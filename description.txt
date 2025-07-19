@@ -1,0 +1,1 @@
+This line graph shows the average CO2 Emission - Actual per EquipID over the specified time period. The graph illustrates how different EquipIDs compare in terms of CO2 emissions.
