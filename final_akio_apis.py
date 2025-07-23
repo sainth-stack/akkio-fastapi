@@ -338,6 +338,7 @@ FIXED_CHART_FILENAMES = [
     "chart_6.json"
 ]
 
+
 @app.post("/gen_plotly_response/")
 async def gen_plotly_response() -> JSONResponse:
     try:
@@ -425,7 +426,7 @@ async def gen_plotly_response() -> JSONResponse:
                                 - Drop rows where datetime conversion failed using df.dropna(subset=[col], inplace=True)
                             - Before using .dt, ensure the column is of datetime type using pd.to_datetime().
                         """
-                )
+                      )
 
         try:
             # Generate code using AI
@@ -477,7 +478,8 @@ async def gen_plotly_response() -> JSONResponse:
 
                 except Exception as e:
                     print(f"Error processing chart '{chart_key}': {str(e)}")
-                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
+                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(
+                        FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
                     chart_responses.append({
                         "chart_file": chart_filename,
                         "chart_title": chart_key if 'chart_key' in locals() else f"Chart {i + 1}",
@@ -616,15 +618,25 @@ def make_serializable(obj):
     else:
         return obj
 
+
 # 6..Get summary api-------------getting the summary of the above generated graphs-----------6-----pending.
 # In-memory cache for summaries
 SUMMARY_CACHE: Dict[str, str] = {}
 
 
-@app.post("/summarize_chart/")
-async def summarize_chart(chart_id: str = Form(...)) -> JSONResponse:
+@app.post("/analyze_chart/")
+async def analyze_chart(
+        chart_id: str = Form(...),
+        question: Optional[str] = Form(None)
+) -> JSONResponse:
+    """
+    Analyzes a chart by either providing a full summary or answering a specific question.
+
+    - If 'question' is not provided, it generates and returns a detailed summary.
+    - If 'question' is provided, it returns a direct answer based on the chart data.
+    """
     try:
-        # Validate chart ID
+        # 1. Validate Chart ID
         try:
             chart_num = int(chart_id)
             if not 1 <= chart_num <= 6:
@@ -632,75 +644,86 @@ async def summarize_chart(chart_id: str = Form(...)) -> JSONResponse:
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid chart ID. Must be integer between 1-6"
+                detail="Invalid chart ID. Must be an integer between 1-6."
             )
 
-        # Check if summary exists in cache
-        if chart_id in SUMMARY_CACHE:
-            return JSONResponse(
-                content={
-                    "chart_id": chart_id,
-                    "summary": markdown_to_html(SUMMARY_CACHE[chart_id]),
-                    "cached": True
-                },
-                status_code=200
-            )
-
-        # Locate chart file
+        # 2. Locate and load chart data from file
         filename = f"chart_{chart_id}.json"
         chart_path = os.path.join(CHARTS_DIR, filename)
 
         if not os.path.exists(chart_path):
-            raise HTTPException(
-                status_code=404,
-                detail="Chart not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Chart file '{filename}' not found.")
 
-        # Load chart data
         with open(chart_path, "r", encoding="utf-8") as f:
             chart_json = json.load(f)
 
-        # Generate analysis prompt
-        prompt = (
-            f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n"
-            f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
-            f"Follow this output structure:\n"
-            f"- Start with a core insight derived from the graph. Bold important terms where needed.\n"
-            f"- Describe distribution patterns if visible (e.g., skewness, outliers, clusters).\n"
-            f"- Explain what real-world behavior the graph appears to reflect (only if clearly supported by the data).\n"
-            f"- Mention modeling implications, **only if they are suggested by the visual pattern**.\n"
-            f"- If any transformation effect is evident from the graph (e.g., log-scale, smoothing), describe it clearly.\n"
-            f"  Use a code block to describe its effect:\n"
-            f"```\n"
-            f"- Point 1\n"
-            f"- Point 2\n"
-            f"- Point 3\n"
-            f"```\n"
-            f"- Mention any business insight that is clearly supported by the visual.\n"
-            f"- Suggest focused actions based on the graph's trends (e.g., rising spikes, drop-offs, correlation zones).\n\n"
-            f"Only describe what you observe from the chart. Do not invent data or generalize beyond the chart. Use clean bullet points. No section headings. No intro or conclusion."
-        )
+        # 3. Determine action: Summarize or Answer Question
+        # --- CASE 1: No question provided -> Generate a detailed summary ---
+        if not question or not question.strip():
+            # Check cache for existing summary
+            if chart_id in SUMMARY_CACHE:
+                return JSONResponse(
+                    content={
+                        "chart_id": chart_id,
+                        "response": markdown_to_html(SUMMARY_CACHE[chart_id]),
+                        "type": "summary",
+                        "cached": True,
+                    },
+                    status_code=200,
+                )
 
-        # Generate and cache summary
-        summary = generate_text(prompt)
-        SUMMARY_CACHE[chart_id] = summary
+            # Generate and cache a new summary
+            prompt = (
+                f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
+                f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
+                f"Follow this output structure:\n"
+                f"- Start with a core insight derived from the graph. Bold important terms.\n"
+                f"- Describe distribution patterns (e.g., skewness, outliers, clusters).\n"
+                f"- Explain what real-world behavior the graph appears to reflect.\n"
+                f"- Mention modeling implications if suggested by a visual pattern.\n"
+                f"- Suggest focused actions based on the graph's trends.\n\n"
+                f"Only describe what you observe. Do not invent data. Use clean bullet points without section headings."
+            )
+            summary = generate_text(prompt)
+            SUMMARY_CACHE[chart_id] = summary
 
-        return JSONResponse(
-            content={
-                "chart_id": chart_id,
-                "summary": markdown_to_html(summary),
-                "cached": False
-            },
-            status_code=200
-        )
+            return JSONResponse(
+                content={
+                    "chart_id": chart_id,
+                    "response": markdown_to_html(summary),
+                    "type": "summary",
+                    "cached": False,
+                },
+                status_code=200,
+            )
+
+        # --- CASE 2: Question provided -> Generate a targeted answer ---
+        else:
+            prompt = (
+                f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
+                f"User Question: '{question}'\n\n"
+                f"Based *only* on the data and trends visible in the chart, provide a clear, concise, and helpful answer. "
+                f"If the question asks for recommendations, suggest actions directly supported by the data. "
+                f"For all other questions, answer directly and factually. "
+                f"Do not invent data or generalize beyond what is shown in the chart. Format your response using markdown."
+            )
+            answer = generate_text(prompt)
+
+            return JSONResponse(
+                content={
+                    "chart_id": chart_id,
+                    "question": question,
+                    "response": markdown_to_html(answer),
+                    "type": "answer"
+                },
+                status_code=200,
+            )
 
     except HTTPException:
-        raise  # Re-raise already handled exceptions
+        raise  # Re-raise exceptions with specific HTTP status codes
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Summary generation failed: {str(e)}"
-        )
+        # Catch-all for any other unexpected errors
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 def markdown_to_html(md_text):
@@ -710,84 +733,21 @@ def markdown_to_html(md_text):
 
 def generate_text(prompt: str) -> str:
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1-mini",
         messages=[
             {"role": "system",
              "content": "You are a helpful data analyst that explains data visualizations and user queries and write insightful summary for the given data."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.7,
+        temperature=0.3,
         max_tokens=500
     )
     return response.choices[0].message.content.strip()
 
 
-# 12.Ask about chart--------------asking the questions for the above summary------------ combine with summary---
-@app.post("/ask_about_chart/")
-async def ask_about_chart(
-        chart_id: str = Form(...),
-        question: str = Form(...)
-) -> JSONResponse:
-    try:
-        # Validate inputs
-        if not chart_id or not question:
-            raise HTTPException(
-                status_code=400,
-                detail="Both chart_id and question are required"
-            )
-
-        # Check if summary exists in cache
-        summary = SUMMARY_CACHE.get(chart_id)
-        if not summary:
-            raise HTTPException(
-                status_code=400,
-                detail="No summary available. Call /summarize_chart first."
-            )
-
-        # Generate answer prompt with strict requirements
-        prompt = (
-            f"Chart Summary Reference:\n{summary}\n\n"
-            f"User Question: {question}\n\n"
-            f"Provide a concise answer with exactly these elements:\n"
-            f"1. First bullet point (key insight)\n"
-            f"2. Second bullet point (supporting detail)\n"
-            f"3. Third bullet point (action/implication)\n"
-            f"- Each point must be under 15 words\n"
-            f"- Use simple language\n"
-            f"- Only include information visible in the chart\n"
-            f"- Format strictly as:\n"
-            f"• Point 1\n• Point 2\n• Point 3"
-        )
-
-        answer = generate_text(prompt)
-
-        # Validate answer format
-        bullet_points = [line.strip() for line in answer.split('\n') if line.startswith('•')]
-        if len(bullet_points) != 3:
-            answer = "• Key insight\n• Supporting detail\n• Recommended action"
-            print(f"Invalid answer format from LLM. Using fallback response.")
-
-        return JSONResponse(
-            content={
-                "chart_id": chart_id,
-                "question": question,
-                "answer": answer
-            },
-            status_code=200
-        )
-
-    except HTTPException:
-        raise  # Re-raise already handled exceptions
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate answer: {str(e)}"
-        )
-
-
 # 7..Filling missing data------------------Evaluating the missed data in the dataframe----------- 7.
 @app.post("/missing_data/")
-async def handle_missing_data() -> JSONResponse:
+async def missing_data() -> JSONResponse:
     try:
         # Load and validate data
         csv_file_path = 'data.csv'
@@ -802,7 +762,7 @@ async def handle_missing_data() -> JSONResponse:
         print(df.head(5))
 
         # Process missing data
-        new_df, html_df = process_missing_data(df.copy())
+        new_df, html_df, summary = process_missing_data(df.copy())
 
         # Save processed data
         processed_path = os.path.join('uploads', 'processed_data.csv')
@@ -832,17 +792,23 @@ async def handle_missing_data() -> JSONResponse:
 
 def process_missing_data(df):
     df = convert_to_datetime(df)
-    df, html_df = handle_missing_data(df)
-    return df, html_df
+    df, html_df, summary = handle_missing_data(df)
+    return df, html_df, summary
 
 
 def convert_to_datetime(df):
+    """
+    Converts object (string) columns containing dates to datetime format.
+    """
     for col in df.columns:
         if df[col].dtype == "object":  # Process only string columns
             if df[col].str.contains(r"\d{1,4}[-/]\d{1,2}[-/]\d{1,4}", na=False).any():
                 df[col] = df[col].apply(detect_and_parse_date)
 
     return df
+
+
+import dateutil.parser
 
 
 def detect_and_parse_date(value):
@@ -868,6 +834,139 @@ def detect_and_parse_date(value):
 
     except ValueError:
         return pd.NaT  # Return NaT if parsing fails
+
+
+from sklearn.impute import KNNImputer
+
+
+def handle_missing_data(df):
+    try:
+        ignore_types = ['object', 'string', 'timedelta', 'complex']
+        ignored_columns_info = {}
+
+        # Identify numeric and datetime columns
+        numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+        date_time_cols = df.select_dtypes(include=['datetime64']).columns
+        ignored_cols = df.select_dtypes(include=ignore_types).columns
+        int_like_cols = [col for col in numeric_cols if is_integer_like(df[col])]
+
+        for col in ignored_cols:
+            ignored_columns_info[col] = f"Ignored because of optional data"
+
+        # Impute numeric columns and track which cells were imputed
+        imputer = KNNImputer(n_neighbors=5)
+        imputed_numeric = imputer.fit_transform(df[numeric_cols])
+        imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols).round(2)
+
+        for col in numeric_cols:
+            if col in int_like_cols:
+                imputed_numeric_df[col] = imputed_numeric_df[col].round().astype("Int64")
+
+        # Mark imputed cells (True if the original cell was NaN)
+        imputed_flags = df[numeric_cols].isnull()
+        imputed_flags = imputed_flags.applymap(lambda x: x if x else False)
+
+        # Update DataFrame with imputed values
+        df[numeric_cols] = imputed_numeric_df
+
+        for col in df.select_dtypes(include='category').columns:
+            if df[col].isnull().any():
+                mode_val = df[col].mode().iloc[0] if not df[col].mode().empty else "Unknown"
+                df[col].fillna(mode_val, inplace=True)
+                imputed_flags[col] = df[col].isnull()
+        for col in df.select_dtypes(include='bool').columns:
+            if df[col].isnull().any():
+                df[col].fillna(df[col].mode().iloc[0], inplace=True)
+
+        # Handle datetime columns by forward filling missing values
+        for col in date_time_cols:
+            df[col] = pd.to_datetime(df[col])
+            time_diffs = df[col].diff().dropna()
+            avg_diff_sec = time_diffs.mean().total_seconds()
+            minute_sec = 60
+            hour_sec = 3600
+            day_sec = 86400
+            month_sec = day_sec * 30.44
+            year_sec = day_sec * 365.25
+
+            if avg_diff_sec < hour_sec:
+                time_unit = "minutes"
+                avg_diff = pd.Timedelta(minutes=avg_diff_sec / minute_sec)
+            elif avg_diff_sec < day_sec:
+                time_unit = "hours"
+                avg_diff = pd.Timedelta(hours=avg_diff_sec / hour_sec)
+            elif avg_diff_sec < month_sec:
+                time_unit = "days"
+                avg_diff = pd.Timedelta(days=avg_diff_sec / day_sec)
+            elif avg_diff_sec < year_sec:
+                time_unit = "months"
+                avg_diff = pd.DateOffset(months=round(avg_diff_sec / month_sec))
+            else:
+                time_unit = "years"
+                avg_diff = pd.DateOffset(years=round(avg_diff_sec / year_sec))
+
+            for i in range(1, len(df)):
+                if pd.isnull(df[col].iloc[i]):
+                    df.loc[i, col] = df[col].iloc[i - 1] + avg_diff
+                    imputed_flags.loc[i, col] = True
+
+            imputed_flags.fillna(False, inplace=True)
+
+        # Convert the DataFrame into a JSON-serializable format with flags
+        data = []
+
+        for _, row in df.iterrows():
+            row_data = {}
+            for col in df.columns:
+                row_data[col] = {
+                    "value": row[col].strftime('%Y-%m-%d %H:%M:%S') if isinstance(row[col], pd.Timestamp) else row[col],
+                    "is_imputed": str(imputed_flags[col].get(_, False)) if col in imputed_flags else str(False)
+                    # Check if cell was imputed
+                }
+            data.append(row_data)
+        missing_values_summary = summarize_missing_values(imputed_flags)
+        missing_values_summary["ignored_columns"] = ignored_columns_info
+        return df, data, missing_values_summary
+    except Exception as e:
+        print(e)
+
+
+def is_integer_like(series):
+    return pd.api.types.is_numeric_dtype(series) and \
+        series.dropna().apply(lambda x: float(x).is_integer()).all()
+
+
+def summarize_missing_values(df):
+    try:
+        # 1. Total number of missing values
+        total_missing = df.sum().sum()
+
+        # 2. Columns with any missing values
+        columns_with_missing = df.columns[df.any()].tolist()
+
+        # 3. Count of missing values per column
+        missing_count_per_column = df.sum()
+
+        # 4. Percentage of missing values per column (optional)
+        missing_percentage = df.mean() * 100
+
+        # Final summary
+        summary = {
+            "total_missing_values": int(total_missing),
+            "columns_with_missing": columns_with_missing,
+            "missing_count_per_column": missing_count_per_column.to_dict(),
+            "missing_percentage_per_column": missing_percentage.round(2).to_dict()
+        }
+        return summary
+    except Exception as e:
+        print(e)
+        return {}
+
+
+def serialize_datetime(obj):
+    if isinstance(obj, (datetime, pd.Timestamp)):
+        return obj.isoformat()
+    raise TypeError("Type not serializable")
 
 
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
@@ -1580,71 +1679,12 @@ def random_forest(data, target_column):
         return False, []
 
 
-# 15.Get Columns Description----------------Getting the columns description from the dataset.---------remove
-@app.post("/col_description/")
-async def get_column_descriptions() -> JSONResponse:
-    try:
-        # Load and validate data
-        csv_file_path = 'data.csv'
-        if not os.path.exists(csv_file_path):
-            raise HTTPException(
-                status_code=404,
-                detail="Data file not found"
-            )
-
-        df = pd.read_csv(csv_file_path)
-        print("Data preview:")
-        print(df.head(5))
-
-        # Generate column descriptions
-        prompt_eng = (
-            f"You are analytics_bot. Analyze the data: {df.head()} and provide:\n"
-            f"1. Column name\n"
-            f"2. Description (1-2 sentences)\n"
-            f"3. Example values\n"
-            f"Format as markdown bullet points:\n"
-            f"- **Column1**: Description...\n  Examples: val1, val2\n"
-            f"- **Column2**: Description...\n  Examples: val1, val2\n"
-            f"Only include columns present in the data."
-        )
-
-        column_description = generate_code(prompt_eng)
-
-        return JSONResponse(
-            content={"Column_description": markdown_to_html(column_description)},
-            status_code=200
-        )
-
-    except pd.errors.EmptyDataError:
-        raise HTTPException(
-            status_code=400,
-            detail="CSV file is empty or corrupt"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate descriptions: {str(e)}"
-        )
-
-
 # 9.Data scout api----------------------Data scout api for generating the data------------- 9
 @app.post("/create_data/")
 async def create_data_with_data_scout(
         prompt: str = Form(...),
         data_type: str = Form(...),
-        file: Optional[UploadFile] = File(None)
 ) -> JSONResponse:
-    """
-    Create data based on prompt and type (excel, pdf, or image)
-
-    Args:
-        prompt: The input prompt for data generation
-        data_type: Type of data to create (excel/pdf/image)
-        file: Optional file upload for image/pdf generation
-
-    Returns:
-        JSONResponse: Generated data in appropriate format
-    """
     if not prompt or not data_type:
         raise HTTPException(
             status_code=400,
@@ -1657,11 +1697,22 @@ async def create_data_with_data_scout(
             result = agent1.invoke({"input": prompt})
 
             if isinstance(result, dict) and "output" in result:
-                return JSONResponse(content={"message": result["output"]})
-            raise HTTPException(
-                status_code=500,
-                detail="Unexpected result format from agent"
-            )
+                output = result["output"]
+                print("output is", output)
+                # Handle DataFrame conversion
+                if hasattr(output, 'to_dict'):  # Check if it's a DataFrame
+                    # Convert DataFrame to dictionary
+                    data_dict = output.to_dict('records')  # List of dictionaries
+                    return JSONResponse(content={
+                        "message": "Data generated successfully",
+                        "data": data_dict,
+                        "shape": output.shape,
+                        "columns": output.columns.tolist()
+                    })
+                else:
+                    # Handle string or other serializable output
+                    return JSONResponse(content={"message": str(output)})
+
 
         elif data_type == "pdf":
             raw_prompt = prompt
@@ -2010,7 +2061,7 @@ async def handle_data_generation(
         file: UploadFile,
         user_prompt: str,
         openai_api_key: str
-) -> StreamingResponse:
+) -> JSONResponse:
     """Handle synthetic data generation"""
     print("[DEBUG] Processing data generation request")
     temp_file_name = None
@@ -2073,20 +2124,51 @@ async def handle_data_generation(
         combined_df = pd.concat([df, generated_df], ignore_index=True)
         print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape}")
 
-        # Stream CSV response
-        stream = io.StringIO()
-        combined_df.to_csv(stream, index=False)
-        response = StreamingResponse(
-            iter([stream.getvalue()]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": 'attachment; filename="synthetic_data_output.csv"'
-            }
-        )
+        # Convert DataFrame to JSON-serializable format
+        # Handle datetime columns and other non-serializable types
+        def convert_to_serializable(obj):
+            """Convert non-serializable objects to serializable format"""
+            if pd.isna(obj):
+                return None
+            elif isinstance(obj, (pd.Timestamp, datetime)):
+                return obj.isoformat()
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            else:
+                return obj
+
+        # Convert DataFrame to records with proper serialization
+        data_records = []
+        for _, row in combined_df.iterrows():
+            record = {}
+            for col, value in row.items():
+                record[col] = convert_to_serializable(value)
+            data_records.append(record)
+
+        result_data = {
+            "status": "success",
+            "original_rows": len(df),
+            "generated_rows": len(generated_df),
+            "total_rows": len(combined_df),
+            "data": data_records
+        }
 
         print("[DEBUG] Successfully generated synthetic data response.")
-        return response
+        return JSONResponse(content=result_data)
 
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        print(f"[ERROR] Error in data generation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Content generation failed: {str(e)}"
+        )
     finally:
         # Clean up temp file
         if temp_file_name and os.path.exists(temp_file_name):
@@ -2118,11 +2200,10 @@ async def handle_image_generation(
 
     # Ensure images folder exists
     folder_path = ensure_images_folder()
-    client = OpenAI(api_key=openai_api_key)
 
     # Analyze all images for comprehensive style
     print("Analyzing uploaded images for style...")
-    comprehensive_style = await analyze_all_images_for_style(images, openai_api_key)
+    comprehensive_style = analyze_all_images_for_style(images, openai_api_key)
     print(f"Extracted style: {comprehensive_style}")
 
     # Get starting index for new images
@@ -2331,7 +2412,15 @@ def analyze_all_images_for_style(uploaded_images, openai_api_key):
     # Get description for each uploaded image
     for i, image_file in enumerate(uploaded_images):
         try:
-            image = Image.open(image_file).convert("RGB")
+            # Read the file content from UploadFile
+            image_file.file.seek(0)  # Reset file pointer to beginning
+            image_content = image_file.file.read()
+
+            # Create a BytesIO object from the content
+            image_bytes = io.BytesIO(image_content)
+
+            # Now open with PIL
+            image = Image.open(image_bytes).convert("RGB")
             vision_caption = describe_image(image, openai_api_key)
             individual_descriptions.append({
                 'index': i + 1,
@@ -2344,7 +2433,6 @@ def analyze_all_images_for_style(uploaded_images, openai_api_key):
 
     if not individual_descriptions:
         return "No valid images could be analyzed"
-
     # Create a comprehensive style analysis prompt
     style_analysis_prompt = f"""
     Analyze the following {len(individual_descriptions)} images and provide a comprehensive style summary that captures the common visual elements, artistic approach, and aesthetic characteristics across all images.
@@ -2769,6 +2857,8 @@ def generate_data_code(prompt_eng):
 
 
 from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
+
+
 def simulate_and_format_with_llm(
         code_to_simulate: str,
         dataframe: pd.DataFrame
