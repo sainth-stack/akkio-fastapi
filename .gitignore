@@ -1,2 +1,5 @@
 .env
 final_apis.py
+__pycache__
+generated_charts
+validation_reports

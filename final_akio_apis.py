@@ -10,6 +10,7 @@ import traceback
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from enum import Enum
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
@@ -24,7 +25,7 @@ import requests
 from fastapi import FastAPI
 from fastapi import UploadFile, File, Form, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from prophet import Prophet
 from sklearn.cluster import KMeans
@@ -35,6 +36,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from starlette.responses import HTMLResponse, JSONResponse
 from statsmodels.tsa.arima_model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from xgboost import XGBRegressor
@@ -42,13 +44,14 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from img_datascout import ImageGen_agent
 from datascout import DataScout_agent, extract_sections_tool, extract_num_pages_tool, \
-    pdf_generator_tool,initialize_llm
+    pdf_generator_tool, initialize_llm
 from database import PostgresDatabase
 from synthetic_data_function import generate_synthetic_data
 from models import DBConnectionRequest
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 from plotly.graph_objs import Figure
+import plotly as px
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict
@@ -74,17 +77,7 @@ db = PostgresDatabase()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-# 1.Create Connection api ---for creating the connection with the database
-@app.post("/connection")
-async def connection(request: DBConnectionRequest):
-    global connection_obj
-    connection_obj = db.create_connection(request.username, request.password, request.database, request.host,
-                                          request.port)
-    print(connection_obj)
-    return JSONResponse(content={"tables": str(connection_obj)})
-
-
-# 2.File upload only-------- It is  useful for uploading the file
+# 1.File upload only-------- It is  useful for uploading the file
 @app.post("/upload_and_store_data")
 async def upload_and_store_data(
         request: Request,
@@ -169,41 +162,7 @@ async def upload_and_store_data(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
-# 3.Table info getting-----------getting the information of the tables
-@app.post("/get_tableinfo")
-async def get_table_info():
-    table_info = db.get_tables_info()
-    return JSONResponse(content=jsonable_encoder(table_info))
-
-
-# 4.Reading table data-------Reading the table data.
-@app.post("/read_data")
-async def read_data(table_name: str = Form(...)):
-    try:
-        # Get data from database
-        df = db.get_table_data(table_name)
-
-        # Save to CSV files
-        df.to_csv('data.csv', index=False)
-        os.makedirs("uploads", exist_ok=True)  # Ensure uploads directory exists
-        df.to_csv(os.path.join("uploads", f"{table_name.lower()}.csv"), index=False)
-
-        # Return JSON response
-        return JSONResponse(content=df.to_dict(orient="records"))
-
-    except KeyError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Table not found: {str(e)}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error reading data: {str(e)}"
-        )
-
-
-# 5.Get user data based on the mail----------get the table data of the user based on the email
+# 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
 @app.post("/get_user_data")
 async def get_user_data(email: str = Form(...)):
     try:
@@ -219,7 +178,7 @@ async def get_user_data(email: str = Form(...)):
         )
 
 
-# 6.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
+# 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
 @app.post("/delete_selected_tables_by_name/")
 async def delete_selected_tables_by_name(
         email: str = Form(...),
@@ -262,196 +221,7 @@ async def delete_selected_tables_by_name(
         )
 
 
-# 7.Deleting all user tables----------------Deleting all user tables
-@app.post("/delete_all_user_tables/")
-async def delete_all_user_tables(email: str = Form(...)):
-    try:
-        print(f"Received email for deletion: {email}")  # Debug statement
-
-        # Call database operation
-        print(f"Calling delete_user_tables method with email: {email}")
-        deletion_status = db.delete_all_tables_data(email)
-
-        if deletion_status:
-            msg = f"All tables associated with email '{email}' have been deleted."
-            print(msg)
-            return JSONResponse(
-                content={"message": msg},
-                status_code=status.HTTP_200_OK
-            )
-        else:
-            msg = f"No tables found for email '{email}' or an error occurred."
-            print(msg)
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=msg
-            )
-
-    except Exception as e:
-        error_msg = f"Exception occurred while deleting tables: {str(e)}"
-        print(error_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred: {str(e)}"
-        )
-
-
-# 8.Generating the test response-----------------Generating the text response for the given user query(txt to sql)
-@app.post("/gen_txt_response")
-async def gen_txt_response(query: str = Form(...)):
-    try:
-        # Load CSV data
-        csv_file_path = 'data.csv'
-        df = pd.read_csv(csv_file_path)
-
-        # Generate CSV metadata
-        csv_metadata = {"columns": df.columns.tolist()}
-        metadata_str = ", ".join(csv_metadata["columns"])
-
-        # Create the prompt
-        prompt_eng = (
-            f"""
-                You are an expert Data Analyst AI. Your mission is to answer a user's query about a dataset. Always strictly adhere to the following rules:               
-                1. Generic Queries:
-                    If the user's query is generic and not related to data, respond with a concise and appropriate print statement. For example:
-
-                    Query: "What is AI?"
-                    Response: "Artificial Intelligence (AI) refers to the simulation of human intelligence in machines."
-                2. Data-Related Queries:
-                    If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
-
-                    For these queries, respond with Python code only, no additional explanations.
-                    The code should:
-
-                    Load data.csv using pandas.
-                    Perform operations to directly address the query.
-                    Exclude plotting, visualization, or other unnecessary steps.
-                    Include comments for key steps in the code.
-                    Example:
-
-                    Query: "How can I filter rows where 'Column1' > 100?"
-                    Response:
-                    python
-                    Copy code
-                    import pandas as pd
-
-                    # Load the dataset
-                    data = pd.read_csv('data.csv')
-
-                    # Filter rows where 'Column1' > 100
-                    filtered_data = data[data['Column1'] > 100]
-
-                    # Output the result
-                    print(filtered_data)
-
-                3. Theoretical Concepts:
-                    For theoretical questions, provide a brief explanation as a print statement. Keep the explanation concise and focused.
-
-                    Example:
-
-                    Query: "What is normalization in data preprocessing?"
-                    Response:
-                    "Normalization is a data preprocessing technique used to scale numeric data within a specific range, typically [0, 1], to ensure all features contribute equally to the model."
-
-                4. For Analytical & Insight Queries:
-                    -If the user asks for a summary, aggregation, finding, or "what is/are" type of question, provide a direct and concise **textual answer**.
-                    - Your answer must be derived from the data in the `df` DataFrame.
-                    - Provide the Python code you used to find the answer.
-
-                Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
-
-                User query is {query}.
-                    """
-        )
-
-        # Generate and execute code
-        code = generate_code(prompt_eng)
-        result = execute_py_code(code, df)
-
-        return JSONResponse(content={"answer": result})
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Data file not found"
-        )
-    except pd.errors.EmptyDataError:
-        raise HTTPException(
-            status_code=400,
-            detail="CSV file is empty or corrupt"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing request: {str(e)}"
-        )
-
-
-# Function to generate code from OpenAI API
-def generate_code(prompt_eng):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt_eng}
-        ]
-    )
-    all_text = ""
-    for choice in response.choices:
-        message = choice.message
-        chunk_message = message.content if message else ''
-        all_text += chunk_message
-    print(all_text)
-    if "```python" in all_text:
-        code_start = all_text.find("```python") + 9
-        code_end = all_text.find("```", code_start)
-        code = all_text[code_start:code_end]
-    else:
-        code = all_text
-    return code
-
-
-def execute_py_code(code: str, df: pd.DataFrame) -> str:
-    # --- Pre-flight Syntax Check using AST ---
-    try:
-        ast.parse(code)
-    except SyntaxError as e:
-        # If ast.parse fails, it's not valid Python code.
-        return f"Syntax Error: The provided text is not valid Python code. Details: {e}"
-
-    # --- Execution Logic ---
-    buffer = io.StringIO()
-    sys.stdout = buffer
-    local_vars = {'df': df, 'pd': pd}  # Include pandas for convenience
-
-    try:
-        # If syntax is valid, execute the code
-        exec(code, globals(), local_vars)
-        output = buffer.getvalue().strip()
-
-        # This part is now less critical because the LLM prompt should enforce a print(),
-        # but it's good fallback logic.
-        if not output:
-            try:
-                last_line = code.strip().split('\n')[-1]
-                if not last_line.startswith(('print', '#')):
-                    # eval the last line to get its value
-                    eval_output = eval(last_line, globals(), local_vars)
-                    output = str(eval_output)
-            except Exception:
-                # If eval fails, it means there was no returnable expression.
-                output = "Code executed successfully with no output."
-
-    except Exception as e:
-        output = f"Runtime Error: {str(e)}"
-    finally:
-        # Always reset stdout
-        sys.stdout = sys.__stdout__
-
-    return output
-
-
-# 9.Get flespi data---------------------------------it is for the flespi data
+# 4.Get flespi data---------------------------------it is for the flespi data---------- total 4(existing)
 @app.post("/download_flespi_data/")
 async def download_flespi_data(
         flespi_URL: str = Form(...),
@@ -553,7 +323,7 @@ def convert_to_hourly(data):
     return hourly_data
 
 
-# Dashboard apis--------------------Dashboard related api for generating the dynamic graphs
+# 5.Dashboard apis--------------------Dashboard related api for generating the dynamic graphs---------- 5. Have to modify
 # Dashboard configuration
 CHARTS_DIR = "generated_charts"
 os.makedirs(CHARTS_DIR, exist_ok=True)
@@ -568,21 +338,6 @@ FIXED_CHART_FILENAMES = [
     "chart_6.json"
 ]
 
-
-def make_serializable(obj: Any) -> Any:
-    """Recursively convert non-serializable objects to serializable formats."""
-    if isinstance(obj, (np.generic, np.ndarray)):
-        return obj.tolist()
-    elif isinstance(obj, datetime):
-        return obj.isoformat()
-    elif isinstance(obj, dict):
-        return {k: make_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [make_serializable(v) for v in obj]
-    return obj
-
-
-# 10.Dashboard main api
 @app.post("/gen_plotly_response/")
 async def gen_plotly_response() -> JSONResponse:
     try:
@@ -590,13 +345,13 @@ async def gen_plotly_response() -> JSONResponse:
         csv_file_path = 'data.csv'
         df = pd.read_csv(csv_file_path)
 
-        # Infer metadata and generate topics
-        metadata = infer_metadata(df)
-        print("Metadata:", metadata)
+        # Clean column names
+        df.columns = df.columns.str.strip()
 
-        topics = generate_topics_llm(metadata)
-        print("Generated topics:", topics)
-
+        num_plots = 6  # Number of plots to generate per topic
+        file_path = csv_file_path
+        sample_data = df.head(10).to_string()
+        data_types_info = df.dtypes.to_string()
         chart_responses = []
 
         # Initialize all chart files as empty
@@ -606,66 +361,147 @@ async def gen_plotly_response() -> JSONResponse:
                 json.dump({}, f)
 
         # Process each topic to generate charts
-        for i, topic in enumerate(topics[:6]):
-            print(f"Processing topic {i + 1}: {topic}")
+        prompt_eng = (f"""
+                        You are a data visualization expert and a Python Plotly developer.For Each request you have to generate the graphs dynamically based on the dataset given.
 
-            prompt_eng = (
-                f"You are an AI specialized in data analytics and visualization.\n"
-                f"Data used for analysis is stored in 'data.csv' with attributes: {metadata}.\n"
-                f"Based on the topic '{topic}', generate Python code using Plotly to create:\n"
-                f"- Basic, easily understandable graphs (no scatter plots)\n"
-                f"- Rich, attractive colors\n"
-                f"- Meaningful visualization for the topic\n"
-                f"Output must be a Plotly Figure object named 'fig'."
-            )
+                        I will provide you with a sample dataset.
 
-            try:
-                chat = generate_code4(prompt_eng)
-                print(f"Generated code:\n{chat}")
+                        Your task is to:
+                        1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
+                        2. Consider the data source as: {file_path}
+                        3. For each chart:
+                           - Use a short, meaningful chart title (as the dictionary key).
+                           - Write a brief insight about the chart as a Python comment (# insight: ...).
+                           - Generate clean Python code that:
+                             a. Creates the Plotly chart using the dataset,
+                             b. Converts the figure to JSON using fig.to_json(),
+                             c. Saves it in a dictionary using chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}
+                             d. Wraps the chart generation and JSON conversion in a try-except block using except Exception as e: (capital E).
 
-                if 'import' not in chat:
-                    raise ValueError("Invalid AI response - missing imports")
 
-                namespace = {}
-                exec(chat, namespace)
-                fig = namespace.get("fig")
+                        Instructions:
+                        - Return *only valid Python code. Do **not* use markdown or bullet points.
+                        - Begin with any required imports and initialization of chart_dict.
+                        - - Do not use except exception as e:. It is incorrect Python. Always use except Exception as e: (capital E). Any other form is invalid and will cause a runtime error.
+                        - All explanations must be in valid Python comments (# ...)
+                        - Do not add any extra text outside Python code.
+                        - Use a diverse range of charts like: line, bar, scatter, pie, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
+                        - Use *aggregations* like .groupby(...).mean(), .count(), .sum() where helpful.
+                        - - Apply *filters* when helpful, such as:
+                          - Top N categories by value or count,
+                          - Recent date ranges,
+                          - Removal of nulls or extreme outliers.
+                          - Top 5 categories by frequency or value
 
-                if not fig or not isinstance(fig, Figure):
-                    raise ValueError("No valid Plotly figure generated")
+                        - Explore *advanced Plotly features*, such as:
+                          - facet_row, facet_col for comparison grids,
+                          - multi-series (e.g. line or scatter with color=column),
+                          - combo charts (e.g., bar + line together),
+                          - rolling averages or moving means,
+                          - violin plots to show distributions,
+                          - 3D scatter plots (px.scatter_3d) where 3 numeric dimensions exist,
+                          - animations (animation_frame, animation_group) if time-based trends are useful.
+                        - Aim for *high-value insights*, like:
+                          - Seasonality or cyclic patterns,
+                          - Equipment performing worse than average,
+                          - Category-wise contribution to deficit or emissions,
+                          - Any shocking anomalies or unexpected gaps.
 
-                # Process and save chart data
-                chart_data = fig.to_plotly_json()
-                chart_data_serializable = make_serializable(chart_data)
-                chart_filename = FIXED_CHART_FILENAMES[i]
-                chart_path = os.path.join(CHARTS_DIR, chart_filename)
+                        - Use this preview of the dataset:
+                            {sample_data}
 
-                # Save individual chart file
-                with open(chart_path, "w", encoding="utf-8") as f:
-                    json.dump(chart_data_serializable, f, indent=2, ensure_ascii=False)
+                        - Column names and data types:
+                            {data_types_info}
 
-                chart_responses.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "query": topic["type"],
-                    "chart_data": chart_data_serializable,
-                    "chart_file": chart_filename,
-                    "status": "success"
-                })
+                        IMPORTANT:
+                            - If you ever write except exception as e, your answer is wrong and must be corrected before use.
+                            - Ensure column names are used *exactly* as they appear in the dataset. *Do not change the case* or formatting of column names.
+                            - Always use df.columns = df.columns.str.strip() after loading the dataset to handle unwanted spaces.
+                            - After reading the CSV:
+                            - Use df.columns = df.columns.str.strip() to remove leading/trailing spaces from column names.
+                            - For datetime columns:
+                                - Strip values using df[col] = df[col].astype(str).str.strip()
+                                - Convert to datetime using pd.to_datetime(df[col], errors='coerce', utc=True)
+                                - Drop rows where datetime conversion failed using df.dropna(subset=[col], inplace=True)
+                            - Before using .dt, ensure the column is of datetime type using pd.to_datetime().
+                        """
+                )
 
-            except Exception as e:
-                print(f"Error processing topic '{topic}': {str(e)}")
+        try:
+            # Generate code using AI
+            generated_code = generate_code4(prompt_eng)
+            print(f"Generated code:\n{generated_code}")
+
+            if 'import' not in generated_code.lower():
+                raise ValueError("Invalid AI response - missing imports")
+
+            # Execute the generated code
+            namespace = {'pd': pd, 'px': px, 'go': go, 'df': df}
+            exec(generated_code, namespace)
+
+            # Get the chart dictionary from executed code
+            chart_dict = namespace.get("chart_dict", {})
+
+            if not chart_dict:
+                raise ValueError("No charts generated - chart_dict is empty")
+
+            # Process each generated chart
+            chart_keys = list(chart_dict.keys())[:num_plots]  # Ensure we only take 6 charts
+
+            for i, chart_key in enumerate(chart_keys):
+                try:
+                    chart_info = chart_dict[chart_key]
+                    chart_data = chart_info.get("plot_data")
+                    description = chart_info.get("description", "")
+
+                    if not chart_data:
+                        raise ValueError(f"No plot data for chart: {chart_key}")
+
+                    # Make data serializable
+                    chart_data_serializable = make_serializable(chart_data)
+                    chart_filename = FIXED_CHART_FILENAMES[i]
+                    chart_path = os.path.join(CHARTS_DIR, chart_filename)
+
+                    # Save individual chart file
+                    with open(chart_path, "w", encoding="utf-8") as f:
+                        json.dump(chart_data_serializable, f, indent=2, ensure_ascii=False)
+
+                    chart_responses.append({
+                        "timestamp": datetime.now().isoformat(),
+                        "chart_title": chart_key,
+                        "chart_data": chart_data_serializable,
+                        "chart_file": chart_filename,
+                        "description": description,
+                        "status": "success"
+                    })
+
+                except Exception as e:
+                    print(f"Error processing chart '{chart_key}': {str(e)}")
+                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
+                    chart_responses.append({
+                        "chart_file": chart_filename,
+                        "chart_title": chart_key if 'chart_key' in locals() else f"Chart {i + 1}",
+                        "status": "failed",
+                        "error": str(e)
+                    })
+
+        except Exception as e:
+            print(f"Error in chart generation: {str(e)}")
+            # Create fallback empty responses
+            for i in range(num_plots):
                 chart_responses.append({
                     "chart_file": FIXED_CHART_FILENAMES[i],
                     "status": "failed",
                     "error": str(e)
                 })
 
-        # Prepare final response
+            # Prepare final response
         success_count = len([c for c in chart_responses if c.get("status") == "success"])
         response_data = {
             "message": "Chart generation completed",
             "generated_charts": success_count,
-            "total_charts": len(FIXED_CHART_FILENAMES),
-            "chart_files": FIXED_CHART_FILENAMES,
+            "total_charts": num_plots,
+            "chart_files": FIXED_CHART_FILENAMES[:num_plots],
             "charts": chart_responses
         }
 
@@ -688,138 +524,99 @@ async def gen_plotly_response() -> JSONResponse:
         )
 
 
-def infer_metadata(df: pd.DataFrame) -> Dict:
-    meta = {
-        "columns": [],
-        "correlation": df.select_dtypes(include='number').corr().to_dict(),
-        "shape": df.shape,
-        "total_nulls": int(df.isnull().sum().sum())
-    }
-
-    for col in df.columns:
-        dtype = str(df[col].dtype)
-        non_null_series = df[col].dropna()
-        sample_values = non_null_series.sample(min(3, len(non_null_series)), random_state=1).tolist() if len(
-            non_null_series) > 0 else []
-
-        col_meta = {
-            "name": col,
-            "dtype": dtype,
-            "nulls": int(df[col].isnull().sum()),
-            "unique": int(df[col].nunique(dropna=True)),
-            "example_values": sample_values
-        }
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            col_meta['type'] = 'datetime'
-        elif pd.api.types.is_categorical_dtype(df[col]) or df[col].dtype == object:
-            col_meta['type'] = 'categorical'
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            col_meta['type'] = 'numerical'
-        else:
-            col_meta['type'] = 'other'
-
-        meta["columns"].append(col_meta)
-
-    return meta
-
-
-def generate_topics_llm(meta: Dict) -> List[Dict]:
-    prompt = f"""
-    Given the following metadata about a dataset:
-    {json.dumps(meta, indent=2)}
-
-        For each visualization topic, return a dictionary with:
-    - `title`: A clear, concise, and human-readable title for the chart (e.g., "Distribution of Price", "Sales over Time").
-    - `type`: A basic chart type that best fits the topic, such as  `bar`,`line`, `scatter`, `histogram`, `heatmap`, `pie`, `box`, etc.
-    - `columns`: A list of column names from the dataset that are relevant to the chart.
-
-    Your response must be a **valid JSON list of exactly six such dictionaries**. Avoid duplication across the topics.
-
-    In choosing the topics, apply the following reasoning:
-    - Identify key metrics for **distribution analysis** (e.g., using histograms, box plots).
-    - Use **relationships or comparisons** (e.g., category vs value, correlation between two columns).
-    - If there's a time/datetime column, include **time series analysis** (e.g., line plots).
-    - Include at least one **summary view**, such as a heatmap of numerical correlations.
-    - Choose **basic visualizations only** that are clear and accessible to a general user audience.
-    -Do not select the topics which we cannot able to draw the plot.
-    - Do not give the topics repeatedly.Give the topics uniquely  for the generation of the graphs.
-
-    Ensure your choices adapt dynamically to each metadata input and avoid repeating the same topic titles across calls.
-
-    Always return output in valid JSON format with no additional text.
-
-    For Each requests,the topics should be dynamically changed leads to the different types of analysis in various scenarios.
-    Give the topics in which the user can easily understand with the help of visualisations.Just give the topics for basic analysis only.
-    You must give the six insightful data visualization topics.
-    Return a valid JSON list of dictionaries only.
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system",
-             "content": "You are a data visualization expert which can give basic topic names for the visualising of the plots.You specialize in helping users generate insightful and beginner-friendly data analysis ideas based on dataset metadata."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7,
-        max_tokens=500
-    )
-
-    try:
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```json"):
-            content = content.lstrip("```json").rstrip("```").strip()
-        return json.loads(content)
-    except Exception as e:
-        print("Error parsing LLM response:", e)
-        return []
-
-
 # Function to generate code from OpenAI API
 def generate_code4(prompt_eng):
+    """Generate Python code for creating Plotly charts using AI"""
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1-mini",  # Updated model name
         messages=[
-            {"role": "system", "content": f"""
-                                        You are a helpful coding assistant named VizCopilot. You're an expert in Python and specialize in generating interactive visualizations using Plotly (both Plotly Express and Plotly Graph Objects).
-
-                                        Your job is to:
-                                        - Understand the user's data context, visualization goals.
-                                        - Generate full, working Plotly code snippets using best practices (readable, maintainable, idiomatic).
-                                        - Use `plotly.express` for standard charts, and `plotly.graph_objects` when more customization is needed.
-                                        - Include layout configuration for titles, labels, tooltips, and themes.
-                                        - Always use a fully reproducible Python code block.
-                                        - Format outputs in Markdown with proper syntax highlighting.
-
-                                        When generating code (especially Plotly/Python):
-                                        - Always produce **fully working, valid Python code**.
-                                        - Use **correct imports**, avoid missing modules like `import plotly.express as px`, `import pandas as pd`, etc.
-                                        - Never leave incomplete functions or syntax or rising of the serialisable json issues.
-                                        - Validate your code logically before outputting it.
-                                        - Always close brackets, function calls, and maintain indentation properly.
-
-                                        You aim to make data visualization with Plotly fast, clear, and interactive. Never skip code steps. Always generate complete, working code.Do not give errors while executing the code.
-                                          """},
+            {"role": "system", "content": """
+            You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
+            
+            Your core responsibilities:
+            - Generate complete, executable Python code for data visualization
+            - Create diverse, insightful charts that reveal different data patterns
+            - Use both plotly.express (px) and plotly.graph_objects (go) appropriately
+            - Apply data analysis techniques: grouping, filtering, aggregation, transformation
+            
+            Code Generation Standards:
+            - Always start with necessary imports: pandas, plotly.express, plotly.graph_objects
+            - Generate ONLY valid Python code (no markdown, no text outside comments)
+            - Use proper exception handling: 'except Exception as e:' (capital E)
+            - Create complete, working code blocks with proper indentation
+            - Include meaningful chart titles and descriptions
+            - Apply best practices for data visualization
+            
+            Chart Diversity Requirements:
+            - Create different chart types for comprehensive data exploration
+            - Use various Plotly features: faceting, animations, multi-series, custom styling
+            - Focus on actionable insights: trends, outliers, distributions, correlations
+            - Apply appropriate data transformations and filtering
+            
+            Technical Requirements:
+            - Return charts in a dictionary format: chart_dict[title] = {"plot_data": fig.to_plotly_json(), "description": "insight"}
+            - Handle edge cases and data quality issues
+            - Use exact column names from provided dataset
+            - Ensure all generated code is immediately executable
+            - Validate data types and handle datetime conversions properly
+            
+            Quality Assurance:
+            - Every chart must provide unique insights
+            - Code must be syntactically correct and complete
+            - No placeholder functions or incomplete logic
+            - Proper error handling for robustness
+                """},
             {"role": "user", "content": prompt_eng}
-        ]
+        ],
+        temperature=0.7,  # Add some randomness for variety in chart generation
+        max_tokens=4000
     )
+
     all_text = ""
     for choice in response.choices:
         message = choice.message
         chunk_message = message.content if message else ''
         all_text += chunk_message
-    print(all_text)
+
+    print(f"AI Response: {all_text}")
+
+    # Extract Python code from response
     if "```python" in all_text:
         code_start = all_text.find("```python") + 9
         code_end = all_text.find("```", code_start)
-        code = all_text[code_start:code_end]
+        if code_end == -1:
+            code_end = len(all_text)
+        code = all_text[code_start:code_end].strip()
+    elif "```" in all_text:
+        code_start = all_text.find("```") + 3
+        code_end = all_text.find("```", code_start)
+        if code_end == -1:
+            code_end = len(all_text)
+        code = all_text[code_start:code_end].strip()
     else:
-        code = all_text
+        code = all_text.strip()
+
     return code
 
 
-# 11.Get summary api-------------getting the summary of the above generated graphs
+def make_serializable(obj):
+    """Convert numpy/pandas objects to JSON serializable format"""
+    if hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    elif hasattr(obj, 'tolist'):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: make_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [make_serializable(item) for item in obj]
+    elif hasattr(obj, 'item'):
+        return obj.item()
+    elif str(type(obj)).startswith("<class 'numpy."):
+        return float(obj) if 'float' in str(type(obj)) else int(obj)
+    else:
+        return obj
+
+# 6..Get summary api-------------getting the summary of the above generated graphs-----------6-----pending.
 # In-memory cache for summaries
 SUMMARY_CACHE: Dict[str, str] = {}
 
@@ -925,7 +722,7 @@ def generate_text(prompt: str) -> str:
     return response.choices[0].message.content.strip()
 
 
-# 12.Ask about chart--------------asking the questions for the above summary
+# 12.Ask about chart--------------asking the questions for the above summary------------ combine with summary---
 @app.post("/ask_about_chart/")
 async def ask_about_chart(
         chart_id: str = Form(...),
@@ -988,7 +785,7 @@ async def ask_about_chart(
         )
 
 
-# 13.Filling missing data------------------Evaluating the missed data in the dataframe
+# 7..Filling missing data------------------Evaluating the missed data in the dataframe----------- 7.
 @app.post("/missing_data/")
 async def handle_missing_data() -> JSONResponse:
     try:
@@ -1073,7 +870,7 @@ def detect_and_parse_date(value):
         return pd.NaT  # Return NaT if parsing fails
 
 
-# 14Genai bot plotly visualisation.-----------------Prediction and forecasting related api
+# 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
 @app.post("/gen_ai_bot/")
 async def gen_ai_bot(request: Request) -> JSONResponse:
     """
@@ -1783,7 +1580,7 @@ def random_forest(data, target_column):
         return False, []
 
 
-# 15.Get Columns Description----------------Getting the columns description from the dataset.
+# 15.Get Columns Description----------------Getting the columns description from the dataset.---------remove
 @app.post("/col_description/")
 async def get_column_descriptions() -> JSONResponse:
     try:
@@ -1830,7 +1627,7 @@ async def get_column_descriptions() -> JSONResponse:
         )
 
 
-# 16.Data scout api----------------------Data scout api for generating the data
+# 9.Data scout api----------------------Data scout api for generating the data------------- 9
 @app.post("/create_data/")
 async def create_data_with_data_scout(
         prompt: str = Form(...),
@@ -1953,7 +1750,7 @@ async def create_data_with_data_scout(
         )
 
 
-# 17.Data preprocess api----------------------Data preprocessing for the generation of the statistical analysis.
+# 17.Data preprocess api----------------------Data preprocessing for the generation of the statistical analysis.-----
 @app.get("/data_processing/")
 async def perform_statistical_analysis() -> JSONResponse:
     """
@@ -2117,26 +1914,108 @@ def checkSentiment(df, categorical):
     return sentiment
 
 
-# 18.Synthetic Data Extended api
-@app.post("/synthetic_data/extended/")
-async def handle_synthetic_data_extended(
-        file: UploadFile,
+# 10.Extend synthetic data generation api
+class ContentType(Enum):
+    DATA = "data"
+    IMAGES = "images"
+    PDF = "pdf"
+
+
+@app.post("/generate_synthetic_content/", response_model=None)
+async def generate_synthetic_content(
+        files: List[UploadFile],
         user_prompt: str = Form(...)
+) -> Union[StreamingResponse, JSONResponse]:
+    """
+    Unified API for generating synthetic content (data, images, or PDFs)
+
+    Args:
+        files: List of uploaded files (CSV/Excel for data, images for image generation, PDF for document generation)
+        user_prompt: Instructions for content generation
+
+    Returns:
+        StreamingResponse for CSV data or JSONResponse for images/PDFs
+    """
+    print("[DEBUG] Entered generate_synthetic_content")
+
+    # Validate API key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI API key not configured"
+        )
+
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail="No files uploaded"
+        )
+
+    print(f"[DEBUG] Number of files uploaded: {len(files)}")
+    print(f"[DEBUG] User prompt: {user_prompt}")
+
+    # Determine content type based on uploaded files
+    content_type = determine_content_type(files)
+    print(f"[DEBUG] Detected content type: {content_type}")
+
+    try:
+        if content_type == ContentType.DATA:
+            return await handle_data_generation(files[0], user_prompt, openai_api_key)
+        elif content_type == ContentType.IMAGES:
+            return await handle_image_generation(files, user_prompt, openai_api_key)
+        elif content_type == ContentType.PDF:
+            return await handle_pdf_generation(files[0], user_prompt)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file type combination"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Content generation failed: {str(e)}"
+        )
+
+
+def determine_content_type(files: List[UploadFile]) -> ContentType:
+    """Determine the type of content to generate based on uploaded files"""
+    if len(files) == 1:
+        file = files[0]
+        extension = os.path.splitext(file.filename)[1].lower()
+
+        if extension in ['.csv', '.xlsx']:
+            return ContentType.DATA
+        elif extension == '.pdf':
+            return ContentType.PDF
+        elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+            return ContentType.IMAGES
+
+    # Multiple files - check if all are images
+    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
+    if all(os.path.splitext(f.filename)[1].lower() in image_extensions for f in files):
+        return ContentType.IMAGES
+
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid file combination. Upload CSV/Excel for data, images for image generation, or PDF for document generation."
+    )
+
+
+async def handle_data_generation(
+        file: UploadFile,
+        user_prompt: str,
+        openai_api_key: str
 ) -> StreamingResponse:
-    print("[DEBUG] Entered handle_synthetic_data_extended")
+    """Handle synthetic data generation"""
+    print("[DEBUG] Processing data generation request")
     temp_file_name = None
 
     try:
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise HTTPException(
-                status_code=400,
-                detail="OpenAI API key not configured"
-            )
-
-        print(f"[DEBUG] Uploaded file: {file.filename}")
-        print(f"[DEBUG] User prompt: {user_prompt}")
-
         file_extension = os.path.splitext(file.filename)[1].lower()
         print(f"[DEBUG] File extension: {file_extension}")
 
@@ -2148,7 +2027,7 @@ async def handle_synthetic_data_extended(
         else:
             raise HTTPException(
                 status_code=400,
-                detail="Unsupported file format. Please upload Excel or CSV."
+                detail="Unsupported file format for data generation. Please upload Excel or CSV."
             )
 
         print(f"[DEBUG] Original DataFrame shape: {df.shape}")
@@ -2201,26 +2080,176 @@ async def handle_synthetic_data_extended(
             iter([stream.getvalue()]),
             media_type="text/csv",
             headers={
-                "Content-Disposition": 'attachment; filename="synthetic_output.csv"'
+                "Content-Disposition": 'attachment; filename="synthetic_data_output.csv"'
             }
         )
 
         print("[DEBUG] Successfully generated synthetic data response.")
         return response
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[ERROR] {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Data generation failed: {str(e)}"
-        )
     finally:
         # Clean up temp file
         if temp_file_name and os.path.exists(temp_file_name):
             os.remove(temp_file_name)
             print(f"[DEBUG] Temporary file {temp_file_name} deleted.")
+
+
+async def handle_image_generation(
+        images: List[UploadFile],
+        user_prompt: str,
+        openai_api_key: str
+) -> JSONResponse:
+    """Handle synthetic image generation"""
+    print("[DEBUG] Processing image generation request")
+
+    # Extract number of images from prompt
+    requested_count = extract_num_images_from_prompt(user_prompt, openai_api_key)
+    if requested_count is None or requested_count <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract valid image count from prompt. Include a clear number like 'generate 20 images'"
+        )
+
+    if requested_count > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum limit is 100 images per request"
+        )
+
+    # Ensure images folder exists
+    folder_path = ensure_images_folder()
+    client = OpenAI(api_key=openai_api_key)
+
+    # Analyze all images for comprehensive style
+    print("Analyzing uploaded images for style...")
+    comprehensive_style = await analyze_all_images_for_style(images, openai_api_key)
+    print(f"Extracted style: {comprehensive_style}")
+
+    # Get starting index for new images
+    start_index = get_next_image_index(folder_path)
+    total_generated = 0
+    generated_images_info = []
+
+    while total_generated < requested_count:
+        remaining = requested_count - total_generated
+        batch_size = min(5, remaining)
+
+        # Construct prompt with style guidance
+        full_prompt = (
+            f"Generate {batch_size} high-quality, stylistically consistent images.\n"
+            f"Visual style from references: {comprehensive_style}\n"
+            f"Avoid redundant compositions.\n"
+            f"Create unique subjects while maintaining style.\n"
+            f"User instructions: {user_prompt.strip()}"
+        )
+
+        print(f"Generating batch of {batch_size} images...")
+        image_urls = generate_images(client, full_prompt, batch_size)
+
+        for url in image_urls:
+            try:
+                # Download and save image
+                response = requests.get(url)
+                response.raise_for_status()
+
+                filename = f"synthetic_{start_index + total_generated}.png"
+                file_path = Path(folder_path) / filename
+
+                with open(file_path, 'wb') as f:
+                    f.write(response.content)
+
+                # Convert to base64
+                with open(file_path, 'rb') as img_file:
+                    base64_image = base64.b64encode(img_file.read()).decode('utf-8')
+
+                generated_images_info.append({
+                    'filename': filename,
+                    'path': str(file_path),
+                    'base64': base64_image,
+                    'index': start_index + total_generated
+                })
+
+                total_generated += 1
+                print(f"Generated {total_generated}/{requested_count}")
+
+            except Exception as e:
+                print(f"Error processing image: {str(e)}")
+                continue
+
+    return JSONResponse(
+        content={
+            'success': True,
+            'content_type': 'images',
+            'message': f'Generated {total_generated} images',
+            'total_generated': total_generated,
+            'images': generated_images_info
+        }
+    )
+
+
+async def handle_pdf_generation(
+        pdf: UploadFile,
+        user_prompt: str
+) -> JSONResponse:
+    """Handle synthetic PDF generation"""
+    print("[DEBUG] Processing PDF generation request")
+
+    # Validate PDF upload
+    if not pdf.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Only PDF files are accepted for document generation."
+        )
+
+    # Extract target pages from prompt
+    target_pages = extract_pdf_prompt_semantics(user_prompt)
+    if not target_pages:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not determine target page count from prompt"
+        )
+
+    # Process uploaded PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        content = await pdf.read()
+        tmp_file.write(content)
+        tmp_file_path = tmp_file.name
+
+    try:
+        # Extract text from PDF
+        loader = PyPDFLoader(tmp_file_path)
+        documents = loader.load()
+        current_pages = len(documents)
+        full_text = "\n\n---\n\n".join([doc.page_content for doc in documents])
+    finally:
+        # Clean up temp file
+        os.unlink(tmp_file_path)
+
+    # Generate extended document
+    final_document = generate_complete_document(
+        full_text,
+        current_pages,
+        target_pages
+    )
+
+    # Check for generation errors
+    if isinstance(final_document, dict) and final_document.get("error"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Document generation failed: {final_document.get('error')}"
+        )
+
+    return JSONResponse(
+        content={
+            'success': True,
+            'content_type': 'pdf',
+            'message': f'Generated extended PDF document',
+            'structured_document': final_document,
+            'original_pages': current_pages,
+            'target_pages': target_pages
+        },
+        status_code=200
+    )
 
 
 def infer_datetime_column(df: pd.DataFrame) -> Optional[str]:
@@ -2251,127 +2280,6 @@ def extract_num_rows_from_prompt1(prompt: str, api_key: str) -> Optional[int]:
     except Exception as e:
         print(f"[ERROR] Semantic extraction failed: {e}")
         return None
-
-
-# 19.Generating extended images
-@app.post("/generate_synthetic_images/")
-async def generate_synthetic_images(
-        images: List[UploadFile],
-        user_prompt: str = Form(...)
-) -> JSONResponse:
-    """
-    Generate synthetic images based on uploaded examples and user prompt
-
-    Args:
-        images: List of uploaded reference images
-        user_prompt: Instructions for image generation
-
-    Returns:
-        JSONResponse: Contains generated images in base64 format and metadata
-    """
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing OpenAI API key"
-        )
-
-    if not images:
-        raise HTTPException(
-            status_code=400,
-            detail="No images uploaded"
-        )
-
-    # Extract number of images from prompt
-    requested_count = extract_num_images_from_prompt(user_prompt, openai_api_key)
-    if requested_count is None or requested_count <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not extract valid image count from prompt. Include a clear number like 'generate 20 images'"
-        )
-
-    if requested_count > 100:
-        raise HTTPException(
-            status_code=400,
-            detail="Maximum limit is 100 images per request"
-        )
-
-    # Ensure images folder exists
-    folder_path = ensure_images_folder()
-    client = OpenAI(api_key=openai_api_key)
-
-    try:
-        # Analyze all images for comprehensive style
-        print("Analyzing uploaded images for style...")
-        comprehensive_style = await analyze_all_images_for_style(images, openai_api_key)
-        print(f"Extracted style: {comprehensive_style}")
-
-        # Get starting index for new images
-        start_index = get_next_image_index(folder_path)
-        total_generated = 0
-        generated_images_info = []
-
-        while total_generated < requested_count:
-            remaining = requested_count - total_generated
-            batch_size = min(5, remaining)
-
-            # Construct prompt with style guidance
-            full_prompt = (
-                f"Generate {batch_size} high-quality, stylistically consistent images.\n"
-                f"Visual style from references: {comprehensive_style}\n"
-                f"Avoid redundant compositions.\n"
-                f"Create unique subjects while maintaining style.\n"
-                f"User instructions: {user_prompt.strip()}"
-            )
-
-            print(f"Generating batch of {batch_size} images...")
-            image_urls = generate_images(client, full_prompt, batch_size)
-
-            for url in image_urls:
-                try:
-                    # Download and save image
-                    response = requests.get(url)
-                    response.raise_for_status()
-
-                    filename = f"synthetic_{start_index + total_generated}.png"
-                    file_path = Path(folder_path) / filename
-
-                    with open(file_path, 'wb') as f:
-                        f.write(response.content)
-
-                    # Convert to base64
-                    with open(file_path, 'rb') as img_file:
-                        base64_image = base64.b64encode(img_file.read()).decode('utf-8')
-
-                    generated_images_info.append({
-                        'filename': filename,
-                        'path': str(file_path),
-                        'base64': base64_image,
-                        'index': start_index + total_generated
-                    })
-
-                    total_generated += 1
-                    print(f"Generated {total_generated}/{requested_count}")
-
-                except Exception as e:
-                    print(f"Error processing image: {str(e)}")
-                    continue
-
-        return JSONResponse(
-            content={
-                'success': True,
-                'message': f'Generated {total_generated} images',
-                'total_generated': total_generated,
-                'images': generated_images_info
-            }
-        )
-
-    except Exception as e:
-        print(f"Image generation failed: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Image generation failed: {str(e)}"
-        )
 
 
 GENERATED_IMAGES_FOLDER = "generated_synthetic_images"
@@ -2606,88 +2514,6 @@ def extract_num_images_from_prompt(prompt: str, api_key: str) -> Optional[int]:
     return None
 
 
-#20.Synthetic_pdf generation
-@app.post("/generate_synthetic_pdfs/")
-async def generate_synthetic_pdfs(
-        pdf: UploadFile,
-        user_prompt: str = Form(...)
-) -> JSONResponse:
-    """
-    Generate extended PDF documents based on uploaded PDF and user prompt
-
-    Args:
-        pdf: Uploaded PDF file
-        user_prompt: Instructions for document generation
-
-    Returns:
-        JSONResponse: Contains structured document with generated content
-    """
-    # Validate API key
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing OpenAI API key"
-        )
-
-    # Validate PDF upload
-    if not pdf.filename.lower().endswith('.pdf'):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid file type. Only PDF files are accepted."
-        )
-
-    # Extract target pages from prompt
-    target_pages = extract_pdf_prompt_semantics(user_prompt)
-    if not target_pages:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not determine target page count from prompt"
-        )
-
-    try:
-        # 1. Process uploaded PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-            content = await pdf.read()
-            tmp_file.write(content)
-            tmp_file_path = tmp_file.name
-
-        try:
-            # Extract text from PDF
-            loader = PyPDFLoader(tmp_file_path)
-            documents = loader.load()
-            current_pages = len(documents)
-            full_text = "\n\n---\n\n".join([doc.page_content for doc in documents])
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_file_path)
-
-        # 2. Generate extended document
-        final_document = generate_complete_document(
-            full_text,
-            current_pages,
-            target_pages
-        )
-
-        # Check for generation errors
-        if isinstance(final_document, dict) and final_document.get("error"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Document generation failed: {final_document.get('error')}"
-            )
-
-        return JSONResponse(
-            content={"structured_document": final_document},
-            status_code=200
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"PDF processing failed: {str(e)}"
-        )
-
-
 # --- NEW, UNIFIED FUNCTION TO HANDLE EVERYTHING ---
 def generate_complete_document(
         full_text: str, current_pages: int, target_pages: int
@@ -2799,7 +2625,6 @@ def repair_json_with_llm(broken_json_string: str) -> str:
         return f'{{"error": "Failed to repair JSON", "details": "{str(e)}"}}'
 
 
-
 def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
     llm = initialize_llm()
 
@@ -2823,7 +2648,192 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
         return None
 
 
+# 11.Explore api
+@app.post("/Explore/")
+async def senior_data_analysis(
+        query: str = Form(...)
+) -> JSONResponse:
+    try:
+        # Load and validate data
+        csv_file_path = 'data.csv'
+        if not os.path.exists(csv_file_path):
+            raise HTTPException(
+                status_code=404,
+                detail="Data file not found"
+            )
+
+        df = pd.read_csv(csv_file_path)
+        if df.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="Dataset is empty"
+            )
+
+        # Generate metadata
+        metadata_str = ", ".join(df.columns.tolist())
+
+        prompt_eng = (
+            f"""
+            You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
+            The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.              
+            1. Generic Queries:
+                If the user's query is generic and not related to data, respond with a concise and appropriate print statement. For example:
+                Query: "What is AI?"
+                Response: "Artificial Intelligence (AI) refers to the simulation of human intelligence in machines."
+            2. Data-Related Queries:
+                If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
+            3.Visualisation related questions:
+                Generate clear visualisations based on the data.csv given to you.
+            4.KPI related questions:
+                Generate the kpis regarding the dataset given.
+            And there are more number of tasks you have to do whatever the senior data analyst can do.
+            Answer for all the queries in a meaningful manner.
+
+            Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
+
+            ### Code Safety & Execution Guidelines:
+            - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
+            - Always use self-contained code that runs without dependencies on undefined names or external files.
+            - If plotting with matplotlib/seaborn:
+                - Use basic arguments only (e.g., `x`, `y`, `data`)
+                - Avoid customizing with advanced style props unless necessary
+                - Use `plt.show()` after plotting
+            - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
+            - Always print results with `print()` — never rely on implicit outputs.
+            - The final line of your code should print something meaningful (DataFrame, value, message).
+            - Never use `plt.savefig()` or attempt to write files.
+
+            ### You MUST assume:
+            - The data required for your analysis can be always there in data.csv 
+            - consider the metadata as it is in {metadata_str}.
+            - Your code is being `exec()`'d in a secure Python environment
+            ### IMPORTANT:
+            - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
+            - You dont even have to give the explanation i.e how you did for getting that results.
+            - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
+            - Do not mention the headings at any cost.
+            - All the statistics and summary should be present in the tabular format only.
+            User query is {query}.
+        """
+        )
+
+        # Generate and execute analysis code
+        print("Analysed the above things,,,,,,,,,going to generate the code")
+        code = generate_data_code(prompt_eng)
+        print("code_generated and going for execution,,,,,,,,")
+        result = simulate_and_format_with_llm(code, df)
+        print("executed_result is", result)
+
+        return JSONResponse(
+            content=markdown_to_html(result),
+            status_code=200
+        )
+
+    except pd.errors.EmptyDataError:
+        raise HTTPException(
+            status_code=400,
+            detail="Data file is corrupt"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
+        )
+
+
+from universal_prompts import prompt_for_data_analyst
+
+
+# Function to generate code from OpenAI API
+def generate_data_code(prompt_eng):
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": prompt_for_data_analyst},
+            {"role": "user", "content": prompt_eng}
+        ]
+    )
+    all_text = ""
+    for choice in response.choices:
+        message = choice.message
+        chunk_message = message.content if message else ''
+        all_text += chunk_message
+    print(all_text)
+    if "```python" in all_text:
+        code_start = all_text.find("```python") + 9
+        code_end = all_text.find("```", code_start)
+        code = all_text[code_start:code_end]
+    else:
+        code = all_text
+    return code
+
+
+from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
+def simulate_and_format_with_llm(
+        code_to_simulate: str,
+        dataframe: pd.DataFrame
+) -> str:
+    info_buffer = io.StringIO()
+    dataframe.info(buf=info_buffer)
+    df_info = info_buffer.getvalue()
+    df_head = dataframe.head().to_string()
+
+    # Step 2: Construct the detailed user prompt.
+    # This prompt gives the LLM its task, the code, and the context.
+    user_prompt = f"""
+    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate a complete report based on your system instructions.
+    ### DATA CONTEXT:
+    The code operates on a pandas DataFrame named `df`. Here is its metadata and a sample of its first few rows:
+
+    #### DataFrame Info (`df.info()`):
+    ```
+    {df_info}
+    ```
+
+    #### DataFrame Head (`df.head()`):
+    ```
+    {df_head}
+    ```
+
+    ### PYTHON CODE TO SIMULATE:
+    You must simulate the execution of this code. Do not just describe it; act as if you have run it and are now reporting the results.
+    ```
+    {code_to_simulate}
+    ```
+    You have to use the engines based on the usage.
+    If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
+
+    ### YOUR TASK:
+    1.  **Simulate Execution:** Mentally run the code against the provided data context.
+    2.  **Predict Output:** Determine what `print()` statements would produce and what a generated plot would look like.
+    3.  **Generate Report:** Produce a single, complete report that STRICTLY follows rules whatever required and formatting defined in your system prompt that should be in the JSON format.You have to follow the required rules wherever necessary.
+   
+    ### IMPORTANT:
+   - The report should be very informative and Don't include the internal functionings for the generation of the reports,Only the analysis related content and the graph related things and summaries and everything which is not executed internally can be given to the Output.
+   - Do not include the internal headings like "**LANGUAGE:** Python | **MODE:** Simulation | **STATUS:** Success\n\n⚡ **EXECUTION OUTPUT:**\n".Do not include any of these ,,Just include the headings in the middle of the content only.
+   - Report can be present in the markdown format.
+   - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
+            {"role": "user", "content": user_prompt}
+        ]
+    )
+
+    # Step 4: Extract and return the final formatted text.
+    all_text = ""
+    for choice in response.choices:
+        message = choice.message
+        chunk_message = message.content if message else ''
+        all_text += chunk_message
+
+    return all_text
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run("final_akio_apis:app", host="127.0.0.1", port=8000, reload=True)
