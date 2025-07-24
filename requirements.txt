@@ -1,0 +1,57 @@
+# Core Python libraries (built-in modules don't need to be listed)
+# ast, base64, io, os, re, smtplib, sys, tempfile, traceback, enum, pathlib
+# email.mime.image, email.mime.multipart, email.mime.text
+# datetime, collections, json, typing, uuid, pickle
+
+# Web framework and API
+fastapi
+starlette
+uvicorn
+
+# Data science and machine learning
+numpy
+pandas
+scikit-learn
+xgboost
+joblib
+
+# Time series forecasting
+prophet
+statsmodels
+
+# Data visualization
+plotly
+matplotlib
+
+# Image processing
+Pillow
+
+# HTTP requests
+requests
+
+# Date/time parsing
+python-dateutil
+
+# Markdown processing
+markdown
+
+# Environment variables
+python-dotenv
+
+# Database
+psycopg2-binary
+
+# LangChain ecosystem
+langchain
+langchain-community
+langchain-openai
+langchain-core
+
+# OpenAI
+openai
+
+# PDF processing
+pypdf
+
+# Timezone handling
+tzdata
