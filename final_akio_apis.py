@@ -2934,6 +2934,7 @@ async def upload_data_only(file: UploadFile = File(...)):
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
     content = await file.read()
+
     try:
         if ext == ".csv":
             df = pd.read_csv(io.StringIO(content.decode("utf-8")))
@@ -2949,16 +2950,26 @@ async def upload_data_only(file: UploadFile = File(...)):
     if df.empty:
         raise HTTPException(status_code=400, detail="Empty file or no data found.")
 
-    # Only convert non-JSON-native (like pd.Timestamp, np.int64) to string; leave others untouched
+    # Handle NaN values and make data JSON serializable
     def make_json_serializable(x):
-        # Native types are left as is
+        # Handle NaN values first
+        if pd.isna(x):
+            return None
+        # Native JSON types are left as is
         if isinstance(x, (str, int, float, bool)) or x is None:
+            # Additional check for float NaN and infinity
+            if isinstance(x, float) and (pd.isna(x) or x == float('inf') or x == float('-inf')):
+                return None
             return x
-        return str(x)  # pd.Timestamp, numpy types, etc. become str
+        # Convert other types (pd.Timestamp, numpy types, etc.) to string
+        return str(x)
 
-    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
+    # Replace deprecated applymap with map
+    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
+
+
 if __name__ == "__main__":
     import uvicorn
 
