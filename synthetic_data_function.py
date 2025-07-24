@@ -3,7 +3,6 @@ from typing import Optional
 import pandas as pd
 from langchain_core.messages import SystemMessage, HumanMessage
 from sklearn.utils import resample
-from vyzeai.models.openai import ChatOpenAI
 from langchain_openai import ChatOpenAI
 import re
 import dateutil.parser as dp
