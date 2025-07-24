@@ -2973,6 +2973,21 @@ async def upload_data_only(
             if df.empty:
                 raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
+            # Convert datetime columns to string for JSON serialization
+            df_copy = df.copy()
+            for col in df_copy.columns:
+                if df_copy[col].dtype == 'datetime64[ns]' or 'datetime' in str(df_copy[col].dtype):
+                    df_copy[col] = df_copy[col].astype(str)
+                # Handle Timestamp objects
+                elif df_copy[col].dtype == 'object':
+                    try:
+                        # Check if it's a timestamp by trying to convert first non-null value
+                        first_val = df_copy[col].dropna().iloc[0] if not df_copy[col].dropna().empty else None
+                        if first_val and hasattr(first_val, 'strftime'):
+                            df_copy[col] = df_copy[col].astype(str)
+                    except:
+                        pass
+
             # Store data in different formats locally
             # Save as CSV
             csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
@@ -3005,9 +3020,10 @@ async def upload_data_only(
                     "file_extension": file_extension,
                     "rows_count": len(df),
                     "columns_count": len(df.columns),
-                    "columns": list(df.columns)
+                    "columns": list(df.columns),
+                    "data_types": df.dtypes.astype(str).to_dict()
                 },
-                "preview": df.head(10).to_dict(orient="records"),
+                "preview": df_copy.head(10).to_dict(orient="records"),  # Use the copy with string dates
             }
 
             return JSONResponse(content=response_data)
