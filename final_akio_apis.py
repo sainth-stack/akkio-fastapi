@@ -2933,7 +2933,6 @@ async def upload_data_only(file: UploadFile = File(...)):
     ext = os.path.splitext(filename)[1].lower()
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
-
     content = await file.read()
     try:
         if ext == ".csv":
@@ -2950,14 +2949,16 @@ async def upload_data_only(file: UploadFile = File(...)):
     if df.empty:
         raise HTTPException(status_code=400, detail="Empty file or no data found.")
 
-    # No conversion at all
-    records = df.to_dict(orient="records")
-    try:
-        return JSONResponse(content={"records": records})
-    except TypeError as e:
-        # If you get a serialization error, it is because of non-JSON-native types in the DataFrame records!
-        raise HTTPException(status_code=500, detail=f"Serialization error: {e}")
+    # Only convert non-JSON-native (like pd.Timestamp, np.int64) to string; leave others untouched
+    def make_json_serializable(x):
+        # Native types are left as is
+        if isinstance(x, (str, int, float, bool)) or x is None:
+            return x
+        return str(x)  # pd.Timestamp, numpy types, etc. become str
 
+    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
+
+    return JSONResponse(content={"records": records})
 if __name__ == "__main__":
     import uvicorn
 
