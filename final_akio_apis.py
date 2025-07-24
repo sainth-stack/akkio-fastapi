@@ -12,8 +12,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
 from pathlib import Path
-
-from decimal import Decimal
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
 from fastapi.responses import StreamingResponse
@@ -54,7 +52,7 @@ from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 from plotly.graph_objs import Figure
 import plotly as px
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
@@ -2927,149 +2925,38 @@ def simulate_and_format_with_llm(
 
 #Upload api for the sla breach only-----upload only + explore api used there
 @app.post("/upload_data")
-async def upload_data_only(
-        request: Request,
-        file: UploadFile = File(...)
-):
+async def upload_data_only(file: UploadFile = File(...)):
+    if not file:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    filename = file.filename
+    ext = os.path.splitext(filename)[1].lower()
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    content = await file.read()
     try:
-        print("[DEBUG] Received a request with method: POST")  # Debug statement
-
-        if not file:
-            raise HTTPException(status_code=400, detail="No files uploaded")
-
-        file_name = file.filename
-        file_extension = os.path.splitext(file_name)[1].lower()
-
-        # Create a directory for storing uploaded files
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        local_file_path = os.path.join(upload_dir, file_name)
-
-        # Save the uploaded file locally
-        with open(local_file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        # Load DataFrame
-        if file_extension == ".csv":
-            print("[DEBUG] Processing as CSV file...")
-            df = pd.read_csv(local_file_path)
-            print("[DEBUG] CSV parsed successfully. DataFrame shape:", df.shape)
-        elif file_extension in [".xls", ".xlsx"]:
-            print("[DEBUG] Processing as Excel file...")
-            df = pd.read_excel(local_file_path)
-            print("[DEBUG] Excel parsed successfully. DataFrame shape:", df.shape)
+        if ext == ".csv":
+            df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+            df.to_csv(os.path.join(upload_dir, "data.csv"), index=False)
+        elif ext in [".xls", ".xlsx"]:
+            df = pd.read_excel(io.BytesIO(content))
+            df.to_excel(os.path.join(upload_dir, "data1.xlsx"), index=False, engine="openpyxl")
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file format")
-
-        # Validate the DataFrame
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Uploaded file contains no data")
-
-        # Store as CSV and Excel in upload directory
-        csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
-        df.to_csv(csv_file_path, index=False)
-        print(f"[DEBUG] CSV saved to: {csv_file_path}")
-
-        excel_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.xlsx').lower())
-        df.to_excel(excel_file_path, index=False, engine='openpyxl')
-        print(f"[DEBUG] Excel saved to: {excel_file_path}")
-
-        # General copies
-        df.to_csv('data.csv', index=False)
-        df.to_excel('data1.xlsx', index=False, engine='openpyxl')
-        print("[DEBUG] General copies saved as data.csv and data1.xlsx")
-
-        print("upload_and_store_data........", df.head(3))
-
-        # Data profiling
-        nan_counts = df.isnull().sum().to_dict()
-        total_nan_values = df.isnull().sum().sum()
-        boolean_columns = df.select_dtypes(include=['bool']).columns.tolist()
-        datetime_columns = df.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns.tolist()
-
-        # Clean DataFrame for JSON serialization
-        df_copy = clean_dataframe_for_json(df)
-
-        # Prepare response
-        response_data = {
-            "message": "File uploaded and stored locally successfully",
-            "storage_info": {
-                "original_file": local_file_path,
-                "csv_file": csv_file_path,
-                "excel_file": excel_file_path,
-                "upload_directory": upload_dir
-            },
-            "file_info": {
-                "filename": file_name,
-                "file_extension": file_extension,
-                "rows_count": len(df),
-                "columns_count": len(df.columns),
-                "columns": list(df.columns),
-                "data_types": df.dtypes.astype(str).to_dict(),
-                "nan_counts_per_column": {k: int(v) for k, v in nan_counts.items()},
-                "total_nan_values": int(total_nan_values)
-            },
-            "data_quality": {
-                "has_missing_values": total_nan_values > 0,
-                "missing_value_percentage": round((total_nan_values / (len(df) * len(df.columns))) * 100, 2),
-                "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0],
-                "boolean_columns": boolean_columns,
-                "datetime_columns": datetime_columns,
-                "data_cleaned_for_json": True
-            },
-            "preview": df_copy.head(10).to_dict(orient="records"),
-        }
-
-        # Final check: is this JSON serializable?
-        try:
-            json.dumps(response_data)  # This will raise if not serializable
-        except Exception as e:
-            print("[ERROR] Serialization failure in preview data:", str(e))
-            raise HTTPException(status_code=500, detail=f"Serialization failed in preview: {e}")
-
-        return JSONResponse(content=response_data)
-
+            raise HTTPException(status_code=400, detail="Unsupported file type")
     except Exception as e:
-        print("[ERROR] An error occurred:", str(e))
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse or save file: {e}")
 
-def clean_dataframe_for_json(df):
-    """
-    Comprehensive cleaning function to make DataFrame JSON-serializable.
-    Handles booleans, NaNs, datetime, Decimals, etc.
-    """
-    df_cleaned = df.copy()
-    # Replace NaN, NaT, inf, -inf with None (works for all numeric/datetime types)
-    df_cleaned = df_cleaned.replace([np.nan, pd.NaT, np.inf, -np.inf], None)
-    # Apply per-value clean
-    df_cleaned = df_cleaned.applymap(convert_value_for_json)
-    return df_cleaned
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Empty file or no data found.")
 
-def convert_value_for_json(value):
-    """
-    Convert a single value into a JSON-serializable, human friendly format.
-    """
-    if pd.isna(value) or value is None:
-        return None
-    elif isinstance(value, (np.bool_, bool)):
-        return "Yes" if value else "No"
-    elif isinstance(value, (np.integer, int)):
-        return int(value)
-    elif isinstance(value, (np.floating, float)):
-        return float(value)
-    elif isinstance(value, (datetime, date, pd.Timestamp)):
-        return str(value)
-    elif isinstance(value, Decimal):
-        return float(value)
-    elif isinstance(value, bytes):
-        return value.decode('utf-8', errors='ignore')
-    else:
-        # For all other types, just convert to string, unless it's already a string
-        if isinstance(value, str):
-            return value
-        return str(value)
-
+    # No conversion at all
+    records = df.to_dict(orient="records")
+    try:
+        return JSONResponse(content={"records": records})
+    except TypeError as e:
+        # If you get a serialization error, it is because of non-JSON-native types in the DataFrame records!
+        raise HTTPException(status_code=500, detail=f"Serialization error: {e}")
 
 if __name__ == "__main__":
     import uvicorn
