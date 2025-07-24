@@ -12,6 +12,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
 from pathlib import Path
+
+from decimal import Decimal
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
 from fastapi.responses import StreamingResponse
@@ -52,7 +54,7 @@ from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 from plotly.graph_objs import Figure
 import plotly as px
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
@@ -2924,11 +2926,6 @@ def simulate_and_format_with_llm(
 
 
 #Upload api for the sla breach only-----upload only + explore api used there
-import json
-import numpy as np
-import pandas as pd
-from datetime import datetime, date
-from decimal import Decimal
 @app.post("/upload_data")
 async def upload_data_only(
         request: Request,
@@ -2941,199 +2938,125 @@ async def upload_data_only(
             raise HTTPException(status_code=400, detail="No files uploaded")
 
         file_name = file.filename
-        file_extension = os.path.splitext(file_name)[1].lower()  # Extract file extension
+        file_extension = os.path.splitext(file_name)[1].lower()
 
+        # Create a directory for storing uploaded files
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        local_file_path = os.path.join(upload_dir, file_name)
+
+        # Save the uploaded file locally
+        with open(local_file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        # Load DataFrame
+        if file_extension == ".csv":
+            print("[DEBUG] Processing as CSV file...")
+            df = pd.read_csv(local_file_path)
+            print("[DEBUG] CSV parsed successfully. DataFrame shape:", df.shape)
+        elif file_extension in [".xls", ".xlsx"]:
+            print("[DEBUG] Processing as Excel file...")
+            df = pd.read_excel(local_file_path)
+            print("[DEBUG] Excel parsed successfully. DataFrame shape:", df.shape)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format")
+
+        # Validate the DataFrame
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Uploaded file contains no data")
+
+        # Store as CSV and Excel in upload directory
+        csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
+        df.to_csv(csv_file_path, index=False)
+        print(f"[DEBUG] CSV saved to: {csv_file_path}")
+
+        excel_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.xlsx').lower())
+        df.to_excel(excel_file_path, index=False, engine='openpyxl')
+        print(f"[DEBUG] Excel saved to: {excel_file_path}")
+
+        # General copies
+        df.to_csv('data.csv', index=False)
+        df.to_excel('data1.xlsx', index=False, engine='openpyxl')
+        print("[DEBUG] General copies saved as data.csv and data1.xlsx")
+
+        print("upload_and_store_data........", df.head(3))
+
+        # Data profiling
+        nan_counts = df.isnull().sum().to_dict()
+        total_nan_values = df.isnull().sum().sum()
+        boolean_columns = df.select_dtypes(include=['bool']).columns.tolist()
+        datetime_columns = df.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns.tolist()
+
+        # Clean DataFrame for JSON serialization
+        df_copy = clean_dataframe_for_json(df)
+
+        # Prepare response
+        response_data = {
+            "message": "File uploaded and stored locally successfully",
+            "storage_info": {
+                "original_file": local_file_path,
+                "csv_file": csv_file_path,
+                "excel_file": excel_file_path,
+                "upload_directory": upload_dir
+            },
+            "file_info": {
+                "filename": file_name,
+                "file_extension": file_extension,
+                "rows_count": len(df),
+                "columns_count": len(df.columns),
+                "columns": list(df.columns),
+                "data_types": df.dtypes.astype(str).to_dict(),
+                "nan_counts_per_column": {k: int(v) for k, v in nan_counts.items()},
+                "total_nan_values": int(total_nan_values)
+            },
+            "data_quality": {
+                "has_missing_values": total_nan_values > 0,
+                "missing_value_percentage": round((total_nan_values / (len(df) * len(df.columns))) * 100, 2),
+                "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0],
+                "boolean_columns": boolean_columns,
+                "datetime_columns": datetime_columns,
+                "data_cleaned_for_json": True
+            },
+            "preview": df_copy.head(10).to_dict(orient="records"),
+        }
+
+        # Final check: is this JSON serializable?
         try:
-            # Create a directory for storing uploaded files
-            upload_dir = "uploads"
-            os.makedirs(upload_dir, exist_ok=True)
-
-            # Save the uploaded file locally
-            local_file_path = os.path.join(upload_dir, file_name)
-            with open(local_file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
-
-            # Process the uploaded file based on its extension
-            if file_extension == ".csv":
-                print("[DEBUG] Processing as CSV file...")  # Debug statement
-                file.file.seek(0)  # Reset file pointer
-                content = (await file.read()).decode("utf-8")
-                csv_data = io.StringIO(content)
-                df = pd.read_csv(csv_data)
-                print("[DEBUG] CSV parsed successfully. DataFrame shape:", df.shape)  # Debug statement
-
-            elif file_extension in [".xls", ".xlsx"]:
-                print("[DEBUG] Processing as Excel file...")  # Debug statement
-                df = pd.read_excel(local_file_path)  # Read from the saved local file
-                print("[DEBUG] Excel parsed successfully. DataFrame shape:", df.shape)  # Debug statement
-
-            else:
-                file.file.seek(0)  # Reset file pointer
-                content = (await file.read()).decode("utf-8")
-                csv_data = io.StringIO(content)
-                df = pd.read_csv(csv_data)
-
-            # Validate the DataFrame
-            if df.empty:
-                raise HTTPException(status_code=400, detail="Uploaded file contains no data")
-
-            # Create a copy for JSON serialization and handle ALL problematic values
-            df_copy = df.copy()
-
-            # Apply comprehensive data cleaning for JSON serialization
-            df_copy = clean_dataframe_for_json(df_copy)
-
-            # Store data in different formats locally (using original df)
-            # Save as CSV
-            csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
-            df.to_csv(csv_file_path, index=False)
-            print(f"[DEBUG] CSV saved to: {csv_file_path}")
-
-            # Save as Excel
-            excel_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.xlsx').lower())
-            df.to_excel(excel_file_path, index=False, engine='openpyxl')
-            print(f"[DEBUG] Excel saved to: {excel_file_path}")
-
-            # Save general copies in root directory
-            df.to_csv('data.csv', index=False)
-            df.to_excel('data1.xlsx', index=False, engine='openpyxl')
-            print("[DEBUG] General copies saved as data.csv and data1.xlsx")
-
-            print("upload_and_store_data........", df.head(3))
-
-            # Count problematic values for reporting
-            nan_counts = df.isnull().sum().to_dict()
-            total_nan_values = df.isnull().sum().sum()
-
-            # Count boolean columns
-            boolean_columns = df.select_dtypes(include=['bool']).columns.tolist()
-            datetime_columns = df.select_dtypes(include=['datetime64']).columns.tolist()
-
-            # Prepare response with local storage information
-            response_data = {
-                "message": "File uploaded and stored locally successfully",
-                "storage_info": {
-                    "original_file": local_file_path,
-                    "csv_file": csv_file_path,
-                    "excel_file": excel_file_path,
-                    "upload_directory": upload_dir
-                },
-                "file_info": {
-                    "filename": file_name,
-                    "file_extension": file_extension,
-                    "rows_count": len(df),
-                    "columns_count": len(df.columns),
-                    "columns": list(df.columns),
-                    "data_types": df.dtypes.astype(str).to_dict(),
-                    "nan_counts_per_column": {k: int(v) for k, v in nan_counts.items()},
-                    "total_nan_values": int(total_nan_values)
-                },
-                "data_quality": {
-                    "has_missing_values": total_nan_values > 0,
-                    "missing_value_percentage": round((total_nan_values / (len(df) * len(df.columns))) * 100, 2),
-                    "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0],
-                    "boolean_columns": boolean_columns,
-                    "datetime_columns": datetime_columns,
-                    "data_cleaned_for_json": True
-                },
-                "preview": df_copy.head(10).to_dict(orient="records"),  # Use the cleaned copy
-            }
-
-            return JSONResponse(content=response_data)
-
+            json.dumps(response_data)  # This will raise if not serializable
         except Exception as e:
-            print("[ERROR] Failed to process and store file:", str(e))  # Debug statement
-            raise HTTPException(status_code=500, detail=f"Failed to process and store file: {str(e)}")
+            print("[ERROR] Serialization failure in preview data:", str(e))
+            raise HTTPException(status_code=500, detail=f"Serialization failed in preview: {e}")
+
+        return JSONResponse(content=response_data)
 
     except Exception as e:
-        print("[ERROR] An error occurred:", str(e))  # Debug statement
+        print("[ERROR] An error occurred:", str(e))
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
 
 def clean_dataframe_for_json(df):
     """
-    Comprehensive function to clean DataFrame for JSON serialization.
-    Handles all problematic data types including booleans, timestamps, NaN, etc.
+    Comprehensive cleaning function to make DataFrame JSON-serializable.
+    Handles booleans, NaNs, datetime, Decimals, etc.
     """
     df_cleaned = df.copy()
-
-    for col in df_cleaned.columns:
-        # Handle different data types
-        dtype = str(df_cleaned[col].dtype)
-
-        # 1. Handle boolean columns
-        if dtype == 'bool' or df_cleaned[col].dtype == 'bool':
-            print(f"[DEBUG] Converting boolean column: {col}")
-            df_cleaned[col] = df_cleaned[col].astype(str)
-            # Replace boolean strings with more readable values
-            df_cleaned[col] = df_cleaned[col].replace({'True': 'Yes', 'False': 'No', 'nan': None})
-
-        # 2. Handle datetime columns
-        elif 'datetime' in dtype or dtype == 'datetime64[ns]':
-            print(f"[DEBUG] Converting datetime column: {col}")
-            df_cleaned[col] = df_cleaned[col].astype(str)
-            # Clean up 'NaT' (Not a Time) values
-            df_cleaned[col] = df_cleaned[col].replace({'NaT': None})
-
-        # 3. Handle timestamp objects in object columns
-        elif dtype == 'object':
-            try:
-                # Check if it contains timestamp objects
-                sample_values = df_cleaned[col].dropna().head(5)
-                if not sample_values.empty:
-                    first_val = sample_values.iloc[0]
-                    if hasattr(first_val, 'strftime') or isinstance(first_val, (datetime, date)):
-                        print(f"[DEBUG] Converting timestamp objects in column: {col}")
-                        df_cleaned[col] = df_cleaned[col].astype(str)
-                    elif isinstance(first_val, (np.bool_, bool)):
-                        print(f"[DEBUG] Converting boolean objects in column: {col}")
-                        df_cleaned[col] = df_cleaned[col].astype(str)
-                        df_cleaned[col] = df_cleaned[col].replace({'True': 'Yes', 'False': 'No', 'nan': None})
-            except:
-                # If anything fails, convert to string as fallback
-                df_cleaned[col] = df_cleaned[col].astype(str)
-
-        # 4. Handle numeric columns with special values
-        elif dtype in ['float64', 'float32', 'int64', 'int32']:
-            # Replace inf, -inf, and NaN with None
-            df_cleaned[col] = df_cleaned[col].replace([np.inf, -np.inf], None)
-            df_cleaned[col] = df_cleaned[col].where(pd.notnull(df_cleaned[col]), None)
-
-        # 5. Handle other potential problematic types
-        else:
-            # Check for any remaining problematic values
-            try:
-                # Test if the column can be JSON serialized
-                test_sample = df_cleaned[col].head(1).to_dict()
-                json.dumps(test_sample, default=str)
-            except (TypeError, ValueError):
-                print(f"[DEBUG] Converting problematic column to string: {col}")
-                df_cleaned[col] = df_cleaned[col].astype(str)
-
-    # Final cleanup: Replace any remaining NaN, inf, -inf with None
-    df_cleaned = df_cleaned.replace([np.nan, np.inf, -np.inf], None)
-
-    # Additional cleanup for pandas-specific types
-    for col in df_cleaned.columns:
-        df_cleaned[col] = df_cleaned[col].apply(lambda x: convert_value_for_json(x))
-
+    # Replace NaN, NaT, inf, -inf with None (works for all numeric/datetime types)
+    df_cleaned = df_cleaned.replace([np.nan, pd.NaT, np.inf, -np.inf], None)
+    # Apply per-value clean
+    df_cleaned = df_cleaned.applymap(convert_value_for_json)
     return df_cleaned
-
 
 def convert_value_for_json(value):
     """
-    Convert individual values to JSON-serializable format
+    Convert a single value into a JSON-serializable, human friendly format.
     """
-    if pd.isna(value) or value is np.nan:
+    if pd.isna(value) or value is None:
         return None
     elif isinstance(value, (np.bool_, bool)):
         return "Yes" if value else "No"
-    elif isinstance(value, (np.integer, np.int64, np.int32)):
+    elif isinstance(value, (np.integer, int)):
         return int(value)
-    elif isinstance(value, (np.floating, np.float64, np.float32)):
-        if np.isnan(value) or np.isinf(value):
-            return None
+    elif isinstance(value, (np.floating, float)):
         return float(value)
     elif isinstance(value, (datetime, date, pd.Timestamp)):
         return str(value)
@@ -3142,7 +3065,10 @@ def convert_value_for_json(value):
     elif isinstance(value, bytes):
         return value.decode('utf-8', errors='ignore')
     else:
-        return value
+        # For all other types, just convert to string, unless it's already a string
+        if isinstance(value, str):
+            return value
+        return str(value)
 
 
 if __name__ == "__main__":
