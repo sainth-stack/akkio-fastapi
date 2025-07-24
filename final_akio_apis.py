@@ -2973,9 +2973,12 @@ async def upload_data_only(
             if df.empty:
                 raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
-            # Convert datetime columns to string for JSON serialization
+            # Create a copy for JSON serialization and handle problematic values
             df_copy = df.copy()
+
+            # Handle NaN values and datetime objects
             for col in df_copy.columns:
+                # Convert datetime columns to string
                 if df_copy[col].dtype == 'datetime64[ns]' or 'datetime' in str(df_copy[col].dtype):
                     df_copy[col] = df_copy[col].astype(str)
                 # Handle Timestamp objects
@@ -2988,7 +2991,15 @@ async def upload_data_only(
                     except:
                         pass
 
-            # Store data in different formats locally
+                # Handle numeric columns with NaN values
+                if df_copy[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+                    # Replace NaN with None (which becomes null in JSON)
+                    df_copy[col] = df_copy[col].where(pd.notnull(df_copy[col]), None)
+
+            # Replace any remaining NaN values with None
+            df_copy = df_copy.where(pd.notnull(df_copy), None)
+
+            # Store data in different formats locally (using original df)
             # Save as CSV
             csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
             df.to_csv(csv_file_path, index=False)
@@ -3006,6 +3017,10 @@ async def upload_data_only(
 
             print("upload_and_store_data........", df.head(3))
 
+            # Count NaN values for reporting
+            nan_counts = df.isnull().sum().to_dict()
+            total_nan_values = df.isnull().sum().sum()
+
             # Prepare response with local storage information
             response_data = {
                 "message": "File uploaded and stored locally successfully",
@@ -3021,9 +3036,16 @@ async def upload_data_only(
                     "rows_count": len(df),
                     "columns_count": len(df.columns),
                     "columns": list(df.columns),
-                    "data_types": df.dtypes.astype(str).to_dict()
+                    "data_types": df.dtypes.astype(str).to_dict(),
+                    "nan_counts_per_column": {k: int(v) for k, v in nan_counts.items()},
+                    "total_nan_values": int(total_nan_values)
                 },
-                "preview": df_copy.head(10).to_dict(orient="records"),  # Use the copy with string dates
+                "data_quality": {
+                    "has_missing_values": total_nan_values > 0,
+                    "missing_value_percentage": round((total_nan_values / (len(df) * len(df.columns))) * 100, 2),
+                    "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0]
+                },
+                "preview": df_copy.head(10).to_dict(orient="records"),  # Use the cleaned copy
             }
 
             return JSONResponse(content=response_data)
@@ -3035,6 +3057,8 @@ async def upload_data_only(
     except Exception as e:
         print("[ERROR] An error occurred:", str(e))  # Debug statement
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
 
 if __name__ == "__main__":
     import uvicorn
