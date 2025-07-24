@@ -2924,6 +2924,11 @@ def simulate_and_format_with_llm(
 
 
 #Upload api for the sla breach only-----upload only + explore api used there
+import json
+import numpy as np
+import pandas as pd
+from datetime import datetime, date
+from decimal import Decimal
 @app.post("/upload_data")
 async def upload_data_only(
         request: Request,
@@ -2973,31 +2978,11 @@ async def upload_data_only(
             if df.empty:
                 raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
-            # Create a copy for JSON serialization and handle problematic values
+            # Create a copy for JSON serialization and handle ALL problematic values
             df_copy = df.copy()
 
-            # Handle NaN values and datetime objects
-            for col in df_copy.columns:
-                # Convert datetime columns to string
-                if df_copy[col].dtype == 'datetime64[ns]' or 'datetime' in str(df_copy[col].dtype):
-                    df_copy[col] = df_copy[col].astype(str)
-                # Handle Timestamp objects
-                elif df_copy[col].dtype == 'object':
-                    try:
-                        # Check if it's a timestamp by trying to convert first non-null value
-                        first_val = df_copy[col].dropna().iloc[0] if not df_copy[col].dropna().empty else None
-                        if first_val and hasattr(first_val, 'strftime'):
-                            df_copy[col] = df_copy[col].astype(str)
-                    except:
-                        pass
-
-                # Handle numeric columns with NaN values
-                if df_copy[col].dtype in ['float64', 'float32', 'int64', 'int32']:
-                    # Replace NaN with None (which becomes null in JSON)
-                    df_copy[col] = df_copy[col].where(pd.notnull(df_copy[col]), None)
-
-            # Replace any remaining NaN values with None
-            df_copy = df_copy.where(pd.notnull(df_copy), None)
+            # Apply comprehensive data cleaning for JSON serialization
+            df_copy = clean_dataframe_for_json(df_copy)
 
             # Store data in different formats locally (using original df)
             # Save as CSV
@@ -3017,9 +3002,13 @@ async def upload_data_only(
 
             print("upload_and_store_data........", df.head(3))
 
-            # Count NaN values for reporting
+            # Count problematic values for reporting
             nan_counts = df.isnull().sum().to_dict()
             total_nan_values = df.isnull().sum().sum()
+
+            # Count boolean columns
+            boolean_columns = df.select_dtypes(include=['bool']).columns.tolist()
+            datetime_columns = df.select_dtypes(include=['datetime64']).columns.tolist()
 
             # Prepare response with local storage information
             response_data = {
@@ -3043,7 +3032,10 @@ async def upload_data_only(
                 "data_quality": {
                     "has_missing_values": total_nan_values > 0,
                     "missing_value_percentage": round((total_nan_values / (len(df) * len(df.columns))) * 100, 2),
-                    "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0]
+                    "columns_with_missing_values": [col for col, count in nan_counts.items() if count > 0],
+                    "boolean_columns": boolean_columns,
+                    "datetime_columns": datetime_columns,
+                    "data_cleaned_for_json": True
                 },
                 "preview": df_copy.head(10).to_dict(orient="records"),  # Use the cleaned copy
             }
@@ -3058,6 +3050,99 @@ async def upload_data_only(
         print("[ERROR] An error occurred:", str(e))  # Debug statement
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
+
+def clean_dataframe_for_json(df):
+    """
+    Comprehensive function to clean DataFrame for JSON serialization.
+    Handles all problematic data types including booleans, timestamps, NaN, etc.
+    """
+    df_cleaned = df.copy()
+
+    for col in df_cleaned.columns:
+        # Handle different data types
+        dtype = str(df_cleaned[col].dtype)
+
+        # 1. Handle boolean columns
+        if dtype == 'bool' or df_cleaned[col].dtype == 'bool':
+            print(f"[DEBUG] Converting boolean column: {col}")
+            df_cleaned[col] = df_cleaned[col].astype(str)
+            # Replace boolean strings with more readable values
+            df_cleaned[col] = df_cleaned[col].replace({'True': 'Yes', 'False': 'No', 'nan': None})
+
+        # 2. Handle datetime columns
+        elif 'datetime' in dtype or dtype == 'datetime64[ns]':
+            print(f"[DEBUG] Converting datetime column: {col}")
+            df_cleaned[col] = df_cleaned[col].astype(str)
+            # Clean up 'NaT' (Not a Time) values
+            df_cleaned[col] = df_cleaned[col].replace({'NaT': None})
+
+        # 3. Handle timestamp objects in object columns
+        elif dtype == 'object':
+            try:
+                # Check if it contains timestamp objects
+                sample_values = df_cleaned[col].dropna().head(5)
+                if not sample_values.empty:
+                    first_val = sample_values.iloc[0]
+                    if hasattr(first_val, 'strftime') or isinstance(first_val, (datetime, date)):
+                        print(f"[DEBUG] Converting timestamp objects in column: {col}")
+                        df_cleaned[col] = df_cleaned[col].astype(str)
+                    elif isinstance(first_val, (np.bool_, bool)):
+                        print(f"[DEBUG] Converting boolean objects in column: {col}")
+                        df_cleaned[col] = df_cleaned[col].astype(str)
+                        df_cleaned[col] = df_cleaned[col].replace({'True': 'Yes', 'False': 'No', 'nan': None})
+            except:
+                # If anything fails, convert to string as fallback
+                df_cleaned[col] = df_cleaned[col].astype(str)
+
+        # 4. Handle numeric columns with special values
+        elif dtype in ['float64', 'float32', 'int64', 'int32']:
+            # Replace inf, -inf, and NaN with None
+            df_cleaned[col] = df_cleaned[col].replace([np.inf, -np.inf], None)
+            df_cleaned[col] = df_cleaned[col].where(pd.notnull(df_cleaned[col]), None)
+
+        # 5. Handle other potential problematic types
+        else:
+            # Check for any remaining problematic values
+            try:
+                # Test if the column can be JSON serialized
+                test_sample = df_cleaned[col].head(1).to_dict()
+                json.dumps(test_sample, default=str)
+            except (TypeError, ValueError):
+                print(f"[DEBUG] Converting problematic column to string: {col}")
+                df_cleaned[col] = df_cleaned[col].astype(str)
+
+    # Final cleanup: Replace any remaining NaN, inf, -inf with None
+    df_cleaned = df_cleaned.replace([np.nan, np.inf, -np.inf], None)
+
+    # Additional cleanup for pandas-specific types
+    for col in df_cleaned.columns:
+        df_cleaned[col] = df_cleaned[col].apply(lambda x: convert_value_for_json(x))
+
+    return df_cleaned
+
+
+def convert_value_for_json(value):
+    """
+    Convert individual values to JSON-serializable format
+    """
+    if pd.isna(value) or value is np.nan:
+        return None
+    elif isinstance(value, (np.bool_, bool)):
+        return "Yes" if value else "No"
+    elif isinstance(value, (np.integer, np.int64, np.int32)):
+        return int(value)
+    elif isinstance(value, (np.floating, np.float64, np.float32)):
+        if np.isnan(value) or np.isinf(value):
+            return None
+        return float(value)
+    elif isinstance(value, (datetime, date, pd.Timestamp)):
+        return str(value)
+    elif isinstance(value, Decimal):
+        return float(value)
+    elif isinstance(value, bytes):
+        return value.decode('utf-8', errors='ignore')
+    else:
+        return value
 
 
 if __name__ == "__main__":
