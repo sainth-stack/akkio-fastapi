@@ -55,3 +55,7 @@ pypdf
 
 # Timezone handling
 tzdata
+
+reportlab
+python-multipart
+

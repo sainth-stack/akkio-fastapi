@@ -2923,6 +2923,103 @@ def simulate_and_format_with_llm(
     return all_text
 
 
+#Upload api for the sla breach only-----upload only + explore api used there
+@app.post("/upload_data")
+async def upload_data_only(
+        request: Request,
+        file: UploadFile = File(...)
+):
+    try:
+        print("[DEBUG] Received a request with method: POST")  # Debug statement
+
+        if not file:
+            raise HTTPException(status_code=400, detail="No files uploaded")
+
+        file_name = file.filename
+        file_extension = os.path.splitext(file_name)[1].lower()  # Extract file extension
+
+        try:
+            # Create a directory for storing uploaded files
+            upload_dir = "uploads"
+            os.makedirs(upload_dir, exist_ok=True)
+
+            # Save the uploaded file locally
+            local_file_path = os.path.join(upload_dir, file_name)
+            with open(local_file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+
+            # Process the uploaded file based on its extension
+            if file_extension == ".csv":
+                print("[DEBUG] Processing as CSV file...")  # Debug statement
+                file.file.seek(0)  # Reset file pointer
+                content = (await file.read()).decode("utf-8")
+                csv_data = io.StringIO(content)
+                df = pd.read_csv(csv_data)
+                print("[DEBUG] CSV parsed successfully. DataFrame shape:", df.shape)  # Debug statement
+
+            elif file_extension in [".xls", ".xlsx"]:
+                print("[DEBUG] Processing as Excel file...")  # Debug statement
+                df = pd.read_excel(local_file_path)  # Read from the saved local file
+                print("[DEBUG] Excel parsed successfully. DataFrame shape:", df.shape)  # Debug statement
+
+            else:
+                file.file.seek(0)  # Reset file pointer
+                content = (await file.read()).decode("utf-8")
+                csv_data = io.StringIO(content)
+                df = pd.read_csv(csv_data)
+
+            # Validate the DataFrame
+            if df.empty:
+                raise HTTPException(status_code=400, detail="Uploaded file contains no data")
+
+            # Store data in different formats locally
+            # Save as CSV
+            csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
+            df.to_csv(csv_file_path, index=False)
+            print(f"[DEBUG] CSV saved to: {csv_file_path}")
+
+            # Save as Excel
+            excel_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.xlsx').lower())
+            df.to_excel(excel_file_path, index=False, engine='openpyxl')
+            print(f"[DEBUG] Excel saved to: {excel_file_path}")
+
+            # Save general copies in root directory
+            df.to_csv('data.csv', index=False)
+            df.to_excel('data1.xlsx', index=False, engine='openpyxl')
+            print("[DEBUG] General copies saved as data.csv and data1.xlsx")
+
+            print("upload_and_store_data........", df.head(3))
+
+            # Prepare response with local storage information
+            response_data = {
+                "message": "File uploaded and stored locally successfully",
+                "storage_info": {
+                    "original_file": local_file_path,
+                    "csv_file": csv_file_path,
+                    "excel_file": excel_file_path,
+                    "upload_directory": upload_dir
+                },
+                "file_info": {
+                    "filename": file_name,
+                    "file_extension": file_extension,
+                    "rows_count": len(df),
+                    "columns_count": len(df.columns),
+                    "columns": list(df.columns)
+                },
+                "preview": df.head(10).to_dict(orient="records"),
+            }
+
+            return JSONResponse(content=response_data)
+
+        except Exception as e:
+            print("[ERROR] Failed to process and store file:", str(e))  # Debug statement
+            raise HTTPException(status_code=500, detail=f"Failed to process and store file: {str(e)}")
+
+    except Exception as e:
+        print("[ERROR] An error occurred:", str(e))  # Debug statement
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
 
