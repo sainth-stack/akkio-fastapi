@@ -3178,7 +3178,7 @@ async def senior_data_analysis_sla(
             The data preview is: {preview_data}   
                      
             1. Data-Related Queries:
-                If the query is about data processing, assume the file `uploads_sla/data1.csv` is the data source and contains the following columns: {metadata_str}.
+                If the query is about data processing, take the file `uploads_sla/data1.csv` is the data source and contains the following columns: {metadata_str}.
             2.Visualisation related questions:
                 Generate clear visualisations based on the `uploads_sla/data1.csv` given to you.
                 Answer for all the queries in a meaningful manner.
@@ -3186,6 +3186,7 @@ async def senior_data_analysis_sla(
             Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
             
             Rules for Code generation:
+             - Consider the data present in `uploads_sla/data1.csv` only
              - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
              - The preview is for context only - your code should work on the complete dataset.
              - Handle both header-based queries and content-based queries (filtering by specific values in rows).
@@ -3197,6 +3198,7 @@ async def senior_data_analysis_sla(
                     - Loads `{csv_file_path}` using pandas.
                     - Filters and processes data based on the query.
                     - Uses comments for readability.
+                    - Provide exact answers based on the dataset only.
 
             3. Tabular Output for React Compatibility:
                 - Format the output as an HTML table for clarity.
@@ -3225,6 +3227,7 @@ async def senior_data_analysis_sla(
             - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
             - Do not mention the headings at any cost.
             - All the statistics and summary should be present in the tabular format only.
+            - MUST avoid Hallucination.Just provide the accurate results from the given dataset.
             
             User query is {query}.
                 """
