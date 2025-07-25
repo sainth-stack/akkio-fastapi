@@ -3234,9 +3234,21 @@ async def senior_data_analysis_sla(
         result = simulate_and_format_with_llm(code, df)
         print("executed_result is", result)
 
+        # Clean the result to extract only JSON
+        clean_result = clean_json_response(result)
+
+        if clean_result:
+            # Parse the clean JSON and return it
+            json_data = json.loads(clean_result)
+            return JSONResponse(content=json_data, status_code=200)
+        else:
+            # Fallback: return original result if cleaning fails
+            return JSONResponse(content={"rawResult": result}, status_code=200)
+
+    except Exception as e:
         return JSONResponse(
-            content=markdown_to_html(result),
-            status_code=200
+            content={"error": f"Processing failed: {str(e)}"},
+            status_code=500
         )
 
     except pd.errors.EmptyDataError:
@@ -3245,6 +3257,39 @@ async def senior_data_analysis_sla(
             detail="Data file is corrupt"
         )
 
+
+def clean_json_response(response_text):
+    """
+    Extract clean JSON from a response that may contain markdown code blocks
+    and additional text explanations.
+    """
+    try:
+        # Method 1: Try to extract JSON from markdown code blocks
+        json_pattern = r'```json\s*(\{.*?\})\s*```'
+        match = re.search(json_pattern, response_text, re.DOTALL)
+
+        if match:
+            json_str = match.group(1)
+            # Parse and return as clean JSON
+            json_data = json.loads(json_str)
+            return json.dumps(json_data, separators=(',', ':'))
+
+        # Method 2: If no markdown blocks, try to find JSON object directly
+        json_pattern2 = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(json_pattern2, response_text, re.DOTALL)
+
+        for match in matches:
+            try:
+                json_data = json.loads(match)
+                return json.dumps(json_data, separators=(',', ':'))
+            except json.JSONDecodeError:
+                continue
+
+        return None
+
+    except Exception as e:
+        print(f"Error cleaning JSON: {e}")
+        return None
 
 if __name__ == "__main__":
     import uvicorn
