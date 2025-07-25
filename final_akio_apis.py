@@ -3146,11 +3146,10 @@ async def upload_data_only(file: UploadFile = File(...)):
         # Convert other types (pd.Timestamp, numpy types, etc.) to string
         return str(x)
 
-    # Use applymap for DataFrame element-wise operation
-    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
+    # Use map instead of deprecated applymap
+    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
-
 
 ##Explore for sla_report
 @app.post("/Explore_sla/")
