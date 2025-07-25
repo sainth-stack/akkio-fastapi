@@ -57,6 +57,10 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
 from dotenv import load_dotenv
+# Calculate comprehensive metrics
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
+    mean_squared_error, r2_score
+
 
 load_dotenv()
 
@@ -1033,14 +1037,44 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
             # Check and retrain model if needed
             if not os.path.exists(deployment_path) or not os.path.exists(pipeline_path):
                 df = pd.read_csv('data.csv')
-                _ = random_forest(df, data.get('target_column'))
+                model_stats = random_forest(df, data.get('target_column'))
+            else:
+                # Load existing model statistics
+                with open(deployment_path, 'r') as f:
+                    model_stats = json.load(f)
 
             # Make prediction
             df_predict = pd.DataFrame([data.get('features')])
             loaded_pipeline = load_pipeline(pipeline_path)
             predictions = loaded_pipeline.predict(df_predict)
 
+            # Get prediction probability/confidence if available
+            prediction_proba = None
+            if hasattr(loaded_pipeline, 'predict_proba'):
+                try:
+                    prediction_proba = loaded_pipeline.predict_proba(df_predict)
+                except:
+                    pass
+
+            # Calculate feature importance and top contributing fields
+            feature_importance = get_feature_importance(loaded_pipeline, data.get('features').keys())
+
             return JSONResponse({
+                "prediction_result": {
+                    "predicted_value": round(predictions[0], 2),
+                    "target_column": data.get('target_column'),
+                    "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
+                },
+                "model_performance": {
+                    "overall_accuracy": model_stats.get('accuracy', 'N/A'),
+                    "performance_metrics": model_stats.get('metrics', {}),
+                    "baseline_comparison": model_stats.get('baseline_comparison', 'N/A')
+                },
+                "feature_analysis": {
+                    "top_fields": feature_importance,
+                    "input_features": data.get('features'),
+                    "feature_impact": calculate_feature_impact(loaded_pipeline, df_predict, data.get('features'))
+                },
                 "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}"
             })
 
@@ -1238,6 +1272,7 @@ def extract_forecast_details_rf(prompt, column_names):
         print(e)
 
 
+
 def process_genai_response(response):
     all_text = ""
     text_post_code = ''
@@ -1258,6 +1293,69 @@ def process_genai_response(response):
     if code_start != -1:
         text_post_code = all_text[code_end:]
     return text_pre_code, text_post_code, code
+
+
+def get_feature_importance(pipeline, feature_names):
+    """Extract feature importance from the trained model"""
+    try:
+        # For RandomForest models
+        if hasattr(pipeline.named_steps['model'], 'feature_importances_'):
+            importances = pipeline.named_steps['model'].feature_importances_
+            feature_importance = list(zip(feature_names, importances))
+            # Sort by importance descending
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
+
+            # Format as percentage and return top fields
+            top_fields = []
+            for feature, importance in feature_importance[:5]:  # Top 5 features
+                top_fields.append({
+                    "field_name": feature,
+                    "importance_percentage": round(importance * 100, 1),
+                    "contribution": importance
+                })
+            return top_fields
+    except:
+        pass
+    return []
+
+
+def get_prediction_confidence(prediction_proba):
+    """Calculate prediction confidence from probability scores"""
+    if prediction_proba is not None and len(prediction_proba) > 0:
+        max_proba = max(prediction_proba[0])
+        return round(max_proba * 100, 1)
+    return None
+
+
+def calculate_feature_impact(pipeline, df_predict, features):
+    """Calculate the impact of each feature on the prediction"""
+    feature_impacts = {}
+    base_prediction = pipeline.predict(df_predict)[0]
+
+    for feature_name, feature_value in features.items():
+        # Create a copy with this feature set to mean/mode
+        df_modified = df_predict.copy()
+        try:
+            # For numerical features, use mean; for categorical, use most frequent
+            if isinstance(feature_value, (int, float)):
+                df_modified[feature_name] = df_modified[feature_name].mean() if not df_modified[
+                    feature_name].isna().all() else 0
+            else:
+                df_modified[feature_name] = "baseline_value"
+
+            modified_prediction = pipeline.predict(df_modified)[0]
+            impact = abs(base_prediction - modified_prediction)
+            impact_percentage = round((impact / abs(base_prediction) * 100), 1) if base_prediction != 0 else 0
+
+            feature_impacts[feature_name] = {
+                "impact_value": round(impact, 2),
+                "impact_percentage": f"{impact_percentage}%",
+                "direction": "positive" if base_prediction > modified_prediction else "negative"
+            }
+        except:
+            feature_impacts[feature_name] = {"impact_value": 0, "impact_percentage": "0%", "direction": "neutral"}
+
+    return feature_impacts
 
 
 def make_serializable(obj):
@@ -1610,8 +1708,12 @@ def detect_seasonality(df):
 
 def random_forest(data, target_column):
     try:
-        if not os.path.exists(os.path.join("models", "rf", target_column, 'deployment.json')):
-            os.makedirs(os.path.join("models", "rf", target_column), exist_ok=True)
+        model_dir = os.path.join("models", "rf", target_column)
+        deployment_path = os.path.join(model_dir, 'deployment.json')
+
+        if not os.path.exists(deployment_path):
+            os.makedirs(model_dir, exist_ok=True)
+
             # Separate features and target
             X = data.drop(columns=[target_column])
             y = data[target_column]
@@ -1640,9 +1742,11 @@ def random_forest(data, target_column):
             if y.nunique() <= 5:  # Classification for few unique target values
                 model_type = 'Classification'
                 model = RandomForestClassifier(random_state=42)
+                is_classification = True
             else:  # Regression for continuous target values
                 model_type = 'Regression'
                 model = RandomForestRegressor(random_state=42)
+                is_classification = False
 
             # Create pipeline
             pipeline = Pipeline(steps=[
@@ -1662,20 +1766,93 @@ def random_forest(data, target_column):
             scores = cross_val_score(pipeline, X_test, y_test, cv=cv)
             print(f"Model Performance (CV): {scores.mean():.4f} ± {scores.std():.4f}")
 
-            # Save the pipeline
-            joblib.dump(pipeline, os.path.join("models", "rf", target_column, "pipeline.pkl"))
-            print(f'Pipeline saved to: {os.path.join("models", "rf", target_column, "pipeline.pkl")}')
+            # Get predictions on test set for detailed metrics
+            predictions = pipeline.predict(X_test)
 
-            with open(os.path.join("models", "rf", target_column, "deployment.json"), "w") as fp:
-                json.dump({"columns": list(X_train.columns), "model_type": model_type, "Target_column": target_column},
-                          fp, indent=4)
-            return True, list(X_train.columns)
+            if is_classification:
+                accuracy = accuracy_score(y_test, predictions)
+                precision = precision_score(y_test, predictions, average='weighted', zero_division=0)
+                recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
+                f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
+                mae = None
+                rmse = None
+                r2 = None
+            else:
+                accuracy = r2_score(y_test, predictions)  # R² for regression
+                precision = None
+                recall = None
+                f1 = None
+                mae = mean_absolute_error(y_test, predictions)
+                rmse = np.sqrt(mean_squared_error(y_test, predictions))
+                r2 = r2_score(y_test, predictions)
+
+            # Calculate baseline comparison
+            def calculate_baseline_comparison(y_true, y_pred, is_classification):
+                try:
+                    if is_classification:
+                        if len(set(y_true)) > 1:
+                            baseline_accuracy = max(np.bincount(y_true)) / len(y_true)
+                            model_accuracy = accuracy_score(y_true, y_pred)
+                            improvement = ((model_accuracy - baseline_accuracy) / baseline_accuracy) * 100
+                            return f"{round(improvement, 1)}% better than baseline"
+                    else:
+                        # For regression, compare with mean baseline
+                        baseline_mae = mean_absolute_error(y_true, [y_true.mean()] * len(y_true))
+                        model_mae = mean_absolute_error(y_true, y_pred)
+                        improvement = ((baseline_mae - model_mae) / baseline_mae) * 100
+                        return f"{round(improvement, 1)}% better than mean baseline"
+                except Exception:
+                    pass
+                return "Baseline comparison unavailable"
+
+            baseline_comparison = calculate_baseline_comparison(y_test, predictions, is_classification)
+
+            # Create comprehensive model statistics
+            model_stats = {
+                "accuracy": round(accuracy * 100, 1) if accuracy is not None else 'N/A',
+                "metrics": {
+                    "precision": round(precision * 100, 1) if precision is not None else None,
+                    "recall": round(recall * 100, 1) if recall is not None else None,
+                    "f1_score": round(f1 * 100, 1) if f1 is not None else None,
+                    "mae": round(mae, 2) if mae is not None else None,
+                    "rmse": round(rmse, 2) if rmse is not None else None,
+                    "r2_score": round(r2 * 100, 1) if r2 is not None else None
+                },
+                "baseline_comparison": baseline_comparison,
+                "total_samples": len(y_test),
+                "correct_predictions": int(sum(y_test == predictions)) if is_classification else None,
+                "model_type": model_type,
+                "cv_mean": round(scores.mean(), 4),
+                "cv_std": round(scores.std(), 4)
+            }
+
+            # Save the pipeline
+            joblib.dump(pipeline, os.path.join(model_dir, "pipeline.pkl"))
+            print(f'Pipeline saved to: {os.path.join(model_dir, "pipeline.pkl")}')
+
+            # Save enhanced deployment information with statistics
+            deployment_data = {
+                "columns": list(X_train.columns),
+                "model_type": model_type,
+                "Target_column": target_column,
+                "stats": model_stats,
+                "feature_names": list(X.columns),
+                "categorical_features": list(categorical_cols),
+                "numerical_features": list(numerical_cols)
+            }
+
+            with open(deployment_path, "w") as fp:
+                json.dump(deployment_data, fp, indent=4)
+
+            return model_stats, list(X_train.columns)
         else:
-            with open(os.path.join(os.getcwd(), "models", "rf", target_column, 'deployment.json'), "r") as fp:
-                data = json.load(fp)
-            return True, data['columns']
+            # Load existing model data and statistics
+            with open(deployment_path, "r") as fp:
+                deployment_data = json.load(fp)
+            return deployment_data.get('stats', {}), deployment_data['columns']
+
     except Exception as e:
-        print(e)
+        print(f"Error in random_forest: {e}")
         return False, []
 
 
@@ -2792,7 +2969,7 @@ async def senior_data_analysis(
             - Never use `plt.savefig()` or attempt to write files.
 
             ### You MUST assume:
-            - The data required for your analysis can be always there in data.csv 
+            - The data required for your analysis can be always there in data.csv. 
             - consider the metadata as it is in {metadata_str}.
             - Your code is being `exec()`'d in a secure Python environment
             ### IMPORTANT:
@@ -2830,8 +3007,6 @@ async def senior_data_analysis(
 
 
 from universal_prompts import prompt_for_data_analyst
-
-
 # Function to generate code from OpenAI API
 def generate_data_code(prompt_eng):
     response = client.chat.completions.create(
@@ -2931,17 +3106,15 @@ async def upload_data_only(file: UploadFile = File(...)):
 
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower()
-    upload_dir = "uploads"
+    upload_dir = "uploads_sla"
     os.makedirs(upload_dir, exist_ok=True)
     content = await file.read()
 
     try:
         if ext == ".csv":
             df = pd.read_csv(io.StringIO(content.decode("utf-8")))
-            df.to_csv(os.path.join(upload_dir, "data.csv"), index=False)
         elif ext in [".xls", ".xlsx"]:
             df = pd.read_excel(io.BytesIO(content))
-            df.to_excel(os.path.join(upload_dir, "data1.xlsx"), index=False, engine="openpyxl")
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
     except Exception as e:
@@ -2949,6 +3122,10 @@ async def upload_data_only(file: UploadFile = File(...)):
 
     if df.empty:
         raise HTTPException(status_code=400, detail="Empty file or no data found.")
+
+    # Always save to data1.csv regardless of original file type
+    static_file_path = os.path.join(upload_dir, "data1.csv")
+    df.to_csv(static_file_path, index=False)
 
     # Handle NaN values and make data JSON serializable
     def make_json_serializable(x):
@@ -2964,10 +3141,113 @@ async def upload_data_only(file: UploadFile = File(...)):
         # Convert other types (pd.Timestamp, numpy types, etc.) to string
         return str(x)
 
-    # Replace deprecated applymap with map
-    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
+    # Use applymap for DataFrame element-wise operation
+    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
+
+
+##Explore for sla_report
+@app.post("/Explore_sla/")
+async def senior_data_analysis_sla(
+        query: str = Form(...)
+) -> JSONResponse:
+    try:
+        # Load and validate data
+        csv_file_path = os.path.join('uploads_sla/data1.csv')
+
+        df = pd.read_csv(csv_file_path)
+        if df.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="Dataset is empty"
+            )
+
+        # Generate metadata
+        metadata_str = ", ".join(df.columns.tolist())
+        preview_data = df.head(20)
+
+        prompt_eng = (
+                   f"""
+            You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
+            The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in `uploads_sla/data1.csv` only.No data assumptions can be taken.
+            The data preview is: {preview_data}            
+            1. Generic Queries:
+                If the user's query is generic and not related to data, respond with a concise and appropriate print statement. For example:
+                Query: "What is AI?"
+                Response: "Artificial Intelligence (AI) refers to the simulation of human intelligence in machines."
+            2. Data-Related Queries:
+                If the query is about data processing, assume the file `uploads_sla/data1.csv` is the data source and contains the following columns: {metadata_str}.
+            3.Visualisation related questions:
+                Generate clear visualisations based on the `uploads_sla/data1.csv` given to you.
+            Answer for all the queries in a meaningful manner.
+
+            Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
+            
+             Rules for Code generation:
+                - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
+                - The preview is for context only - your code should work on the complete dataset.
+                - Handle both header-based queries and content-based queries (filtering by specific values in rows).
+                - Only return results filtered exactly as per the query.
+                
+            Code Structure Guidelines:
+                - Provide only Python code, no explanations.
+                - Ensure the code:
+                    - Loads `{csv_file_path}` using pandas.
+                    - Filters and processes data based on the query.
+                    - Uses comments for readability.
+
+            5. Tabular Output for React Compatibility:
+                - Format the output as an HTML table for clarity.
+                - Use proper `<table>`, `<thead>`, `<tbody>`, `<tr>`, and `<td>` tags.
+                - Ensure the table structure is well-formed.
+
+            ### Code Safety & Execution Guidelines:
+            - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
+            - Always use self-contained code that runs without dependencies on undefined names or external files.
+            - If plotting with matplotlib/seaborn:
+                - Use basic arguments only (e.g., `x`, `y`, `data`)
+                - Avoid customizing with advanced style props unless necessary
+                - Use `plt.show()` after plotting
+            - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
+            - Always print results with `print()` — never rely on implicit outputs.
+            - The final line of your code should print something meaningful (DataFrame, value, message).
+            - Never use `plt.savefig()` or attempt to write files.
+
+            ### You MUST assume:
+            - The data required for your analysis can be always there in `uploads_sla/data1.csv`. 
+            - consider the metadata as it is in {metadata_str}.
+            - Your code is being `exec()`'d in a secure Python environment
+            
+            ### IMPORTANT:
+            - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
+            - You dont even have to give the explanation i.e how you did for getting that results.
+            - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
+            - Do not mention the headings at any cost.
+            - All the statistics and summary should be present in the tabular format only.
+            
+            User query is {query}.
+                """
+
+        )
+
+        # Generate and execute analysis code
+        print("Analysed the above things,,,,,,,,,going to generate the code")
+        code = generate_data_code(prompt_eng)
+        print("code_generated and going for execution,,,,,,,,")
+        result = simulate_and_format_with_llm(code, df)
+        print("executed_result is", result)
+
+        return JSONResponse(
+            content=markdown_to_html(result),
+            status_code=200
+        )
+
+    except pd.errors.EmptyDataError:
+        raise HTTPException(
+            status_code=400,
+            detail="Data file is corrupt"
+        )
 
 
 if __name__ == "__main__":
