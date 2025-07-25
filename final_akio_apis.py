@@ -3146,10 +3146,11 @@ async def upload_data_only(file: UploadFile = File(...)):
         # Convert other types (pd.Timestamp, numpy types, etc.) to string
         return str(x)
 
-    # Use map instead of deprecated applymap
-    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
+    # Use applymap for DataFrame element-wise operation
+    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
+
 
 ##Explore for sla_report
 @app.post("/Explore_sla/")
@@ -3200,11 +3201,6 @@ async def senior_data_analysis_sla(
                     - Uses comments for readability.
                     - Provide exact answers based on the dataset only.
 
-            3. Tabular Output for React Compatibility:
-                - Format the output as an HTML table for clarity.
-                - Use proper `<table>`, `<thead>`, `<tbody>`, `<tr>`, and `<td>` tags.
-                - Ensure the table structure is well-formed.
-
             ### Code Safety & Execution Guidelines:
             - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
             - Always use self-contained code that runs without dependencies on undefined names or external files.
@@ -3224,13 +3220,12 @@ async def senior_data_analysis_sla(
             ### IMPORTANT:
             - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
             - You dont even have to give the explanation i.e how you did for getting that results.
-            - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
             - Do not mention the headings at any cost.
-            - All the statistics and summary should be present in the tabular format only.
             - MUST avoid Hallucination.Just provide the accurate results from the given dataset.
             
             User query is {query}.
                 """
+
 
         )
 
