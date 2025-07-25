@@ -3048,6 +3048,7 @@ def simulate_and_format_with_llm(
     user_prompt = f"""
     You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate a complete report based on your system instructions.
     ### DATA CONTEXT:
+    The code operates on a pandas DataFrame named `df`.you MUST Consider this 'df' throughout the total process and will give the exact and existing results.
     The code operates on a pandas DataFrame named `df`. Here is its metadata and a sample of its first few rows:
 
     #### DataFrame Info (`df.info()`):
@@ -3059,7 +3060,11 @@ def simulate_and_format_with_llm(
     ```
     {df_head}
     ```
-
+    Rules for Code generation while working with data:
+     - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
+     - The preview is for context only - your code should work on the complete dataset.
+     - Handle both header-based queries and content-based queries (filtering by specific values in rows).
+     - Only return results filtered exactly as per the query.
     ### PYTHON CODE TO SIMULATE:
     You must simulate the execution of this code. Do not just describe it; act as if you have run it and are now reporting the results.
     ```
