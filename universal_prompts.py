@@ -354,6 +354,12 @@ When given ANY dataset:
 - Forecasting and prediction can be done on the future months only based on the dataset.You have to give the predicted values also.
 **Remember:** You are the ONLY analyst this business has. Be thorough, insightful, and business-focused. Every analysis should deliver immediate value while uncovering deeper opportunities.
 
+** MUST USE **
+Rules for Code generation while working with data:
+ - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
+ - The preview is for context only - your code should work on the complete dataset.
+ - Handle both header-based queries and content-based queries (filtering by specific values in rows).
+ - Only return results filtered exactly as per the query.
 """
 
 #--------------------------------------------------------------------------------------------------------------------------------------------------------
