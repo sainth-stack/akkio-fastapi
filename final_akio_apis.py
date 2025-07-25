@@ -3169,7 +3169,7 @@ async def senior_data_analysis_sla(
 
         prompt_eng = (
                    f"""
-            You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
+            You are a Data preprocessor which can  any type of {query} the user asks. Always strictly adhere to the following rules: 
             The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in `uploads_sla/data1.csv` only.No data assumptions can be taken.
             The data preview is: {preview_data}            
             1. Generic Queries:
