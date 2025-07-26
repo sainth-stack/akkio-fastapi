@@ -74,7 +74,7 @@ async def upload_data_only(file: UploadFile = File(...)):
         return str(x)
 
     # Use applymap for DataFrame element-wise operation
-    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
+    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
 
@@ -434,7 +434,7 @@ You are an expert data analyst AI. Your task is to analyze a user's question abo
 **IMPORTANT:**
 -If the user asks any information related tickets,you have to consider and work on the UNIQUE tickets only instead of all the tickets in the dataset.
 -If the user asks about the user names then you MUST look at 'Request - Resource Assigned To - Name' only.
--You have to give reply with entire data frame columns rather than the user required columns based on the user question only.Do not give reply in this format for every question.
+-You have to give reply with entire data frame columns except these two columns i.e "Request - Text Request"  and "Request - Text Answer" rather than the user required columns based on the user question only.Do not give reply in this format for every question.
 
 **Instructions:**
 
@@ -538,8 +538,18 @@ Your JSON response:
   "payload": "Your name is Sainath."
 }}
 
+### MUST FOLLOW:
+* If the user passes any Number or STRING or PHRASE,Then the details regarding the Number or STRING or PHRASE should be definitely  present in these three columns only i.e "Request - Text Request" or "Request - Text Request" or "Request - Subject description".While searching in the dataset,you have to figure out the details of what user has given in any one of these three columns and then filter the rows based on that.
 
-Now, provide the JSON response for the given user question. Do not include any text or markdown outside of the JSON object.
+  Example: The user will ask like "list of tickets with 1051409560" or "1051409560",then you have to think like the details regarding the users query will be present in any one of the above derived columns only.Do not search for the "Request - ID".
+  
+* While generating result in tabular format,Do not generate any index for that,just give the results in the tabular format straight away with out any indexes.
+* If you dont Find any results with the user prompts or any issues with the internal code generation or execution,then you have to give the response as "The Current Query is not processed efficiently,Please try with Other prompts". You have to give this statement as the response only.
+* If the user asks about statuses or priorities then you have to look at "Request - Priority Description" only.
+
+
+
+Now, provide the JSON response for the given user {query}. Do not include any text or markdown outside of the JSON object.
 """
 
     response = llm.invoke(llm_prompt)
