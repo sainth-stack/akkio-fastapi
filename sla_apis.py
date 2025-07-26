@@ -5,15 +5,11 @@ import io
 import pandas as pd
 from datetime import datetime
 import json
-from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
 import traceback
 from difflib import get_close_matches
 import re
 import ast
-import sys
-from contextlib import redirect_stdout, redirect_stderr
 from uuid import uuid4
 from collections import defaultdict
 import threading
@@ -27,6 +23,7 @@ try:
     import plotly.graph_objects as go
     import plotly.figure_factory as ff
     import numpy as np
+
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -62,164 +59,134 @@ async def upload_data_only(file: UploadFile = File(...)):
     static_file_path = os.path.join(upload_dir, "data1.csv")
     df.to_csv(static_file_path, index=False)
 
-    # Store in vector DB for semantic search
-    try:
-        # Always use the same file for vector DB (overwrite)
-        vector_db_path = static_file_path
-        # Store in Chroma vector DB
-        loader = None
-        if ext == ".csv":
-            from langchain_community.document_loaders.csv_loader import CSVLoader
-            loader = CSVLoader(file_path=vector_db_path)
-        elif ext in [".xls", ".xlsx"]:
-            # Save as CSV for loader compatibility
-            csv_path = vector_db_path  # already saved as csv
-            from langchain_community.document_loaders.csv_loader import CSVLoader
-            loader = CSVLoader(file_path=csv_path)
-        if loader:
-            docs = loader.load()
-            from langchain.text_splitter import CharacterTextSplitter
-            text_splitter = CharacterTextSplitter(chunk_size=200, chunk_overlap=0)
-            split_docs = text_splitter.split_documents(docs)
-            # Check for chunk size (tokens) before embedding
-            from openai import OpenAI
-            import tiktoken
-            enc = tiktoken.get_encoding("cl100k_base")
-            max_tokens = 300000
-            MAX_TOTAL_TOKENS = 290000
-            filtered_docs = []
-            total_tokens = 0
-            for d in split_docs:
-                num_tokens = len(enc.encode(d.page_content))
-                if num_tokens > max_tokens:
-                    continue  # skip this chunk
-                if total_tokens + num_tokens > MAX_TOTAL_TOKENS:
-                    break  # stop before exceeding the limit
-                filtered_docs.append(d)
-                total_tokens += num_tokens
-            if not filtered_docs:
-                raise HTTPException(status_code=400, detail="File is too large to process for semantic search. Please upload a smaller file or sample your data.")
-            embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
-            vectordb = Chroma.from_documents(filtered_docs, embeddings, persist_directory="db")
-            vectordb.persist()
-            partial_indexed = len(filtered_docs) < len(split_docs)
-        rows = len(df)
-    except Exception as e:
-        print("[ERROR] Exception in vector DB storage:")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Vector DB storage failed: {e}")
+    # Handle NaN values and make data JSON serializable
+    def make_json_serializable(x):
+        # Handle NaN values first
+        if pd.isna(x):
+            return None
+        # Native JSON types are left as is
+        if isinstance(x, (str, int, float, bool)) or x is None:
+            # Additional check for float NaN and infinity
+            if isinstance(x, float) and (pd.isna(x) or x == float('inf') or x == float('-inf')):
+                return None
+            return x
+        # Convert other types (pd.Timestamp, numpy types, etc.) to string
+        return str(x)
 
-    if 'partial_indexed' in locals() and partial_indexed:
-        return JSONResponse(content={
-            "message": "File partially processed for semantic search due to size limits. Only the first part of your file is indexed.",
-            "rows_processed": rows
-        })
+    # Use applymap for DataFrame element-wise operation
+    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
 
-    return JSONResponse(content={"message": "File uploaded and processed", "rows_processed": rows})
+    return JSONResponse(content={"records": records})
+
 
 def safe_execute_pandas_code(code: str, df: pd.DataFrame):
     """
-    Safely execute pandas code with proper sandboxing and error handling.
-    """
-    # Check if plotly is available
-    if not PLOTLY_AVAILABLE:
-        # Check if the code requires plotly
-        if any(keyword in code.lower() for keyword in ['px.', 'go.', 'ff.', 'plotly']):
-            raise ValueError("Plotly is required for chart generation but is not installed.")
-    
-    # Import plotly for chart generation
-    try:
-        import plotly.express as px
-        import plotly.graph_objects as go
-        import plotly.figure_factory as ff
-        import numpy as np
-    except ImportError as e:
-        if any(keyword in code.lower() for keyword in ['px.', 'go.', 'ff.', 'plotly']):
-            raise ValueError(f"Required library not available for chart generation: {e}")
-        # If no plotly needed, continue without it
-        px = go = ff = np = None
+    Safely executes sandboxed Python code for data analysis, primarily using the pandas library.
 
+    This function is designed to run untrusted code in a controlled environment by restricting
+    imports, built-in functions, and dangerous operations. It supports optional chart generation
+    using the Plotly library.
+
+    Args:
+        code: A string containing the Python code to execute. The code should assign its
+              final output to a variable named 'result'. If no 'result' variable is found,
+              the function will attempt to evaluate the last non-empty line as an expression.
+        df: The pandas DataFrame to be used in the execution context, accessible as 'df'.
+
+    Returns:
+        The object assigned to the 'result' variable in the executed code, the value of the
+        last evaluated expression, or a message indicating successful execution with no
+        output.
+
+    Raises:
+        ImportError: If a disallowed module is imported.
+        ValueError: If the code contains forbidden operations, fails to parse, or if a
+                    required library (like Plotly) is not available when needed.
+    """
+    # 1. Determine if Plotly is needed before attempting to import it
+    plotly_keywords = ['px.', 'go.', 'ff.', 'plotly']
+    is_plotly_needed = any(keyword in code.lower() for keyword in plotly_keywords)
+    px = go = ff = np = None
+
+    if is_plotly_needed:
+        try:
+            import plotly.express as px
+            import plotly.graph_objects as go
+            import plotly.figure_factory as ff
+            import numpy as np
+        except ImportError:
+            raise ValueError(
+                "Plotly and/or NumPy are required for chart generation but are not installed. "
+                "Please install them using: pip install plotly numpy"
+            )
+
+    # 2. Define a secure importer to whitelist allowed modules
     def secure_importer(name, globals=None, locals=None, fromlist=(), level=0):
-        """A wrapped version of __import__ that whitelists modules for security."""
+        """A wrapped version of __import__ that only allows whitelisted modules."""
         allowed_modules = {
-            'pandas', 'pd', 'numpy', 'np', 'math', 'random', 'datetime', 
-            'json', 're', 'collections', 'plotly', 'plotly.express', 
+            'pandas', 'pd', 'numpy', 'np', 'math', 'random', 'datetime',
+            'json', 're', 'collections', 'plotly', 'plotly.express',
             'plotly.graph_objects', 'plotly.figure_factory'
         }
         if name not in allowed_modules:
             raise ImportError(f"Import of module '{name}' is disallowed for security reasons.")
         return __import__(name, globals, locals, fromlist, level)
-    
-    # Create a safe execution environment
+
+    # 3. Establish a heavily restricted execution environment
     safe_globals = {
         'pd': pd,
         'df': df,
-        'json': json,
-        're': re,
-        'datetime': datetime,
         'px': px,
         'go': go,
         'ff': ff,
         'np': np,
         '__builtins__': {
-            'len': len,
-            'str': str,
-            'int': int,
-            'float': float,
-            'list': list,
-            'dict': dict,
-            'tuple': tuple,
-            'set': set,
-            'range': range,
-            'enumerate': enumerate,
-            'zip': zip,
-            'sorted': sorted,
-            'sum': sum,
-            'min': min,
-            'max': max,
-            'abs': abs,
-            'round': round,
-            '__import__': secure_importer,  # Use the secure "bouncer" for imports
+            '__import__': secure_importer,  # Override the default import
+            # Whitelist of safe built-in functions
+            'abs': abs, 'dict': dict, 'enumerate': enumerate, 'float': float,
+            'int': int, 'len': len, 'list': list, 'max': max, 'min': min,
+            'range': range, 'round': round, 'set': set, 'sorted': sorted,
+            'str': str, 'sum': sum, 'tuple': tuple, 'zip': zip,
         }
     }
-    
-    # Forbidden operations for security
+
+    # 4. Check for forbidden patterns using a generator expression for efficiency
+    # This blacklist prevents access to dangerous functions not covered by the __builtins__ override.
     forbidden_patterns = [
-        'import os', 'import sys', 'import subprocess', 'import shutil',
-        'open(', 'file(', 'exec(', 'eval(',  # __import__ is handled by the bouncer
-        'os.', 'sys.', 'subprocess.', 'shutil.',
-        'globals()', 'locals()', 'vars()', 'dir()',
-        'getattr', 'setattr', 'delattr', 'hasattr'
+        'import os', 'import sys', 'subprocess', 'shutil', 'open', 'eval', 'exec',
+        'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr'
     ]
-    
-    # Check for forbidden patterns
-    for pattern in forbidden_patterns:
-        if pattern in code.lower():
-            raise ValueError(f"Forbidden operation detected: {pattern}")
-    
+    if any(pattern in code for pattern in forbidden_patterns):
+        raise ValueError(f"Execution failed: Use of a forbidden keyword or function was detected.")
+
     try:
-        # Parse the code to check for syntax errors
-        parsed = ast.parse(code)
-        
-        # Execute the code
+        # 5. Parse the code to check for syntax errors before execution
+        ast.parse(code)
+
+        # Execute the code in the sandboxed environment
         local_vars = {}
         exec(code, safe_globals, local_vars)
-        
-        # Get the result (should be assigned to 'result' variable)
+
+        # 6. Refined result retrieval
         if 'result' in local_vars:
             return local_vars['result']
-        else:
-            # If no result variable, try to evaluate the last expression
-            lines = code.strip().split('\n')
-            last_line = lines[-1].strip()
-            if last_line and not last_line.startswith('#'):
-                try:
-                    return eval(last_line, safe_globals, local_vars)
-                except:
-                    return "Code executed successfully but no result returned"
+
+        # If no 'result' variable, try to eval the last line if it's an expression
+        lines = code.strip().split('\n')
+        last_line = lines[-1].strip()
+        if last_line and not last_line.startswith('#'):
+            try:
+                # Evaluate the last line in the same sandboxed context
+                return eval(last_line, safe_globals, local_vars)
+            except Exception:
+                # The last line was not a valid expression (e.g., an assignment)
+                return "Code executed successfully, but no output was returned."
+
+        return "Code executed successfully, but no output was returned."
+
     except Exception as e:
-        raise ValueError(f"Code execution error: {str(e)}")
+        # Catch and re-raise exceptions with a clear, unified error message
+        raise ValueError(f"Code execution failed with error: {e}")
 
 def classify_query_complexity(query: str, col_names: list) -> tuple:
     """
@@ -227,7 +194,7 @@ def classify_query_complexity(query: str, col_names: list) -> tuple:
     Returns (can_handle_directly, structured_result)
     """
     query_lower = query.lower()
-    
+
     # Simple aggregation patterns that can be handled directly
     simple_patterns = [
         (r"how many unique (.+?)s?", "nunique"),
@@ -245,7 +212,7 @@ def classify_query_complexity(query: str, col_names: list) -> tuple:
         (r"how many (.+?)s?", "count"),
         (r"number of (.+?)s?", "count"),
     ]
-    
+
     # Check for simple patterns
     for pattern, intent in simple_patterns:
         match = re.search(pattern, query_lower)
@@ -255,7 +222,7 @@ def classify_query_complexity(query: str, col_names: list) -> tuple:
             matches = get_close_matches(col_candidate, col_names, n=1, cutoff=0.7)
             if matches:
                 return True, (intent, matches[0])
-    
+
     # Complex patterns that need LLM
     complex_keywords = [
         'chart', 'graph', 'plot', 'visualize', 'correlation', 'regression',
@@ -263,12 +230,13 @@ def classify_query_complexity(query: str, col_names: list) -> tuple:
         'percentage', 'ratio', 'trend', 'compare', 'analysis',
         'distribution', 'histogram', 'scatter', 'line chart', 'bar chart'
     ]
-    
+
     if any(keyword in query_lower for keyword in complex_keywords):
         return False, None
-    
+
     # If no pattern matches, use LLM for safety
     return False, None
+
 
 def handle_simple_query(df: pd.DataFrame, intent: str, column: str):
     """
@@ -278,113 +246,50 @@ def handle_simple_query(df: pd.DataFrame, intent: str, column: str):
         if intent == "nunique":
             result = int(df[column].nunique())
             return {"type": "text", "payload": f"There are {result} unique values in column '{column}'."}
-        
+
         elif intent == "unique" or intent == "list":
             result = df[column].dropna().unique().tolist()
             # Convert to serializable format
             result = [str(v) if pd.notna(v) else None for v in result]
             return {"type": "table", "payload": [{column: v} for v in result]}
-        
+
         elif intent == "sum":
             if df[column].dtype in ['int64', 'float64']:
                 result = float(df[column].sum())
                 return {"type": "text", "payload": f"The sum of column '{column}' is {result}."}
             else:
                 return {"type": "text", "payload": f"Cannot calculate sum for non-numeric column '{column}'."}
-        
+
         elif intent == "mean":
             if df[column].dtype in ['int64', 'float64']:
                 result = float(df[column].mean())
                 return {"type": "text", "payload": f"The average of column '{column}' is {result:.2f}."}
             else:
                 return {"type": "text", "payload": f"Cannot calculate mean for non-numeric column '{column}'."}
-        
+
         elif intent == "min":
             result = df[column].min()
             return {"type": "text", "payload": f"The minimum value in column '{column}' is {result}."}
-        
+
         elif intent == "max":
             result = df[column].max()
             return {"type": "text", "payload": f"The maximum value in column '{column}' is {result}."}
-        
+
         elif intent == "count":
             result = int(df[column].count())
             return {"type": "text", "payload": f"There are {result} non-null records in column '{column}'."}
-        
+
         elif intent == "groupby":
             group_counts = df.groupby(column).size().reset_index(name='count')
             payload = group_counts.to_dict(orient='records')
             return {"type": "table", "payload": payload}
-        
+
         else:
             return {"type": "text", "payload": f"Intent '{intent}' not supported for direct handling."}
-    
+
     except Exception as e:
         return {"type": "text", "payload": f"Error processing query: {str(e)}"}
 
-def generate_pandas_code_with_llm(query: str, df: pd.DataFrame, context: str = ""):
-    """
-    Use LLM to generate pandas code for complex queries.
-    """
-    # Get dataset information
-    num_rows, num_cols = df.shape
-    col_names = list(df.columns)
-    col_types = df.dtypes.to_dict()
-    sample_data = df.head(3).to_dict(orient='records')
-    
-    # Create detailed dataset summary
-    dataset_info = f"""
-Dataset Information:
-- Shape: {num_rows} rows, {num_cols} columns
-- Columns: {col_names}
-- Column Types: {col_types}
-- Sample Data (first 3 rows): {sample_data}
-"""
-    
-    llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-3.5-turbo", temperature=0.1)
-    
-    llm_prompt = f"""
-You are a pandas expert. Generate Python pandas code to answer the user's question about the dataset.
-
-{dataset_info}
-
-Additional Context: {context}
-
-User Question: {query}
-
-Requirements:
-1. The DataFrame is already loaded as 'df'
-2. Write clean, efficient pandas code
-3. Store the final result in a variable called 'result'
-4. If the result should be a chart/visualization, create a plotly figure and store it as 'result'
-5. Available imports: pd (pandas), px (plotly.express), go (plotly.graph_objects), ff (plotly.figure_factory), np (numpy)
-6. Handle potential errors (missing columns, data type issues)
-7. Do NOT include any import statements - all libraries are pre-imported
-8. Do NOT include any print statements or explanations
-9. Only return the executable Python code
-10. For charts, ensure proper titles and labels are set
-
-Examples:
-- For "show me the top 10 values in column X": result = df['X'].value_counts().head(10)
-- For "create a bar chart of Y by X": result = px.bar(df, x='X', y='Y', title='Y by X')
-- For "correlation between A and B": result = df[['A', 'B']].corr()
-- For "histogram of column Z": result = px.histogram(df, x='Z', title='Distribution of Z')
-- For "scatter plot of A vs B": result = px.scatter(df, x='A', y='B', title='A vs B Scatter Plot')
-- For "line chart of X over time": result = px.line(df, x='time_column', y='X', title='X over Time')
-
-Return only the Python code, nothing else:
-"""
-    
-    response = llm.invoke(llm_prompt)
-    code = response.content.strip()
-    
-    # Clean up the code
-    if code.startswith("```python"):
-        code = code.replace("```python", "").replace("```", "").strip()
-    elif code.startswith("```"):
-        code = code.replace("```", "").strip()
-    
-    return code
 
 def convert_plotly_arrays(obj):
     """
@@ -427,14 +332,14 @@ def format_result_for_response(result):
         except Exception as e:
             print(f"Error converting plotly figure: {e}")
             # Fall through to other handlers
-    
+
     # Handle pandas DataFrames
     if isinstance(result, pd.DataFrame):
         # Replace NaN and inf values with None for JSON compatibility
         result = result.replace({np.nan: None, np.inf: None, -np.inf: None})
         if len(result) > 1000:  # Limit large results
             result = result.head(1000)
-        
+
         # Check if it's a correlation matrix or similar (numeric data with meaningful index/columns)
         if result.index.name or all(isinstance(col, str) for col in result.columns):
             # Convert to records format but preserve index
@@ -442,28 +347,28 @@ def format_result_for_response(result):
             payload = result_with_index.to_dict(orient='records')
         else:
             payload = result.to_dict(orient='records')
-        
+
         return {"type": "table", "payload": payload}
-    
+
     # Handle pandas Series
     if isinstance(result, pd.Series):
         # Replace NaN and inf values with None for JSON compatibility
         result = result.replace({np.nan: None, np.inf: None, -np.inf: None})
         if len(result) > 1000:
             result = result.head(1000)
-        
+
         # Convert to DataFrame for consistent display
         df_result = result.reset_index()
-        
+
         # Better column naming for series
         if hasattr(result, 'name') and result.name:
             df_result.columns = [result.index.name or 'index', result.name]
         else:
             df_result.columns = [result.index.name or 'index', 'value']
-        
+
         payload = df_result.to_dict(orient='records')
         return {"type": "table", "payload": payload}
-    
+
     # Handle dictionaries (correlation matrices, etc.)
     if isinstance(result, dict):
         # Try to convert to DataFrame if possible
@@ -475,14 +380,14 @@ def format_result_for_response(result):
         except:
             # Return as text if can't convert
             return {"type": "text", "payload": str(result)}
-    
+
     # Handle lists
     if isinstance(result, list):
         if len(result) > 0 and isinstance(result[0], dict):
             return {"type": "table", "payload": result}
         else:
             return {"type": "text", "payload": str(result)}
-    
+
     # Handle numpy arrays
     if hasattr(result, 'tolist'):
         try:
@@ -490,9 +395,10 @@ def format_result_for_response(result):
             return {"type": "text", "payload": str(list_result)}
         except:
             return {"type": "text", "payload": str(result)}
-    
+
     # Handle simple values (numbers, strings)
     return {"type": "text", "payload": str(result)}
+
 
 def get_llm_analysis(query: str, df: pd.DataFrame, chat_history: List[Dict[str, str]]):
     """
@@ -509,9 +415,9 @@ Dataset Information:
 """
 
     history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
-    
+
     llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4-turbo", temperature=0.1)
-    
+
     llm_prompt = f"""
 You are an expert data analyst AI. Your task is to analyze a user's question about a dataset and respond with a structured JSON object. You must also maintain a conversation and remember details from the chat history provided.
 
@@ -524,6 +430,10 @@ You are an expert data analyst AI. Your task is to analyze a user's question abo
 {dataset_info}
 
 **Current User Question:** {query}
+
+**IMPORTANT:**
+-If the user asks any information related tickets,you have to consider and work on the UNIQUE tickets only instead of all the tickets in the dataset.
+-If the user asks about the user names then you MUST look at 'Request - Resource Assigned To - Name' only.
 
 **Instructions:**
 
@@ -561,8 +471,8 @@ Your JSON response:
 {{
   "type": "data_analysis_answer",
   "payload": {{
-    "explanation": "To find the number of unique users, I will count the distinct values in the 'Request - User Name' column.",
-    "code": "result = df['Request - User Name'].nunique()"
+    "explanation": "To find the number of unique users, I will count the distinct values in the Request - Resource Assigned To - Name column.",
+    "code": "result = df[Request - Resource Assigned To - Name].nunique()"
   }}
 }}
 
@@ -603,7 +513,7 @@ Your JSON response:
   "type": "data_analysis_answer",
   "payload": {{
     "explanation": "Here is a list of all request users, their request counts, and the subject of their requests.",
-    "code": "result = df.groupby(['Request - User Name', 'Request - Subject description']).size().reset_index(name='count')"
+    "code": "result = df.groupby(['Request - Resource Assigned To - Name', 'Request - Subject description']).size().reset_index(name='count')"
   }}
 }}
 
@@ -614,7 +524,7 @@ Your JSON response:
   "type": "data_analysis_answer",
   "payload": {{
     "explanation": "Here is the user who raised the maximum number of tickets, along with the top 10 users by ticket count.",
-    "code": "user_counts = df['Request - User Name'].value_counts()\nmax_user = user_counts.idxmax()\ntop_10_users = user_counts.head(10).reset_index()\ntop_10_users.columns = ['Request - User Name', 'count']\nresult = {{'max_user': max_user, 'top_10_users': top_10_users.to_dict('records')}}"
+    "code": "user_counts = df['Request - Resource Assigned To - Name'].value_counts()\nmax_user = user_counts.idxmax()\ntop_10_users = user_counts.head(10).reset_index()\ntop_10_users.columns = ['Request - User Name', 'count']\nresult = {{'max_user': max_user, 'top_10_users': top_10_users.to_dict('records')}}"
   }}
 }}
 
@@ -627,9 +537,10 @@ Your JSON response:
   "payload": "Your name is Sainath."
 }}
 
+
 Now, provide the JSON response for the given user question. Do not include any text or markdown outside of the JSON object.
 """
-    
+
     response = llm.invoke(llm_prompt)
     content = response.content.strip()
 
@@ -650,7 +561,7 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
         # Session handling
         if not session_id:
             session_id = str(uuid4())
-        
+
         with SESSION_MEMORY_LOCK:
             # Pass a copy of the history to the LLM
             chat_history_for_llm = list(SESSION_MEMORY.get(session_id, []))
@@ -659,14 +570,14 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
         csv_file_path = os.path.join('uploads_sla/data1.csv')
         if not os.path.exists(csv_file_path):
             raise HTTPException(status_code=400, detail="No dataset found. Please upload a file first.")
-        
+
         df = pd.read_csv(csv_file_path)
         if df.empty:
             raise HTTPException(status_code=400, detail="Dataset is empty")
 
         # Step 1: Get AI analysis (intent, code, explanation) using chat history
         analysis_result = get_llm_analysis(query, df, chat_history=chat_history_for_llm)
-        
+
         response_type = analysis_result.get("type")
         payload = analysis_result.get("payload")
 
@@ -685,26 +596,30 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
             SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_response_text})
 
         if not response_type or not payload:
-            return JSONResponse(content={"type": "text", "payload": "I'm sorry, I couldn't process that request. Please try rephrasing.", "session_id": session_id}, status_code=200)
+            return JSONResponse(content={"type": "text",
+                                         "payload": "I'm sorry, I couldn't process that request. Please try rephrasing.",
+                                         "session_id": session_id}, status_code=200)
 
         # Step 2: Handle based on response type
         if response_type == "conversational_answer":
             return JSONResponse(content={"type": "text", "payload": payload, "session_id": session_id}, status_code=200)
-        
+
         elif response_type == "data_analysis_answer":
             explanation = payload.get("explanation")
             code = payload.get("code")
 
             if not code:
-                return JSONResponse(content={"type": "text", "payload": explanation or "I understood you wanted to analyze the data, but I couldn't generate the right code. Please try again.", "session_id": session_id}, status_code=200)
-            
+                return JSONResponse(content={"type": "text",
+                                             "payload": explanation or "I understood you wanted to analyze the data, but I couldn't generate the right code. Please try again.",
+                                             "session_id": session_id}, status_code=200)
+
             try:
                 # Step 3: Execute code
                 result = safe_execute_pandas_code(code, df)
-                
+
                 # Step 4: Format result
                 formatted_response = format_result_for_response(result)
-                
+
                 # Step 5: Add initial explanation and return
                 formatted_response['explanation'] = explanation
                 formatted_response['session_id'] = session_id
@@ -712,11 +627,15 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
 
             except Exception as e:
                 error_msg = f"There was an error executing the analysis: {str(e)}"
-                return JSONResponse(content={"type": "text", "payload": error_msg, "explanation": explanation, "session_id": session_id}, status_code=200)
-        
+                return JSONResponse(content={"type": "text", "payload": error_msg, "explanation": explanation,
+                                             "session_id": session_id}, status_code=200)
+
         else:
-            return JSONResponse(content={"type": "text", "payload": f"Unrecognized response type from AI model: {response_type}", "session_id": session_id}, status_code=200)
+            return JSONResponse(
+                content={"type": "text", "payload": f"Unrecognized response type from AI model: {response_type}",
+                         "session_id": session_id}, status_code=200)
 
     except Exception as e:
         print(f"An unexpected error occurred: {traceback.format_exc()}")
-        return JSONResponse(content={"error": str(e), "session_id": session_id if 'session_id' in locals() else None}, status_code=500)
+        return JSONResponse(content={"error": str(e), "session_id": session_id if 'session_id' in locals() else None},
+                            status_code=500)
