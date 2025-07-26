@@ -539,12 +539,8 @@ Your JSON response:
 }}
 
 ### MUST FOLLOW:
-* If the user passes any Number or STRING or PHRASE,Then the details regarding the Number or STRING or PHRASE should be definitely  present in these three columns only i.e "Request - Text Request" or "Request - Text Request" or "Request - Subject description".While searching in the dataset,you have to figure out the details of what user has given in any one of these three columns and then filter the rows based on that.
-
-  Example: The user will ask like "list of tickets with 1051409560" or "1051409560",then you have to think like the details regarding the users query will be present in any one of the above derived columns only.Do not search for the "Request - ID".
-  
 * While generating result in tabular format,Do not generate any index for that,just give the results in the tabular format straight away with out any indexes.
-* If you dont Find any results with the user prompts or any issues with the internal code generation or execution,then you have to give the response as "The Current Query is not processed efficiently,Please try with Other prompts". You have to give this statement as the response only.
+* If you dont find any results like empty payload with the user prompts,then you have to give the response as "The Current Query is not processed efficiently,Please try with Other prompts". You have to give this statement as the response only.
 * If the user asks about statuses or priorities then you have to look at "Request - Priority Description" only.
 
 
