@@ -584,7 +584,7 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
 
         # Step 1: Get AI analysis (intent, code, explanation) using chat history
         analysis_result = get_llm_analysis(query, df, chat_history=chat_history_for_llm)
-
+        print("Analysis results",analysis_result)
         response_type = analysis_result.get("type")
         payload = analysis_result.get("payload")
 
