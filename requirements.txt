@@ -50,6 +50,8 @@ langchain-core
 # OpenAI
 openai
 
+chromadb
+
 # PDF processing
 pypdf
 
@@ -58,4 +60,5 @@ tzdata
 
 reportlab
 python-multipart
+openpyxl
 

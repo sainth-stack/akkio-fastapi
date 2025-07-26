@@ -57,9 +57,16 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
 from dotenv import load_dotenv
+from langchain_community.vectorstores import Chroma
+from langchain_openai import ChatOpenAI
+from langchain.embeddings.openai import OpenAIEmbeddings
+import shutil
+from sla_apis import sla_router
 # Calculate comprehensive metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
+import threading
+import uuid
 
 
 load_dotenv()
@@ -80,6 +87,7 @@ db = PostgresDatabase()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+app.include_router(sla_router)
 
 # 1.File upload only-------- It is  useful for uploading the file
 @app.post("/upload_and_store_data")
@@ -978,15 +986,6 @@ def serialize_datetime(obj):
 async def gen_ai_bot(request: Request) -> JSONResponse:
     """
     AI bot endpoint for data analysis, forecasting, and predictions
-
-    Handles:
-    - Data analysis queries
-    - Forecasting requests
-    - Prediction requests
-    - Visualization generation
-
-    Returns:
-        JSONResponse: Response varies by request type
     """
     try:
         # Load and prepare data
@@ -994,29 +993,46 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
         metadata_str = ", ".join(df.columns.tolist())
         sample_data = df.head(2).to_dict(orient='records')
 
-        # Get prompt from request
+        # Get prompt and session_id from request
         content_type = request.headers.get('Content-Type')
         if content_type == "application/json":
             body = await request.json()
             prompt = body.get('prompt')
+            session_id = body.get('session_id')
         else:
             form_data = await request.form()
             prompt = form_data.get('prompt')
+            session_id = form_data.get('session_id')
 
-        if not prompt:
-            raise HTTPException(
-                status_code=400,
-                detail="Prompt is required"
-            )
+        # Generate a session_id if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
 
+        # Store the new user message in memory
+        with CHAT_MEMORY_LOCK:
+            CHAT_MEMORY[session_id].append({"role": "user", "content": prompt, "timestamp": datetime.now().isoformat()})
+
+        # Build LLM messages with full chat history
+        messages = []
+        with CHAT_MEMORY_LOCK:
+            for msg in CHAT_MEMORY[session_id]:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Use messages as context for the LLM
         # Handle forecasting requests
         if 'forecast' in prompt.lower():
             data = extract_forecast_details_llm(prompt, df.columns)
             stat, data, img_data = arima_train(df, data['target_variable'], data)
 
+            # Store bot response
+            bot_content = json.dumps({'data': json.loads(data.to_json()), 'plot': make_serializable(img_data)})
+            with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+
             return JSONResponse({
                 'data': json.loads(data.to_json()),
-                'plot': make_serializable(img_data)
+                'plot': make_serializable(img_data),
+                'session_id': session_id
             })
 
         # Handle prediction requests
@@ -1024,10 +1040,16 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
             data = extract_forecast_details_rf(prompt, df.columns)
 
             if len(data.get('missing_columns', [])) > 0:
+                bot_content = json.dumps({'text_pre_code_response': (
+                    f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
+                    f'Please retry with all required inputs.')})
+                with CHAT_MEMORY_LOCK:
+                    CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
                 return JSONResponse({
                     'text_pre_code_response': (
                         f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
-                        f'Please retry with all required inputs.')
+                        f'Please retry with all required inputs.'),
+                    'session_id': session_id
                 })
 
             model_path = os.path.join("models", "rf", data['target_column'])
@@ -1059,7 +1081,7 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
             # Calculate feature importance and top contributing fields
             feature_importance = get_feature_importance(loaded_pipeline, data.get('features').keys())
 
-            return JSONResponse({
+            bot_content = json.dumps({
                 "prediction_result": {
                     "predicted_value": round(predictions[0], 2),
                     "target_column": data.get('target_column'),
@@ -1077,30 +1099,39 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
                 },
                 "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}"
             })
+            with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+
+            return JSONResponse({
+                "prediction_result": {
+                    "predicted_value": round(predictions[0], 2),
+                    "target_column": data.get('target_column'),
+                    "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
+                },
+                "model_performance": {
+                    "overall_accuracy": model_stats.get('accuracy', 'N/A'),
+                    "performance_metrics": model_stats.get('metrics', {}),
+                    "baseline_comparison": model_stats.get('baseline_comparison', 'N/A')
+                },
+                "feature_analysis": {
+                    "top_fields": feature_importance,
+                    "input_features": data.get('features'),
+                    "feature_impact": calculate_feature_impact(loaded_pipeline, df_predict, data.get('features'))
+                },
+                "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}",
+                'session_id': session_id
+            })
 
         # Handle general data analysis requests
         else:
-            system_prompt = f"""You are an AI specialized in data analytics and visualization. The data for analysis is 
-            stored in a CSV file named data.csv, with the following attributes: {metadata_str} and sample data as 
-            {sample_data}.
-
-            Follow these rules while responding to user queries:
-            1. Strictly use 'data.csv' as the data source
-            2. For numerical insights, extract data and provide concise summaries
-            3. For visualizations, generate Plotly code with fig as output
-            4. For forecasting, use ARIMA and store results
-            """
-
-            result: Dict[str, Any] = {}
+            # Use full chat history as context for the LLM
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                messages=messages
             )
 
             pre_code_text, post_code_text, code = process_genai_response(response)
+            result: Dict[str, Any] = {}
             result.update({
                 'text_pre_code_response': pre_code_text,
                 'code': code,
@@ -1117,11 +1148,20 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
                     if fig and isinstance(fig, Figure):
                         result['chart_response'] = make_serializable(fig.to_plotly_json())
                 except Exception as e:
+                    bot_content = json.dumps({'error': f"Code execution failed: {str(e)}"})
+                    with CHAT_MEMORY_LOCK:
+                        CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
                     raise HTTPException(
                         status_code=500,
                         detail=f"Code execution failed: {str(e)}"
                     )
 
+            # Store bot response
+            bot_content = json.dumps(result)
+            with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+
+            result['session_id'] = session_id
             return JSONResponse(result)
 
     except FileNotFoundError:
@@ -3103,168 +3143,6 @@ def simulate_and_format_with_llm(
     return all_text
 
 
-#Upload api for the sla breach only-----upload only + explore api used there
-@app.post("/upload_data")
-async def upload_data_only(file: UploadFile = File(...)):
-    if not file:
-        raise HTTPException(status_code=400, detail="No file uploaded")
-
-    filename = file.filename
-    ext = os.path.splitext(filename)[1].lower()
-    upload_dir = "uploads_sla"
-    os.makedirs(upload_dir, exist_ok=True)
-    content = await file.read()
-
-    try:
-        if ext == ".csv":
-            df = pd.read_csv(io.StringIO(content.decode("utf-8")))
-        elif ext in [".xls", ".xlsx"]:
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse or save file: {e}")
-
-    if df.empty:
-        raise HTTPException(status_code=400, detail="Empty file or no data found.")
-
-    # Always save to data1.csv regardless of original file type
-    static_file_path = os.path.join(upload_dir, "data1.csv")
-    df.to_csv(static_file_path, index=False)
-
-    # Handle NaN values and make data JSON serializable
-    def make_json_serializable(x):
-        # Handle NaN values first
-        if pd.isna(x):
-            return None
-        # Native JSON types are left as is
-        if isinstance(x, (str, int, float, bool)) or x is None:
-            # Additional check for float NaN and infinity
-            if isinstance(x, float) and (pd.isna(x) or x == float('inf') or x == float('-inf')):
-                return None
-            return x
-        # Convert other types (pd.Timestamp, numpy types, etc.) to string
-        return str(x)
-
-    # Use map instead of deprecated applymap
-    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
-
-    return JSONResponse(content={"records": records})
-
-##Explore for sla_report
-@app.post("/Explore_sla/")
-async def senior_data_analysis_sla(
-        query: str = Form(...)
-) -> JSONResponse:
-    try:
-        # Load and validate data
-        csv_file_path = os.path.join('uploads_sla/data1.csv')
-
-        df = pd.read_csv(csv_file_path)
-        if df.empty:
-            raise HTTPException(
-                status_code=400,
-                detail="Dataset is empty"
-            )
-
-        # Generate metadata
-        metadata_str = ", ".join(df.columns.tolist())
-        preview_data = df.head(20)
-
-        prompt_eng = (
-                   f"""
-            You are a Data preprocessor which can  any type of {query} the user asks. Always strictly adhere to the following rules: 
-            The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in `uploads_sla/data1.csv` only.No data assumptions can be taken.
-            The data preview is: {preview_data}   
-                     
-            1. Data-Related Queries:
-                If the query is about data processing, take the file `uploads_sla/data1.csv` is the data source and contains the following columns: {metadata_str}.
-            2.Visualisation related questions:
-                Generate clear visualisations based on the `uploads_sla/data1.csv` given to you.
-                Answer for all the queries in a meaningful manner.
-
-            Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
-            
-            Rules for Code generation:
-             - Consider the data present in `uploads_sla/data1.csv` only
-             - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
-             - The preview is for context only - your code should work on the complete dataset.
-             - Handle both header-based queries and content-based queries (filtering by specific values in rows).
-             - Only return results filtered exactly as per the query.
-                
-            Code Structure Guidelines:
-                - Provide only Python code, no explanations.
-                - Ensure the code:
-                    - Loads `{csv_file_path}` using pandas.
-                    - Filters and processes data based on the query.
-                    - Uses comments for readability.
-                    - Provide exact answers based on the dataset only.
-
-            3. Tabular Output for React Compatibility:
-                - Format the output as an HTML table for clarity.
-                - Use proper `<table>`, `<thead>`, `<tbody>`, `<tr>`, and `<td>` tags.
-                - Ensure the table structure is well-formed.
-
-            ### Code Safety & Execution Guidelines:
-            - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
-            - Always use self-contained code that runs without dependencies on undefined names or external files.
-            - If plotting with matplotlib/seaborn:
-                - Use basic arguments only (e.g., `x`, `y`, `data`)
-                - Avoid customizing with advanced style props unless necessary
-                - Use `plt.show()` after plotting
-            - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
-            - Always print results with `print()` — never rely on implicit outputs.
-            - The final line of your code should print something meaningful (DataFrame, value, message).
-            - Never use `plt.savefig()` or attempt to write files.
-
-            ### You MUST assume:
-            - The data required for your analysis can be always there in `uploads_sla/data1.csv`. 
-            - consider the metadata as it is in {metadata_str}.
-            - Your code is being `exec()`'d in a secure Python environment
-            ### IMPORTANT:
-            - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
-            - You dont even have to give the explanation i.e how you did for getting that results.
-            - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
-            - Do not mention the headings at any cost.
-            - All the statistics and summary should be present in the tabular format only.
-            - MUST avoid Hallucination.Just provide the accurate results from the given dataset.
-            
-            User query is {query}.
-                """
-
-        )
-
-        # Generate and execute analysis code
-        print("Analysed the above things,,,,,,,,,going to generate the code")
-        code = generate_data_code(prompt_eng)
-        print("code_generated and going for execution,,,,,,,,")
-        result = simulate_and_format_with_llm(code, df)
-        print("executed_result is", result)
-
-        # Clean the result to extract only JSON
-        clean_result = clean_json_response(result)
-
-        if clean_result:
-            # Parse the clean JSON and return it
-            json_data = json.loads(clean_result)
-            return JSONResponse(content=json_data, status_code=200)
-        else:
-            # Fallback: return original result if cleaning fails
-            return JSONResponse(content={"rawResult": result}, status_code=200)
-
-    except Exception as e:
-        return JSONResponse(
-            content={"error": f"Processing failed: {str(e)}"},
-            status_code=500
-        )
-
-    except pd.errors.EmptyDataError:
-        raise HTTPException(
-            status_code=400,
-            detail="Data file is corrupt"
-        )
-
-
 def clean_json_response(response_text):
     """
     Extract clean JSON from a response that may contain markdown code blocks
@@ -3302,3 +3180,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("final_akio_apis:app", host="127.0.0.1", port=8000, reload=True)
+
