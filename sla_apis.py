@@ -74,7 +74,7 @@ async def upload_data_only(file: UploadFile = File(...)):
         return str(x)
 
     # Use applymap for DataFrame element-wise operation
-    records = df.astype(object).applymap(make_json_serializable).to_dict(orient="records")
+    records = df.astype(object).map(make_json_serializable).to_dict(orient="records")
 
     return JSONResponse(content={"records": records})
 
