@@ -416,7 +416,7 @@ Dataset Information:
 
     history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
 
-    llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4-turbo", temperature=0.1)
+    llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4.1-mini", temperature=0.1)
 
     llm_prompt = f"""
 You are an expert data analyst AI. Your task is to analyze a user's question about a dataset and respond with a structured JSON object. You must also maintain a conversation and remember details from the chat history provided.
@@ -434,6 +434,7 @@ You are an expert data analyst AI. Your task is to analyze a user's question abo
 **IMPORTANT:**
 -If the user asks any information related tickets,you have to consider and work on the UNIQUE tickets only instead of all the tickets in the dataset.
 -If the user asks about the user names then you MUST look at 'Request - Resource Assigned To - Name' only.
+-You have to give reply with entire data frame columns rather than the user required columns.
 
 **Instructions:**
 
