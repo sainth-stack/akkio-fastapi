@@ -68,12 +68,14 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import threading
 import uuid
 
-
 load_dotenv()
 
 app = FastAPI()
 
 global connection_obj
+# Global variables for chat memory management
+CHAT_MEMORY = defaultdict(list)
+CHAT_MEMORY_LOCK = threading.Lock()
 
 # Enable CORS if needed (similar to Django's csrf_exempt)
 app.add_middleware(
@@ -88,6 +90,7 @@ db = PostgresDatabase()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
+
 
 # 1.File upload only-------- It is  useful for uploading the file
 @app.post("/upload_and_store_data")
@@ -546,13 +549,13 @@ def generate_code4(prompt_eng):
         messages=[
             {"role": "system", "content": """
             You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
-            
+
             Your core responsibilities:
             - Generate complete, executable Python code for data visualization
             - Create diverse, insightful charts that reveal different data patterns
             - Use both plotly.express (px) and plotly.graph_objects (go) appropriately
             - Apply data analysis techniques: grouping, filtering, aggregation, transformation
-            
+
             Code Generation Standards:
             - Always start with necessary imports: pandas, plotly.express, plotly.graph_objects
             - Generate ONLY valid Python code (no markdown, no text outside comments)
@@ -560,20 +563,20 @@ def generate_code4(prompt_eng):
             - Create complete, working code blocks with proper indentation
             - Include meaningful chart titles and descriptions
             - Apply best practices for data visualization
-            
+
             Chart Diversity Requirements:
             - Create different chart types for comprehensive data exploration
             - Use various Plotly features: faceting, animations, multi-series, custom styling
             - Focus on actionable insights: trends, outliers, distributions, correlations
             - Apply appropriate data transformations and filtering
-            
+
             Technical Requirements:
             - Return charts in a dictionary format: chart_dict[title] = {"plot_data": fig.to_plotly_json(), "description": "insight"}
             - Handle edge cases and data quality issues
             - Use exact column names from provided dataset
             - Ensure all generated code is immediately executable
             - Validate data types and handle datetime conversions properly
-            
+
             Quality Assurance:
             - Every chart must provide unique insights
             - Code must be syntactically correct and complete
@@ -1009,12 +1012,12 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
             session_id = str(uuid.uuid4())
 
         # Store the new user message in memory
-        with CHAT_MEMORY_LOCK:
+        async with CHAT_MEMORY_LOCK:
             CHAT_MEMORY[session_id].append({"role": "user", "content": prompt, "timestamp": datetime.now().isoformat()})
 
         # Build LLM messages with full chat history
         messages = []
-        with CHAT_MEMORY_LOCK:
+        async with CHAT_MEMORY_LOCK:
             for msg in CHAT_MEMORY[session_id]:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -1026,8 +1029,9 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
 
             # Store bot response
             bot_content = json.dumps({'data': json.loads(data.to_json()), 'plot': make_serializable(img_data)})
-            with CHAT_MEMORY_LOCK:
-                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+            async with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append(
+                    {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
 
             return JSONResponse({
                 'data': json.loads(data.to_json()),
@@ -1043,8 +1047,9 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
                 bot_content = json.dumps({'text_pre_code_response': (
                     f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
                     f'Please retry with all required inputs.')})
-                with CHAT_MEMORY_LOCK:
-                    CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                async with CHAT_MEMORY_LOCK:
+                    CHAT_MEMORY[session_id].append(
+                        {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
                 return JSONResponse({
                     'text_pre_code_response': (
                         f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
@@ -1099,8 +1104,9 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
                 },
                 "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}"
             })
-            with CHAT_MEMORY_LOCK:
-                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+            async with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append(
+                    {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
 
             return JSONResponse({
                 "prediction_result": {
@@ -1149,8 +1155,9 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
                         result['chart_response'] = make_serializable(fig.to_plotly_json())
                 except Exception as e:
                     bot_content = json.dumps({'error': f"Code execution failed: {str(e)}"})
-                    with CHAT_MEMORY_LOCK:
-                        CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                    async with CHAT_MEMORY_LOCK:
+                        CHAT_MEMORY[session_id].append(
+                            {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
                     raise HTTPException(
                         status_code=500,
                         detail=f"Code execution failed: {str(e)}"
@@ -1158,8 +1165,9 @@ async def gen_ai_bot(request: Request) -> JSONResponse:
 
             # Store bot response
             bot_content = json.dumps(result)
-            with CHAT_MEMORY_LOCK:
-                CHAT_MEMORY[session_id].append({"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+            async with CHAT_MEMORY_LOCK:
+                CHAT_MEMORY[session_id].append(
+                    {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
 
             result['session_id'] = session_id
             return JSONResponse(result)
@@ -1310,7 +1318,6 @@ def extract_forecast_details_rf(prompt, column_names):
 
     except Exception as e:
         print(e)
-
 
 
 def process_genai_response(response):
@@ -3047,6 +3054,8 @@ async def senior_data_analysis(
 
 
 from universal_prompts import prompt_for_data_analyst
+
+
 # Function to generate code from OpenAI API
 def generate_data_code(prompt_eng):
     response = client.chat.completions.create(
@@ -3072,7 +3081,6 @@ def generate_data_code(prompt_eng):
 
 
 from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
-
 
 def simulate_and_format_with_llm(
         code_to_simulate: str,
@@ -3117,7 +3125,7 @@ def simulate_and_format_with_llm(
     1.  **Simulate Execution:** Mentally run the code against the provided data context.
     2.  **Predict Output:** Determine what `print()` statements would produce and what a generated plot would look like.
     3.  **Generate Report:** Produce a single, complete report that STRICTLY follows rules whatever required and formatting defined in your system prompt that should be in the JSON format.You have to follow the required rules wherever necessary.
-   
+
     ### IMPORTANT:
    - The report should be very informative and Don't include the internal functionings for the generation of the reports,Only the analysis related content and the graph related things and summaries and everything which is not executed internally can be given to the Output.
    - Do not include the internal headings like "**LANGUAGE:** Python | **MODE:** Simulation | **STATUS:** Success\n\n⚡ **EXECUTION OUTPUT:**\n".Do not include any of these ,,Just include the headings in the middle of the content only.
@@ -3176,8 +3184,8 @@ def clean_json_response(response_text):
         print(f"Error cleaning JSON: {e}")
         return None
 
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("final_akio_apis:app", host="127.0.0.1", port=8000, reload=True)
-
