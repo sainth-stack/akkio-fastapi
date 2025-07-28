@@ -194,6 +194,24 @@ async def get_user_data(email: str = Form(...)):
         )
 
 
+@app.post("/api/tabledata")
+async def read_data(tablename: str = Form(...)):
+    try:
+        df = db.get_table_data(tablename)
+        if df.empty:
+            return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
+
+        # Save CSV locally (optional)
+        df.to_csv('data.csv', index=False)
+        os.makedirs("uploads", exist_ok=True)
+        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
+
+        # Return JSON response
+        return JSONResponse(content=df.to_dict(orient='records'))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading table data: {e}")
+
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
 @app.post("/api/delete_selected_tables")
 async def delete_selected_tables_by_name(
@@ -790,7 +808,7 @@ async def missing_data() -> JSONResponse:
             json.dump({'data': html_df}, fp, indent=4)
 
         return JSONResponse(
-            content={"df": html_df},
+            content={"df": html_df,"summary": summary},
             status_code=200
         )
 
