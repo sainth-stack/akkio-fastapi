@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import base64
 import io
 import os
@@ -32,12 +33,12 @@ from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, root_mean_squared_error
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from starlette.responses import HTMLResponse, JSONResponse
-from statsmodels.tsa.arima_model import ARIMA
+from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from xgboost import XGBRegressor
 from langchain_openai import ChatOpenAI
@@ -47,7 +48,7 @@ from datascout import DataScout_agent, extract_sections_tool, extract_num_pages_
     pdf_generator_tool, initialize_llm
 from database import PostgresDatabase
 from synthetic_data_function import generate_synthetic_data
-from models import DBConnectionRequest
+from models import DBConnectionRequest, GenAIBotRequest, ModelRequest
 from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 from plotly.graph_objs import Figure
@@ -74,8 +75,8 @@ app = FastAPI()
 
 global connection_obj
 # Global variables for chat memory management
-CHAT_MEMORY = defaultdict(list)
-CHAT_MEMORY_LOCK = threading.Lock()
+CHAT_MEMORY: Dict[str, list] = {}        # In-memory store; replace as needed
+CHAT_MEMORY_LOCK = asyncio.Lock()
 
 # Enable CORS if needed (similar to Django's csrf_exempt)
 app.add_middleware(
@@ -93,7 +94,7 @@ app.include_router(sla_router)
 
 
 # 1.File upload only-------- It is  useful for uploading the file
-@app.post("/upload_and_store_data")
+@app.post("/api/upload_only")
 async def upload_and_store_data(
         request: Request,
         mail: str = Form(...),
@@ -178,7 +179,7 @@ async def upload_and_store_data(
 
 
 # 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
-@app.post("/get_user_data")
+@app.post("/api/get_user_data")
 async def get_user_data(email: str = Form(...)):
     try:
         # Get user tables from database
@@ -194,7 +195,7 @@ async def get_user_data(email: str = Form(...)):
 
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
-@app.post("/delete_selected_tables_by_name/")
+@app.post("/api/delete_selected_tables")
 async def delete_selected_tables_by_name(
         email: str = Form(...),
         table_names: List[str] = Form(...)
@@ -237,7 +238,7 @@ async def delete_selected_tables_by_name(
 
 
 # 4.Get flespi data---------------------------------it is for the flespi data---------- total 4(existing)
-@app.post("/download_flespi_data/")
+@app.post("/api/download_flespi_data")
 async def download_flespi_data(
         flespi_URL: str = Form(...),
         flespi_token: str = Form(...)
@@ -354,7 +355,7 @@ FIXED_CHART_FILENAMES = [
 ]
 
 
-@app.post("/gen_plotly_response/")
+@app.post("/api/dashboard")
 async def gen_plotly_response() -> JSONResponse:
     try:
         # Load and process data
@@ -639,7 +640,7 @@ def make_serializable(obj):
 SUMMARY_CACHE: Dict[str, str] = {}
 
 
-@app.post("/analyze_chart/")
+@app.post("/api/analyze_chart")
 async def analyze_chart(
         chart_id: str = Form(...),
         question: Optional[str] = Form(None)
@@ -761,7 +762,7 @@ def generate_text(prompt: str) -> str:
 
 
 # 7..Filling missing data------------------Evaluating the missed data in the dataframe----------- 7.
-@app.post("/missing_data/")
+@app.post("/api/fill_missed_data")
 async def missing_data() -> JSONResponse:
     try:
         # Load and validate data
@@ -984,47 +985,137 @@ def serialize_datetime(obj):
     raise TypeError("Type not serializable")
 
 
+#8.1 Models related apis:
+@app.post("/api/models")
+async def models(input: ModelRequest):
+    try:
+        # Load and clean data
+        df = pd.read_csv('data.csv')
+        single_value_columns = [col for col in df.columns if df[col].nunique() == 1]
+        df.drop(single_value_columns, axis=1, inplace=True)
+
+        numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+        if len(numeric_cols) < 1:
+            raise HTTPException(400, "Dataset does not meet modeling requirements")
+
+        # Handle RandomForest
+        if input.model == 'RandomForest':
+            stat, cols = random_forest(df, input.col)
+            return {
+                'columns': list(df.columns),
+                'rf': True,
+                'status': stat,
+                'rf_cols': cols
+            }
+
+        # Handle ARIMA
+        elif input.model == 'Arima':
+            if not input.frequency or not input.tenure:
+                raise HTTPException(400, "Missing frequency or tenure for ARIMA")
+            stat, data, img_data = arima_train(df, input.col, {
+                'time_unit': input.frequency,
+                'forecast_horizon': input.tenure
+            })
+            return {
+                'columns': list(df.columns),
+                'status': stat,
+                'arima': True,
+                'path': str(img_data),
+                'data': json.loads(data.to_json())
+            }
+
+        # Handle unsupported models
+        else:
+            raise HTTPException(400, "Unsupported model type")
+
+    except FileNotFoundError:
+        raise HTTPException(404, "Data file not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+#Model predict for Random forest
+@app.post("/api/model_predict")
+async def model_predict(request: Request):
+    try:
+        form_data = await request.form()
+        form_data = dict(form_data)
+
+        if form_data.get('form_name') != 'rf':
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid form type, expected 'rf'"
+            )
+
+        targetcol = form_data.get('targetColumn')
+        if not targetcol:
+            raise HTTPException(
+                status_code=400,
+                detail="Target column (targetColumn) is required"
+            )
+
+        # Prepare features dynamically from all provided fields
+        features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
+        df = pd.DataFrame([features])
+
+        model_path = os.path.join("models", "rf", targetcol, "pipeline.pkl")
+        if not os.path.exists(model_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model pipeline not found for target column {targetcol}"
+            )
+
+        loaded_pipeline = load_pipeline(model_path)
+        predictions = loaded_pipeline.predict(df)
+
+        return JSONResponse(
+            content={
+                'columns': list(df.columns),
+                'rf_result': f"Predicted {targetcol} value is {round(float(predictions[0]), 2)}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Prediction error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Prediction failed",
+            headers={"X-Error-Details": str(e)}
+        )
+
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
-@app.post("/gen_ai_bot/")
-async def gen_ai_bot(request: Request) -> JSONResponse:
-    """
-    AI bot endpoint for data analysis, forecasting, and predictions
-    """
+@app.post("/api/ai_bot")
+async def gen_ai_bot(request_body: GenAIBotRequest):
     try:
         # Load and prepare data
         df = pd.read_csv('data.csv')
         metadata_str = ", ".join(df.columns.tolist())
         sample_data = df.head(2).to_dict(orient='records')
 
-        # Get prompt and session_id from request
-        content_type = request.headers.get('Content-Type')
-        if content_type == "application/json":
-            body = await request.json()
-            prompt = body.get('prompt')
-            session_id = body.get('session_id')
-        else:
-            form_data = await request.form()
-            prompt = form_data.get('prompt')
-            session_id = form_data.get('session_id')
-
-        # Generate a session_id if not provided
-        if not session_id:
-            session_id = str(uuid.uuid4())
+        prompt = request_body.prompt
+        session_id = str(uuid.uuid4())
 
         # Store the new user message in memory
-        async with CHAT_MEMORY_LOCK:
-            CHAT_MEMORY[session_id].append({"role": "user", "content": prompt, "timestamp": datetime.now().isoformat()})
-
+        async with CHAT_MEMORY_LOCK:  # <--- no error now!
+            if session_id not in CHAT_MEMORY:
+                CHAT_MEMORY[session_id] = []
+            CHAT_MEMORY[session_id].append({
+                "role": "user",
+                "content": prompt,
+                "timestamp": datetime.now().isoformat()
+            })
         # Build LLM messages with full chat history
         messages = []
-        async with CHAT_MEMORY_LOCK:
-            for msg in CHAT_MEMORY[session_id]:
-                messages.append({"role": msg["role"], "content": msg["content"]})
+        for msg in CHAT_MEMORY[session_id]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Use messages as context for the LLM
         # Handle forecasting requests
         if 'forecast' in prompt.lower():
             data = extract_forecast_details_llm(prompt, df.columns)
+            print("data printed")
             stat, data, img_data = arima_train(df, data['target_variable'], data)
 
             # Store bot response
@@ -1578,6 +1669,7 @@ def check_data_frequency(train):
     data_freq = {'D': 'Days', 'W': 'Weeks', "H": "Hours", "Q": "Quarters", 'A': 'Years'}
     m = pd.infer_freq(train.index)
     if m in ['15T', '30T', "H", "D", "W", "M", "Q", "A"]:
+        print("Date Frequency is",m)
         return data_freq[m]
     else:
         print('Unsupported frequency')
@@ -1593,7 +1685,9 @@ def train_models(df, target_col):
         train, test = train_test_split(resampled_df, test_size=0.2, shuffle=False)
 
         trend = detect_trend(train)
+        print("Trend is", trend)
         seasonality = detect_seasonality(train)
+        print("Seasonality is",seasonality)
 
         best_model = None
         best_error = float('inf')
@@ -1668,9 +1762,11 @@ def train_models(df, target_col):
 
 
 def train_arima(train, test):
+    print("Arima Started training")
     model = ARIMA(train['value'], order=(1, 1, 1)).fit()
     pred = model.predict(start=test.index[0], end=test.index[-1])
     error = mean_squared_error(test['value'], pred, squared=False)
+    print("Returning the values by Arima")
     return model, error
 
 
@@ -1683,7 +1779,8 @@ def train_prophet(train, test):
 
     future = pd.DataFrame({'ds': test.index})
     forecast = model.predict(future)
-    error = mean_squared_error(test['value'], forecast['yhat'], squared=False)
+    error = root_mean_squared_error(test['value'], forecast['yhat'])
+    print("Returning the parameters from the Prophet model")
     return model, error
 
 
@@ -1904,7 +2001,7 @@ def random_forest(data, target_column):
 
 
 # 9.Data scout api----------------------Data scout api for generating the data------------- 9
-@app.post("/create_data/")
+@app.post("/api/data_scout")
 async def create_data_with_data_scout(
         prompt: str = Form(...),
         data_type: str = Form(...),
@@ -2026,7 +2123,7 @@ async def create_data_with_data_scout(
 
 
 # 17.Data preprocess api----------------------Data preprocessing for the generation of the statistical analysis.-----
-@app.get("/data_processing/")
+@app.get("/api/processing_for_dashboard")
 async def perform_statistical_analysis() -> JSONResponse:
     """
     Perform comprehensive statistical analysis on the dataset
@@ -2196,7 +2293,7 @@ class ContentType(Enum):
     PDF = "pdf"
 
 
-@app.post("/generate_synthetic_content/", response_model=None)
+@app.post("/api/generate_synthetic_data", response_model=None)
 async def generate_synthetic_content(
         files: List[UploadFile],
         user_prompt: str = Form(...)
@@ -2961,7 +3058,7 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
 
 
 # 11.Explore api
-@app.post("/Explore/")
+@app.post("/api/Explore")
 async def senior_data_analysis(
         query: str = Form(...)
 ) -> JSONResponse:
