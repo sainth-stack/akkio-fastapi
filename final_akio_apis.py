@@ -2295,6 +2295,7 @@ async def perform_statistical_analysis() -> JSONResponse:
         response = {
             'nof_rows': str(nor),
             'nof_columns': str(nof),
+            'Preview_Data':df.head(50),
             'timestamp': timestamp,
             "single_value_columns": ",".join(single_value_columns) if single_value_columns else "NA",
             "sentiment": sentiment,
