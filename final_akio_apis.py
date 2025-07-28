@@ -1041,12 +1041,14 @@ async def model_predict(request: Request):
         form_data = await request.form()
         form_data = dict(form_data)
 
+        # Validate form_name
         if form_data.get('form_name') != 'rf':
             raise HTTPException(
                 status_code=400,
                 detail="Invalid form type, expected 'rf'"
             )
 
+        # Validate targetColumn
         targetcol = form_data.get('targetColumn')
         if not targetcol:
             raise HTTPException(
@@ -1054,31 +1056,74 @@ async def model_predict(request: Request):
                 detail="Target column (targetColumn) is required"
             )
 
-        # Prepare features dynamically from all provided fields
+        # Extract features (exclude form_name and targetColumn)
         features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
-        df = pd.DataFrame([features])
+        df_predict = pd.DataFrame([features])
 
-        model_path = os.path.join("models", "rf", targetcol, "pipeline.pkl")
-        if not os.path.exists(model_path):
+        # Load pipeline and deployment data paths
+        model_dir = os.path.join("models", "rf", targetcol)
+        pipeline_path = os.path.join(model_dir, "pipeline.pkl")
+        deployment_path = os.path.join(model_dir, "deployment.json")
+
+        if not os.path.exists(pipeline_path):
             raise HTTPException(
                 status_code=404,
-                detail=f"Model pipeline not found for target column {targetcol}"
+                detail=f"Model pipeline not found for target column '{targetcol}'"
             )
 
-        loaded_pipeline = load_pipeline(model_path)
-        predictions = loaded_pipeline.predict(df)
+        if not os.path.exists(deployment_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model deployment metadata not found for target column '{targetcol}'"
+            )
 
-        return JSONResponse(
-            content={
-                'columns': list(df.columns),
-                'rf_result': f"Predicted {targetcol} value is {round(float(predictions[0]), 2)}"
+        # Load model pipeline
+        loaded_pipeline = load_pipeline(pipeline_path)
+
+        # Load deployment metadata
+        with open(deployment_path, "r") as f:
+            deployment_data = json.load(f)
+        model_stats = deployment_data.get("stats", {})
+
+        # Make prediction
+        predictions = loaded_pipeline.predict(df_predict)
+
+        # Try to get prediction confidence if available
+        prediction_proba = None
+        if hasattr(loaded_pipeline, 'predict_proba'):
+            try:
+                prediction_proba = loaded_pipeline.predict_proba(df_predict)
+            except Exception as e:
+                print(f"Warning: predict_proba failed: {e}")
+
+        # Compute feature importance and impact
+        feature_importance = get_feature_importance(loaded_pipeline, features.keys())
+        feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features)
+
+        response = {
+            "prediction_result": {
+                "predicted_value": round(float(predictions[0]), 2),
+                "target_column": targetcol,
+                "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
+            },
+            "model_performance": {
+                "overall_accuracy": model_stats.get("accuracy", "N/A"),
+                "performance_metrics": model_stats.get("metrics", {}),
+                "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+            },
+            "feature_analysis": {
+                "top_fields": feature_importance,
+                "input_features": features,
+                "feature_impact": feature_impact
             }
-        )
+        }
+
+        return JSONResponse(content=response)
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Prediction error: {str(e)}")
+        print(f"Prediction error: {e}")
         raise HTTPException(
             status_code=500,
             detail="Prediction failed",
@@ -1863,17 +1908,19 @@ def random_forest(data, target_column):
             y = data[target_column]
 
             # Detect categorical and numerical features
-            categorical_cols = X.select_dtypes(include=['object', 'category']).columns
-            numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns
+            categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+            numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
 
             # Preprocessing pipelines for numerical and categorical data
             numerical_transformer = Pipeline(steps=[
                 ('imputer', SimpleImputer(strategy='mean')),
-                ('scaler', StandardScaler())])
+                ('scaler', StandardScaler())
+            ])
 
             categorical_transformer = Pipeline(steps=[
                 ('imputer', SimpleImputer(strategy='most_frequent')),
-                ('onehot', OneHotEncoder(handle_unknown='ignore'))])
+                ('onehot', OneHotEncoder(handle_unknown='ignore'))
+            ])
 
             # Combine preprocessing steps
             preprocessor = ColumnTransformer(
@@ -1883,11 +1930,11 @@ def random_forest(data, target_column):
                 ])
 
             # Choose Random Forest type based on target type
-            if y.nunique() <= 5:  # Classification for few unique target values
+            if y.nunique() <= 5:  # Classification
                 model_type = 'Classification'
                 model = RandomForestClassifier(random_state=42)
                 is_classification = True
-            else:  # Regression for continuous target values
+            else:  # Regression
                 model_type = 'Regression'
                 model = RandomForestRegressor(random_state=42)
                 is_classification = False
@@ -1913,61 +1960,72 @@ def random_forest(data, target_column):
             # Get predictions on test set for detailed metrics
             predictions = pipeline.predict(X_test)
 
+            # Initialize metric variables
+            accuracy = None
+            precision = None
+            recall = None
+            f1 = None
+            mae = None
+            rmse = None
+            r2 = None
+
             if is_classification:
                 accuracy = accuracy_score(y_test, predictions)
                 precision = precision_score(y_test, predictions, average='weighted', zero_division=0)
                 recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
                 f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
-                mae = None
-                rmse = None
-                r2 = None
             else:
-                accuracy = r2_score(y_test, predictions)  # R² for regression
-                precision = None
-                recall = None
-                f1 = None
+                r2 = r2_score(y_test, predictions)  # R² for regression
                 mae = mean_absolute_error(y_test, predictions)
                 rmse = np.sqrt(mean_squared_error(y_test, predictions))
-                r2 = r2_score(y_test, predictions)
 
             # Calculate baseline comparison
             def calculate_baseline_comparison(y_true, y_pred, is_classification):
                 try:
                     if is_classification:
                         if len(set(y_true)) > 1:
+                            # baseline accuracy is accuracy of always predicting most frequent class
                             baseline_accuracy = max(np.bincount(y_true)) / len(y_true)
                             model_accuracy = accuracy_score(y_true, y_pred)
                             improvement = ((model_accuracy - baseline_accuracy) / baseline_accuracy) * 100
                             return f"{round(improvement, 1)}% better than baseline"
+                        else:
+                            return "Baseline comparison unavailable (only one class)"
                     else:
-                        # For regression, compare with mean baseline
-                        baseline_mae = mean_absolute_error(y_true, [y_true.mean()] * len(y_true))
+                        # For regression, compare with mean baseline (mean of targets)
+                        baseline_mae = mean_absolute_error(y_true, [np.mean(y_true)] * len(y_true))
                         model_mae = mean_absolute_error(y_true, y_pred)
                         improvement = ((baseline_mae - model_mae) / baseline_mae) * 100
                         return f"{round(improvement, 1)}% better than mean baseline"
                 except Exception:
-                    pass
-                return "Baseline comparison unavailable"
+                    return "Baseline comparison unavailable"
 
             baseline_comparison = calculate_baseline_comparison(y_test, predictions, is_classification)
 
-            # Create comprehensive model statistics
-            model_stats = {
-                "accuracy": round(accuracy * 100, 1) if accuracy is not None else 'N/A',
-                "metrics": {
+            # Compose model metrics dictionary according to task
+            if is_classification:
+                model_metrics = {
+                    "accuracy": round(accuracy * 100, 1) if accuracy is not None else 'N/A',
                     "precision": round(precision * 100, 1) if precision is not None else None,
                     "recall": round(recall * 100, 1) if recall is not None else None,
                     "f1_score": round(f1 * 100, 1) if f1 is not None else None,
+                }
+            else:
+                model_metrics = {
+                    "r2_score": round(r2 * 100, 1) if r2 is not None else None,
                     "mae": round(mae, 2) if mae is not None else None,
                     "rmse": round(rmse, 2) if rmse is not None else None,
-                    "r2_score": round(r2 * 100, 1) if r2 is not None else None
-                },
-                "baseline_comparison": baseline_comparison,
+                }
+
+            # Create comprehensive model statistics
+            model_stats = {
+                "model_type": model_type,
                 "total_samples": len(y_test),
                 "correct_predictions": int(sum(y_test == predictions)) if is_classification else None,
-                "model_type": model_type,
-                "cv_mean": round(scores.mean(), 4),
-                "cv_std": round(scores.std(), 4)
+                "cross_val_mean": round(scores.mean(), 4),
+                "cross_val_std": round(scores.std(), 4),
+                "baseline_comparison": baseline_comparison,
+                "metrics": model_metrics,
             }
 
             # Save the pipeline
@@ -1978,11 +2036,11 @@ def random_forest(data, target_column):
             deployment_data = {
                 "columns": list(X_train.columns),
                 "model_type": model_type,
-                "Target_column": target_column,
+                "target_column": target_column,
                 "stats": model_stats,
                 "feature_names": list(X.columns),
-                "categorical_features": list(categorical_cols),
-                "numerical_features": list(numerical_cols)
+                "categorical_features": categorical_cols,
+                "numerical_features": numerical_cols
             }
 
             with open(deployment_path, "w") as fp:
