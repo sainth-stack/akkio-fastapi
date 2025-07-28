@@ -2,15 +2,15 @@ import psycopg2
 import pandas as pd
 import pickle
 import base64
+import psycopg2.errors
 from datetime import datetime
 from fastapi import HTTPException
-
 
 class PostgresDatabase:
     def __init__(self):
         self.connection = None
 
-    def create_connection(self, user, password, database, host, port=5432):
+    def create_connection(self, user, password, database, host, port=5432, return_tables_info: bool = False):
         try:
             self.connection = psycopg2.connect(
                 database=database,
@@ -21,7 +21,8 @@ class PostgresDatabase:
             )
             self.connection.autocommit = True
             print("Database connection established.")
-            return self.get_tables_info()
+            if return_tables_info:
+                return self.get_tables_info()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"DB Connection Error: {e}")
 
@@ -40,6 +41,7 @@ class PostgresDatabase:
             raise
 
     def create_table(self):
+        """Creates akio_data_fastapi with no unique constraints on email, allowing duplicates."""
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
@@ -49,27 +51,26 @@ class PostgresDatabase:
                     name VARCHAR(255),
                     lastupdate TIMESTAMP,
                     datecreated TIMESTAMP,
-                    fileobj BYTEA,
-                    CONSTRAINT email_unique UNIQUE(email),
-                    CONSTRAINT email_name_unique UNIQUE(email, name)
+                    fileobj BYTEA
                 )
             """)
 
     def create_reports_table(self):
+        """Creates reports_fastapi with no unique or foreign key constraints on email."""
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reports_fastapi (
                     id SERIAL PRIMARY KEY,
-                    email VARCHAR(255) UNIQUE,
+                    email VARCHAR(255),
                     image_bytes BYTEA,
                     created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW(),
-                    CONSTRAINT fk_email FOREIGN KEY(email) REFERENCES akio_data_fastapi(email) ON DELETE CASCADE
+                    updated_at TIMESTAMP DEFAULT NOW()
                 )
             """)
 
     def insert_or_update(self, email, data, tb_name):
+        """Insert or update a row in akio_data_fastapi. Allows multiple rows per email."""
         self.ensure_connection()
         tb_name_clean = tb_name.split('.')[0]
         blob_data = pickle.dumps(data)
@@ -99,14 +100,20 @@ class PostgresDatabase:
         return pd.DataFrame(rows, columns=cols)
 
     def get_tables_info(self):
-        df = self.read()
-        if df.empty:
+        """Returns table info, gracefully handles missing table."""
+        try:
+            df = self.read()
+            if df.empty:
+                return {}
+            df['lastupdate'] = df['lastupdate'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
+            df['datecreated'] = df['datecreated'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
+            return df.iloc[:, :-1].to_dict(orient="records")
+        except psycopg2.errors.UndefinedTable:
+            print("Table does not exist, returning empty info.")
             return {}
-        # Convert datetime columns to string format
-        df['lastupdate'] = df['lastupdate'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
-        df['datecreated'] = df['datecreated'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
-
-        return df.iloc[:, :-1].to_dict(orient="records")
+        except Exception as e:
+            print(f"Unexpected error in get_tables_info: {e}")
+            return {}
 
     def get_user_tables(self, user):
         df = self.read()
@@ -138,6 +145,7 @@ class PostgresDatabase:
             return f"{cursor.rowcount} records deleted"
 
     def insert_report(self, email, image_base64):
+        """Insert a report. Multiple reports per email allowed."""
         self.ensure_connection()
         try:
             image_bytes = base64.b64decode(image_base64)
@@ -194,12 +202,13 @@ class PostgresDatabase:
     def delete_all_tables(self):
         self.ensure_connection()
         with self.connection.cursor() as cursor:
-            cursor.execute("DROP TABLE IF EXISTS reports_fastapi CASCADE")
-            cursor.execute("DROP TABLE IF EXISTS akio_data_fastapi CASCADE")
+            cursor.execute("DROP TABLE IF EXISTS reports_fastapi")
+            cursor.execute("DROP TABLE IF EXISTS akio_data_fastapi")
+            print("All tables dropped successfully.")
             return "All tables dropped"
 
 
-
+# Sample config - replace with your actual database credentials
 PGHOST = 'ep-yellow-recipe-a5fny139.us-east-2.aws.neon.tech'
 PGDATABASE = 'test'
 PGUSER = 'test_owner'
@@ -208,7 +217,7 @@ PGPASSWORD = 'tcWI7unQ6REA'
 if __name__ == '__main__':
     pdd = PostgresDatabase()
     pdd.create_connection(PGUSER, PGPASSWORD, PGDATABASE, PGHOST)
-    pdd.create_table()
-    pdd.create_reports_table()
-
-    pdd.get_user_tables('admin@gmail.com')
+    #pdd.delete_all_tables()      # Drops old tables (with all constraints)
+    pdd.create_table()           # Creates akio_data_fastapi (no unique on email)
+    pdd.create_reports_table()   # Creates reports_fastapi (no unique/FK on email)
+    print("Tables recreated with no unique or foreign key constraints on email.")
