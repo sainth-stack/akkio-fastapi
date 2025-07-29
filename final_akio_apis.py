@@ -2291,11 +2291,16 @@ async def perform_statistical_analysis() -> JSONResponse:
         # Sentiment analysis
         sentiment = checkSentiment(df, categorical_vars)
 
+        # **** Get the preview data (first 50 rows) ****
+        preview = df.head(50)
+        preview_data = json.loads(preview.to_json(orient='records'))
+
         # Build response
         response = {
             'nof_rows': str(nor),
             'nof_columns': str(nof),
             'timestamp': timestamp,
+            'Preview_data': preview_data,
             "single_value_columns": ",".join(single_value_columns) if single_value_columns else "NA",
             "sentiment": sentiment,
             "stationary": stationary,
