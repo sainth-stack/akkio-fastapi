@@ -56,14 +56,14 @@ class PostgresDatabase:
             """)
 
     def create_reports_table(self):
-        """Creates reports_fastapi with no unique or foreign key constraints on email."""
+        """Creates reports_fastapi table with url field instead of image_bytes."""
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reports_fastapi (
                     id SERIAL PRIMARY KEY,
                     email VARCHAR(255),
-                    image_bytes BYTEA,
+                    url TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
@@ -144,35 +144,29 @@ class PostgresDatabase:
             cursor.execute("DELETE FROM akio_data_fastapi WHERE email = %s", (email,))
             return f"{cursor.rowcount} records deleted"
 
-    def insert_report(self, email, image_base64):
-        """Insert a report. Multiple reports per email allowed."""
+    def insert_report(self, email, url):
         self.ensure_connection()
-        try:
-            image_bytes = base64.b64decode(image_base64)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO reports_fastapi (email, image_bytes)
+                INSERT INTO reports_fastapi (email, url)
                 VALUES (%s, %s)
-                RETURNING id, email, created_at
-            """, (email, psycopg2.Binary(image_bytes)))
+                RETURNING id, email, url, created_at
+            """, (email, url))
             result = cursor.fetchone()
+            self.connection.commit()  # commit after insert
             return dict(zip([d[0] for d in cursor.description], result))
 
-    def update_report(self, email, image_base64):
+
+    def update_report(self, email, url):
+        """Update the report URL for a given email."""
         self.ensure_connection()
-        try:
-            image_bytes = base64.b64decode(image_base64)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
         with self.connection.cursor() as cursor:
             cursor.execute("""
                 UPDATE reports_fastapi
-                SET image_bytes = %s, updated_at = NOW()
+                SET url = %s, updated_at = NOW()
                 WHERE email = %s
-                RETURNING id, email, updated_at
-            """, (psycopg2.Binary(image_bytes), email))
+                RETURNING id, email, url, updated_at
+            """, (url, email))
             result = cursor.fetchone()
             return dict(zip([d[0] for d in cursor.description], result))
 
@@ -180,12 +174,26 @@ class PostgresDatabase:
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                SELECT id, email, encode(image_bytes, 'base64') as image_bytes, created_at, updated_at
+                SELECT id, email, url, created_at, updated_at
                 FROM reports_fastapi
                 WHERE email = %s
             """, (email,))
             rows = cursor.fetchall()
             return [dict(zip([d[0] for d in cursor.description], row)) for row in rows]
+
+    def get_reports_by_ids_and_email(self, email, report_ids):
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            query = """
+                SELECT id, email, url, created_at, updated_at
+                FROM reports_fastapi
+                WHERE email = %s
+                  AND id = ANY(%s)
+            """
+            cursor.execute(query, (email, report_ids))
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
 
     def delete_report_by_email(self, email):
         self.ensure_connection()
