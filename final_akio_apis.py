@@ -8,11 +8,14 @@ import smtplib
 import sys
 import tempfile
 import traceback
+from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
 from pathlib import Path
+
+import boto3
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
 from fastapi.responses import StreamingResponse
@@ -75,7 +78,7 @@ app = FastAPI()
 
 global connection_obj
 # Global variables for chat memory management
-CHAT_MEMORY: Dict[str, list] = {}        # In-memory store; replace as needed
+CHAT_MEMORY: Dict[str, list] = {}  # In-memory store; replace as needed
 CHAT_MEMORY_LOCK = asyncio.Lock()
 
 # Enable CORS if needed (similar to Django's csrf_exempt)
@@ -96,8 +99,8 @@ app.include_router(sla_router)
 # 1.File upload only-------- It is  useful for uploading the file
 @app.post("/api/upload_only")
 async def upload_only(
-    mail: str = Form(...),
-    file: UploadFile = File(...)
+        mail: str = Form(...),
+        file: UploadFile = File(...)
 ):
     try:
         if not file:
@@ -134,6 +137,7 @@ async def upload_only(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
+
 # 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
 @app.post("/api/get_user_data")
 async def get_user_data(email: str = Form(...)):
@@ -167,6 +171,7 @@ async def read_data(tablename: str = Form(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading table data: {e}")
+
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
 @app.post("/api/delete_selected_tables")
@@ -764,7 +769,7 @@ async def missing_data() -> JSONResponse:
             json.dump({'data': html_df}, fp, indent=4)
 
         return JSONResponse(
-            content={"df": html_df,"summary": summary},
+            content={"df": html_df, "summary": summary},
             status_code=200
         )
 
@@ -959,7 +964,7 @@ def serialize_datetime(obj):
     raise TypeError("Type not serializable")
 
 
-#8.1 Models related apis:
+# 8.1 Models related apis:
 @app.post("/api/models")
 async def models(input: ModelRequest):
     try:
@@ -1008,7 +1013,7 @@ async def models(input: ModelRequest):
         raise HTTPException(500, str(e))
 
 
-#Model predict for Random forest
+# Model predict for Random forest
 @app.post("/api/model_predict")
 async def model_predict(request: Request):
     try:
@@ -1103,6 +1108,7 @@ async def model_predict(request: Request):
             detail="Prediction failed",
             headers={"X-Error-Details": str(e)}
         )
+
 
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
 @app.post("/api/ai_bot")
@@ -1688,7 +1694,7 @@ def check_data_frequency(train):
     data_freq = {'D': 'Days', 'W': 'Weeks', "H": "Hours", "Q": "Quarters", 'A': 'Years'}
     m = pd.infer_freq(train.index)
     if m in ['15T', '30T', "H", "D", "W", "M", "Q", "A"]:
-        print("Date Frequency is",m)
+        print("Date Frequency is", m)
         return data_freq[m]
     else:
         print('Unsupported frequency')
@@ -1706,7 +1712,7 @@ def train_models(df, target_col):
         trend = detect_trend(train)
         print("Trend is", trend)
         seasonality = detect_seasonality(train)
-        print("Seasonality is",seasonality)
+        print("Seasonality is", seasonality)
 
         best_model = None
         best_error = float('inf')
@@ -3216,6 +3222,7 @@ def generate_data_code(prompt_eng):
 
 from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
 
+
 def simulate_and_format_with_llm(
         code_to_simulate: str,
         dataframe: pd.DataFrame
@@ -3317,6 +3324,169 @@ def clean_json_response(response_text):
     except Exception as e:
         print(f"Error cleaning JSON: {e}")
         return None
+
+
+# Report related apis like sending and saving and sending.
+# Save report api
+
+# AWS/S3 configuration with your bucket and region
+S3_BUCKET = "akio-report-data"
+S3_REGION = "ap-southeast-1"
+s3_client = boto3.client("s3",
+                         aws_access_key_id=os.getenv("REACT_APP_AWS_ACCESS_KEY_ID"),
+                         aws_secret_access_key=os.getenv("REACT_APP_AWS_SECRET_ACCESS_KEY"),
+                         region_name=S3_REGION)
+
+
+def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
+    """
+    Uploads file to S3 bucket and returns the public URL.
+    """
+    contents = file.file.read()
+    s3_client.put_object(Bucket=bucket, Key=key, Body=contents, ContentType=file.content_type)
+    # Construct the S3 object URL for Singapore region
+    return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"
+
+def serialize_report(report: dict) -> dict:
+    """Convert datetime objects to ISO format strings in a report dict."""
+    for key in ['created_at', 'updated_at']:
+        if key in report and isinstance(report[key], datetime):
+            report[key] = report[key].isoformat()
+    return report
+
+
+@app.post("/api/save_report")
+async def save_report(
+    email: str = Form(...),
+    pdf_file: UploadFile = File(...)
+) -> JSONResponse:
+    """
+    Upload a PDF file to S3 and save its URL in the database with the user’s email.
+    """
+    try:
+        # Validate file content type
+        if pdf_file.content_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+        # Generate unique key for S3
+        safe_email = email.replace("@", "_at_").replace(".", "_dot_")
+        unique_filename = f"reports/{safe_email}/{uuid.uuid4().hex}.pdf"
+        print(f"Generated S3 key: {unique_filename}")
+
+        # Upload file to S3
+        try:
+            s3_url = upload_file_to_s3(pdf_file, S3_BUCKET, unique_filename)
+        except Exception as s3exc:
+            raise HTTPException(status_code=500, detail=f"S3 upload failed: {s3exc}")
+
+        print(f"S3_url: {s3_url}")
+
+        # Insert record in DB and serialize output
+        result = db.insert_report(email, s3_url)
+        result = serialize_report(result) if result else {}
+
+        return JSONResponse(content={"status": "success", "result": result, "pdf_url": s3_url})
+
+    except HTTPException as he:
+        raise he
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error in save_report: {exc}")
+
+
+@app.post("/api/get_reports_by_email")
+async def get_reports_with_email(
+    email: str = Form(...)
+) -> JSONResponse:
+    """
+    Retrieve all saved reports for a given email.
+    """
+    try:
+        reports = db.get_report_by_email(email)  # List[Dict], each dict contains url, timestamps, etc.
+
+        if not reports:
+            return JSONResponse(content=[])
+
+        # Serialize datetime fields in all reports
+        serialized_reports = [serialize_report(r) for r in reports]
+
+        return JSONResponse(content=serialized_reports)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/delete_report_by_id")
+async def delete_report_by_id(
+    email: str = Form(...),
+    report_id: int = Form(...)
+) -> JSONResponse:
+    """
+    Delete a specific report by its ID and the associated email.
+    """
+    try:
+        result = db.delete_user_report_by_id(email, report_id)
+        return JSONResponse(content={"status": result})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+#Email report to the user
+@app.post("/api/email_report")
+async def email_report(
+        email: str = Form(...),
+        report_ids_str: Optional[str] = Form(None)  # Accept comma-separated string
+) -> JSONResponse:
+    try:
+        if report_ids_str:
+            # Parse comma-separated string into list of ints
+            report_ids = [int(rid.strip()) for rid in report_ids_str.split(",") if rid.strip()]
+            reports = db.get_reports_by_ids_and_email(email, report_ids)
+        else:
+            reports = db.get_report_by_email(email)
+
+        if not reports:
+            raise HTTPException(
+                status_code=404,
+                detail="No reports found for this email with specified report IDs."
+            )
+
+        msg = MIMEMultipart()
+        msg['Subject'] = 'Selected Graph Reports'
+        msg['From'] = os.getenv("EMAIL_USER")
+        msg['To'] = email
+        msg.attach(MIMEText("Please find attached the selected PDF report(s).", 'plain'))
+
+        for i, report in enumerate(reports, start=1):
+            pdf_url = report.get("url")
+            if not pdf_url:
+                print(f"Skipped report {i}: no URL found")
+                continue
+
+            try:
+                response = requests.get(pdf_url)
+                response.raise_for_status()
+                pdf_content = response.content
+
+                pdf_part = MIMEApplication(pdf_content, _subtype="pdf")
+                pdf_part.add_header('Content-Disposition', 'attachment', filename=f"report_{report.get('id', i)}.pdf")
+                msg.attach(pdf_part)
+            except Exception as download_err:
+                print(f"Failed to download or attach report {i} from {pdf_url}: {download_err}")
+                continue
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
+            server.send_message(msg)
+
+        return JSONResponse(content={"status": "Email sent successfully."})
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 if __name__ == "__main__":
