@@ -95,88 +95,44 @@ app.include_router(sla_router)
 
 # 1.File upload only-------- It is  useful for uploading the file
 @app.post("/api/upload_only")
-async def upload_and_store_data(
-        request: Request,
-        mail: str = Form(...),
-        file: UploadFile = File(...)
+async def upload_only(
+    mail: str = Form(...),
+    file: UploadFile = File(...)
 ):
     try:
-        print("[DEBUG] Received a request with method: POST")  # Debug statement
-
         if not file:
-            raise HTTPException(status_code=400, detail="No files uploaded")
+            raise HTTPException(status_code=400, detail="No file uploaded")
 
         file_name = file.filename
-        file_extension = os.path.splitext(file_name)[1].lower()  # Extract file extension
+        file_extension = os.path.splitext(file_name)[1].lower()
 
-        try:
-            # Create a directory for storing uploaded files
-            upload_dir = "uploads"
-            os.makedirs(upload_dir, exist_ok=True)
+        # Read file content into a DataFrame
+        content = await file.read()
+        if file_extension == ".csv":
+            df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+        elif file_extension in [".xls", ".xlsx"]:
+            # Save to temp file because read_excel reads from file path
+            temp_path = f"temp{file_extension}"
+            with open(temp_path, "wb") as temp_file:
+                temp_file.write(content)
+            df = pd.read_excel(temp_path)
+            os.remove(temp_path)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Only CSV or Excel allowed")
 
-            # Save the uploaded file locally
-            local_file_path = os.path.join(upload_dir, file_name)
-            with open(local_file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
-            # Process the uploaded file based on its extension
-            if file_extension == ".csv":
-                print("[DEBUG] Processing as CSV file...")  # Debug statement
-                file.file.seek(0)  # Reset file pointer
-                content = (await file.read()).decode("utf-8")
-                csv_data = io.StringIO(content)
-                df = pd.read_csv(csv_data)
-                print("[DEBUG] CSV parsed successfully. DataFrame shape:", df.shape)  # Debug statement
+        # Insert or update in database ONLY (no local save)
+        results = db.insert_or_update(mail, df, file_name)
 
-            elif file_extension in [".xls", ".xlsx"]:
-                print("[DEBUG] Processing as Excel file...")  # Debug statement
-                df = pd.read_excel(local_file_path)  # Read from the saved local file
-                print("[DEBUG] Excel parsed successfully. DataFrame shape:", df.shape)  # Debug statement
-
-            else:
-                file.file.seek(0)  # Reset file pointer
-                content = (await file.read()).decode("utf-8")
-                csv_data = io.StringIO(content)
-                df = pd.read_csv(csv_data)
-
-            # Validate the DataFrame
-            if df.empty:
-                raise HTTPException(status_code=400, detail="Uploaded file contains no data")
-
-            csv_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.csv').lower())
-            df.to_csv(csv_file_path, index=False)
-
-            excel_file_path = os.path.join(upload_dir, file_name.replace(file_extension, '.xlsx').lower())
-            df.to_excel(excel_file_path, index=False, engine='openpyxl')
-
-            df.to_csv('data.csv', index=False)
-            df.to_excel('data1.xlsx', index=False, engine='openpyxl')
-
-            print("upload_and_store_data........", df.head(3))
-
-            # Store data directly into the database
-            print("[DEBUG] Storing data into the database...")  # Debug statement
-            results = db.insert_or_update(mail, df, file_name)  # Insert into MongoDB
-            print("[DEBUG] Database operation results:", results)  # Debug statement
-
-            # Prepare response
-            response_data = {
-                "message": "File uploaded, stored locally, and data saved to the database successfully",
-                "upload_status": results,
-                "preview": df.head(10).to_dict(orient="records"),
-            }
-
-            return JSONResponse(content=response_data)
-
-        except Exception as e:
-            print("[ERROR] Failed to process and store file:", str(e))  # Debug statement
-            raise HTTPException(status_code=500, detail=f"Failed to process and store file: {str(e)}")
+        return JSONResponse(content={
+            "message": "File uploaded and data saved to database successfully",
+            "db_insert_result": results
+        })
 
     except Exception as e:
-        print("[ERROR] An error occurred:", str(e))  # Debug statement
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 # 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
 @app.post("/api/get_user_data")
