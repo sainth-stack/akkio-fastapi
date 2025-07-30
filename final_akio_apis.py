@@ -1541,13 +1541,15 @@ def arima_train(data, target_col, bot_query=None):
         results = {}
         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
             for col in data.columns:
+                print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
                 if data.dtypes[col] == 'object':
                     try:
-                        # Attempt to convert column to datetime
-                        pd.to_datetime(data[col])
+                        _ = pd.to_datetime(data[col])
                         date_column = col
+                        print(f"Detected datetime column: {col}")
                         break
-                    except (ValueError, TypeError):
+                    except Exception as e:
+                        print(f"Failed to parse column '{col}' as datetime: {e}")
                         continue
             if not date_column:
                 raise ValueError("No datetime column found in the dataset.")
