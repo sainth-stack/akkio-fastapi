@@ -1531,26 +1531,31 @@ def make_serializable(obj):
         return [make_serializable(v) for v in obj]
     return obj
 
-
 def detect_and_parse_date_column(data: pd.DataFrame, threshold: float = 0.7):
+
     def try_parse_dates(column):
         for dayfirst in [False, True]:
-            parsed = pd.to_datetime(column, infer_datetime_format=True, errors='coerce', dayfirst=dayfirst)
+            parsed = pd.to_datetime(column, errors='coerce', dayfirst=dayfirst)
             valid_ratio = parsed.notna().mean()
             if valid_ratio >= threshold:
                 return parsed, dayfirst
         return None, None
 
-    for col in data.columns:
+    # Consider only columns with dtype object
+    candidate_columns = [col for col in data.columns if data[col].dtype == 'object']
+
+    if not candidate_columns:
+        raise ValueError("No candidate columns of dtype 'object' found for datetime detection.")
+
+    for col in candidate_columns:
         print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
         parsed_dates, used_dayfirst = try_parse_dates(data[col])
         if parsed_dates is not None:
-            print(
-                f"Detected datetime column: '{col}' with dayfirst={used_dayfirst} and {parsed_dates.notna().mean() * 100:.2f}% valid dates")
+            print(f"Detected datetime column: '{col}' with dayfirst={used_dayfirst} "
+                  f"and {parsed_dates.notna().mean()*100:.2f}% valid dates")
             return col, parsed_dates
 
     raise ValueError("No datetime column found in the dataset.")
-
 
 def arima_train(data, target_col, bot_query=None):
     try:
@@ -1558,14 +1563,13 @@ def arima_train(data, target_col, bot_query=None):
         print("Column dtypes:\n", data.dtypes)
         results = {}
 
-        # Check if model directory exists to determine training need
         model_dir = os.path.join("models", 'Arima', target_col)
         if not os.path.exists(model_dir):
-            # Detect and parse date column robustly
+            # Detect date column only from object type columns
             date_column, parsed_dates = detect_and_parse_date_column(data)
             print(f"Using detected date column: {date_column}")
 
-            # Replace original column with parsed datetime
+            # Replace original column with parsed datetime and set as index
             data[date_column] = parsed_dates
             data.set_index(date_column, inplace=True)
 
@@ -1575,10 +1579,9 @@ def arima_train(data, target_col, bot_query=None):
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
 
-                train_frequency = check_data_frequency(data_actual)  # You define this
-                train_models(data_actual, target_col)  # You define this
+                train_frequency = check_data_frequency(data_actual)  # your existing function
+                train_models(data_actual, target_col)               # your existing function
 
-                # Save frequency info as JSON
                 os.makedirs(model_dir, exist_ok=True)
                 with open(os.path.join(model_dir, f"{target_col}_results.json"), 'w') as fp:
                     json.dump({'data_freq': train_frequency}, fp, indent=4)
@@ -1591,7 +1594,7 @@ def arima_train(data, target_col, bot_query=None):
             periods = bot_query.get('forecast_horizon')
             model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
             print("model_path", model_path)
-            loaded_model = load_forecast_model(model_path)  # You define this
+            loaded_model = load_forecast_model(model_path)  # your existing function
             freq_map = {
                 'hours': 'H',
                 'days': 'D',
@@ -1601,21 +1604,20 @@ def arima_train(data, target_col, bot_query=None):
                 'years': 'YS'
             }
 
-            forecasted_data = forecast(loaded_model, periods, freq_map.get(frequency))  # You define this
+            forecasted_data = forecast(loaded_model, periods, freq_map.get(frequency))  # your existing function
             print(forecasted_data)
 
-            result_graph = plot_graph(forecasted_data)  # You define this
+            result_graph = plot_graph(forecasted_data)  # your existing function
 
             print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
             return True, forecasted_data, result_graph
 
-        # If no bot_query, just return True for training done
+        # if no forecasting requested, return True signaling training done
         return True, None, None
 
     except Exception as e:
         print("ARIMA error:", e)
         return False, pd.DataFrame(), ""
-
 
 def load_forecast_model(model_path):
     if os.path.exists(model_path):
