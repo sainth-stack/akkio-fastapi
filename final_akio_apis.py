@@ -14,7 +14,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
 from pathlib import Path
-
+from dateutil.parser import parse
 import boto3
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
@@ -1532,85 +1532,103 @@ def make_serializable(obj):
     return obj
 
 
+def parse_mixed_dates(date_series):
+    """Parse a series containing mixed date formats"""
+    parsed_dates = []
+    for date_str in date_series:
+        try:
+            # Try parsing with dateutil's flexible parser
+            parsed_date = parse(str(date_str), dayfirst=False, yearfirst=False)
+            parsed_dates.append(parsed_date)
+        except Exception as e:
+            print(f"Could not parse date: {date_str} - {e}")
+            parsed_dates.append(pd.NaT)  # Not-a-Time for invalid dates
+
+    return pd.to_datetime(parsed_dates)
+
+
 def arima_train(data, target_col, bot_query=None):
     try:
         print('ArimaTrain')
         print("Column dtypes:\n", data.dtypes)
-        # Identify date column by checking for datetime type
+
+        # Identify date column
         date_column = None
         results = {}
 
         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
             for col in data.columns:
-                print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
+                print(f"Checking column '{col}' for dates")
                 if data.dtypes[col] == 'object':
                     try:
-                        # Try multiple common date formats
-                        common_formats = [
-                            '%m/%d/%Y',  # 1/13/2020
-                            '%d/%m/%Y',  # 13/1/2020
-                            '%Y-%m-%d',  # 2020-01-13
-                            '%m-%d-%Y',  # 01-13-2020
-                            '%d-%m-%Y',  # 13-01-2020
-                            '%Y/%m/%d',  # 2020/01/13
-                            '%b %d, %Y',  # Jan 13, 2020
-                            '%d %b %Y',  # 13 Jan 2020
-                            '%B %d, %Y',  # January 13, 2020
-                            '%d %B %Y',  # 13 January 2020
-                            '%Y%m%d',  # 20200113
-                            '%m%d%Y',  # 01132020
-                            '%d%m%Y'  # 13012020
-                        ]
-
-                        # First try with strict format checking
-                        for fmt in common_formats:
-                            try:
-                                data[col] = pd.to_datetime(data[col], format=fmt, exact=True)
-                                date_column = col
-                                print(f"Successfully parsed column '{col}' with format '{fmt}'")
-                                break
-                            except:
-                                continue
-
-                        # If none of the common formats worked, try pandas' automatic inference
-                        if not date_column:
-                            print(f"Trying automatic parsing for column '{col}'")
-                            data[col] = pd.to_datetime(data[col], infer_datetime_format=True)
+                        # First check if it's already datetime
+                        if pd.api.types.is_datetime64_any_dtype(data[col]):
                             date_column = col
-                            print(f"Detected datetime column: {col} using automatic parsing")
+                            break
 
-                        if date_column:
+                        # Try parsing with mixed formats handler
+                        print(f"Attempting to parse mixed formats in column '{col}'")
+                        data[col] = parse_mixed_dates(data[col])
+
+                        # Check if we successfully parsed any dates
+                        if not data[col].isnull().all():
+                            date_column = col
+                            print(f"Successfully parsed datetime column: {col}")
                             break
 
                     except Exception as e:
-                        print(f"Failed to parse column '{col}' as datetime: {e}")
+                        print(f"Error parsing column '{col}': {e}")
                         continue
 
             if not date_column:
-                raise ValueError("No datetime column found in the dataset.")
+                raise ValueError("No datetime column could be parsed from the dataset")
 
-            print(f"Using datetime column: {date_column}")
-            # Set the date column as index
+            # Handle any remaining NaT values (invalid dates)
+            if data[date_column].isnull().any():
+                print(f"Warning: {data[date_column].isnull().sum()} invalid dates found")
+                data = data.dropna(subset=[date_column])
+
+            # Standardize the format and set as index
+            print(f"Standardizing datetime format for column '{date_column}'")
+            data[date_column] = pd.to_datetime(data[date_column])
             data.set_index(date_column, inplace=True)
+
+            # Sort by datetime index
+            data = data.sort_index()
 
             try:
                 data_actual = data[[target_col]]
                 data_actual.reset_index(inplace=True)
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
+
+                # Check for frequency and handle any irregularities
                 train_frequency = check_data_frequency(data_actual)
+
+                # Ensure no duplicate indices
+                if data_actual.index.duplicated().any():
+                    print("Warning: Duplicate datetime indices found - aggregating")
+                    data_actual = data_actual.groupby(data_actual.index).mean()
 
                 train_models(data_actual, target_col)
 
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
-                    json.dump({'data_freq': train_frequency}, fp, indent=4)
+                    json.dump({
+                        'data_freq': train_frequency,
+                        'start_date': str(data_actual.index.min()),
+                        'end_date': str(data_actual.index.max())
+                    }, fp, indent=4)
+
             except Exception as e:
                 print(f"Error during model training: {e}")
+                raise
 
+        # Forecasting logic remains the same
         frequency = bot_query['time_unit']
         periods = bot_query['forecast_horizon']
         model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
         print("model_path", model_path)
+
         loaded_model = load_forecast_model(model_path)
         freq_map = {
             'hours': 'H',
@@ -1632,7 +1650,6 @@ def arima_train(data, target_col, bot_query=None):
     except Exception as e:
         print("ARIMA error:", e)
         return False, pd.DataFrame(), ""
-
 
 def load_forecast_model(model_path):
     if os.path.exists(model_path):
