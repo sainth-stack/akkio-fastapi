@@ -1539,23 +1539,58 @@ def arima_train(data, target_col, bot_query=None):
         # Identify date column by checking for datetime type
         date_column = None
         results = {}
+
         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
             for col in data.columns:
                 print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
                 if data.dtypes[col] == 'object':
                     try:
-                        _ = pd.to_datetime(data[col])
-                        date_column = col
-                        print(f"Detected datetime column: {col}")
-                        break
+                        # Try multiple common date formats
+                        common_formats = [
+                            '%m/%d/%Y',  # 1/13/2020
+                            '%d/%m/%Y',  # 13/1/2020
+                            '%Y-%m-%d',  # 2020-01-13
+                            '%m-%d-%Y',  # 01-13-2020
+                            '%d-%m-%Y',  # 13-01-2020
+                            '%Y/%m/%d',  # 2020/01/13
+                            '%b %d, %Y',  # Jan 13, 2020
+                            '%d %b %Y',  # 13 Jan 2020
+                            '%B %d, %Y',  # January 13, 2020
+                            '%d %B %Y',  # 13 January 2020
+                            '%Y%m%d',  # 20200113
+                            '%m%d%Y',  # 01132020
+                            '%d%m%Y'  # 13012020
+                        ]
+
+                        # First try with strict format checking
+                        for fmt in common_formats:
+                            try:
+                                data[col] = pd.to_datetime(data[col], format=fmt, exact=True)
+                                date_column = col
+                                print(f"Successfully parsed column '{col}' with format '{fmt}'")
+                                break
+                            except:
+                                continue
+
+                        # If none of the common formats worked, try pandas' automatic inference
+                        if not date_column:
+                            print(f"Trying automatic parsing for column '{col}'")
+                            data[col] = pd.to_datetime(data[col], infer_datetime_format=True)
+                            date_column = col
+                            print(f"Detected datetime column: {col} using automatic parsing")
+
+                        if date_column:
+                            break
+
                     except Exception as e:
                         print(f"Failed to parse column '{col}' as datetime: {e}")
                         continue
+
             if not date_column:
                 raise ValueError("No datetime column found in the dataset.")
-            print(date_column)
+
+            print(f"Using datetime column: {date_column}")
             # Set the date column as index
-            data[date_column] = pd.to_datetime(data[date_column])
             data.set_index(date_column, inplace=True)
 
             try:
@@ -1569,9 +1604,8 @@ def arima_train(data, target_col, bot_query=None):
 
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({'data_freq': train_frequency}, fp, indent=4)
-                # result_graph = plot_graph(results, os.path.join('models', 'arima', target_col))
             except Exception as e:
-                print(e)
+                print(f"Error during model training: {e}")
 
         frequency = bot_query['time_unit']
         periods = bot_query['forecast_horizon']
