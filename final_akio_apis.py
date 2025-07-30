@@ -1531,46 +1531,144 @@ def make_serializable(obj):
         return [make_serializable(v) for v in obj]
     return obj
 
-def detect_and_parse_date_column(data: pd.DataFrame, threshold: float = 0.7):
 
-    def try_parse_dates(column):
-        for dayfirst in [False, True]:
-            parsed = pd.to_datetime(column, errors='coerce', dayfirst=dayfirst)
-            valid_ratio = parsed.notna().mean()
-            if valid_ratio >= threshold:
-                return parsed, dayfirst
-        return None, None
+def find_date_column_robust(data):
+    """Ultra-robust date column detection for ANY format"""
 
-    # Consider only columns with dtype object
-    candidate_columns = [col for col in data.columns if data[col].dtype == 'object']
+    def can_parse_as_date(series):
+        """Test if a series can be parsed as dates"""
+        sample = series.dropna().head(5)  # Test first 5 non-null values
+        if len(sample) == 0:
+            return False
 
-    if not candidate_columns:
-        raise ValueError("No candidate columns of dtype 'object' found for datetime detection.")
+        success_count = 0
+        for val in sample:
+            try:
+                # Try multiple parsing methods
+                val_str = str(val).strip()
 
-    for col in candidate_columns:
-        print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
-        parsed_dates, used_dayfirst = try_parse_dates(data[col])
-        if parsed_dates is not None:
-            print(f"Detected datetime column: '{col}' with dayfirst={used_dayfirst} "
-                  f"and {parsed_dates.notna().mean()*100:.2f}% valid dates")
-            return col, parsed_dates
+                # Method 1: Auto-infer (works for most formats)
+                try:
+                    pd.to_datetime(val_str, infer_datetime_format=True)
+                    success_count += 1
+                    continue
+                except:
+                    pass
 
-    raise ValueError("No datetime column found in the dataset.")
+                # Method 2: With dayfirst (for DD/MM/YYYY)
+                try:
+                    pd.to_datetime(val_str, dayfirst=True)
+                    success_count += 1
+                    continue
+                except:
+                    pass
+
+                # Method 3: Force coercion
+                try:
+                    result = pd.to_datetime(val_str, errors='coerce')
+                    if pd.notna(result):
+                        success_count += 1
+                except:
+                    pass
+
+            except:
+                continue
+
+        # Return True if at least 80% of samples parsed successfully
+        return success_count >= len(sample) * 0.8
+
+    # Check common date column names first
+    date_names = ['date', 'Date', 'DATE', 'datetime', 'DateTime', 'timestamp', 'time', 'Time']
+    for name in date_names:
+        if name in data.columns and data.dtypes[name] == 'object':
+            if can_parse_as_date(data[name]):
+                return name
+
+    # Check all object columns
+    for col in data.columns:
+        if data.dtypes[col] == 'object':
+            if can_parse_as_date(data[col]):
+                return col
+
+    return None
+
+
+def parse_date_column_robust(data, date_column):
+    """Ultra-robust date parsing for ANY format"""
+
+    def try_parse_methods(series):
+        """Try multiple parsing methods until one works"""
+
+        # Method 1: Auto-infer format
+        try:
+            return pd.to_datetime(series, infer_datetime_format=True)
+        except:
+            pass
+
+        # Method 2: With dayfirst=True (for DD/MM/YYYY formats)
+        try:
+            return pd.to_datetime(series, dayfirst=True)
+        except:
+            pass
+
+        # Method 3: With dayfirst=False (for MM/DD/YYYY formats)
+        try:
+            return pd.to_datetime(series, dayfirst=False)
+        except:
+            pass
+
+        # Method 4: Coerce errors (converts bad dates to NaT)
+        try:
+            result = pd.to_datetime(series, errors='coerce')
+            # Check if we got reasonable results (not all NaT)
+            if result.notna().sum() > len(result) * 0.5:  # At least 50% valid
+                return result
+        except:
+            pass
+
+        # Method 5: Try common formats explicitly
+        common_formats = [
+            '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d',
+            '%m-%d-%Y', '%d-%m-%Y', '%Y-%m-%d',
+            '%m.%d.%Y', '%d.%m.%Y', '%Y.%m.%d',
+            '%m/%d/%y', '%d/%m/%y', '%y/%m/%d',
+            '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S'
+        ]
+
+        for fmt in common_formats:
+            try:
+                return pd.to_datetime(series, format=fmt)
+            except:
+                continue
+
+        # If all methods fail, raise an error
+        raise ValueError(f"Unable to parse dates in column '{date_column}'. Sample values: {series.head(3).tolist()}")
+
+    return try_parse_methods(data[date_column])
+
 
 def arima_train(data, target_col, bot_query=None):
     try:
         print('ArimaTrain')
         print("Column dtypes:\n", data.dtypes)
+        # Identify date column by checking for datetime type
+        date_column = None
         results = {}
+        if not os.path.exists(os.path.join("models", 'Arima', target_col)):
+            date_column = find_date_column_robust(data)
+            if not date_column:
+                # Enhanced error message with sample data
+                print("DEBUG: Unable to find date column. Data info:")
+                for col in data.columns:
+                    if data.dtypes[col] == 'object':
+                        sample_vals = data[col].dropna().head(3).tolist()
+                        print(f"  {col}: {sample_vals}")
+                raise ValueError("No datetime column found in the dataset.")
 
-        model_dir = os.path.join("models", 'Arima', target_col)
-        if not os.path.exists(model_dir):
-            # Detect date column only from object type columns
-            date_column, parsed_dates = detect_and_parse_date_column(data)
-            print(f"Using detected date column: {date_column}")
+            print(f"Found date column: {date_column}")
 
-            # Replace original column with parsed datetime and set as index
-            data[date_column] = parsed_dates
+            # Robust date parsing
+            data[date_column] = parse_date_column_robust(data, date_column)
             data.set_index(date_column, inplace=True)
 
             try:
@@ -1578,46 +1676,42 @@ def arima_train(data, target_col, bot_query=None):
                 data_actual.reset_index(inplace=True)
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
+                train_frequency = check_data_frequency(data_actual)
 
-                train_frequency = check_data_frequency(data_actual)  # your existing function
-                train_models(data_actual, target_col)               # your existing function
+                train_models(data_actual, target_col)
 
-                os.makedirs(model_dir, exist_ok=True)
-                with open(os.path.join(model_dir, f"{target_col}_results.json"), 'w') as fp:
+                with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({'data_freq': train_frequency}, fp, indent=4)
-
+                # result_graph = plot_graph(results, os.path.join('models', 'arima', target_col))
             except Exception as e:
-                print("Training inner exception:", e)
+                print(e)
 
-        if bot_query:
-            frequency = bot_query.get('time_unit')
-            periods = bot_query.get('forecast_horizon')
-            model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
-            print("model_path", model_path)
-            loaded_model = load_forecast_model(model_path)  # your existing function
-            freq_map = {
-                'hours': 'H',
-                'days': 'D',
-                'weeks': 'W',
-                'months': 'MS',
-                'quarters': 'QS',
-                'years': 'YS'
-            }
+        frequency = bot_query['time_unit']
+        periods = bot_query['forecast_horizon']
+        model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
+        print("model_path", model_path)
+        loaded_model = load_forecast_model(model_path)
+        freq_map = {
+            'hours': 'H',
+            'days': 'D',
+            'weeks': 'W',
+            'months': 'MS',
+            'quarters': 'QS',
+            'years': 'YS'
+        }
 
-            forecasted_data = forecast(loaded_model, periods, freq_map.get(frequency))  # your existing function
-            print(forecasted_data)
+        forecasted_data = forecast(loaded_model, periods, freq_map[frequency])
+        print(forecasted_data)
 
-            result_graph = plot_graph(forecasted_data)  # your existing function
+        result_graph = plot_graph(forecasted_data)
 
-            print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
-            return True, forecasted_data, result_graph
-
-        # if no forecasting requested, return True signaling training done
-        return True, None, None
+        print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
+        return True, forecasted_data, result_graph
 
     except Exception as e:
         print("ARIMA error:", e)
         return False, pd.DataFrame(), ""
+
 
 def load_forecast_model(model_path):
     if os.path.exists(model_path):
