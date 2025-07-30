@@ -1532,30 +1532,41 @@ def make_serializable(obj):
     return obj
 
 
+def detect_and_parse_date_column(data: pd.DataFrame, threshold: float = 0.7):
+    def try_parse_dates(column):
+        for dayfirst in [False, True]:
+            parsed = pd.to_datetime(column, infer_datetime_format=True, errors='coerce', dayfirst=dayfirst)
+            valid_ratio = parsed.notna().mean()
+            if valid_ratio >= threshold:
+                return parsed, dayfirst
+        return None, None
+
+    for col in data.columns:
+        print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
+        parsed_dates, used_dayfirst = try_parse_dates(data[col])
+        if parsed_dates is not None:
+            print(
+                f"Detected datetime column: '{col}' with dayfirst={used_dayfirst} and {parsed_dates.notna().mean() * 100:.2f}% valid dates")
+            return col, parsed_dates
+
+    raise ValueError("No datetime column found in the dataset.")
+
+
 def arima_train(data, target_col, bot_query=None):
     try:
         print('ArimaTrain')
         print("Column dtypes:\n", data.dtypes)
-        # Identify date column by checking for datetime type
-        date_column = None
         results = {}
-        if not os.path.exists(os.path.join("models", 'Arima', target_col)):
-            for col in data.columns:
-                print(f"Trying to parse column '{col}' with dtype {data.dtypes[col]}")
-                if data.dtypes[col] == 'object':
-                    try:
-                        _ = pd.to_datetime(data[col])
-                        date_column = col
-                        print(f"Detected datetime column: {col}")
-                        break
-                    except Exception as e:
-                        print(f"Failed to parse column '{col}' as datetime: {e}")
-                        continue
-            if not date_column:
-                raise ValueError("No datetime column found in the dataset.")
-            print(date_column)
-            # Set the date column as index
-            data[date_column] = pd.to_datetime(data[date_column])
+
+        # Check if model directory exists to determine training need
+        model_dir = os.path.join("models", 'Arima', target_col)
+        if not os.path.exists(model_dir):
+            # Detect and parse date column robustly
+            date_column, parsed_dates = detect_and_parse_date_column(data)
+            print(f"Using detected date column: {date_column}")
+
+            # Replace original column with parsed datetime
+            data[date_column] = parsed_dates
             data.set_index(date_column, inplace=True)
 
             try:
@@ -1563,37 +1574,43 @@ def arima_train(data, target_col, bot_query=None):
                 data_actual.reset_index(inplace=True)
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
-                train_frequency = check_data_frequency(data_actual)
 
-                train_models(data_actual, target_col)
+                train_frequency = check_data_frequency(data_actual)  # You define this
+                train_models(data_actual, target_col)  # You define this
 
-                with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
+                # Save frequency info as JSON
+                os.makedirs(model_dir, exist_ok=True)
+                with open(os.path.join(model_dir, f"{target_col}_results.json"), 'w') as fp:
                     json.dump({'data_freq': train_frequency}, fp, indent=4)
-                # result_graph = plot_graph(results, os.path.join('models', 'arima', target_col))
+
             except Exception as e:
-                print(e)
+                print("Training inner exception:", e)
 
-        frequency = bot_query['time_unit']
-        periods = bot_query['forecast_horizon']
-        model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
-        print("model_path", model_path)
-        loaded_model = load_forecast_model(model_path)
-        freq_map = {
-            'hours': 'H',
-            'days': 'D',
-            'weeks': 'W',
-            'months': 'MS',
-            'quarters': 'QS',
-            'years': 'YS'
-        }
+        if bot_query:
+            frequency = bot_query.get('time_unit')
+            periods = bot_query.get('forecast_horizon')
+            model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
+            print("model_path", model_path)
+            loaded_model = load_forecast_model(model_path)  # You define this
+            freq_map = {
+                'hours': 'H',
+                'days': 'D',
+                'weeks': 'W',
+                'months': 'MS',
+                'quarters': 'QS',
+                'years': 'YS'
+            }
 
-        forecasted_data = forecast(loaded_model, periods, freq_map[frequency])
-        print(forecasted_data)
+            forecasted_data = forecast(loaded_model, periods, freq_map.get(frequency))  # You define this
+            print(forecasted_data)
 
-        result_graph = plot_graph(forecasted_data)
+            result_graph = plot_graph(forecasted_data)  # You define this
 
-        print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
-        return True, forecasted_data, result_graph
+            print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
+            return True, forecasted_data, result_graph
+
+        # If no bot_query, just return True for training done
+        return True, None, None
 
     except Exception as e:
         print("ARIMA error:", e)
