@@ -1790,7 +1790,7 @@ def train_arima(train, test):
     print("Arima Started training")
     model = ARIMA(train['value'], order=(1, 1, 1)).fit()
     pred = model.predict(start=test.index[0], end=test.index[-1])
-    error = mean_squared_error(test['value'], pred, squared=False)
+    error = root_mean_squared_error(test['value'], pred, squared=False)
     print("Returning the values by Arima")
     return model, error
 
