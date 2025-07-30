@@ -1803,7 +1803,7 @@ def train_prophet(train, test):
 
     future = pd.DataFrame({'ds': test.index})
     forecast = model.predict(future)
-    error = mean_squared_error(test['value'], forecast['yhat'])
+    error = mean_squared_error(test['value'], forecast['yhat'],squared=False)
     print("Returning the parameters from the Prophet model")
     return model, error
 
