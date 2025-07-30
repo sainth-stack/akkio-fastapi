@@ -36,7 +36,6 @@ from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -1790,7 +1789,7 @@ def train_arima(train, test):
     print("Arima Started training")
     model = ARIMA(train['value'], order=(1, 1, 1)).fit()
     pred = model.predict(start=test.index[0], end=test.index[-1])
-    error = root_mean_squared_error(test['value'], pred, squared=False)
+    error = mean_squared_error(test['value'], pred, squared=False)
     print("Returning the values by Arima")
     return model, error
 
@@ -1804,7 +1803,7 @@ def train_prophet(train, test):
 
     future = pd.DataFrame({'ds': test.index})
     forecast = model.predict(future)
-    error = root_mean_squared_error(test['value'], forecast['yhat'])
+    error = mean_squared_error(test['value'], forecast['yhat'])
     print("Returning the parameters from the Prophet model")
     return model, error
 
