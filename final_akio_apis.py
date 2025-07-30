@@ -1803,7 +1803,7 @@ def train_prophet(train, test):
 
     future = pd.DataFrame({'ds': test.index})
     forecast = model.predict(future)
-    error = mean_squared_error(test['value'], forecast['yhat'],squared=False)
+    error = mean_squared_error(test['value'], forecast['yhat'], squared=False)
     print("Returning the parameters from the Prophet model")
     return model, error
 
@@ -3346,6 +3346,7 @@ def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
     # Construct the S3 object URL for Singapore region
     return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"
 
+
 def serialize_report(report: dict) -> dict:
     """Convert datetime objects to ISO format strings in a report dict."""
     for key in ['created_at', 'updated_at']:
@@ -3356,8 +3357,8 @@ def serialize_report(report: dict) -> dict:
 
 @app.post("/api/save_report")
 async def save_report(
-    email: str = Form(...),
-    pdf_file: UploadFile = File(...)
+        email: str = Form(...),
+        pdf_file: UploadFile = File(...)
 ) -> JSONResponse:
     """
     Upload a PDF file to S3 and save its URL in the database with the user’s email.
@@ -3394,7 +3395,7 @@ async def save_report(
 
 @app.post("/api/get_reports_by_email")
 async def get_reports_with_email(
-    email: str = Form(...)
+        email: str = Form(...)
 ) -> JSONResponse:
     """
     Retrieve all saved reports for a given email.
@@ -3416,8 +3417,8 @@ async def get_reports_with_email(
 
 @app.post("/api/delete_report_by_id")
 async def delete_report_by_id(
-    email: str = Form(...),
-    report_id: int = Form(...)
+        email: str = Form(...),
+        report_id: int = Form(...)
 ) -> JSONResponse:
     """
     Delete a specific report by its ID and the associated email.
@@ -3430,16 +3431,16 @@ async def delete_report_by_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-#Email report to the user
+# Email report to the user
 @app.post("/api/email_report")
 async def email_report(
         email: str = Form(...),
-        report_ids_str: Optional[str] = Form(None)  # Accept comma-separated string
+        report_ids: Optional[str] = Form(None)  # Accept comma-separated string
 ) -> JSONResponse:
     try:
-        if report_ids_str:
+        if report_ids:
             # Parse comma-separated string into list of ints
-            report_ids = [int(rid.strip()) for rid in report_ids_str.split(",") if rid.strip()]
+            report_ids = [int(rid.strip()) for rid in report_ids.split(",") if rid.strip()]
             reports = db.get_reports_by_ids_and_email(email, report_ids)
         else:
             reports = db.get_report_by_email(email)
