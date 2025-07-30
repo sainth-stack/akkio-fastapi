@@ -1840,12 +1840,24 @@ def train_models(df, target_col):
 
 def train_arima(train, test):
     print("Arima Started training")
-    model = ARIMA(train['value'], order=(1, 1, 1)).fit()
-    pred = model.predict(start=test.index[0], end=test.index[-1])
-    error = mean_squared_error(test['value'], pred, squared=False)
-    print("Returning the values by Arima")
-    return model, error
+    try:
+        # Fit ARIMA model
+        model = ARIMA(train['value'], order=(1, 1, 1)).fit()
+        pred = model.predict(start=test.index[0], end=test.index[-1])
 
+        # Calculate RMSE (handle different sklearn versions)
+        try:
+            # For newer sklearn versions
+            error = mean_squared_error(test['value'], pred, squared=False)
+        except TypeError:
+            # For older sklearn versions
+            error = np.sqrt(mean_squared_error(test['value'], pred))
+
+        print("ARIMA training completed successfully")
+        return model, error
+    except Exception as e:
+        print(f"Error in ARIMA training: {str(e)}")
+        raise
 
 # Train Prophet Model
 def train_prophet(train, test):
@@ -1856,10 +1868,13 @@ def train_prophet(train, test):
 
     future = pd.DataFrame({'ds': test.index})
     forecast = model.predict(future)
-    error = mean_squared_error(test['value'], forecast['yhat'], squared=False)
+
+    # Calculate RMSE (compatible with all sklearn versions)
+    mse = mean_squared_error(test['value'], forecast['yhat'])
+    error = np.sqrt(mse)  # Calculate RMSE manually
+
     print("Returning the parameters from the Prophet model")
     return model, error
-
 
 # Train XGBoost Model
 def train_xgboost(train, test):
@@ -1872,7 +1887,11 @@ def train_xgboost(train, test):
     model.fit(X_train, y_train)
     model.last_index_ = len(train) + len(test) - 1
     pred = model.predict(X_test)
-    error = mean_squared_error(test['value'], pred, squared=False)
+
+    # Calculate RMSE (compatible with all sklearn versions)
+    mse = mean_squared_error(test['value'], pred)
+    error = np.sqrt(mse)  # Calculate RMSE manually
+
     return model, error
 
 
@@ -1887,7 +1906,11 @@ def train_randomforest(train, test):
     model.fit(X_train, y_train)
     model.last_index_ = len(train) + len(test) - 1
     pred = model.predict(X_test)
-    error = mean_squared_error(test['value'], pred, squared=False)
+
+    # Calculate RMSE (compatible with all sklearn versions)
+    mse = mean_squared_error(test['value'], pred)
+    error = np.sqrt(mse)  # Calculate RMSE manually
+
     return model, error
 
 
