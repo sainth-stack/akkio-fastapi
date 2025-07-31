@@ -1252,7 +1252,7 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
         else:
             # Use full chat history as context for the LLM
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-mini",
                 messages=messages
             )
 
@@ -1361,7 +1361,7 @@ def extract_forecast_details_llm(prompt, column_names):
             """
         forecast_details = ''
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
@@ -1439,7 +1439,7 @@ def extract_forecast_details_rf(prompt, column_names):
 
         predict_details = ''
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
@@ -2814,7 +2814,7 @@ def extract_num_rows_from_prompt1(prompt: str, api_key: str) -> Optional[int]:
     """
     Extracts number of rows to generate using LLM-based semantic parsing only.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=api_key)
+    llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
     messages = [
         SystemMessage(content="You extract the number of rows to generate from user input. Return only the integer."),
         HumanMessage(content=prompt)
@@ -2925,7 +2925,7 @@ def analyze_all_images_for_style(uploaded_images, openai_api_key):
 
     # Use ChatOpenAI to analyze the combined descriptions
     try:
-        analysis_llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=openai_api_key)
+        analysis_llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=openai_api_key)
         analysis_messages = [
             SystemMessage(
                 content="You are an expert visual style analyst. Analyze multiple image descriptions to extract a comprehensive, unified style guide."),
@@ -3011,7 +3011,7 @@ Your goal is to create a verbal representation so detailed that someone could un
 
 # Usage example with your function:
 def describe_image(image: Image.Image, api_key: str) -> str:
-    vision_llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=api_key)
+    vision_llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
     image_bytes = io.BytesIO()
     image.save(image_bytes, format='PNG')
     image_bytes.seek(0)
@@ -3043,7 +3043,7 @@ def generate_images(client: OpenAI, prompt: str, count: int) -> list:
 
 def extract_num_images_from_prompt(prompt: str, api_key: str) -> Optional[int]:
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=api_key)
+        llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
         messages = [
             SystemMessage(
                 content="You extract the number of images to generate from user input. Return only the integer."),
