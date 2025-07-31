@@ -3175,6 +3175,9 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
         return None
 
 
+
+from universal_prompts import reportstructure
+# 11.Explore api
 # 11.Explore api
 @app.post("/api/Explore")
 async def senior_data_analysis(
@@ -3199,50 +3202,138 @@ async def senior_data_analysis(
         # Generate metadata
         metadata_str = ", ".join(df.columns.tolist())
 
-        prompt_eng = (
-            f"""
-            You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
-            The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.              
-            1. Generic Queries:
-                If the user's query is generic and not related to data, respond with a concise and appropriate print statement. For example:
-                Query: "What is AI?"
-                Response: "Artificial Intelligence (AI) refers to the simulation of human intelligence in machines."
-            2. Data-Related Queries:
-                If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
-            3.Visualisation related questions:
-                Generate clear visualisations based on the data.csv given to you.
-            4.KPI related questions:
-                Generate the kpis regarding the dataset given.
-            And there are more number of tasks you have to do whatever the senior data analyst can do.
-            Answer for all the queries in a meaningful manner.
+        # Check if query is report-related
+        is_report_query = any(keyword in query.lower() for keyword in
+                              ['report', 'summary report', 'analysis report', 'detailed report',
+                               'comprehensive report'])
 
-            Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
+        if is_report_query:
+            # Generate report-specific prompt
+            prompt_eng = (
+                f"""
+                You are a Senior data analyst generating a comprehensive report. Always strictly adhere to the following rules: 
+                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
 
-            ### Code Safety & Execution Guidelines:
-            - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
-            - Always use self-contained code that runs without dependencies on undefined names or external files.
-            - If plotting with matplotlib/seaborn:
-                - Use basic arguments only (e.g., `x`, `y`, `data`)
-                - Avoid customizing with advanced style props unless necessary
-                - Use `plt.show()` after plotting
-            - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
-            - Always print results with `print()` — never rely on implicit outputs.
-            - The final line of your code should print something meaningful (DataFrame, value, message).
-            - Never use `plt.savefig()` or attempt to write files.
+                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
+                {{
+                    "report": {{
+                        "heading": "Report Title Here",
+                        "paragraphs": [
+                            "Paragraph 1 content...",
+                            "Paragraph 2 content...",
+                            "Paragraph 3 content...",
+                            "Paragraph 4 content..."
+                        ],
+                        "table": {{
+                            "headers": ["Column1", "Column2", "Column3"],
+                            "rows": [
+                                ["Row1Col1", "Row1Col2", "Row1Col3"],
+                                ["Row2Col1", "Row2Col2", "Row2Col3"]
+                            ]
+                        }},
+                        "charts": [
+                            {{
+                                "title": "Chart 1 Title",
+                                "plotly": {{
+                                    "data": [{{
+                                        "x": ["data points"],
+                                        "y": [numbers],
+                                        "type": "scatter/bar/line",
+                                        "mode": "lines+markers",
+                                        "marker": {{"color": "#color"}},
+                                        "name": "Series Name"
+                                    }}],
+                                    "layout": {{
+                                        "title": "Chart Title",
+                                        "xaxis": {{"title": "X Axis Label"}},
+                                        "yaxis": {{"title": "Y Axis Label"}},
+                                        "paper_bgcolor": "#fafafa",
+                                        "plot_bgcolor": "#ffffff"
+                                    }}
+                                }}
+                            }},
+                            {{
+                                "title": "Chart 2 Title",  
+                                "plotly": {{
+                                    "data": [{{
+                                        "x": ["data points"],
+                                        "y": [numbers],
+                                        "type": "bar/scatter/line",
+                                        "marker": {{"color": "#color"}},
+                                        "name": "Series Name"
+                                    }}],
+                                    "layout": {{
+                                        "title": "Chart Title",
+                                        "xaxis": {{"title": "X Axis Label"}},
+                                        "yaxis": {{"title": "Y Axis Label"}},
+                                        "paper_bgcolor": "#fafafa",
+                                        "plot_bgcolor": "#ffffff"
+                                    }}
+                                }}
+                            }}
+                        ]
+                    }}
+                }}
 
-            ### You MUST assume:
-            - The data required for your analysis can be always there in data.csv. 
-            - consider the metadata as it is in {metadata_str}.
-            - Your code is being `exec()`'d in a secure Python environment
-            ### IMPORTANT:
-            - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
-            - You dont even have to give the explanation i.e how you did for getting that results.
-            - If you got any analysis  like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
-            - Do not mention the headings at any cost.
-            - All the statistics and summary should be present in the tabular format only.
-            User query is {query}.
-        """
-        )
+                Generate a report for: {query}
+                Use the report structure format provided in {reportstructure} as reference only.
+                The report should have *5 paragraphs* and each paragraph consists of *7 lines* and *3 charts* included in between the paragraphs with proper headings and all.
+                If required,You can add tables in the chart also.
+                
+                ##MUST FOLLOW: The report format must be changing dynamically with each request like shuffling of the contents from one place to the another place in the page.The Report should not be static.
+                """
+            )
+        else:
+            # Generate regular analysis prompt
+            prompt_eng = (
+                f"""
+                You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
+                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
+
+                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "answer" as the key:
+                {{
+                    "answer": "Your analysis result here..."
+                }}
+
+                1. Generic Queries:
+                    If the user's query is generic and not related to data, respond with a concise and appropriate answer in the JSON format above.
+                2. Data-Related Queries:
+                    If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
+                3. Visualisation related questions:
+                    Generate clear visualisations based on the data.csv given to you.
+                4. KPI related questions:
+                    Generate the kpis regarding the dataset given.
+                And there are more number of tasks you have to do whatever the senior data analyst can do.
+                Answer for all the queries in a meaningful manner.
+
+                Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
+
+                ### Code Safety & Execution Guidelines:
+                - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
+                - Always use self-contained code that runs without dependencies on undefined names or external files.
+                - If plotting with matplotlib/seaborn:
+                    - Use basic arguments only (e.g., `x`, `y`, `data`)
+                    - Avoid customizing with advanced style props unless necessary
+                    - Use `plt.show()` after plotting
+                - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
+                - Always print results with `print()` — never rely on implicit outputs.
+                - The final line of your code should print something meaningful (DataFrame, value, message).
+                - Never use `plt.savefig()` or attempt to write files.
+
+                ### You MUST assume:
+                - The data required for your analysis can be always there in data.csv. 
+                - consider the metadata as it is in {metadata_str}.
+                - Your code is being `exec()`'d in a secure Python environment
+                ### IMPORTANT:
+                - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
+                - You dont even have to give the explanation i.e how you did for getting that results.
+                - If you got any analysis like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
+                - Do not mention the headings at any cost.
+                - All the statistics and summary should be present in the tabular format only.
+
+                User query is {query}.
+            """
+            )
 
         # Generate and execute analysis code
         print("Analysed the above things,,,,,,,,,going to generate the code")
@@ -3252,7 +3343,7 @@ async def senior_data_analysis(
         print("executed_result is", result)
 
         return JSONResponse(
-            content=markdown_to_html(result),
+            content=clean_json_response(result),
             status_code=200
         )
 
@@ -3269,8 +3360,6 @@ async def senior_data_analysis(
 
 
 from universal_prompts import prompt_for_data_analyst
-
-
 # Function to generate code from OpenAI API
 def generate_data_code(prompt_eng):
     response = client.chat.completions.create(
@@ -3381,7 +3470,7 @@ def clean_json_response(response_text):
             json_str = match.group(1)
             # Parse and return as clean JSON
             json_data = json.loads(json_str)
-            return json.dumps(json_data, separators=(',', ':'))
+            return json.dumps(json_data)
 
         # Method 2: If no markdown blocks, try to find JSON object directly
         json_pattern2 = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
@@ -3390,7 +3479,7 @@ def clean_json_response(response_text):
         for match in matches:
             try:
                 json_data = json.loads(match)
-                return json.dumps(json_data, separators=(',', ':'))
+                return json.dumps(json_data)
             except json.JSONDecodeError:
                 continue
 
