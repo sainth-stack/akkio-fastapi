@@ -623,12 +623,6 @@ async def analyze_chart(
         chart_id: str = Form(...),
         question: Optional[str] = Form(None)
 ) -> JSONResponse:
-    """
-    Analyzes a chart by either providing a full summary or answering a specific question.
-
-    - If 'question' is not provided, it generates and returns a detailed summary.
-    - If 'question' is provided, it returns a direct answer based on the chart data.
-    """
     try:
         # 1. Validate Chart ID
         try:
@@ -670,13 +664,16 @@ async def analyze_chart(
             prompt = (
                 f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
                 f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
-                f"Follow this output structure:\n"
-                f"- Start with a core insight derived from the graph. Bold important terms.\n"
-                f"- Describe distribution patterns (e.g., skewness, outliers, clusters).\n"
-                f"- Explain what real-world behavior the graph appears to reflect.\n"
-                f"- Mention modeling implications if suggested by a visual pattern.\n"
-                f"- Suggest focused actions based on the graph's trends.\n\n"
-                f"Only describe what you observe. Do not invent data. Use clean bullet points without section headings."
+                f"Follow this output structure with exactly 4 key observations:\n\n"
+                f"Core Insight\n"
+                f"• Start with the primary finding from the graph. Bold important terms.\n\n"
+                f"Pattern Analysis\n"
+                f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
+                f"Business Context\n"
+                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
+                f"Action Recommendations\n"
+                f"• Suggest focused next steps based on the chart's insights.Maximum give 5 bullet points\n\n"
+                f"Only describe what you observe. Do not invent data. Use the exact format shown above."
             )
             summary = generate_text(prompt)
             SUMMARY_CACHE[chart_id] = summary
@@ -696,10 +693,16 @@ async def analyze_chart(
             prompt = (
                 f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
                 f"User Question: '{question}'\n\n"
-                f"Based *only* on the data and trends visible in the chart, provide a clear, concise, and helpful answer. "
-                f"If the question asks for recommendations, suggest actions directly supported by the data. "
-                f"For all other questions, answer directly and factually. "
-                f"Do not invent data or generalize beyond what is shown in the chart. Format your response using markdown."
+                f"Follow this output structure with exactly 4 key observations:\n\n"
+                f"Core Insight\n"
+                f"• Start with the primary finding from the graph. Bold important terms.\n\n"
+                f"Pattern Analysis\n"
+                f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
+                f"Business Context\n"
+                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
+                f"Action Recommendations\n"
+                f"• Suggest focused next steps based on the chart's insights.Maximum give five points.\n\n"
+                f"Only describe what you observe. Do not invent data. Use the exact format shown above."
             )
             answer = generate_text(prompt)
 
@@ -999,7 +1002,8 @@ async def models(input: ModelRequest):
                 'status': stat,
                 'arima': True,
                 'path': str(img_data),
-                'data': json.loads(data.to_json())
+                'data': json.loads(data.to_json()),
+                'description': generate_text_from_json(json.loads(data.to_json()))
             }
 
         # Handle unsupported models
@@ -1151,7 +1155,8 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             return JSONResponse({
                 'data': json.loads(data.to_json()),
                 'plot': make_serializable(img_data),
-                'session_id': session_id
+                'session_id': session_id,
+                'description': generate_text_from_json(json.loads(data.to_json()))
             })
 
         # Handle prediction requests
@@ -1304,6 +1309,24 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             status_code=500,
             detail=f"An error occurred: {str(e)}"
         )
+
+
+def generate_text_from_json(json_data: dict) -> str:
+    description = "You are a helpful data analyst. Given the following analysis output, describe the results to the user in plain English within 2 or 3 lines only.."
+    data_summary = json.dumps(json_data, indent=2)
+    full_prompt = f"{description}\nHere is the analysis output:\n{data_summary}\n"
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system",
+             "content": "You are a helpful data analyst who explains model outputs, data visualizations, and user queries clearly and insightfully."},
+            {"role": "user", "content": full_prompt}
+        ],
+        temperature=0.3,
+        max_tokens=500
+    )
+    return response.choices[0].message.content.strip()
 
 
 def load_pipeline(save_path="model_pipeline.pkl"):
@@ -1651,6 +1674,7 @@ def arima_train(data, target_col, bot_query=None):
         print("ARIMA error:", e)
         return False, pd.DataFrame(), ""
 
+
 def load_forecast_model(model_path):
     if os.path.exists(model_path):
         print(f"Loading model from: {model_path}")
@@ -1859,6 +1883,7 @@ def train_arima(train, test):
         print(f"Error in ARIMA training: {str(e)}")
         raise
 
+
 # Train Prophet Model
 def train_prophet(train, test):
     print("Training Prophet...")
@@ -1875,6 +1900,7 @@ def train_prophet(train, test):
 
     print("Returning the parameters from the Prophet model")
     return model, error
+
 
 # Train XGBoost Model
 def train_xgboost(train, test):
@@ -3175,9 +3201,9 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
         return None
 
 
-
 from universal_prompts import reportstructure
-# 11.Explore api
+
+
 # 11.Explore api
 @app.post("/api/Explore")
 async def senior_data_analysis(
@@ -3205,84 +3231,189 @@ async def senior_data_analysis(
         # Check if query is report-related
         is_report_query = any(keyword in query.lower() for keyword in
                               ['report', 'summary report', 'analysis report', 'detailed report',
-                               'comprehensive report'])
+                               'comprehensive report','summary_report','analysis_report','detailed_report','Comprehensive_report'])
 
         if is_report_query:
             # Generate report-specific prompt
             prompt_eng = (
-                f"""
-                You are a Senior data analyst generating a comprehensive report. Always strictly adhere to the following rules: 
-                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
+            f"""
+                            You are a Senior data analyst generating a comprehensive report with advanced analytics and forecasting capabilities. 
+                            Always strictly adhere to the following rules: 
 
-                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
-                {{
-                    "report": {{
-                        "heading": "Report Title Here",
-                        "paragraphs": [
-                            "Paragraph 1 content...",
-                            "Paragraph 2 content...",
-                            "Paragraph 3 content...",
-                            "Paragraph 4 content..."
-                        ],
-                        "table": {{
-                            "headers": ["Column1", "Column2", "Column3"],
-                            "rows": [
-                                ["Row1Col1", "Row1Col2", "Row1Col3"],
-                                ["Row2Col1", "Row2Col2", "Row2Col3"]
-                            ]
-                        }},
-                        "charts": [
+                            The metadata required for your analysis: {metadata_str}
+                            Dataset location: data.csv only. No data assumptions can be taken.
+
+                            Forecasting Information:
+                            -Take the information for forecasting from the data.csv itself.
+                            -Extract the dates very accurately from the data.csv and use that dates for forecasting.
+                        
+                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
                             {{
-                                "title": "Chart 1 Title",
-                                "plotly": {{
-                                    "data": [{{
-                                        "x": ["data points"],
-                                        "y": [numbers],
-                                        "type": "scatter/bar/line",
-                                        "mode": "lines+markers",
-                                        "marker": {{"color": "#color"}},
-                                        "name": "Series Name"
-                                    }}],
-                                    "layout": {{
-                                        "title": "Chart Title",
-                                        "xaxis": {{"title": "X Axis Label"}},
-                                        "yaxis": {{"title": "Y Axis Label"}},
-                                        "paper_bgcolor": "#fafafa",
-                                        "plot_bgcolor": "#ffffff"
-                                    }}
-                                }}
-                            }},
-                            {{
-                                "title": "Chart 2 Title",  
-                                "plotly": {{
-                                    "data": [{{
-                                        "x": ["data points"],
-                                        "y": [numbers],
-                                        "type": "bar/scatter/line",
-                                        "marker": {{"color": "#color"}},
-                                        "name": "Series Name"
-                                    }}],
-                                    "layout": {{
-                                        "title": "Chart Title",
-                                        "xaxis": {{"title": "X Axis Label"}},
-                                        "yaxis": {{"title": "Y Axis Label"}},
-                                        "paper_bgcolor": "#fafafa",
-                                        "plot_bgcolor": "#ffffff"
-                                    }}
+                                "report": {{
+                                    "heading": "Comprehensive Data Analysis & Forecasting Report",
+                                    "paragraphs": [
+                                        "First paragraph: Provide detailed current data analysis insights, trends, and patterns observed in the dataset. Include statistical summaries, key findings, and data quality observations. This should be exactly 4 lines of detailed analysis.",
+                                        "Second paragraph: Present forecasting analysis, methodology used, future predictions, confidence intervals, and business implications. Explain the forecasting approach, seasonal patterns if any, and actionable recommendations. This should be exactly 4 lines of forecasting insights."
+                                    ],
+                                    "table": {{
+                                        "headers": ["Metric", "Current Value", "Forecasted Value", "Change %", "Confidence"],
+                                        "rows": [
+                                            ["Key Metric 1", "Current", "Predicted", "+X%", "95%"],
+                                            ["Key Metric 2", "Current", "Predicted", "+Y%", "90%"],
+                                            ["Key Metric 3", "Current", "Predicted", "-Z%", "85%"]
+                                        ]
+                                    }},
+                                    "analysis_charts": [
+                                        {{
+                                            "title": "[heading]",
+                                            "plotly": {{
+                                                "data": [{{
+                                                    "x": ["category_values_from_actual_data"],
+                                                    "y": [actual_numeric_values],
+                                                    "type": "bar",
+                                                    "marker": {{"color": "#3498db"}},
+                                                    "name": "Current Distribution"
+                                                }}],
+                                                "layout": {{
+                                                    "title": "[title]",
+                                                    "xaxis": {{"title": "Categories"}},
+                                                    "yaxis": {{"title": "Values"}},
+                                                    "paper_bgcolor": "#fafafa",
+                                                    "plot_bgcolor": "#ffffff"
+                                                }}
+                                            }}
+                                        }},
+                                        {{
+                                            "title": "[heading]",
+                                            "plotly": {{
+                                                "data": [{{
+                                                    "x": ["time_periods_from_data"],
+                                                    "y": [trend_values],
+                                                    "type": "scatter",
+                                                    "mode": "lines+markers",
+                                                    "marker": {{"color": "#e74c3c"}},
+                                                    "name": "Historical Trend"
+                                                }}],
+                                                "layout": {{
+                                                    "title": "[title]",
+                                                    "xaxis": {{"title": "Time Period"}},
+                                                    "yaxis": {{"title": "Values"}},
+                                                    "paper_bgcolor": "#fafafa",
+                                                    "plot_bgcolor": "#ffffff"
+                                                }}
+                                            }}
+                                        }}
+                                    ],
+                                    "forecasting_charts": [
+                                        {{
+                                            "title": "[heading]",
+                                            "plotly": {{
+                                                "data": [
+                                                    {{
+                                                        "x": ["historical_dates"],
+                                                        "y": [historical_values],
+                                                        "type": "scatter",
+                                                        "mode": "lines+markers",
+                                                        "marker": {{"color": "#2ecc71"}},
+                                                        "name": "Historical Data"
+                                                    }},
+                                                    {{
+                                                        "x": ["future_dates"],
+                                                        "y": [predicted_values],
+                                                        "type": "scatter",
+                                                        "mode": "lines+markers",
+                                                        "marker": {{"color": "#f39c12", "symbol": "diamond"}},
+                                                        "name": "Forecasted Values"
+                                                    }},
+                                                    {{
+                                                        "x": ["future_dates"],
+                                                        "y": [upper_confidence_values],
+                                                        "type": "scatter",
+                                                        "mode": "lines",
+                                                        "line": {{"dash": "dash", "color": "#95a5a6"}},
+                                                        "name": "Upper Confidence",
+                                                        "showlegend": false
+                                                    }},
+                                                    {{
+                                                        "x": ["future_dates"],
+                                                        "y": [lower_confidence_values],
+                                                        "type": "scatter",
+                                                        "mode": "lines",
+                                                        "line": {{"dash": "dash", "color": "#95a5a6"}},
+                                                        "fill": "tonexty",
+                                                        "fillcolor": "rgba(149, 165, 166, 0.2)",
+                                                        "name": "Confidence Interval"
+                                                    }}
+                                                ],
+                                                "layout": {{
+                                                    "title": "[title]",
+                                                    "xaxis": {{"title": "Date"}},
+                                                    "yaxis": {{"title": "Predicted Values"}},
+                                                    "paper_bgcolor": "#fafafa",
+                                                    "plot_bgcolor": "#ffffff"
+                                                }}
+                                            }}
+                                        }},
+                                        {{
+                                            "title": "[heading]",
+                                            "plotly": {{
+                                                "data": [
+                                                    {{
+                                                        "x": ["time_periods"],
+                                                        "y": [seasonal_trend],
+                                                        "type": "scatter",
+                                                        "mode": "lines",
+                                                        "marker": {{"color": "#9b59b6"}},
+                                                        "name": "Seasonal Trend"
+                                                    }},
+                                                    {{
+                                                        "x": ["time_periods"],
+                                                        "y": [forecasted_seasonal],
+                                                        "type": "scatter",
+                                                        "mode": "lines+markers",
+                                                        "marker": {{"color": "#e67e22"}},
+                                                        "name": "Forecasted Seasonal Pattern"
+                                                    }}
+                                                ],
+                                                "layout": {{
+                                                    "title": "[title]",
+                                                    "xaxis": {{"title": "Time Period"}},
+                                                    "yaxis": {{"title": "Seasonal Values"}},
+                                                    "paper_bgcolor": "#fafafa",
+                                                    "plot_bgcolor": "#ffffff"
+                                                }}
+                                            }}
+                                        }}
+                                    ]
                                 }}
                             }}
-                        ]
-                    }}
-                }}
 
-                Generate a report for: {query}
-                Use the report structure format provided in {reportstructure} as reference only.
-                The report should have *5 paragraphs* and each paragraph consists of *7 lines* and *3 charts* included in between the paragraphs with proper headings and all.
-                If required,You can add tables in the chart also.
-                
-                ##MUST FOLLOW: The report format must be changing dynamically with each request like shuffling of the contents from one place to the another place in the page.The Report should not be static.
-                """
-            )
+                            FORECASTING REQUIREMENTS:
+                            1. Use appropriate time series forecasting methods (ARIMA, Exponential Smoothing, or Seasonal Decomposition)
+                            2. Generate predictions for the next 6-12 periods based on available data
+                            3. Include confidence intervals (80% and 95%) for predictions
+                            4. Identify seasonal patterns if present in the data
+                            5. Provide forecast accuracy metrics where possible
+                            6. Use actual data values, dates, and column names from the dataset
+                            7. Ensure all chart data points are realistic and based on actual data patterns
+
+                            DYNAMIC REPORT STRUCTURE:
+                            - Vary the order of analysis vs forecasting charts
+                            - Rotate between different visualization types (bar, line, scatter, etc.)
+                            - Change color schemes for each request
+                            - Alternate table structures and metrics shown
+                            - Randomize which forecasting method emphasis to show first
+
+                            Generate a comprehensive report with forecasting for: {query}
+
+                            The report must include:
+                            - 3 paragraphs (4 lines each): two for current analysis, one for forecasting insights with related headings and all.
+                            - 1 summary table with forecasting metrics and all other analysis metrics
+                            - 2 analysis charts showing current data patterns from the data
+                            - 2 forecasting charts with predictions and confidence intervals
+                            - All visualizations must use actual data from the CSV file
+                            - Forecasting should predict realistic future values based on historical patterns
+                            """)
         else:
             # Generate regular analysis prompt
             prompt_eng = (
