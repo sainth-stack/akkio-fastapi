@@ -672,7 +672,6 @@ async def analyze_chart(
                 f"Business Context\n"
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
                 f"Action Recommendations\n"
-                f"• Suggest focused next steps based on the chart's insights.Maximum give 5 bullet points\n\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
             )
             summary = generate_text(prompt)
@@ -694,14 +693,13 @@ async def analyze_chart(
                 f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
                 f"User Question: '{question}'\n\n"
                 f"Follow this output structure with exactly 4 key observations:\n\n"
-                f"Core Insight\n"
+                f"if the user asks about Core Insight\n"
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
-                f"Pattern Analysis\n"
+                f" if the user asks Pattern Analysis\n"
                 f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                f"Business Context\n"
+                f" if the user asks about Business Context\n"
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f"Action Recommendations\n"
-                f"• Suggest focused next steps based on the chart's insights.Maximum give five points.\n\n"
+                f" if the user asks about Action Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
             )
             answer = generate_text(prompt)
@@ -733,7 +731,7 @@ def generate_text(prompt: str) -> str:
         model="gpt-4.1-mini",
         messages=[
             {"role": "system",
-             "content": "You are a helpful data analyst that explains data visualizations and user queries and write insightful summary for the given data."},
+             "content": "You are a helpful data analyst that explains data visualizations and user queries and write insightful summary for the given data.Generate the answers in the plain format with the nice headings and all."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
