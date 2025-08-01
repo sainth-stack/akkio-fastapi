@@ -124,7 +124,15 @@ class PostgresDatabase:
         row = df[df['name'] == table_name]["fileobj"]
         if row.empty:
             raise HTTPException(status_code=404, detail="Table not found")
-        return pickle.loads(row.values[0].tobytes())
+        
+        # Load the pickled data
+        table_data = pickle.loads(row.values[0].tobytes())
+        
+        # Ensure it's a DataFrame
+        if not isinstance(table_data, pd.DataFrame):
+            table_data = pd.DataFrame(table_data)
+            
+        return table_data
 
     def delete_tables_data(self, email, table_names):
         if not table_names:
