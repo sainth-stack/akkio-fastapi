@@ -710,7 +710,7 @@ async def analyze_chart(
             return JSONResponse(
                 content={
                     "chart_id": chart_id,
-                    "response": markdown_to_html(summary),
+                    "response": summary,
                     "type": "summary",
                     "cached": False,
                 },
@@ -739,7 +739,7 @@ async def analyze_chart(
                 content={
                     "chart_id": chart_id,
                     "question": question,
-                    "response": markdown_to_html(answer),
+                    "response": answer,
                     "type": "answer"
                 },
                 status_code=200,
