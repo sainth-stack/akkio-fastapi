@@ -698,10 +698,6 @@ async def analyze_chart(
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
                 f"Pattern Analysis\n"
                 f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                f"Business Context\n"
-                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f"Action Recommendations\n"
-                f"Only describe what you observe. Do not invent data. Use the exact format shown above."
                 f"Give the response in markdown format with proper headings in 'h4' and bullet points."
             )
             summary = generate_text(prompt)
