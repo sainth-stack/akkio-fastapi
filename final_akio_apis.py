@@ -3231,12 +3231,13 @@ async def senior_data_analysis(
         # Check if query is report-related
         is_report_query = any(keyword in query.lower() for keyword in
                               ['report', 'summary report', 'analysis report', 'detailed report',
-                               'comprehensive report','summary_report','analysis_report','detailed_report','Comprehensive_report'])
+                               'comprehensive report', 'summary_report', 'analysis_report', 'detailed_report',
+                               'Comprehensive_report'])
 
         if is_report_query:
             # Generate report-specific prompt
             prompt_eng = (
-            f"""
+                f"""
                             You are a Senior data analyst generating a comprehensive report with advanced analytics and forecasting capabilities. 
                             Always strictly adhere to the following rules: 
 
@@ -3491,6 +3492,8 @@ async def senior_data_analysis(
 
 
 from universal_prompts import prompt_for_data_analyst
+
+
 # Function to generate code from OpenAI API
 def generate_data_code(prompt_eng):
     response = client.chat.completions.create(
@@ -3785,7 +3788,47 @@ async def email_report(
         )
 
 
+# Database connection creation
+# Initialize the multi-database agent
+from database_agent import MultiDatabaseAgent, ChatRequest, ChatResponse, logger
+
+multi_db_agent = MultiDatabaseAgent()
+
+
+@app.post("/api/database_chat", response_model=ChatResponse)
+async def database_chat(request: ChatRequest):
+    """
+    Main chat endpoint for multi-database operations
+
+    Supports:
+    - Multiple database connections (PostgreSQL, MySQL, SQLite, Oracle, SQL Server)
+    - Natural language queries across databases
+    - Automatic SQL generation and execution
+    - Cross-database operations and comparisons
+    """
+
+    # Generate session ID if not provided
+    """
+        Main chat endpoint for multi-database operations
+        """
+    # Generate session ID if not provided, otherwise use the provided one
+    session_id = request.session_id or str(uuid.uuid4())
+
+    try:
+        response = await multi_db_agent.process_message(session_id, request.message)
+        return response
+
+    except Exception as e:
+        logger.error(f"Chat endpoint error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("final_akio_apis:app", host="127.0.0.1", port=8000, reload=True)
+
+
