@@ -702,6 +702,7 @@ async def analyze_chart(
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
                 f"Action Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
+                f"Give the response in markdown format with proper headings and bullet points."
             )
             summary = generate_text(prompt)
             SUMMARY_CACHE[chart_id] = summary
@@ -730,6 +731,7 @@ async def analyze_chart(
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
                 f" if the user asks about Action Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
+                f"Give the response in markdown format with proper headings and bullet points."
             )
             answer = generate_text(prompt)
 
