@@ -3198,10 +3198,6 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
     except Exception:
         return None
 
-
-from universal_prompts import reportstructure
-
-
 # 11.Explore api
 @app.post("/api/Explore")
 async def senior_data_analysis(
@@ -3249,10 +3245,10 @@ async def senior_data_analysis(
                             ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
                             {{
                                 "report": {{
-                                    "heading": "Comprehensive Data Analysis & Forecasting Report",
+                                    "heading": "[Suitable Heading]",
                                     "paragraphs": [
-                                        "First paragraph: Provide detailed current data analysis insights, trends, and patterns observed in the dataset. Include statistical summaries, key findings, and data quality observations. This should be exactly 4 lines of detailed analysis.",
-                                        "Second paragraph: Present forecasting analysis, methodology used, future predictions, confidence intervals, and business implications. Explain the forecasting approach, seasonal patterns if any, and actionable recommendations. This should be exactly 4 lines of forecasting insights."
+                                        "First Bullet point: Provide detailed current data analysis insights, trends, and patterns observed in the dataset. Include statistical summaries, key findings, and data quality observations. This should be exactly 4 lines of detailed analysis.",
+                                        "Second Bullet point: Present forecasting analysis, methodology used, future predictions, confidence intervals, and business implications. Explain the forecasting approach, seasonal patterns if any, and actionable recommendations. This should be exactly 4 lines of forecasting insights."
                                     ],
                                     "table": {{
                                         "headers": ["Metric", "Current Value", "Forecasted Value", "Change %", "Confidence"],
@@ -3406,10 +3402,10 @@ async def senior_data_analysis(
                             Generate a comprehensive report with forecasting for: {query}
 
                             The report must include:
-                            - 3 paragraphs (4 lines each): two for current analysis, one for forecasting insights with related headings and all.
+                            - 4 Bullet points (2 lines each): three for current analysis, one for forecasting insights with related headings and all.
                             - 1 summary table with forecasting metrics and all other analysis metrics
-                            - 2 analysis charts showing current data patterns from the data
-                            - 2 forecasting charts with predictions and confidence intervals
+                            - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
+                            - 2 forecasting charts with predictions and confidence intervals with main heading of Forecast.
                             - All visualizations must use actual data from the CSV file
                             - Forecasting should predict realistic future values based on historical patterns
                             """)
