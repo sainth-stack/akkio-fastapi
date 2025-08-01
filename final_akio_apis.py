@@ -160,16 +160,45 @@ async def read_data(tablename: str = Form(...)):
         if df.empty:
             return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
 
+        # Clean the DataFrame to handle non-JSON compliant values
+        df_clean = clean_dataframe_for_json(df)
+
         # Save CSV locally (optional)
-        df.to_csv('data.csv', index=False)
+        df_clean.to_csv('data.csv', index=False)
         os.makedirs("uploads", exist_ok=True)
-        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
+        df_clean.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
 
-        # Return JSON response
-        return JSONResponse(content=df.to_dict(orient='records'))
-
+        # Return JSON response with cleaned data
+        return JSONResponse(content=df_clean.to_dict(orient='records'))
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading table data: {e}")
+        return JSONResponse(
+            content={"detail": f"Error processing table data: {str(e)}"}, 
+            status_code=500
+        )
+
+def clean_dataframe_for_json(df):
+    """
+    Clean DataFrame to ensure all values are JSON serializable
+    """
+    df_clean = df.copy()
+    
+    # Replace inf and -inf with None
+    df_clean = df_clean.replace([np.inf, -np.inf], None)
+    
+    # Replace NaN with None
+    df_clean = df_clean.where(pd.notnull(df_clean), None)
+    
+    # Handle any remaining problematic float values
+    for col in df_clean.columns:
+        if df_clean[col].dtype in ['float64', 'float32']:
+            # Check for any remaining non-finite values
+            mask = ~np.isfinite(df_clean[col].astype(float, errors='ignore'))
+            if mask.any():
+                df_clean.loc[mask, col] = None
+    
+    return df_clean
+
 
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
@@ -974,6 +1003,7 @@ async def models(input: ModelRequest):
         df.drop(single_value_columns, axis=1, inplace=True)
 
         numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+        print(numeric_cols)
         if len(numeric_cols) < 1:
             raise HTTPException(400, "Dataset does not meet modeling requirements")
 
