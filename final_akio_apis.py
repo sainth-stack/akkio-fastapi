@@ -3688,24 +3688,23 @@ def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
     return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"
 
 
-def extract_text_from_pdf(file_contents: bytes) -> str:
-    """
-    Extract text content from PDF file bytes.
-    """
+def extract_text_with_pypdf_loader(file_contents: bytes) -> str:
     try:
-        pdf_file = io.BytesIO(file_contents)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        
-        text_content = ""
-        # Extract text from all pages (limit to first 5 pages for performance)
-        for page_num in range(min(len(pdf_reader.pages), 5)):
-            page = pdf_reader.pages[page_num]
-            text_content += page.extract_text() + "\n"
-        
-        return text_content.strip()
+        # Save bytes to a temporary buffer for PyPDFLoader to work with
+        with open("temp.pdf", "wb") as f:
+            f.write(file_contents)
+
+        loader = PyPDFLoader("temp.pdf")
+        pages = loader.load()
+
+        # Join the content from all pages
+        text = "\n".join(page.page_content for page in pages)
+        return text.strip()
+
     except Exception as e:
-        print(f"Error extracting text from PDF: {e}")
+        print(f"Error with PyPDFLoader: {e}")
         return ""
+    
 
 from datascout import initialize_llm
 async def analyze_pdf_with_llm(pdf_text: str) -> dict:
@@ -3810,6 +3809,7 @@ def serialize_report(report: dict) -> dict:
     return report
 
 
+
 @app.post("/api/save_report")
 async def save_report(
         email: str = Form(...),
@@ -3843,7 +3843,7 @@ async def save_report(
 
         # Extract text from PDF
         print("Extracting text from PDF...")
-        pdf_text = extract_text_from_pdf(file_contents)
+        pdf_text = extract_text_with_pypdf_loader(file_contents)
         print(f"Extracted {len(pdf_text)} characters from PDF")
 
         # Analyze PDF content with LLM
@@ -3851,8 +3851,12 @@ async def save_report(
         analysis_result = await analyze_pdf_with_llm(pdf_text)
         print(f"LLM Analysis: {analysis_result}")
 
-        # Insert record in DB with extracted metadata
-        result = db.insert_report(email, s3_url)
+        # Extract title and description from analysis
+        title = analysis_result.get("title")
+        description = analysis_result.get("description")
+
+        # Insert record in DB with extracted metadata INCLUDING title and description
+        result = db.insert_report(email, s3_url, title, description)
         result = serialize_report(result) if result else {}
 
         # Enhanced response with extracted information
@@ -3860,10 +3864,9 @@ async def save_report(
             "status": "success",
             "result": result,
             "pdf_url": s3_url,
-            "title": analysis_result.get("title"),
-            "description": analysis_result.get("description"),
+            "title": title,
+            "description": description,
             "text_length": len(pdf_text),
-
         })
 
     except HTTPException as he:
@@ -3871,17 +3874,17 @@ async def save_report(
     except Exception as exc:
         print(f"Unexpected error in save_report: {exc}")
         raise HTTPException(status_code=500, detail=f"Error in save_report: {exc}")
-    
+
 
 @app.post("/api/get_reports_by_email")
 async def get_reports_with_email(
         email: str = Form(...)
 ) -> JSONResponse:
     """
-    Retrieve all saved reports for a given email.
+    Retrieve all saved reports for a given email with title and description.
     """
     try:
-        reports = db.get_report_by_email(email)  # List[Dict], each dict contains url, timestamps, etc.
+        reports = db.get_report_by_email(email)  # Now includes title and description
 
         if not reports:
             return JSONResponse(content=[])
