@@ -70,6 +70,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
     mean_squared_error, r2_score
 import threading
 import uuid
+import PyPDF2
 
 load_dotenv()
 
@@ -989,6 +990,24 @@ def serialize_datetime(obj):
     if isinstance(obj, (datetime, pd.Timestamp)):
         return obj.isoformat()
     raise TypeError("Type not serializable")
+
+
+#Api for generating the column names for the model training
+@app.get("/api/get_columns")
+async def get_column_names() -> JSONResponse:
+    try:
+        # Read only the header to get column names
+        df = pd.read_csv("data.csv")
+        
+        return JSONResponse(content={
+            "status": "success",
+            "columns": df.columns.tolist()
+        })
+        
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="data.csv file not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 # 8.1 Models related apis:
@@ -3658,6 +3677,7 @@ s3_client = boto3.client("s3",
                          region_name=S3_REGION)
 
 
+
 def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
     """
     Uploads file to S3 bucket and returns the public URL.
@@ -3667,6 +3687,120 @@ def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
     # Construct the S3 object URL for Singapore region
     return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"
 
+
+def extract_text_from_pdf(file_contents: bytes) -> str:
+    """
+    Extract text content from PDF file bytes.
+    """
+    try:
+        pdf_file = io.BytesIO(file_contents)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        
+        text_content = ""
+        # Extract text from all pages (limit to first 5 pages for performance)
+        for page_num in range(min(len(pdf_reader.pages), 5)):
+            page = pdf_reader.pages[page_num]
+            text_content += page.extract_text() + "\n"
+        
+        return text_content.strip()
+    except Exception as e:
+        print(f"Error extracting text from PDF: {e}")
+        return ""
+
+from datascout import initialize_llm
+async def analyze_pdf_with_llm(pdf_text: str) -> dict:
+    """
+    Use LLM to extract title and description from PDF text.
+    """
+    if not pdf_text or len(pdf_text.strip()) < 10:
+        return {
+            "title": "Untitled Document",
+            "description": "No content could be extracted from the document."
+        }
+    
+    # Truncate text if too long (to avoid token limits)
+    max_chars = 8000
+    if len(pdf_text) > max_chars:
+        pdf_text = pdf_text[:max_chars] + "..."
+    
+    prompt = f"""
+            Analyze the following PDF content and extract:
+            1. A concise, descriptive title (max 70 characters)
+            2. A brief description summarizing the main content (max 200 characters)
+
+            PDF Content:
+            {pdf_text}
+
+            Respond ONLY with valid JSON format (no markdown formatting, no code blocks):
+            {{
+                "title": "extracted title here",
+                "description": "brief description here"
+            }}
+
+            Rules:
+            - Title should be clear and descriptive
+            - Description should summarize key points
+            - If content is unclear, provide generic but meaningful titles/descriptions
+            - Keep responses concise and professional
+            - Return ONLY the JSON object, no additional text or formatting
+            """
+
+    try:
+        llm = initialize_llm()
+        response = llm.invoke([HumanMessage(content=prompt)])
+        response_text = response.content.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]  # Remove ```
+        if response_text.startswith("```"):
+            response_text = response_text[3:]   # Remove ```
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]  # Remove trailing ```
+        
+        # Clean up any remaining whitespace
+        response_text = response_text.strip()
+        
+        # Alternative approach: Use regex to extract JSON if still wrapped
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group()
+        
+        # Parse JSON response
+        parsed_response = json.loads(response_text)
+        
+        return {
+            "title": parsed_response.get("title", "Document Analysis")[:100],
+            "description": parsed_response.get("description", "PDF document content")[:300]
+        }
+        
+    except json.JSONDecodeError as je:
+        print(f"JSON parsing error: {je}")
+        print(f"Raw response: {response_text}")
+        
+        # Fallback: Try to extract title and description using regex
+        try:
+            title_match = re.search(r'"title":\s*"([^"]*)"', response_text)
+            desc_match = re.search(r'"description":\s*"([^"]*)"', response_text)
+            
+            if title_match and desc_match:
+                return {
+                    "title": title_match.group(1)[:100],
+                    "description": desc_match.group(1)[:300]
+                }
+        except Exception as regex_error:
+            print(f"Regex fallback failed: {regex_error}")
+        
+        return {
+            "title": "Document Analysis",
+            "description": "Content analysis unavailable due to parsing error."
+        }
+    except Exception as e:
+        print(f"Error analyzing PDF with LLM: {e}")
+        return {
+            "title": "Document Analysis",
+            "description": "Content analysis unavailable at this time."
+        }
 
 def serialize_report(report: dict) -> dict:
     """Convert datetime objects to ISO format strings in a report dict."""
@@ -3682,12 +3816,18 @@ async def save_report(
         pdf_file: UploadFile = File(...)
 ) -> JSONResponse:
     """
-    Upload a PDF file to S3 and save its URL in the database with the user’s email.
+    Upload a PDF file to S3, extract title/description using LLM, and save metadata in database.
     """
     try:
         # Validate file content type
         if pdf_file.content_type != "application/pdf":
             raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+        # Read file contents (we'll need this for both S3 upload and text extraction)
+        file_contents = await pdf_file.read()
+        
+        # Reset file pointer for S3 upload
+        pdf_file.file = io.BytesIO(file_contents)
 
         # Generate unique key for S3
         safe_email = email.replace("@", "_at_").replace(".", "_dot_")
@@ -3697,22 +3837,41 @@ async def save_report(
         # Upload file to S3
         try:
             s3_url = upload_file_to_s3(pdf_file, S3_BUCKET, unique_filename)
+            print(f"S3_url: {s3_url}")
         except Exception as s3exc:
             raise HTTPException(status_code=500, detail=f"S3 upload failed: {s3exc}")
 
-        print(f"S3_url: {s3_url}")
+        # Extract text from PDF
+        print("Extracting text from PDF...")
+        pdf_text = extract_text_from_pdf(file_contents)
+        print(f"Extracted {len(pdf_text)} characters from PDF")
 
-        # Insert record in DB and serialize output
+        # Analyze PDF content with LLM
+        print("Analyzing PDF content with LLM...")
+        analysis_result = await analyze_pdf_with_llm(pdf_text)
+        print(f"LLM Analysis: {analysis_result}")
+
+        # Insert record in DB with extracted metadata
         result = db.insert_report(email, s3_url)
         result = serialize_report(result) if result else {}
 
-        return JSONResponse(content={"status": "success", "result": result, "pdf_url": s3_url})
+        # Enhanced response with extracted information
+        return JSONResponse(content={
+            "status": "success",
+            "result": result,
+            "pdf_url": s3_url,
+            "title": analysis_result.get("title"),
+            "description": analysis_result.get("description"),
+            "text_length": len(pdf_text),
+
+        })
 
     except HTTPException as he:
         raise he
     except Exception as exc:
+        print(f"Unexpected error in save_report: {exc}")
         raise HTTPException(status_code=500, detail=f"Error in save_report: {exc}")
-
+    
 
 @app.post("/api/get_reports_by_email")
 async def get_reports_with_email(
