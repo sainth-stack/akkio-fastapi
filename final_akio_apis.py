@@ -70,7 +70,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
     mean_squared_error, r2_score
 import threading
 import uuid
-import PyPDF2
+from PyPDF2 import PdfReader
 
 load_dotenv()
 
@@ -3689,22 +3689,27 @@ def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
 
 
 def extract_text_with_pypdf_loader(file_contents: bytes) -> str:
+    """
+    Extract text from PDF using BytesIO instead of temporary files.
+    """
     try:
-        # Save bytes to a temporary buffer for PyPDFLoader to work with
-        with open("temp.pdf", "wb") as f:
-            f.write(file_contents)
-
-        loader = PyPDFLoader("temp.pdf")
-        pages = loader.load()
-
-        # Join the content from all pages
-        text = "\n".join(page.page_content for page in pages)
+        # Use BytesIO to avoid file system issues
+        pdf_stream = io.BytesIO(file_contents)
+        
+        # Use PyPDF2 directly with BytesIO
+        reader = PdfReader(pdf_stream)
+        
+        # Extract text from all pages
+        text_parts = []
+        for page in reader.pages:
+            text_parts.append(page.extract_text())
+        
+        text = "\n".join(text_parts)
         return text.strip()
-
+        
     except Exception as e:
-        print(f"Error with PyPDFLoader: {e}")
-        return ""
-    
+        print(f"Error with PyPDF2: {e}")
+        
 
 from datascout import initialize_llm
 async def analyze_pdf_with_llm(pdf_text: str) -> dict:
