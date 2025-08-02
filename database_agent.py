@@ -96,7 +96,7 @@ class MultiDatabaseAgent:
                 ### Connection Response Formats (NO BACKTICKS):
                 - PostgreSQL: CONNECT_DB:{{"type":"postgresql","uri":"postgresql://user:pass@host:port/db"}}
                 - MySQL: CONNECT_DB:{{"type":"mysql","uri":"mysql://user:pass@host:port/db"}}
-                - S3: CONNECT_S3:{{"access_key":"akia.....","secret_key":"bvc6QU....","region":"us-east-1","bucket":"bucket-name","session_token":"optional"}}
+                - S3: CONNECT_S3:{{"access_key":"AKIA......","secret_key":"bvc6Q....","region":"us-east-1","bucket":"bucket-name","session_token":"optional"}}
 
                 ## QUERY HANDLING:
                 ### Database Query Intent Recognition (WHEN CONNECTED):
@@ -429,21 +429,10 @@ class MultiDatabaseAgent:
                 # Extract connection details for display
                 uri_parts = self.parse_connection_uri(db_uri)
 
-                return f"""**Successfully Connected to {db_type.title()}!**
-                        **Connection Details:**
-                        - Database Type: {db_type.upper()}
-                        - Host: {uri_parts.get('host', 'N/A')}
-                        - Port: {uri_parts.get('port', 'N/A')}
-                        - Database: {uri_parts.get('database', 'N/A')}
-                        - User: {uri_parts.get('username', 'N/A')}
-
-                        **You can now:**
-                        - Query data: "show tables", "select data from table"
-                        - Get analytics: "count records", "show latest entries"
-
-                        **Active Systems:** {', '.join(list(session['databases'].keys()) + list(session['s3_connections'].keys()))}
-
-                         What would you like to explore?"""
+                return f"""
+                      **Successfully Connected to {db_type.title()} at {uri_parts.get('host', 'N/A')}!**
+                        What would you like to explore?
+                        """
 
             except Exception as e:
                 print(f"Database connection error: {e}")
@@ -522,20 +511,7 @@ class MultiDatabaseAgent:
                     session["state"] = "CONNECTED"
 
                     return f"""**Successfully Connected to S3!**
-                            **S3 Connection Details:**
                             - Bucket: {bucket_name}
-                            - Region: {region}
-                            - Access Key: {access_key[:8]}...{access_key[-4:]} (masked for security)
-                            - Connection Type: {"Temporary" if session_token else "Permanent"} credentials
-
-                             **You can now:**
-                            - List files: "show bucket contents", "list files in bucket"
-                            - Get file info: "describe file filename.txt"
-                            - Manage files: "upload data to s3", "download file"
-                            - Switch systems: "connect to postgresql" or "switch to mysql"
-
-                             **Active Systems:** {', '.join(list(session['databases'].keys()) + list(session['s3_connections'].keys()))}
-
                             What would you like to do with S3?"""
 
                 except ClientError as e:
@@ -599,27 +575,10 @@ class MultiDatabaseAgent:
 
                 try:
                     result = database.run(sql_query)
-                    return f"""**Query Executed Successfully**
-                            **Operation**: {explanation}
-                            **Database**: {target_db.title()}
-                            **SQL**: {sql_query}
-
-                            **Results**:
-                            {result}
-
-                            **Try next**: "show more data", "get table info", "count records"
-                            """
+                    return result
+                
                 except Exception as query_error:
-                    return f""" **Query Execution Error**
-                            **Database**: {target_db.title()}
-                            **SQL**: {sql_query}
-                            **Issue**: {str(query_error)}
-
-                            **Solutions**:
-                            - For PostgreSQL: Use "Column Name" (double quotes)
-                            - For MySQL: Use `Column Name` (backticks)
-                            - Try: "show tables" or "describe table_name" first
-                            """
+                    return str(query_error)
 
             except Exception as e:
                 return f"**Query Processing Error**: {str(e)}"
@@ -667,13 +626,11 @@ class MultiDatabaseAgent:
                         else:
                             object_list = "No objects found in bucket"
 
-                        return f"""**S3 Objects Listed**
+                        return f"""
+                                    **S3 Objects Listed**
                                      **Bucket**: {bucket}
                                      **Objects** ({len(objects)} items):
-
                                     {object_list}
-
-                                    **Try next**: "get info for specific-file.txt", "show bucket details"
                                     """
                     except Exception as s3_error:
                         return f" **S3 List Error**: {str(s3_error)}"
@@ -694,7 +651,6 @@ class MultiDatabaseAgent:
                         return f""" **S3 Buckets Listed**
                                     **Your S3 Buckets** ({len(buckets)} items):
                                     {bucket_list}
-                                    **Try next**: "connect to bucket [bucket-name]", "list files in [bucket]"
                                     """
                     except Exception as s3_error:
                         return f" **S3 Bucket List Error**: {str(s3_error)}"
