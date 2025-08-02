@@ -3997,7 +3997,7 @@ async def database_chat(request: ChatRequest):
 
     try:
         response = await multi_db_agent.process_message(session_id, request.message)
-        return response
+        return markdown_to_html(response)
 
     except Exception as e:
         logger.error(f"Chat endpoint error: {str(e)}")
