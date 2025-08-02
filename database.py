@@ -56,7 +56,7 @@ class PostgresDatabase:
             """)
 
     def create_reports_table(self):
-        """Creates reports_fastapi table with url field instead of image_bytes."""
+        """Creates reports_fastapi table with url, title, and description fields."""
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
@@ -64,6 +64,8 @@ class PostgresDatabase:
                     id SERIAL PRIMARY KEY,
                     email VARCHAR(255),
                     url TEXT,
+                    title VARCHAR(500),
+                    description TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
@@ -152,37 +154,38 @@ class PostgresDatabase:
             cursor.execute("DELETE FROM akio_data_fastapi WHERE email = %s", (email,))
             return f"{cursor.rowcount} records deleted"
 
-    def insert_report(self, email, url):
+    
+    def insert_report(self, email, url, title=None, description=None):
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO reports_fastapi (email, url)
-                VALUES (%s, %s)
-                RETURNING id, email, url, created_at
-            """, (email, url))
+                INSERT INTO reports_fastapi (email, url, title, description)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, email, url, title, description, created_at
+            """, (email, url, title, description))
             result = cursor.fetchone()
             self.connection.commit()  # commit after insert
             return dict(zip([d[0] for d in cursor.description], result))
 
-
-    def update_report(self, email, url):
-        """Update the report URL for a given email."""
+    def update_report(self, email, url, title=None, description=None):
+        """Update the report URL, title, and description for a given email."""
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
                 UPDATE reports_fastapi
-                SET url = %s, updated_at = NOW()
+                SET url = %s, title = %s, description = %s, updated_at = NOW()
                 WHERE email = %s
-                RETURNING id, email, url, updated_at
-            """, (url, email))
+                RETURNING id, email, url, title, description, updated_at
+            """, (url, title, description, email))
             result = cursor.fetchone()
-            return dict(zip([d[0] for d in cursor.description], result))
+            self.connection.commit()  # Added commit for consistency
+            return dict(zip([d[0] for d in cursor.description], result)) if result else None
 
     def get_report_by_email(self, email):
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                SELECT id, email, url, created_at, updated_at
+                SELECT id, email, url, title, description, created_at, updated_at
                 FROM reports_fastapi
                 WHERE email = %s
             """, (email,))
@@ -193,10 +196,10 @@ class PostgresDatabase:
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             query = """
-                SELECT id, email, url, created_at, updated_at
+                SELECT id, email, url, title, description, created_at, updated_at
                 FROM reports_fastapi
                 WHERE email = %s
-                  AND id = ANY(%s)
+                AND id = ANY(%s)
             """
             cursor.execute(query, (email, report_ids))
             rows = cursor.fetchall()
@@ -207,12 +210,14 @@ class PostgresDatabase:
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("DELETE FROM reports_fastapi WHERE email = %s", (email,))
+            self.connection.commit()  # Added commit for consistency
             return f"{cursor.rowcount} reports_fastapi deleted"
 
     def delete_user_report_by_id(self, email, report_id):
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute("DELETE FROM reports_fastapi WHERE id = %s AND email = %s", (report_id, email))
+            self.connection.commit()  # Added commit for consistency
             return f"{cursor.rowcount} reports_fastapi deleted"
 
     def delete_all_tables(self):
