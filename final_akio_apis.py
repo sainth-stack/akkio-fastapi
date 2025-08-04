@@ -71,6 +71,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import threading
 import uuid
 from PyPDF2 import PdfReader
+from datetime import datetime, date, time
+from decimal import Decimal
 
 load_dotenv()
 
@@ -161,16 +163,13 @@ async def read_data(tablename: str = Form(...)):
         if df.empty:
             return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
 
-        # Clean the DataFrame to handle non-JSON compliant values
-        df_clean = clean_dataframe_for_json(df)
-
-        # Save CSV locally (optional)
-        df_clean.to_csv('data.csv', index=False)
-        os.makedirs("uploads", exist_ok=True)
-        df_clean.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
-
-        # Return JSON response with cleaned data
-        return JSONResponse(content=df_clean.to_dict(orient='records'))
+        # Ultra-safe conversion using pandas built-in JSON handling
+        result = ultra_safe_conversion(df)
+        
+        # Save CSV files (in background)
+        threading.Thread(target=save_csv_files, args=(df, tablename)).start()
+        
+        return JSONResponse(content=result)
     
     except Exception as e:
         return JSONResponse(
@@ -178,28 +177,34 @@ async def read_data(tablename: str = Form(...)):
             status_code=500
         )
 
-def clean_dataframe_for_json(df):
-    """
-    Clean DataFrame to ensure all values are JSON serializable
-    """
-    df_clean = df.copy()
-    
-    # Replace inf and -inf with None
-    df_clean = df_clean.replace([np.inf, -np.inf], None)
-    
-    # Replace NaN with None
-    df_clean = df_clean.where(pd.notnull(df_clean), None)
-    
-    # Handle any remaining problematic float values
-    for col in df_clean.columns:
-        if df_clean[col].dtype in ['float64', 'float32']:
-            # Check for any remaining non-finite values
-            mask = ~np.isfinite(df_clean[col].astype(float, errors='ignore'))
-            if mask.any():
-                df_clean.loc[mask, col] = None
-    
-    return df_clean
 
+def ultra_safe_conversion(df):
+    """
+    Uses pandas' built-in JSON conversion which handles most edge cases
+    """
+    if df.empty:
+        return []
+    
+    try:
+        # Let pandas handle the JSON conversion with proper date formatting
+        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
+        return json.loads(json_str)
+    except Exception as e:
+        # Fallback to manual conversion
+        return str(e)
+    
+
+def save_csv_files(df, tablename):
+    """Save CSV files in background"""
+    try:
+        # Save main CSV
+        df.to_csv('data.csv', index=False)
+        
+        # Create uploads directory and save table-specific CSV
+        os.makedirs("uploads", exist_ok=True)
+        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
+    except Exception as e:
+        print(f"Warning: Could not save CSV files: {e}")
 
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
@@ -374,6 +379,7 @@ async def gen_plotly_response() -> JSONResponse:
         df.columns = df.columns.str.strip()
 
         num_plots = 6  # Number of plots to generate per topic
+        basic_plots=3
         file_path = csv_file_path
         sample_data = df.head(10).to_string()
         data_types_info = df.dtypes.to_string()
@@ -393,8 +399,9 @@ async def gen_plotly_response() -> JSONResponse:
 
                         Your task is to:
                         1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
-                        2. Consider the data source as: {file_path}
-                        3. For each chart:
+                        2.You have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
+                        3. Consider the data source as: {file_path}
+                        4. For each chart:
                            - Use a short, meaningful chart title (as the dictionary key).
                            - Write a brief insight about the chart as a Python comment (# insight: ...).
                            - Generate clean Python code that:
@@ -449,6 +456,7 @@ async def gen_plotly_response() -> JSONResponse:
                                 - Convert to datetime using pd.to_datetime(df[col], errors='coerce', utc=True)
                                 - Drop rows where datetime conversion failed using df.dropna(subset=[col], inplace=True)
                             - Before using .dt, ensure the column is of datetime type using pd.to_datetime().
+                            - The basic plots should be simple and straightforward which can be easily understandable by the user, while the advanced plots should be more complex and insightful.
                         """
                       )
 
@@ -3289,7 +3297,7 @@ async def senior_data_analysis(
                             -Take the information for forecasting from the data.csv itself.
                             -Extract the dates very accurately from the data.csv and use that dates for forecasting.
                         
-                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
+                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","Description" as the keys:
                             {{
                                 "report": {{
                                     "heading": "[Suitable Heading]",
@@ -3428,6 +3436,8 @@ async def senior_data_analysis(
                                         }}
                                     ]
                                 }}
+                                "title: "[Suitable Title for the Report]",
+                                "Description":"[A brief  one liner description of the report's purpose and scope]"
                             }}
 
                             FORECASTING REQUIREMENTS:
@@ -3460,51 +3470,82 @@ async def senior_data_analysis(
             # Generate regular analysis prompt
             prompt_eng = (
                 f"""
-                You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
-                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
+                        You are a **Senior Data Analyst**.  
+                        Handle **any kind of user query**—from casual questions to advanced statistical analysis—while strictly following the rules below.
 
-                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "answer" as the key:
-                {{
-                    "answer": "Your analysis result here..."
-                }}
+                        ────────────────────────────────────────────────────────────────────────
+                        GLOBAL RESPONSE FORMAT  
+                        • Every reply MUST be valid JSON with exactly one top-level key: **"answer"**.  
+                        Example:  
+                        {
+                            "answer": "Your analysis result here..."
+                        }
+                        • Never add extra keys, nesting, or comments outside the JSON block.
+                        ────────────────────────────────────────────────────────────────────────
+                        HOW TO DECIDE WHAT TO RETURN
+                        1. Generic queries  
+                        • If the user question does not involve the dataset, answer concisely in plain text (inside the JSON).
 
-                1. Generic Queries:
-                    If the user's query is generic and not related to data, respond with a concise and appropriate answer in the JSON format above.
-                2. Data-Related Queries:
-                    If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
-                3. Visualisation related questions:
-                    Generate clear visualisations based on the data.csv given to you.
-                4. KPI related questions:
-                    Generate the kpis regarding the dataset given.
-                And there are more number of tasks you have to do whatever the senior data analyst can do.
-                Answer for all the queries in a meaningful manner.
+                        2. Data-related queries  
+                        • Assume the data source is **data.csv** and its columns are exactly those listed in **{metadata_str}**.  
+                        • Perform whatever processing, statistics, KPIs, or predictions are requested.  
+                        • Never invent data; use only what is in data.csv.
 
-                Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
+                        3. Visualisation requests  
+                        • Write clean, self-contained Python code that generates the requested chart.  
+                        • Follow the Code-Safety rules (see below).  
+                        • End the code with `plt.show()` so the plot is displayed.  
+                        • The final printed line must be meaningful (e.g., print the figure object or a confirmation message).
 
-                ### Code Safety & Execution Guidelines:
-                - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
-                - Always use self-contained code that runs without dependencies on undefined names or external files.
-                - If plotting with matplotlib/seaborn:
-                    - Use basic arguments only (e.g., `x`, `y`, `data`)
-                    - Avoid customizing with advanced style props unless necessary
-                    - Use `plt.show()` after plotting
-                - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
-                - Always print results with `print()` — never rely on implicit outputs.
-                - The final line of your code should print something meaningful (DataFrame, value, message).
-                - Never use `plt.savefig()` or attempt to write files.
+                        4. KPI or summary-table requests  
+                        • Produce the KPIs or summary statistics in a **pure HTML table** using `<table>`, `<tr>`, `<td>` only (no `<th>`, no headings).
 
-                ### You MUST assume:
-                - The data required for your analysis can be always there in data.csv. 
-                - consider the metadata as it is in {metadata_str}.
-                - Your code is being `exec()`'d in a secure Python environment
-                ### IMPORTANT:
-                - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
-                - You dont even have to give the explanation i.e how you did for getting that results.
-                - If you got any analysis like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
-                - Do not mention the headings at any cost.
-                - All the statistics and summary should be present in the tabular format only.
+                        5. Mixed or complex queries  
+                        • If a question combines several tasks (e.g., “show a chart and list KPIs”), fulfil ALL parts, preserving the rules above.
 
-                User query is {query}.
+                        ────────────────────────────────────────────────────────────────────────
+                        CODE-SAFETY & EXECUTION RULES  
+                        • Use only standard libraries plus pandas, numpy, matplotlib, seaborn.  
+                        • No undefined variables (e.g., boxprops) unless you define them.  
+                        • No file I/O except reading **data.csv** (already present).  
+                        • Do NOT use `os`, `sys`, `input()`, `open()`, or save/write any files.  
+                        • Always call `plt.show()` after plotting.  
+                        • Always include a `print()` statement at the end of your code.  
+                        • The last line of code must print something meaningful.
+
+                        ────────────────────────────────────────────────────────────────────────
+                        STYLE & TONE  
+                        • Never reveal internal reasoning or the steps you took—only provide the result (code, table, or plain text).  
+                        • Do **not** prepend headings or explanations.  
+                        • Do **not** reply with “Understood” or similar confirmations.  
+                        • Keep answers succinct and relevant.
+
+                        ────────────────────────────────────────────────────────────────────────
+                        PLACEHOLDERS  
+                        • `{metadata_str}`: replace with the real column list when rendering the prompt to the analyst.  
+                        • `{query}`: the user's question.
+
+                        ────────────────────────────────────────────────────────────────────────
+                        EXAMPLES
+
+                        User: “What is 2 + 2?”  
+                        Return:  
+                        {
+                            "answer": "4"
+                        }
+
+                        User: “Show a histogram of the Age column.”  
+                        Return:  
+                        {
+                            "answer": "``````"
+                        }
+
+                        User: “Give me average salary and headcount.”  
+                        Return:  
+                        {
+                            "answer": "<table><tr><td>Average Salary</td><td>75,230</td></tr><tr><td>Headcount</td><td>1,024</td></tr></table>"
+                        }
+
             """
             )
 
@@ -3688,124 +3729,6 @@ def upload_file_to_s3(file: UploadFile, bucket: str, key: str) -> str:
     return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"
 
 
-def extract_text_with_pypdf_loader(file_contents: bytes) -> str:
-    """
-    Extract text from PDF using BytesIO instead of temporary files.
-    """
-    try:
-        # Use BytesIO to avoid file system issues
-        pdf_stream = io.BytesIO(file_contents)
-        
-        # Use PyPDF2 directly with BytesIO
-        reader = PdfReader(pdf_stream)
-        
-        # Extract text from all pages
-        text_parts = []
-        for page in reader.pages:
-            text_parts.append(page.extract_text())
-        
-        text = "\n".join(text_parts)
-        return text.strip()
-        
-    except Exception as e:
-        print(f"Error with PyPDF2: {e}")
-        
-
-from datascout import initialize_llm
-async def analyze_pdf_with_llm(pdf_text: str) -> dict:
-    """
-    Use LLM to extract title and description from PDF text.
-    """
-    if not pdf_text or len(pdf_text.strip()) < 10:
-        return {
-            "title": "Untitled Document",
-            "description": "No content could be extracted from the document."
-        }
-    
-    # Truncate text if too long (to avoid token limits)
-    max_chars = 8000
-    if len(pdf_text) > max_chars:
-        pdf_text = pdf_text[:max_chars] + "..."
-    
-    prompt = f"""
-            Analyze the following PDF content and extract:
-            1. A concise, descriptive title (max 70 characters)
-            2. A brief description summarizing the main content (max 200 characters)
-
-            PDF Content:
-            {pdf_text}
-
-            Respond ONLY with valid JSON format (no markdown formatting, no code blocks):
-            {{
-                "title": "extracted title here",
-                "description": "brief description here"
-            }}
-
-            Rules:
-            - Title should be clear and descriptive
-            - Description should summarize key points
-            - If content is unclear, provide generic but meaningful titles/descriptions
-            - Keep responses concise and professional
-            - Return ONLY the JSON object, no additional text or formatting
-            """
-
-    try:
-        llm = initialize_llm()
-        response = llm.invoke([HumanMessage(content=prompt)])
-        response_text = response.content.strip()
-        
-        # Remove markdown code blocks if present
-        if response_text.startswith("```json"):
-            response_text = response_text[7:]  # Remove ```
-        if response_text.startswith("```"):
-            response_text = response_text[3:]   # Remove ```
-        if response_text.endswith("```"):
-            response_text = response_text[:-3]  # Remove trailing ```
-        
-        # Clean up any remaining whitespace
-        response_text = response_text.strip()
-        
-        # Alternative approach: Use regex to extract JSON if still wrapped
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            response_text = json_match.group()
-        
-        # Parse JSON response
-        parsed_response = json.loads(response_text)
-        
-        return {
-            "title": parsed_response.get("title", "Document Analysis")[:100],
-            "description": parsed_response.get("description", "PDF document content")[:300]
-        }
-        
-    except json.JSONDecodeError as je:
-        print(f"JSON parsing error: {je}")
-        print(f"Raw response: {response_text}")
-        
-        # Fallback: Try to extract title and description using regex
-        try:
-            title_match = re.search(r'"title":\s*"([^"]*)"', response_text)
-            desc_match = re.search(r'"description":\s*"([^"]*)"', response_text)
-            
-            if title_match and desc_match:
-                return {
-                    "title": title_match.group(1)[:100],
-                    "description": desc_match.group(1)[:300]
-                }
-        except Exception as regex_error:
-            print(f"Regex fallback failed: {regex_error}")
-        
-        return {
-            "title": "Document Analysis",
-            "description": "Content analysis unavailable due to parsing error."
-        }
-    except Exception as e:
-        print(f"Error analyzing PDF with LLM: {e}")
-        return {
-            "title": "Document Analysis",
-            "description": "Content analysis unavailable at this time."
-        }
-
 def serialize_report(report: dict) -> dict:
     """Convert datetime objects to ISO format strings in a report dict."""
     for key in ['created_at', 'updated_at']:
@@ -3814,10 +3737,11 @@ def serialize_report(report: dict) -> dict:
     return report
 
 
-
 @app.post("/api/save_report")
 async def save_report(
         email: str = Form(...),
+        title: str = Form(...),
+        description: str = Form(...),
         pdf_file: UploadFile = File(...)
 ) -> JSONResponse:
     """
@@ -3846,20 +3770,6 @@ async def save_report(
         except Exception as s3exc:
             raise HTTPException(status_code=500, detail=f"S3 upload failed: {s3exc}")
 
-        # Extract text from PDF
-        print("Extracting text from PDF...")
-        pdf_text = extract_text_with_pypdf_loader(file_contents)
-        print(f"Extracted {len(pdf_text)} characters from PDF")
-
-        # Analyze PDF content with LLM
-        print("Analyzing PDF content with LLM...")
-        analysis_result = await analyze_pdf_with_llm(pdf_text)
-        print(f"LLM Analysis: {analysis_result}")
-
-        # Extract title and description from analysis
-        title = analysis_result.get("title")
-        description = analysis_result.get("description")
-
         # Insert record in DB with extracted metadata INCLUDING title and description
         result = db.insert_report(email, s3_url, title, description)
         result = serialize_report(result) if result else {}
@@ -3870,8 +3780,7 @@ async def save_report(
             "result": result,
             "pdf_url": s3_url,
             "title": title,
-            "description": description,
-            "text_length": len(pdf_text),
+            "description": description
         })
 
     except HTTPException as he:
@@ -3879,6 +3788,7 @@ async def save_report(
     except Exception as exc:
         print(f"Unexpected error in save_report: {exc}")
         raise HTTPException(status_code=500, detail=f"Error in save_report: {exc}")
+
 
 
 @app.post("/api/get_reports_by_email")
@@ -3986,29 +3896,18 @@ multi_db_agent = MultiDatabaseAgent()
 
 @app.post("/api/database_chat", response_model=ChatResponse)
 async def database_chat(request: ChatRequest):
-    """
-    Main chat endpoint for multi-database operations
-
-    Supports:
-    - Multiple database connections (PostgreSQL, MySQL, SQLite, Oracle, SQL Server)
-    - Natural language queries across databases
-    - Automatic SQL generation and execution
-    - Cross-database operations and comparisons
-    """
-
-    # Generate session ID if not provided
-    """
-        Main chat endpoint for multi-database operations
-        """
     # Generate session ID if not provided, otherwise use the provided one
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
         response = await multi_db_agent.process_message(session_id, request.message)
+
+        formatted_response=await llm_format_response(user_query=request.message, response=response.response)
+        print(f"Formatted response: {formatted_response}")
         return JSONResponse(
             content={
                 "session_id": session_id,
-                "response": markdown_to_html(response.response)
+                "response": markdown_to_html(formatted_response),
             },
             status_code=200
         )
@@ -4020,6 +3919,40 @@ async def database_chat(request: ChatRequest):
             detail=f"Internal server error: {str(e)}"
         )
 
+
+async def llm_format_response(user_query: str, response: str) -> str:
+    """
+    Formats the LLM response to include user query and response in a structured way.
+    """
+    prompt = f"""
+                You are a helpful formatting assistant.
+            The user asked the following question:
+            "{user_query}"
+
+            Here is the raw response:
+            \"\"\"{json.dumps(response)}\"\"\"
+
+            -Just consider the "data" key only in the raw respose.
+
+            Determine if the user expects the response in:
+            - bullet points (if asking for "list", "top items", "options", etc.)
+            - a table (if asking for "comparison", "tabular", "table", "data", etc.)
+            - plain answer otherwise
+            
+            -You can add a one liner explanation before the response about the response.
+            Convert the response to that format using HTML (use <ul>/<li> for lists, <table> for tables, <p> for plain).
+            Reply with only the formatted HTML content.
+            """
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": "you are a responsive formatting assistant"},
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response.choices[0].message.content.strip()
 
 if __name__ == "__main__":
     import uvicorn
