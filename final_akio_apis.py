@@ -3436,8 +3436,12 @@ async def senior_data_analysis(
                                         }}
                                     ]
                                 }}
-                                "title: "[Suitable Title for the Report]",
-                                "Description":"[A brief  one liner description of the report's purpose and scope]"
+                                {{
+                                    "title: {{"[Suitable Title for the Report]"}}
+                                }}
+                                {{ 
+                                    "Description": {{"[A brief  one liner description of the report's purpose and scope]"}}
+                                }}
                             }}
 
                             FORECASTING REQUIREMENTS:
