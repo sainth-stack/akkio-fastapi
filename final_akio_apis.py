@@ -3530,7 +3530,7 @@ async def senior_data_analysis(
         print("executed_result is", result)
 
         return JSONResponse(
-            content=clean_json_response(result),
+            content=result,
             status_code=200
         )
 
