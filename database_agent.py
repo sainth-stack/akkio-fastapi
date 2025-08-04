@@ -15,6 +15,8 @@ import asyncio
 from typing import Optional, Dict, Any
 from datetime import datetime
 import logging
+from enum import Enum
+from typing import Dict, Any, Optional, List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +34,7 @@ class ChatResponse(BaseModel):
     connection_status: str
     active_databases: list
     timestamp: str
+
 
 class MultiDatabaseAgent:
     def __init__(self):
@@ -263,84 +266,90 @@ class MultiDatabaseAgent:
                 Remember: You are a helpful, intelligent multi-system expert who makes complex database and cloud storage operations simple through natural conversation. Always prioritize accuracy, security, and user experience.
                 """
 
-    async def process_message(self, session_id: str, message: str) -> ChatResponse:
-        """Main conversation processing logic"""
-        print(f"Processing message for session {session_id}: {message}")
 
-        # Initialize session if new
+    async def process_message(self, session_id: str, message: str) -> ChatResponse:
+        """
+        Main entry-point called by the FastAPI route.
+        """
+        logger.info("Processing message for session %s: %s", session_id, message)
+
+        # Initialise session if necessary
         if session_id not in self.sessions:
-            print(f"Creating new session: {session_id}")
+            logger.info("Creating new session: %s", session_id)
             self.sessions[session_id] = {
                 "state": "INITIAL",
-                "databases": {},  # db_type -> {agent, uri, connected}
-                "s3_connections": {},  # bucket -> {client, connection_info}
+                "databases": {},        # db_type → {agent, uri, database}
+                "s3_connections": {},   # bucket  → {client, …}
                 "active_db": None,
                 "active_s3": None,
                 "conversation_history": [],
-                "last_activity": datetime.now()
+                "last_activity": datetime.utcnow(),
             }
 
         session = self.sessions[session_id]
-        session["last_activity"] = datetime.now()
-
-        print(f"Current session state: {session['state']}")
-        print(f"Active databases: {list(session['databases'].keys())}")
-        print(f"Active S3 connections: {list(session['s3_connections'].keys())}")
+        session["last_activity"] = datetime.utcnow()
 
         try:
-            # Add to conversation history
-            session["conversation_history"].append({"user": message, "timestamp": datetime.now()})
+            # ── build prompt context ────────────────────────────────────
+            session["conversation_history"].append(
+                {"user": message, "timestamp": datetime.utcnow()}
+            )
 
-            # Get system prompt with current context
-            active_systems = list(session["databases"].keys()) + list(session["s3_connections"].keys())
-            system_prompt = self.get_comprehensive_system_prompt(session["state"], active_systems)
+            system_prompt = self.get_comprehensive_system_prompt(
+                session["state"],
+                list(session["databases"].keys()) + list(session["s3_connections"].keys()),
+            )
 
-            # Build conversation context
-            messages = [SystemMessage(content=system_prompt)]
+            messages: List[HumanMessage | SystemMessage] = [
+                SystemMessage(content=system_prompt)
+            ]
 
-            # Add recent conversation history (last 5 exchanges for performance)
-            recent_history = session["conversation_history"][-5:]
-            for entry in recent_history[:-1]:
+            # add last five user / assistant turns
+            for entry in session["conversation_history"][-5:-1]:
                 messages.append(HumanMessage(content=entry["user"]))
                 if "assistant" in entry:
                     messages.append(HumanMessage(content=entry["assistant"]))
 
-            # Add current message
             messages.append(HumanMessage(content=message))
 
-            # Get LLM response
-            llm_response = await self.llm.ainvoke(messages)
-            response_content = llm_response.content
-            print("llm_response:", response_content)
+            # ── call LLM ────────────────────────────────────────────────
+            llm_resp = await self.llm.ainvoke(messages)
+            cleaned_resp = self.clean_llm_response(llm_resp.content)
+            logger.info("LLM cleaned response: %s", cleaned_resp)
 
-            # Clean the response content
-            cleaned_response = self.clean_llm_response(response_content)
-            print("cleaned_response:", cleaned_response)
-
-            # Process LLM commands
-            final_response = await self.handle_llm_commands(session_id, message, cleaned_response)
-            print("final_response after handling llm commands:", final_response)
-
-            # Add assistant response to history
-            session["conversation_history"][-1]["assistant"] = final_response
-
-            return ChatResponse(
-                response=final_response,
+            # ── let the command handler take over ──────────────────────
+            final_json = await self.handle_llm_commands(
                 session_id=session_id,
-                connection_status=session["state"],
-                active_databases=list(session["databases"].keys()) + list(session["s3_connections"].keys()),
-                timestamp=datetime.now().isoformat()
+                user_message=message,
+                llm_response=cleaned_resp,
             )
 
-        except Exception as e:
-            logger.error(f"Error processing message for session {session_id}: {str(e)}")
+            # log assistant reply
+            session["conversation_history"][-1]["assistant"] = final_json
+
             return ChatResponse(
-                response=f"❌ **System Error**: {str(e)}\n\nPlease try again or start a new session.",
+                response=final_json,
+                session_id=session_id,
+                connection_status=session["state"],
+                active_databases=list(session["databases"].keys())
+                + list(session["s3_connections"].keys()),
+                timestamp=datetime.utcnow().isoformat(),
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled error")
+            error_payload = create_standard_response(
+                data={"error_details": str(exc)},
+                metadata={"session_id": session_id},
+            )
+            return ChatResponse(
+                response=json.dumps(error_payload, indent=2),
                 session_id=session_id,
                 connection_status="ERROR",
                 active_databases=[],
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.utcnow().isoformat(),
             )
+
 
     def clean_llm_response(self, response: str) -> str:
         """Clean LLM response by removing backticks and markdown formatting"""
@@ -362,10 +371,9 @@ class MultiDatabaseAgent:
 
         return cleaned.strip()
 
-
     async def handle_llm_commands(self, session_id: str, user_message: str, llm_response: str) -> str:
-        """Handle all LLM commands for databases and S3"""
-
+        """Handle all LLM commands for databases and S3 - returns JSON responses"""
+        
         session = self.sessions[session_id]
         print("In handle llm commands.....")
         print("session_id:", session_id)
@@ -400,7 +408,7 @@ class MultiDatabaseAgent:
                 # Create database connection
                 database = SQLDatabase.from_uri(db_uri)
 
-                # Create SQL agent with improved settings
+                # Create SQL agent
                 agent = create_sql_agent(
                     self.llm,
                     db=database,
@@ -423,22 +431,33 @@ class MultiDatabaseAgent:
                 session["active_db"] = db_type
                 session["state"] = "CONNECTED"
 
-                print(f"Successfully connected! Session state: {session['state']}")
-                print(f"Active databases: {list(session['databases'].keys())}")
-
-                # Extract connection details for display
+                # Extract connection details
                 uri_parts = self.parse_connection_uri(db_uri)
 
-                return f"""
-                      **Successfully Connected to {db_type.title()} at {uri_parts.get('host', 'N/A')}!**
-                        What would you like to explore?
-                        """
+                response = create_standard_response(
+                    data={
+                        "database_type": db_type,
+                        "host": uri_parts.get('host', 'N/A'),
+                        "database_name": uri_parts.get('database', 'N/A'),
+                        "connection_status": "active"
+                    },
+                    metadata={
+                        "session_state": session["state"],
+                        "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
+                    }
+                )
+
+                return json.dumps(response, indent=2)
 
             except Exception as e:
                 print(f"Database connection error: {e}")
-                return f"**Database Connection Failed**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)},
+                    metadata={"attempted_connection": db_type if 'db_type' in locals() else "unknown"}
+                )
+                return json.dumps(response, indent=2)
 
-        # Handle S3 connection with user-provided credentials
+        # Handle S3 connection
         elif "CONNECT_S3:" in llm_response:
             try:
                 json_start = llm_response.find("CONNECT_S3:") + len("CONNECT_S3:")
@@ -458,51 +477,48 @@ class MultiDatabaseAgent:
                     json_data = json_data[:json_end]
 
                 s3_data = json.loads(json_data)
-                
-                # Extract user-provided credentials
                 access_key = s3_data.get("access_key")
                 secret_key = s3_data.get("secret_key") 
                 region = s3_data.get("region", "us-east-1")
                 bucket_name = s3_data.get("bucket")
-                session_token = s3_data.get("session_token")  # Optional
+                session_token = s3_data.get("session_token")
 
                 # Validate required credentials
                 if not access_key or not secret_key or not bucket_name:
-                    return """**Missing S3 Credentials**
-                            Please provide all required S3 credentials:
-                            - **Access Key ID**: Your AWS Access Key ID (starts with AKIA...)
-                            - **Secret Access Key**: Your AWS Secret Access Key
-                            - **Bucket Name**: S3 bucket name
-                            - **Region**: AWS region (optional, defaults to us-east-1)
+                    response = create_standard_response(
+                        data={
+                            "required_fields": ["access_key", "secret_key", "bucket"],
+                            "missing_fields": [
+                                field for field in ["access_key", "secret_key", "bucket"] 
+                                if not s3_data.get(field)
+                            ]
+                        },
+                        metadata={
+                            "help": "Provide all required S3 credentials to establish connection"
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
-                            **Example**: "Connect to S3 with access_key=AKIA123..., secret_key=xyz789..., region=us-east-1, bucket=my-bucket"
-                            """
-
-                # Create S3 client with user-provided credentials
+                # Create S3 client
                 try:
-                    # Build credentials dictionary
                     credentials = {
                         'aws_access_key_id': access_key,
                         'aws_secret_access_key': secret_key,
                         'region_name': region
                     }
                     
-                    # Add session token if provided (for temporary credentials)
                     if session_token:
                         credentials['aws_session_token'] = session_token
                     
-                    # Create S3 client with user credentials
                     s3_client = boto3.client('s3', **credentials)
-                    
-                    # Test connection by checking if bucket exists and is accessible
                     s3_client.head_bucket(Bucket=bucket_name)
                     
-                    # Store S3 connection info
+                    # Store S3 connection
                     session["s3_connections"][bucket_name] = {
                         "client": s3_client,
                         "bucket": bucket_name,
                         "region": region,
-                        "access_key": access_key[:8] + "..." + access_key[-4:],  # Mask middle part
+                        "access_key": access_key[:8] + "..." + access_key[-4:],
                         "connected": True,
                         "connected_at": datetime.now().isoformat()
                     }
@@ -510,33 +526,43 @@ class MultiDatabaseAgent:
                     session["active_s3"] = bucket_name
                     session["state"] = "CONNECTED"
 
-                    return f"""**Successfully Connected to S3!**
-                            - Bucket: {bucket_name}
-                            What would you like to do with S3?"""
+                    response = create_standard_response(
+                        data={
+                            "bucket_name": bucket_name,
+                            "region": region,
+                            "access_key_masked": access_key[:8] + "..." + access_key[-4:],
+                            "connection_status": "active"
+                        },
+                        metadata={
+                            "session_state": session["state"],
+                            "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
                 except ClientError as e:
                     error_code = e.response['Error']['Code']
-                    if error_code == 'NoSuchBucket':
-                        return f" **S3 Bucket Not Found**: Bucket '{bucket_name}' does not exist or you don't have access to it."
-                    elif error_code == 'InvalidAccessKeyId':
-                        return " **Invalid Access Key**: The AWS Access Key ID you provided is not valid."
-                    elif error_code == 'SignatureDoesNotMatch':
-                        return " **Invalid Secret Key**: The AWS Secret Access Key you provided is not valid."
-                    elif error_code == 'AccessDenied':
-                        return f" **Access Denied**: You don't have permission to access bucket '{bucket_name}'."
-                    else:
-                        return f" **S3 Connection Failed**: {str(e)}"
-                        
-                except NoCredentialsError:
-                    return " **No AWS Credentials**: Please provide valid AWS Access Key ID and Secret Access Key."
+                    error_messages = {
+                        'NoSuchBucket': f"Bucket '{bucket_name}' does not exist or is not accessible",
+                        'InvalidAccessKeyId': "Invalid AWS Access Key ID provided",
+                        'SignatureDoesNotMatch': "Invalid AWS Secret Access Key provided",
+                        'AccessDenied': f"Access denied to bucket '{bucket_name}'"
+                    }
                     
-                except Exception as s3_error:
-                    return f" **S3 Connection Error**: {str(s3_error)}"
+                    response = create_standard_response(
+                        data={
+                            "error_code": error_code,
+                            "error_details": error_messages.get(error_code, str(e)),
+                            "bucket_name": bucket_name
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
-            except json.JSONDecodeError as je:
-                return " **S3 Credential Parsing Error**: Could not parse S3 connection details."
             except Exception as e:
-                return f" **S3 Setup Error**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)}
+                )
+                return json.dumps(response, indent=2)
 
         # Handle database queries
         elif "EXECUTE_QUERY:" in llm_response:
@@ -562,7 +588,11 @@ class MultiDatabaseAgent:
                 explanation = query_data.get("explanation", "Executing database query")
 
                 if not target_db or target_db not in session["databases"]:
-                    return " **No Database Connection**\nPlease connect to PostgreSQL or MySQL first."
+                    response = create_standard_response(
+                        data={"available_databases": list(session["databases"].keys())},
+                        metadata={"suggestion": "Connect to PostgreSQL or MySQL first"}
+                    )
+                    return json.dumps(response, indent=2)
 
                 # Generate and execute SQL query
                 db_info = session["databases"][target_db]
@@ -571,19 +601,42 @@ class MultiDatabaseAgent:
                 sql_query = await self.generate_sql_query(user_message, database, target_db)
                 
                 if not sql_query:
-                    return " **Could not generate SQL query**\nPlease try rephrasing your request."
+                    response = create_standard_response(
+                        data={"user_request": user_message},
+                        metadata={"suggestion": "Try rephrasing your request"}
+                    )
+                    return json.dumps(response, indent=2)
 
                 try:
                     result = database.run(sql_query)
-                    return result
+                    
+                    response = create_standard_response(
+                        data={
+                            "result": result
+                        },
+                        metadata={
+                            "execution_time": datetime.now().isoformat(),
+                            "database": target_db
+                        }
+                    )
+                    return json.dumps(response, indent=2)
                 
                 except Exception as query_error:
-                    return str(query_error)
+                    response = create_standard_response(
+                        data={
+                            "error_details": str(query_error),
+                            "database_type": target_db
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
             except Exception as e:
-                return f"**Query Processing Error**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)}
+                )
+                return json.dumps(response, indent=2)
 
-        # Handle S3 operations using stored client
+        # Handle S3 operations
         elif "EXECUTE_S3:" in llm_response:
             try:
                 json_start = llm_response.find("EXECUTE_S3:") + len("EXECUTE_S3:")
@@ -607,56 +660,90 @@ class MultiDatabaseAgent:
                 bucket = s3_data.get("bucket", session.get("active_s3"))
 
                 if not bucket or bucket not in session["s3_connections"]:
-                    return " **No S3 Connection**: Please connect to an S3 bucket first."
+                    response = create_standard_response(
+                        data={"available_buckets": list(session["s3_connections"].keys())},
+                        metadata={"suggestion": "Connect to an S3 bucket first"}
+                    )
+                    return json.dumps(response, indent=2)
 
-                # Get the user-created S3 client
                 s3_connection = session["s3_connections"][bucket]
                 s3_client = s3_connection["client"]
 
                 if operation == "list_objects":
                     try:
-                        response = s3_client.list_objects_v2(Bucket=bucket, MaxKeys=20)
-                        objects = response.get('Contents', [])
+                        response_data = s3_client.list_objects_v2(Bucket=bucket, MaxKeys=20)
+                        objects = response_data.get('Contents', [])
                         
-                        if objects:
-                            object_list = "\n".join([
-                                f"📄 {obj['Key']} ({obj['Size']} bytes, {obj['LastModified'].strftime('%Y-%m-%d %H:%M:%S')})" 
-                                for obj in objects
-                            ])
-                        else:
-                            object_list = "No objects found in bucket"
+                        object_list = [
+                            {
+                                "key": obj['Key'],
+                                "size": obj['Size'],
+                                "last_modified": obj['LastModified'].isoformat(),
+                                "etag": obj.get('ETag', '')
+                            }
+                            for obj in objects
+                        ]
 
-                        return f"""
-                                    **S3 Objects Listed**
-                                     **Bucket**: {bucket}
-                                     **Objects** ({len(objects)} items):
-                                    {object_list}
-                                    """
+                        response = create_standard_response(
+                            data={
+                                "bucket_name": bucket,
+                                "object_count": len(objects),
+                                "objects": object_list,
+                                "operation": "list_objects"
+                            },
+                            metadata={
+                                "max_keys": 20,
+                                "has_more": response_data.get('IsTruncated', False)
+                            }
+                        )
+                        return json.dumps(response, indent=2)
+
                     except Exception as s3_error:
-                        return f" **S3 List Error**: {str(s3_error)}"
+                        response = create_standard_response(
+                            data={
+                                "bucket_name": bucket,
+                                "operation": "list_objects",
+                                "error_details": str(s3_error)
+                            }
+                        )
+                        return json.dumps(response, indent=2)
 
                 elif operation == "list_buckets":
                     try:
-                        response = s3_client.list_buckets()
-                        buckets = response.get('Buckets', [])
+                        response_data = s3_client.list_buckets()
+                        buckets = response_data.get('Buckets', [])
                         
-                        if buckets:
-                            bucket_list = "\n".join([
-                                f"🪣 {bucket['Name']} (created: {bucket['CreationDate'].strftime('%Y-%m-%d')})" 
-                                for bucket in buckets
-                            ])
-                        else:
-                            bucket_list = "No buckets found"
+                        bucket_list = [
+                            {
+                                "name": bucket_info['Name'],
+                                "creation_date": bucket_info['CreationDate'].isoformat()
+                            }
+                            for bucket_info in buckets
+                        ]
 
-                        return f""" **S3 Buckets Listed**
-                                    **Your S3 Buckets** ({len(buckets)} items):
-                                    {bucket_list}
-                                    """
+                        response = create_standard_response(
+                            data={
+                                "bucket_count": len(buckets),
+                                "buckets": bucket_list,
+                                "operation": "list_buckets"
+                            }
+                        )
+                        return json.dumps(response, indent=2)
+
                     except Exception as s3_error:
-                        return f" **S3 Bucket List Error**: {str(s3_error)}"
+                        response = create_standard_response(
+                            data={
+                                "operation": "list_buckets",
+                                "error_details": str(s3_error)
+                            }
+                        )
+                        return json.dumps(response, indent=2)
 
             except Exception as e:
-                return f" **S3 Operation Error**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)}
+                )
+                return json.dumps(response, indent=2)
 
         # Handle disconnection commands
         elif "DISCONNECT_DB:" in llm_response:
@@ -698,13 +785,24 @@ class MultiDatabaseAgent:
                         if not remaining_dbs and not session["s3_connections"]:
                             session["state"] = "INITIAL"
 
-                    return f"""**Disconnected from {disconnect_type.title()}**
-                                 Connection closed successfully
-                                 Remaining systems: {', '.join(list(session['databases'].keys()) + list(session['s3_connections'].keys())) if (session['databases'] or session['s3_connections']) else 'None'}
-                                You can reconnect anytime"""
+                    response = create_standard_response(
+                        data={
+                            "disconnected_system": disconnect_type,
+                            "remaining_databases": list(session["databases"].keys()),
+                            "remaining_s3_connections": list(session["s3_connections"].keys())
+                        },
+                        metadata={
+                            "session_state": session["state"],
+                            "can_reconnect": True
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
             except Exception as e:
-                return f" **Disconnect Error**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)}
+                )
+                return json.dumps(response, indent=2)
 
         # Handle S3 disconnection
         elif "DISCONNECT_S3:" in llm_response:
@@ -737,33 +835,77 @@ class MultiDatabaseAgent:
                         if not remaining_buckets and not session["databases"]:
                             session["state"] = "INITIAL"
 
-                    return f"""**Disconnected from S3 Bucket: {bucket}**
-                                 S3 connection closed successfully
-                                 Remaining systems: {', '.join(list(session['databases'].keys()) + list(session['s3_connections'].keys())) if (session['databases'] or session['s3_connections']) else 'None'}
-                                You can reconnect anytime"""
+                    response = create_standard_response(
+                        data={
+                            "disconnected_bucket": bucket,
+                            "remaining_databases": list(session["databases"].keys()),
+                            "remaining_s3_connections": list(session["s3_connections"].keys())
+                        },
+                        metadata={
+                            "session_state": session["state"],
+                            "can_reconnect": True
+                        }
+                    )
+                    return json.dumps(response, indent=2)
 
             except Exception as e:
-                return f" **S3 Disconnect Error**: {str(e)}"
+                response = create_standard_response(
+                    data={"error_details": str(e)}
+                )
+                return json.dumps(response, indent=2)
 
         # Handle status requests
         elif "SHOW_STATUS" in llm_response:
             if not session["databases"] and not session["s3_connections"]:
-                return "📭 **No Active Connections**\n\nConnect to PostgreSQL, MySQL, or S3 to get started!"
+                response = create_standard_response(
+                    data={
+                        "databases": {},
+                        "s3_connections": {},
+                        "total_connections": 0
+                    },
+                    metadata={
+                        "suggestion": "Connect to PostgreSQL, MySQL, or S3 to get started"
+                    }
+                )
+                return json.dumps(response, indent=2)
 
-            status_info = "🗄️ **Active Connections:**\n\n"
-            
-            # Show database connections
+            # Prepare database status
+            db_status = {}
             for db_type, db_info in session["databases"].items():
-                active_indicator = "🔴" if db_type == session["active_db"] else "🟢"
-                status_info += f"{active_indicator} **{db_type.title()}**: Connected since {db_info['connected_at'][:19]}\n"
-            
-            # Show S3 connections
-            for bucket, s3_info in session["s3_connections"].items():
-                active_indicator = "🔴" if bucket == session["active_s3"] else "☁️"
-                status_info += f"{active_indicator} **S3/{bucket}**: Connected since {s3_info['connected_at'][:19]}\n"
+                db_status[db_type] = {
+                    "status": "connected",
+                    "connected_since": db_info['connected_at'],
+                    "is_active": db_type == session["active_db"],
+                    "type": "database"
+                }
 
-            status_info += f"\n**Available Actions:**\n- Switch systems: 'switch to [system]'\n- Query data: 'show tables' or 'list files'\n- Disconnect: 'disconnect from [system]'"
-            return status_info
+            # Prepare S3 status
+            s3_status = {}
+            for bucket, s3_info in session["s3_connections"].items():
+                s3_status[bucket] = {
+                    "status": "connected",
+                    "connected_since": s3_info['connected_at'],
+                    "is_active": bucket == session["active_s3"],
+                    "region": s3_info.get('region', 'unknown'),
+                    "type": "s3"
+                }
+
+            response = create_standard_response(
+                data={
+                    "databases": db_status,
+                    "s3_connections": s3_status,
+                    "total_connections": len(db_status) + len(s3_status),
+                    "session_state": session["state"]
+                },
+                metadata={
+                    "available_actions": [
+                        "Switch systems: 'switch to [system]'",
+                        "Query data: 'show tables' or 'list files'",
+                        "Disconnect: 'disconnect from [system]'"
+                    ]
+                }
+            )
+            return json.dumps(response, indent=2)
 
         # Regular LLM response
         else:
@@ -771,7 +913,15 @@ class MultiDatabaseAgent:
                 if session["state"] == "INITIAL":
                     session["state"] = "AWAITING_CREDENTIALS"
 
-            return llm_response
+            response = create_standard_response(
+                data={"content": llm_response},
+                metadata={
+                    "session_state": session["state"],
+                    "is_llm_response": True
+                }
+            )
+            return json.dumps(response, indent=2)
+        
 
     def parse_connection_uri(self, uri: str) -> Dict[str, str]:
         """Parse connection URI to extract components"""
@@ -855,3 +1005,10 @@ class MultiDatabaseAgent:
             logger.error(f"Error generating SQL query: {e}")
             return None
 
+
+def create_standard_response( data: Optional[Dict[str, Any]] = None,metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "data": data or {},
+        "metadata": metadata or {},
+        "timestamp": datetime.now().isoformat()
+    }
