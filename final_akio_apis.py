@@ -3258,7 +3258,6 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
 async def senior_data_analysis(
         query: str = Form(...)
 ) -> JSONResponse:
-    try:
         # Load and validate data
         csv_file_path = 'data.csv'
         if not os.path.exists(csv_file_path):
@@ -3268,6 +3267,7 @@ async def senior_data_analysis(
             )
 
         df = pd.read_csv(csv_file_path)
+        print(df.head())
         if df.empty:
             raise HTTPException(
                 status_code=400,
@@ -3466,6 +3466,17 @@ async def senior_data_analysis(
                             - All visualizations must use actual data from the CSV file
                             - Forecasting should predict realistic future values based on historical patterns
                             """)
+            
+            print("Analysed the above things,,,,,,,,,going to generate the code")
+            code = generate_data_code(prompt_eng)
+            print("code_generated and going for execution,,,,,,,,")
+            result = simulate_and_format_with_llm(code, df)
+            print("executed_result is", result)
+
+            return JSONResponse(
+                content=clean_json_response(result),
+                status_code=200
+            )
         else:
             # Generate regular analysis prompt
             prompt_eng = (
@@ -3478,7 +3489,7 @@ async def senior_data_analysis(
                         • Every reply MUST be valid JSON with exactly one top-level key: **"answer"**.  
                         Example:  
                         {
-                            "answer": "Your analysis result here..."
+                           { "answer": "Your analysis result here..."}
                         }
                         • Never add extra keys, nesting, or comments outside the JSON block.
                         ────────────────────────────────────────────────────────────────────────
@@ -3527,50 +3538,44 @@ async def senior_data_analysis(
 
                         ────────────────────────────────────────────────────────────────────────
                         EXAMPLES
+                         User: “Hi”  
+                        Return:  
+                        {
+                            {"answer": "Hello! How can I assist you today?"}
+                        }
 
                         User: “What is 2 + 2?”  
                         Return:  
                         {
-                            "answer": "4"
+                            {"answer": "4"}
                         }
 
                         User: “Show a histogram of the Age column.”  
                         Return:  
                         {
-                            "answer": "``````"
+                            {"answer": "``````"}
                         }
 
                         User: “Give me average salary and headcount.”  
                         Return:  
                         {
-                            "answer": "<table><tr><td>Average Salary</td><td>75,230</td></tr><tr><td>Headcount</td><td>1,024</td></tr></table>"
+                            {"answer": "<table><tr><td>Average Salary</td><td>75,230</td></tr><tr><td>Headcount</td><td>1,024</td></tr></table>"}
                         }
 
             """
             )
 
-        # Generate and execute analysis code
-        print("Analysed the above things,,,,,,,,,going to generate the code")
-        code = generate_data_code(prompt_eng)
-        print("code_generated and going for execution,,,,,,,,")
-        result = simulate_and_format_with_llm(code, df)
-        print("executed_result is", result)
+            # Generate and execute analysis code
+            print("Analysed the above things,,,,,,,,,going to generate the code")
+            code = generate_data_code(prompt_eng)
+            print("code_generated and going for execution,,,,,,,,")
+            result = simulate_and_format_with_llm(code, df)
+            print("executed_result is", result)
 
-        return JSONResponse(
-            content=clean_json_response(result),
-            status_code=200
-        )
-
-    except pd.errors.EmptyDataError:
-        raise HTTPException(
-            status_code=400,
-            detail="Data file is corrupt"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {str(e)}"
-        )
+            return JSONResponse(
+                content=result,
+                status_code=200
+            )
 
 
 from universal_prompts import prompt_for_data_analyst
@@ -3615,7 +3620,7 @@ def simulate_and_format_with_llm(
     # Step 2: Construct the detailed user prompt.
     # This prompt gives the LLM its task, the code, and the context.
     user_prompt = f"""
-    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate a complete report based on your system instructions.
+    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate an answer based on your system instructions.
     ### DATA CONTEXT:
     The code operates on a pandas DataFrame named `df`.you MUST Consider this 'df' throughout the total process and will give the exact and existing results.
     The code operates on a pandas DataFrame named `df`. Here is its metadata and a sample of its first few rows:
@@ -3634,23 +3639,24 @@ def simulate_and_format_with_llm(
      - The preview is for context only - your code should work on the complete dataset.
      - Handle both header-based queries and content-based queries (filtering by specific values in rows).
      - Only return results filtered exactly as per the query.
+     - Do not hallucinate or assume data not present in the DataFrame.
     ### PYTHON CODE TO SIMULATE:
     You must simulate the execution of this code. Do not just describe it; act as if you have run it and are now reporting the results.
     ```
     {code_to_simulate}
     ```
     You have to use the engines based on the usage.
-    If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
+    -If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
+    - If you have the code to execute, then you can use the {Prompt_for_code_execution}.
+    -Just use the code as it is and do not change anything in the code and you have to give the exact result of the code execution.
 
     ### YOUR TASK:
     1.  **Simulate Execution:** Mentally run the code against the provided data context.
     2.  **Predict Output:** Determine what `print()` statements would produce and what a generated plot would look like.
-    3.  **Generate Report:** Produce a single, complete report that STRICTLY follows rules whatever required and formatting defined in your system prompt that should be in the JSON format.You have to follow the required rules wherever necessary.
 
     ### IMPORTANT:
    - The report should be very informative and Don't include the internal functionings for the generation of the reports,Only the analysis related content and the graph related things and summaries and everything which is not executed internally can be given to the Output.
    - Do not include the internal headings like "**LANGUAGE:** Python | **MODE:** Simulation | **STATUS:** Success\n\n⚡ **EXECUTION OUTPUT:**\n".Do not include any of these ,,Just include the headings in the middle of the content only.
-   - Report can be present in the markdown format.
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
 
