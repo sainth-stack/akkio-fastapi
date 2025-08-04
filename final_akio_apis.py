@@ -3297,7 +3297,7 @@ async def senior_data_analysis(
                             -Take the information for forecasting from the data.csv itself.
                             -Extract the dates very accurately from the data.csv and use that dates for forecasting.
                         
-                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
+                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","Description" as the keys:
                             {{
                                 "report": {{
                                     "heading": "[Suitable Heading]",
@@ -3436,6 +3436,8 @@ async def senior_data_analysis(
                                         }}
                                     ]
                                 }}
+                                "title: "[Suitable Title for the Report]",
+                                "Description":"[A brief  one liner description of the report's purpose and scope]"
                             }}
 
                             FORECASTING REQUIREMENTS:
