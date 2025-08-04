@@ -3258,6 +3258,7 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
 async def senior_data_analysis(
         query: str = Form(...)
 ) -> JSONResponse:
+    try:
         # Load and validate data
         csv_file_path = 'data.csv'
         if not os.path.exists(csv_file_path):
@@ -3267,7 +3268,6 @@ async def senior_data_analysis(
             )
 
         df = pd.read_csv(csv_file_path)
-        print(df.head())
         if df.empty:
             raise HTTPException(
                 status_code=400,
@@ -3297,7 +3297,7 @@ async def senior_data_analysis(
                             -Take the information for forecasting from the data.csv itself.
                             -Extract the dates very accurately from the data.csv and use that dates for forecasting.
                         
-                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","Description" as the keys:
+                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report" as the key:
                             {{
                                 "report": {{
                                     "heading": "[Suitable Heading]",
@@ -3436,8 +3436,6 @@ async def senior_data_analysis(
                                         }}
                                     ]
                                 }}
-                                "title: "[Suitable Title for the Report]",
-                                "Description":"[A brief  one liner description of the report's purpose and scope]"
                             }}
 
                             FORECASTING REQUIREMENTS:
@@ -3466,116 +3464,80 @@ async def senior_data_analysis(
                             - All visualizations must use actual data from the CSV file
                             - Forecasting should predict realistic future values based on historical patterns
                             """)
-            
-            print("Analysed the above things,,,,,,,,,going to generate the code")
-            code = generate_data_code(prompt_eng)
-            print("code_generated and going for execution,,,,,,,,")
-            result = simulate_and_format_with_llm(code, df)
-            print("executed_result is", result)
-
-            return JSONResponse(
-                content=clean_json_response(result),
-                status_code=200
-            )
         else:
             # Generate regular analysis prompt
             prompt_eng = (
                 f"""
-                        You are a **Senior Data Analyst**.  
-                        Handle **any kind of user query**—from casual questions to advanced statistical analysis—while strictly following the rules below.
+                You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
+                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
 
-                        ────────────────────────────────────────────────────────────────────────
-                        GLOBAL RESPONSE FORMAT  
-                        • Every reply MUST be valid JSON with exactly one top-level key: **"answer"**.  
-                        Example:  
-                        {
-                           { "answer": "Your analysis result here..."}
-                        }
-                        • Never add extra keys, nesting, or comments outside the JSON block.
-                        ────────────────────────────────────────────────────────────────────────
-                        HOW TO DECIDE WHAT TO RETURN
-                        1. Generic queries  
-                        • If the user question does not involve the dataset, answer concisely in plain text (inside the JSON).
+                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "answer" as the key:
+                {{
+                    "answer": "Your analysis result here..."
+                }}
 
-                        2. Data-related queries  
-                        • Assume the data source is **data.csv** and its columns are exactly those listed in **{metadata_str}**.  
-                        • Perform whatever processing, statistics, KPIs, or predictions are requested.  
-                        • Never invent data; use only what is in data.csv.
+                1. Generic Queries:
+                    If the user's query is generic and not related to data, respond with a concise and appropriate answer in the JSON format above.
+                2. Data-Related Queries:
+                    If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
+                3. Visualisation related questions:
+                    Generate clear visualisations based on the data.csv given to you.
+                4. KPI related questions:
+                    Generate the kpis regarding the dataset given.
+                And there are more number of tasks you have to do whatever the senior data analyst can do.
+                Answer for all the queries in a meaningful manner.
 
-                        3. Visualisation requests  
-                        • Write clean, self-contained Python code that generates the requested chart.  
-                        • Follow the Code-Safety rules (see below).  
-                        • End the code with `plt.show()` so the plot is displayed.  
-                        • The final printed line must be meaningful (e.g., print the figure object or a confirmation message).
+                Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
 
-                        4. KPI or summary-table requests  
-                        • Produce the KPIs or summary statistics in a **pure HTML table** using `<table>`, `<tr>`, `<td>` only (no `<th>`, no headings).
+                ### Code Safety & Execution Guidelines:
+                - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
+                - Always use self-contained code that runs without dependencies on undefined names or external files.
+                - If plotting with matplotlib/seaborn:
+                    - Use basic arguments only (e.g., `x`, `y`, `data`)
+                    - Avoid customizing with advanced style props unless necessary
+                    - Use `plt.show()` after plotting
+                - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
+                - Always print results with `print()` — never rely on implicit outputs.
+                - The final line of your code should print something meaningful (DataFrame, value, message).
+                - Never use `plt.savefig()` or attempt to write files.
 
-                        5. Mixed or complex queries  
-                        • If a question combines several tasks (e.g., “show a chart and list KPIs”), fulfil ALL parts, preserving the rules above.
+                ### You MUST assume:
+                - The data required for your analysis can be always there in data.csv. 
+                - consider the metadata as it is in {metadata_str}.
+                - Your code is being `exec()`'d in a secure Python environment
+                ### IMPORTANT:
+                - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
+                - You dont even have to give the explanation i.e how you did for getting that results.
+                - If you got any analysis like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
+                - Do not mention the headings at any cost.
+                - All the statistics and summary should be present in the tabular format only.
 
-                        ────────────────────────────────────────────────────────────────────────
-                        CODE-SAFETY & EXECUTION RULES  
-                        • Use only standard libraries plus pandas, numpy, matplotlib, seaborn.  
-                        • No undefined variables (e.g., boxprops) unless you define them.  
-                        • No file I/O except reading **data.csv** (already present).  
-                        • Do NOT use `os`, `sys`, `input()`, `open()`, or save/write any files.  
-                        • Always call `plt.show()` after plotting.  
-                        • Always include a `print()` statement at the end of your code.  
-                        • The last line of code must print something meaningful.
-
-                        ────────────────────────────────────────────────────────────────────────
-                        STYLE & TONE  
-                        • Never reveal internal reasoning or the steps you took—only provide the result (code, table, or plain text).  
-                        • Do **not** prepend headings or explanations.  
-                        • Do **not** reply with “Understood” or similar confirmations.  
-                        • Keep answers succinct and relevant.
-
-                        ────────────────────────────────────────────────────────────────────────
-                        PLACEHOLDERS  
-                        • `{metadata_str}`: replace with the real column list when rendering the prompt to the analyst.  
-                        • `{query}`: the user's question.
-
-                        ────────────────────────────────────────────────────────────────────────
-                        EXAMPLES
-                         User: “Hi”  
-                        Return:  
-                        {
-                            {"answer": "Hello! How can I assist you today?"}
-                        }
-
-                        User: “What is 2 + 2?”  
-                        Return:  
-                        {
-                            {"answer": "4"}
-                        }
-
-                        User: “Show a histogram of the Age column.”  
-                        Return:  
-                        {
-                            {"answer": "``````"}
-                        }
-
-                        User: “Give me average salary and headcount.”  
-                        Return:  
-                        {
-                            {"answer": "<table><tr><td>Average Salary</td><td>75,230</td></tr><tr><td>Headcount</td><td>1,024</td></tr></table>"}
-                        }
-
+                User query is {query}.
             """
             )
 
-            # Generate and execute analysis code
-            print("Analysed the above things,,,,,,,,,going to generate the code")
-            code = generate_data_code(prompt_eng)
-            print("code_generated and going for execution,,,,,,,,")
-            result = simulate_and_format_with_llm(code, df)
-            print("executed_result is", result)
+        # Generate and execute analysis code
+        print("Analysed the above things,,,,,,,,,going to generate the code")
+        code = generate_data_code(prompt_eng)
+        print("code_generated and going for execution,,,,,,,,")
+        result = simulate_and_format_with_llm(code, df)
+        print("executed_result is", result)
 
-            return JSONResponse(
-                content=result,
-                status_code=200
-            )
+        return JSONResponse(
+            content=clean_json_response(result),
+            status_code=200
+        )
+
+    except pd.errors.EmptyDataError:
+        raise HTTPException(
+            status_code=400,
+            detail="Data file is corrupt"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
+        )
 
 
 from universal_prompts import prompt_for_data_analyst
@@ -3606,8 +3568,6 @@ def generate_data_code(prompt_eng):
 
 
 from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
-
-
 def simulate_and_format_with_llm(
         code_to_simulate: str,
         dataframe: pd.DataFrame
