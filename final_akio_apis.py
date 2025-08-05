@@ -167,7 +167,11 @@ async def read_data(tablename: str = Form(...)):
         result = ultra_safe_conversion(df)
         
         # Save CSV files (in background)
-        threading.Thread(target=save_csv_files, args=(df, tablename)).start()
+        df.to_csv('data.csv', index=False)
+        
+        # Create uploads directory and save table-specific CSV
+        os.makedirs("uploads", exist_ok=True)
+        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
         
         return JSONResponse(content=result)
     
@@ -193,19 +197,6 @@ def ultra_safe_conversion(df):
         # Fallback to manual conversion
         return str(e)
     
-
-def save_csv_files(df, tablename):
-    """Save CSV files in background"""
-    try:
-        # Save main CSV
-        df.to_csv('data.csv', index=False)
-        
-        # Create uploads directory and save table-specific CSV
-        os.makedirs("uploads", exist_ok=True)
-        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
-    except Exception as e:
-        print(f"Warning: Could not save CSV files: {e}")
-
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
 @app.post("/api/delete_selected_tables")
@@ -3297,8 +3288,11 @@ async def senior_data_analysis(
                             -Take the information for forecasting from the data.csv itself.
                             -Extract the dates very accurately from the data.csv and use that dates for forecasting.
                         
-                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","Description" as the keys:
+                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","description" as the keys:
                             {{
+                                "title": "[Concise, descriptive title for the analysis]",
+                                "description": "[Brief one sentence summary of what the analysis covers]",
+                                {{
                                 "report": {{
                                     "heading": "[Suitable Heading]",
                                     "paragraphs": [
@@ -3436,14 +3430,8 @@ async def senior_data_analysis(
                                         }}
                                     ]
                                 }}
-                                {{
-                                    "title: {{"[Suitable Title for the Report]"}}
-                                }}
-                                {{ 
-                                    "Description": {{"[A brief  one liner description of the report's purpose and scope]"}}
-                                }}
                             }}
-
+                        }}
                             FORECASTING REQUIREMENTS:
                             1. Use appropriate time series forecasting methods (ARIMA, Exponential Smoothing, or Seasonal Decomposition)
                             2. Generate predictions for the next 6-12 periods based on available data
@@ -3470,6 +3458,22 @@ async def senior_data_analysis(
                             - All visualizations must use actual data from the CSV file
                             - Forecasting should predict realistic future values based on historical patterns
                             """)
+            
+            print("Analysed the above things,,,,,,,,,going to generate the code")
+            code = generate_data_code(prompt_eng)
+            print("code_generated and going for execution,,,,,,,,")
+            result = simulate_and_format_with_llm(code, df)
+            print("executed_result is", result)
+            cleaned_result = clean_json_response(result)
+
+            return JSONResponse(
+                content={
+                    "report": cleaned_result["report"],
+                    "title": cleaned_result["title"],
+                    "description": cleaned_result["description"]
+                },
+                status_code=200
+            )
         else:
             # Generate regular analysis prompt
             prompt_eng = (
@@ -3479,7 +3483,7 @@ async def senior_data_analysis(
 
                 ###IMPORTANT: You MUST return the response in this EXACT JSON format with "answer" as the key:
                 {{
-                    "answer": "Your analysis result here..."
+                    "answer": {{"Your analysis result here..."}}
                 }}
 
                 1. Generic Queries:
@@ -3530,7 +3534,7 @@ async def senior_data_analysis(
         print("executed_result is", result)
 
         return JSONResponse(
-            content=result,
+            content=clean_json_response(result),
             status_code=200
         )
 
@@ -3544,7 +3548,6 @@ async def senior_data_analysis(
             status_code=500,
             detail=f"Analysis failed: {str(e)}"
         )
-
 
 from universal_prompts import prompt_for_data_analyst
 
@@ -3586,7 +3589,7 @@ def simulate_and_format_with_llm(
     # Step 2: Construct the detailed user prompt.
     # This prompt gives the LLM its task, the code, and the context.
     user_prompt = f"""
-    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate an answer based on your system instructions.
+    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate a complete report based on your system instructions.
     ### DATA CONTEXT:
     The code operates on a pandas DataFrame named `df`.you MUST Consider this 'df' throughout the total process and will give the exact and existing results.
     The code operates on a pandas DataFrame named `df`. Here is its metadata and a sample of its first few rows:
@@ -3605,24 +3608,23 @@ def simulate_and_format_with_llm(
      - The preview is for context only - your code should work on the complete dataset.
      - Handle both header-based queries and content-based queries (filtering by specific values in rows).
      - Only return results filtered exactly as per the query.
-     - Do not hallucinate or assume data not present in the DataFrame.
     ### PYTHON CODE TO SIMULATE:
     You must simulate the execution of this code. Do not just describe it; act as if you have run it and are now reporting the results.
     ```
     {code_to_simulate}
     ```
     You have to use the engines based on the usage.
-    -If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
-    - If you have the code to execute, then you can use the {Prompt_for_code_execution}.
-    -Just use the code as it is and do not change anything in the code and you have to give the exact result of the code execution.
+    If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
 
     ### YOUR TASK:
     1.  **Simulate Execution:** Mentally run the code against the provided data context.
     2.  **Predict Output:** Determine what `print()` statements would produce and what a generated plot would look like.
+    3.  **Generate Report:** Produce a single, complete report that STRICTLY follows rules whatever required and formatting defined in your system prompt that should be in the JSON format.You have to follow the required rules wherever necessary.
 
     ### IMPORTANT:
    - The report should be very informative and Don't include the internal functionings for the generation of the reports,Only the analysis related content and the graph related things and summaries and everything which is not executed internally can be given to the Output.
    - Do not include the internal headings like "**LANGUAGE:** Python | **MODE:** Simulation | **STATUS:** Success\n\n⚡ **EXECUTION OUTPUT:**\n".Do not include any of these ,,Just include the headings in the middle of the content only.
+   - Report can be present in the markdown format.
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
 
@@ -3644,6 +3646,7 @@ def simulate_and_format_with_llm(
     return all_text
 
 
+
 def clean_json_response(response_text):
     """
     Extract clean JSON from a response that may contain markdown code blocks
@@ -3658,7 +3661,7 @@ def clean_json_response(response_text):
             json_str = match.group(1)
             # Parse and return as clean JSON
             json_data = json.loads(json_str)
-            return json.dumps(json_data)
+            return json_data
 
         # Method 2: If no markdown blocks, try to find JSON object directly
         json_pattern2 = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
@@ -3667,7 +3670,7 @@ def clean_json_response(response_text):
         for match in matches:
             try:
                 json_data = json.loads(match)
-                return json.dumps(json_data)
+                return json_data
             except json.JSONDecodeError:
                 continue
 
