@@ -3929,6 +3929,66 @@ async def llm_format_response(user_query: str, response: str) -> str:
 
     return response.choices[0].message.content.strip()
 
+
+#Database table getting and reading
+from sqlalchemy import create_engine
+def get_engine(db_type: str, host: str, database: str, username: str, password: str):
+    if db_type == "mysql":
+        return create_engine(
+            f"mysql+pymysql://{username}:{password}@{host}/{database}"
+        )
+    elif db_type == "postgresql":
+        return create_engine(
+            f"postgresql://{username}:{password}@{host}/{database}"
+        )
+    else:
+        raise ValueError("Unsupported db_type. Use 'mysql' or 'postgresql'.")
+
+
+def get_table_data(table_name: str, db_type: str,host: str,database:str, username:str, password:str) -> pd.DataFrame:
+    engine = get_engine(db_type,host, database, username, password)
+    df = pd.read_sql_table(table_name, engine)
+    return df
+
+# -------------------- API --------------------
+@app.post("/api/get_table_from_database")
+async def read_data_from_db(
+    tablename: str = Form(...),
+    db_type: str = Form(...),
+    host: str = Form(...),
+    database: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...)
+):
+    try:
+        df = get_table_data(tablename, db_type,host, database, username, password)
+        if df.empty:
+            return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
+
+        ultra_safe_conversion(df)
+
+        # Save shared CSV
+        df.to_csv('data.csv', index=False)
+        
+        print(df.head())
+
+        # Save table-specific CSV
+        os.makedirs("uploads", exist_ok=True)
+        csv_path = os.path.join("uploads", f"{tablename.lower()}.csv")
+        df.to_csv(csv_path, index=False)
+
+        return JSONResponse(
+        content={
+            "message": f"Data from '{tablename}' saved successfully.",
+        })
+
+    except Exception as e:
+        return JSONResponse(
+            content={"detail": f"Error processing table data: {str(e)}"},
+            status_code=500
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 
