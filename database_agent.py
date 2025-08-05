@@ -434,18 +434,107 @@ class MultiDatabaseAgent:
                 # Extract connection details
                 uri_parts = self.parse_connection_uri(db_uri)
 
-                response = create_standard_response(
-                    data={
-                        "database_type": db_type,
-                        "host": uri_parts.get('host', 'N/A'),
-                        "database_name": uri_parts.get('database', 'N/A'),
-                        "connection_status": "active"
-                    },
-                    metadata={
-                        "session_state": session["state"],
-                        "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
-                    }
-                )
+                # AUTOMATICALLY GET ALL TABLES AFTER CONNECTION
+                try:
+                    # Get all tables from the database
+                    if db_type.lower() == "postgresql":
+                        tables_query = """
+                        SELECT table_name 
+                        FROM information_schema.tables 
+                        WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+                        AND table_type = 'BASE TABLE'
+                        ORDER BY table_name;
+                        """
+                    elif db_type.lower() == "mysql":
+                        tables_query = """
+                        SELECT table_name 
+                        FROM information_schema.tables 
+                        WHERE table_schema = DATABASE()
+                        AND table_type = 'BASE TABLE'
+                        ORDER BY table_name;
+                        """
+                    else:
+                        # Generic query for other databases
+                        tables_query = "SELECT name FROM sqlite_master WHERE type='table';"
+
+                    tables_result = database.run(tables_query)
+                    print(f"Raw tables result: {tables_result}")
+                    
+                    
+                    # ------------------------------------------------------------------ #
+                    # 1. Parse iterable results  (preferred format returned by LangChain)
+                    # ------------------------------------------------------------------ #
+                    tables_data: list[dict[str, str]] = []
+                    if isinstance(tables_result, (list, tuple)):
+                        for row in tables_result:
+                            # row can be ('table_name',)  OR  ('table_name', 'schema')
+                            if not row:                              # skip empty rows
+                                continue
+                            table_name = str(row[0]).strip()
+                            schema     = str(row[1]).strip() if len(row) > 1 else "public"
+                            if table_name:
+                                tables_data.append({"table_name": table_name, "schema": schema})
+
+                    # ------------------------------------------------------------------ #
+                    # 2. Parse a single string (some DB drivers return pretty-printed text)
+                    # ------------------------------------------------------------------ #
+                    if not tables_data and isinstance(tables_result, str):
+                        lines = [ln.strip() for ln in tables_result.splitlines() if ln.strip()]
+                        for ln in lines:
+                            if ln.lower() == "table_name" or ln.startswith("-"):
+                                continue
+                            if "|" in ln:       #  | table_name | schema |
+                                ln = ln.split("|")[1].strip()
+                            ln = ln.strip("() ,")
+                            if ln:
+                                tables_data.append({"table_name": ln, "schema": "public"})
+
+                    # ------------------------------------------------------------------ #
+                    # 3. Fallback: use LangChain helper if still empty
+                    # ------------------------------------------------------------------ #
+                    if not tables_data:
+                        try:
+                            names = database.get_usable_table_names()
+                            tables_data = [{"table_name": n, "schema": "public"} for n in names]
+                        except Exception as helper_err:
+                            logger.warning("get_usable_table_names() failed ➜ %s", helper_err)
+
+                    total_tables = len(tables_data)
+                    response = create_standard_response(
+                        data={
+                            "database_type": db_type,
+                            "username": uri_parts.get('username', 'N/A'),
+                            "host": uri_parts.get('host', 'N/A'),
+                            "database_name": uri_parts.get('database', 'N/A'),
+                            'password': uri_parts.get('password', 'N/A'),
+                            "total_tables": total_tables,
+                            "tables": tables_data if tables_data else None
+                        },
+                        metadata={
+                            "session_state" : session["state"],
+                            "active_systems": list(session["databases"].keys()) +
+                                            list(session["s3_connections"].keys()),
+                            "auto_loaded"   : "tables"
+                        }
+                    )
+
+                except Exception as table_error:
+                    print(f"Error retrieving tables: {table_error}")
+                    # Still return successful connection but without table info
+                    response = create_standard_response(
+                        data={
+                            "database_type": db_type,
+                            "host": uri_parts.get('host', 'N/A'),
+                            "database_name": uri_parts.get('database', 'N/A'),
+                            "connection_status": "active",
+                            "tables_error": "Could not retrieve table information",
+                            "tables_error_details": str(table_error)
+                        },
+                        metadata={
+                            "session_state": session["state"],
+                            "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
+                        }
+                    )
 
                 return json.dumps(response, indent=2)
 
@@ -526,18 +615,58 @@ class MultiDatabaseAgent:
                     session["active_s3"] = bucket_name
                     session["state"] = "CONNECTED"
 
-                    response = create_standard_response(
-                        data={
-                            "bucket_name": bucket_name,
-                            "region": region,
-                            "access_key_masked": access_key[:8] + "..." + access_key[-4:],
-                            "connection_status": "active"
-                        },
-                        metadata={
-                            "session_state": session["state"],
-                            "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
-                        }
-                    )
+                    # AUTOMATICALLY LIST ALL OBJECTS AFTER S3 CONNECTION
+                    try:
+                        # List all objects in the bucket (limited to first 1000 for performance)
+                        response_data = s3_client.list_objects_v2(Bucket=bucket_name, MaxKeys=1000)
+                        objects = response_data.get('Contents', [])
+                        
+                        object_list = [
+                            {
+                                "key": obj['Key'],
+                                "size": obj['Size'],
+                                "last_modified": obj['LastModified'].isoformat(),
+                                "etag": obj.get('ETag', '').replace('"', '')
+                            }
+                            for obj in objects
+                        ]
+
+                        # Calculate total size
+                        total_size = sum(obj['Size'] for obj in objects)
+                        
+                        response = create_standard_response(
+                            data={
+                                "total_objects": len(objects),
+                                "total_size_bytes": total_size,
+                                "objects": object_list
+                            },
+                            metadata={
+                                "session_state": session["state"],
+                                "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys()),
+                                "max_objects_shown": 1000,
+                                "has_more": response_data.get('IsTruncated', False),
+                                "auto_loaded": "objects"
+                            }
+                        )
+                        
+                    except Exception as list_error:
+                        print(f"Error listing objects: {list_error}")
+                        # Still return successful connection but without object list
+                        response = create_standard_response(
+                            data={
+                                "bucket_name": bucket_name,
+                                "region": region,
+                                "access_key_masked": access_key[:8] + "..." + access_key[-4:],
+                                "connection_status": "active",
+                                "objects_error": "Could not retrieve object list",
+                                "objects_error_details": str(list_error)
+                            },
+                            metadata={
+                                "session_state": session["state"],
+                                "active_systems": list(session["databases"].keys()) + list(session["s3_connections"].keys())
+                            }
+                        )
+
                     return json.dumps(response, indent=2)
 
                 except ClientError as e:
@@ -563,6 +692,7 @@ class MultiDatabaseAgent:
                     data={"error_details": str(e)}
                 )
                 return json.dumps(response, indent=2)
+
 
         # Handle database queries
         elif "EXECUTE_QUERY:" in llm_response:
@@ -934,7 +1064,7 @@ class MultiDatabaseAgent:
                     return {
                         "type": db_type,
                         "username": match.group(1),
-                        "password": "***",
+                        "password": match.group(2),
                         "host": match.group(3),
                         "port": match.group(4),
                         "database": match.group(5)
@@ -1012,3 +1142,6 @@ def create_standard_response( data: Optional[Dict[str, Any]] = None,metadata: Op
         "metadata": metadata or {},
         "timestamp": datetime.now().isoformat()
     }
+
+
+
