@@ -3946,38 +3946,22 @@ async def llm_format_response(user_query: str, response: str) -> str:
     Always returns response in <p> + <ul>/<li> format.
     """
     prompt = f"""
-    You are a helpful formatting assistant that ALWAYS formats responses in a specific HTML structure.
+                You are a helpful formatting assistant.
+            The user asked the following question:
+            "{user_query}"
 
-    The user asked: "{user_query}"
+            Here is the raw response:
+            \"\"\"{json.dumps(response)}\"\"\"
 
-    Here is the raw response:
-    \"\"\"{json.dumps(response)}\"\"\"
+            -Just consider the "data" key only in the raw respose.
 
-    IMPORTANT FORMATTING RULES:
-    1. ONLY consider the "data" key from the raw response
-    2. ALWAYS format your response using this exact structure:
-       - Start with a <p> tag containing a brief one-line explanation
-       - Follow with a <ul> containing <li> items for all data points
-    3. Use <strong> tags for field names/labels
-    4. For nested data, use nested <ul>/<li> structures
-    5. Return ONLY the HTML content, no markdown or other formatting
-    6. Do not include any text outside of the HTML tags
-
-    Example format:
-    <p>Brief explanation about the data:</p>
-    <ul>
-      <li><strong>Field Name:</strong> Value</li>
-      <li><strong>Another Field:</strong> Value</li>
-      <li><strong>Nested Data:</strong>
-        <ul>
-          <li>Item 1</li>
-          <li>Item 2</li>
-        </ul>
-      </li>
-    </ul>
-
-    Convert the response data to this exact format.
-    """
+            Determine if the user expects the response in:
+            - a table (if asking for  "tabular", "table"etc.)
+            
+            -You can add a one liner explanation before the response about the response.
+            Convert the response to that format using HTML (use <ul>/<li> for lists, <table> for tables).
+            Reply with only the formatted HTML content.
+            """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",  # Fixed the model name
