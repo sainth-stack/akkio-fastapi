@@ -3927,7 +3927,7 @@ async def database_chat(request: ChatRequest):
         return JSONResponse(
             content={
                 "session_id": session_id,
-                "response": markdown_to_html(formatted_response),
+                "response":formatted_response,
             },
             status_code=200
         )
