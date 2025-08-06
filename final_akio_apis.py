@@ -2324,7 +2324,10 @@ async def perform_statistical_analysis() -> JSONResponse:
 
         # Load and preprocess data
         df = pd.read_csv('data.csv')
+        print(df.head(5))
         df = updatedtypes(df)
+
+        print("coming from function",df.dtypes)
 
         if df.shape[0] == 0:
             raise HTTPException(
@@ -2358,15 +2361,17 @@ async def perform_statistical_analysis() -> JSONResponse:
 
         # Column type analysis
         for col, dtype in df.dtypes.items():
-            if str(dtype) in ["float64", "int64"]:
+            dtype_str = str(dtype)
+            print(f"Processing column: {col}, dtype: {dtype_str}")
+            if dtype_str in ["float64", "int64"]:
                 numeric_vars[col] = df[col].describe().to_dict()
-            elif str(dtype) == "object" and col not in ['Remark']:
+            elif dtype_str == "object" and col not in ['Remark']:
                 categorical_vars.append({col: df[col].nunique()})
-            elif str(dtype) == "datetime64[ns]":
-                if col.upper() in ['DATE', "TIME", "DATE_TIME"]:
+            elif any(dt_format in dtype_str for dt_format in ['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns,']):
+                if col.upper() in ['DATE', "TIME", "DATE_TIME","START", "END"]:
                     td = col
                 datetime_vars.append(col)
-            elif str(dtype) == "bool":
+            elif dtype_str == "bool":
                 boolean_vars.append(col)
 
         # Additional analyses
@@ -2375,19 +2380,20 @@ async def perform_statistical_analysis() -> JSONResponse:
             timestamp = 'Y'
         if td:
             stationary = adf_test(df, td)
+        catvalues = [{'Parameter': list(data.keys())[0], 'Count': list(data.values())[0]} for data in
+                        categorical_vars]
+        sentiment = checkSentiment(df, categorical_vars)
+        if len(catvalues) > 0:
+            catdf = pd.DataFrame(catvalues)
+        else:
+            catdf = pd.DataFrame()
+        if len(numeric_vars) > 0:
+            numdf = pd.DataFrame(numeric_vars).T
+            numdf['ColumnName'] = numdf.index
+        else:
+            numdf = pd.DataFrame()
         if len(boolean_vars) > 0:
             boolean = 'Y'
-
-        # Prepare categorical data
-        catvalues = [{'Parameter': list(data.keys())[0],
-                      'Count': list(data.values())[0]}
-                     for data in categorical_vars]
-        catdf = pd.DataFrame(catvalues) if catvalues else pd.DataFrame()
-
-        # Prepare numeric data
-        numdf = pd.DataFrame(numeric_vars).T
-        if not numdf.empty:
-            numdf['ColumnName'] = numdf.index
 
         # Prepare missing values data
         missingvalue = pd.DataFrame({
@@ -2395,9 +2401,7 @@ async def perform_statistical_analysis() -> JSONResponse:
             'Missing Value Count': count
         })
 
-        # Sentiment analysis
-        sentiment = checkSentiment(df, categorical_vars)
-
+    
         # **** Get the preview data (first 50 rows) ****
         preview = df.head(50)
         preview_data = json.loads(preview.to_json(orient='records'))
@@ -2439,7 +2443,7 @@ def updatedtypes(df):
     for col in df.columns:
         if datatypes[col] == 'object':
             try:
-                pd.to_datetime(df[col])
+                pd.to_datetime(df[col],utc=True)
                 df.drop(col, axis=1, inplace=True)
                 print(df.columns)
             except Exception as e:
@@ -3278,185 +3282,226 @@ async def senior_data_analysis(
             # Generate report-specific prompt
             prompt_eng = (
                 f"""
-                            You are a Senior data analyst generating a comprehensive report with advanced analytics and forecasting capabilities. 
-                            Always strictly adhere to the following rules: 
+                           You are a Senior data analyst generating a comprehensive report with advanced analytics and forecasting capabilities. 
+                        Always strictly adhere to the following rules: 
 
-                            The metadata required for your analysis: {metadata_str}
-                            Dataset location: data.csv only. No data assumptions can be taken.
+                        The metadata required for your analysis: {metadata_str}
+                        Dataset location: data.csv only. No data assumptions can be taken.Consider all the data from {df.head(1)} to {df.tail(1)}.Do not assume any data outside this range.
 
-                            Forecasting Information:
-                            -Take the information for forecasting from the data.csv itself.
-                            -Extract the dates very accurately from the data.csv and use that dates for forecasting.
+                        UNIVERSAL DATE HANDLING AND FORECASTING REQUIREMENTS:
+                        1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
+                        - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
+                        - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
+                        - ISO Format: "2025-01-05T08:00:30+00:00"
+                        - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
+                        - Any other datetime format
+
+                        2. **Intelligent Data Aggregation Strategy**:
+                        - **High-frequency data (seconds/minutes/hours)**: 
+                            * Convert all timestamps to ISO format internally
+                            * Calculate daily averages from all timestamps within each day
+                            * For monthly forecasts: Average all daily values within each month
+                            * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
+                            → Calculate single daily average for 01-05-2025
                         
-                            ###IMPORTANT: You MUST return the response in this EXACT JSON format with "report","title","description" as the keys:
-                            {{
-                                "title": "[Concise, descriptive title for the analysis]",
-                                "description": "[Brief one sentence summary of what the analysis covers]",
-                                {{
-                                "report": {{
-                                    "heading": "[Suitable Heading]",
-                                    "paragraphs": [
-                                        "First Bullet point: Provide detailed current data analysis insights, trends, and patterns observed in the dataset. Include statistical summaries, key findings, and data quality observations. This should be exactly 4 lines of detailed analysis.",
-                                        "Second Bullet point: Present forecasting analysis, methodology used, future predictions, confidence intervals, and business implications. Explain the forecasting approach, seasonal patterns if any, and actionable recommendations. This should be exactly 4 lines of forecasting insights."
-                                    ],
-                                    "table": {{
-                                        "headers": ["Metric", "Current Value", "Forecasted Value", "Change %", "Confidence"],
-                                        "rows": [
-                                            ["Key Metric 1", "Current", "Predicted", "+X%", "95%"],
-                                            ["Key Metric 2", "Current", "Predicted", "+Y%", "90%"],
-                                            ["Key Metric 3", "Current", "Predicted", "-Z%", "85%"]
-                                        ]
-                                    }},
-                                    "analysis_charts": [
-                                        {{
-                                            "title": "[heading]",
-                                            "plotly": {{
-                                                "data": [{{
-                                                    "x": ["category_values_from_actual_data"],
-                                                    "y": [actual_numeric_values],
-                                                    "type": "bar",
-                                                    "marker": {{"color": "#3498db"}},
-                                                    "name": "Current Distribution"
-                                                }}],
-                                                "layout": {{
-                                                    "title": "[title]",
-                                                    "xaxis": {{"title": "Categories"}},
-                                                    "yaxis": {{"title": "Values"}},
-                                                    "paper_bgcolor": "#fafafa",
-                                                    "plot_bgcolor": "#ffffff"
-                                                }}
+                        - **UTC/ISO Timestamps**:
+                            * Parse UTC timestamps and convert to local date representation
+                            * Apply same daily → monthly aggregation logic
+                            * Maintain timezone awareness for accurate date grouping
+
+                        3. **Forecasting Logic Based on Data Frequency**:
+                        - **Sub-daily data** → Aggregate to daily → Forecast 10 of daily values
+                        - **Daily data** → Direct forecasting for 1 to 2 months
+                        - **Weekly/Monthly data** → Direct forecasting for 6-12 periods
+
+                        4. **Date Processing Pipeline**:
+                        - Step 1: Detect all possible date/timestamp columns
+                        - Step 2: Parse and standardize ALL date formats to ISO internally
+                        - Step 3: Determine original data frequency (seconds, minutes, hours, days)
+                        - Step 4: Apply appropriate aggregation (if needed)
+                        - Step 5: Find the EXACT last date after aggregation
+                        - Step 6: Generate future dates with proper intervals based on the original frequency dates and consider the last historical date as {df.tail(1)}
+
+                        ###IMPORTANT: You MUST return the response in this EXACT JSON format:
+                        {{
+                            "title": "[Concise, descriptive title for the analysis]",
+                            "description": "[Brief one sentence summary of what the analysis covers]",
+                            "report": {{
+                                "heading": "[Suitable Heading Based on Data Analysis]",
+                                "paragraphs": [
+                                    "First Bullet Point: **Data Overview & Quality**: Analyzed [DATA_FREQUENCY] data from [START_DATE] to [END_DATE] with [TOTAL_RECORDS] records. Data shows [AGGREGATION_METHOD] applied to convert [ORIGINAL_FREQUENCY] timestamps to [FINAL_FREQUENCY] intervals. Quality assessment reveals [DATA_QUALITY_INSIGHTS] with [MISSING_DATA_PERCENTAGE]% missing values. Key patterns include [TREND_DIRECTION] trend with [VOLATILITY_LEVEL] volatility observed across the time series.",
+                                    "Second Bullet Point: **Statistical Analysis**: Time series exhibits [STATISTICAL_SUMMARY] with mean value of [MEAN_VALUE] and standard deviation of [STD_DEVIATION]. Distribution analysis shows [DISTRIBUTION_TYPE] pattern with [SKEWNESS_DIRECTION] skewness. Correlation analysis between temporal features reveals [CORRELATION_INSIGHTS]. Outlier detection identified [OUTLIER_COUNT] anomalous points representing [OUTLIER_PERCENTAGE]% of total observations.",
+                                    "Third Bullet Point: **Trend & Seasonality**: Historical trend analysis indicates [TREND_ANALYSIS] with [GROWTH_RATE]% average change over the period. Seasonal decomposition reveals [SEASONALITY_PATTERN] patterns with [SEASONAL_STRENGTH] seasonal component strength. Weekly/monthly cyclical behavior shows [CYCLICAL_INSIGHTS]. Moving average analysis confirms [MOVING_AVERAGE_INSIGHTS] suggesting [TREND_STABILITY] in underlying patterns.",
+                                    "Fourth Bullet Point: **Forecasting Methodology**: Applied [FORECASTING_METHOD] model to predict [FORECAST_HORIZON] future values from [FORECAST_START_DATE] to [FORECAST_END_DATE]. Model incorporates [SEASONAL_COMPONENTS] and achieves [ACCURACY_METRICS] accuracy on validation data. Confidence intervals calculated at 80%, 90%, and 95% levels show [CONFIDENCE_INSIGHTS]. Business recommendations include [ACTIONABLE_RECOMMENDATIONS] based on projected [FORECAST_TREND] trend."
+                                ],
+                                "table": {{
+                                    "headers": ["Metric", "Last Actual Value ([LAST_DATE])", "Forecasted Value ([FORECAST_END_DATE])", "Change %", "Confidence Level"],
+                                    "rows": [
+                                        ["[PRIMARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE]", "[PREDICTED_VALUE]", "[PERCENTAGE_CHANGE]", "95%"],
+                                        ["[SECONDARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE_2]", "[PREDICTED_VALUE_2]", "[PERCENTAGE_CHANGE_2]", "90%"],
+                                        ["[TERTIARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE_3]", "[PREDICTED_VALUE_3]", "[PERCENTAGE_CHANGE_3]", "85%"]
+                                    ]
+                                }},
+                                "analysis_charts": [
+                                    {{
+                                        "title": "Data Distribution and Aggregation Analysis",
+                                        "plotly": {{
+                                            "data": [{{
+                                                "x": ["[ACTUAL_CATEGORIES_OR_TIME_BINS]"],
+                                                "y": "[AGGREGATED_VALUES_FROM_DATA]",
+                                                "type": "bar",
+                                                "marker": {{"color": "#3498db"}},
+                                                "name": "Aggregated Distribution"
+                                            }}],
+                                            "layout": {{
+                                                "title": "[METRIC_NAME] Distribution After [AGGREGATION_TYPE] Aggregation",
+                                                "xaxis": {{"title": "[TIME_PERIOD_OR_CATEGORY]"}},
+                                                "yaxis": {{"title": "Aggregated [VALUE_NAME]"}},
+                                                "paper_bgcolor": "#fafafa",
+                                                "plot_bgcolor": "#ffffff"
                                             }}
-                                        }},
-                                        {{
-                                            "title": "[heading]",
-                                            "plotly": {{
-                                                "data": [{{
-                                                    "x": ["time_periods_from_data"],
-                                                    "y": [trend_values],
+                                        }}
+                                    }},
+                                    {{
+                                        "title": "Historical Trend Analysis",
+                                        "plotly": {{
+                                            "data": [{{
+                                                "x": ["[PROCESSED_DATES_SEQUENCE]"],
+                                                "y": "[AGGREGATED_TIME_SERIES_VALUES]",
+                                                "type": "scatter",
+                                                "mode": "lines+markers",
+                                                "marker": {{"color": "#e74c3c"}},
+                                                "name": "Historical Trend (Aggregated)"
+                                            }}],
+                                            "layout": {{
+                                                "title": "Time Series Trend from [START_DATE] to [END_DATE] ([AGGREGATION_LEVEL])",
+                                                "xaxis": {{"title": "Date ([FINAL_FREQUENCY])"}},
+                                                "yaxis": {{"title": "[AGGREGATED_METRIC_NAME]"}},
+                                                "paper_bgcolor": "#fafafa",
+                                                "plot_bgcolor": "#ffffff"
+                                            }}
+                                        }}
+                                    }}
+                                ],
+                                "forecasting_charts": [
+                                    {{
+                                        "title": "Comprehensive Forecast with Confidence Intervals",
+                                        "plotly": {{
+                                            "data": [
+                                                {{
+                                                    "x": ["[HISTORICAL_DATES_AGGREGATED]"],
+                                                    "y": "[HISTORICAL_VALUES_AGGREGATED]",
                                                     "type": "scatter",
                                                     "mode": "lines+markers",
-                                                    "marker": {{"color": "#e74c3c"}},
-                                                    "name": "Historical Trend"
-                                                }}],
-                                                "layout": {{
-                                                    "title": "[title]",
-                                                    "xaxis": {{"title": "Time Period"}},
-                                                    "yaxis": {{"title": "Values"}},
-                                                    "paper_bgcolor": "#fafafa",
-                                                    "plot_bgcolor": "#ffffff"
+                                                    "marker": {{"color": "#2ecc71"}},
+                                                    "name": "Historical Data (Aggregated)"
+                                                }},
+                                                {{
+                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
+                                                    "y": "[FORECASTED_VALUES_REALISTIC]",
+                                                    "type": "scatter",
+                                                    "mode": "lines+markers",
+                                                    "marker": {{"color": "#f39c12", "symbol": "diamond"}},
+                                                    "name": "Forecasted Values"
+                                                }},
+                                                {{
+                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
+                                                    "y": "[UPPER_CONFIDENCE_VALUES]",
+                                                    "type": "scatter",
+                                                    "mode": "lines",
+                                                    "line": {{"dash": "dash", "color": "#95a5a6"}},
+                                                    "name": "Upper Confidence (95%)",
+                                                    "showlegend": false
+                                                }},
+                                                {{
+                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
+                                                    "y": "[LOWER_CONFIDENCE_VALUES]",
+                                                    "type": "scatter",
+                                                    "mode": "lines",
+                                                    "line": {{"dash": "dash", "color": "#95a5a6"}},
+                                                    "fill": "tonexty",
+                                                    "fillcolor": "rgba(149, 165, 166, 0.2)",
+                                                    "name": "Confidence Interval (95%)"
                                                 }}
+                                            ],
+                                            "layout": {{
+                                                "title": "[FORECAST_HORIZON] Forecast from [LAST_ACTUAL_DATE]",
+                                                "xaxis": {{"title": "Date"}},
+                                                "yaxis": {{"title": "[FORECASTED_METRIC]"}},
+                                                "paper_bgcolor": "#fafafa",
+                                                "plot_bgcolor": "#ffffff"
                                             }}
                                         }}
-                                    ],
-                                    "forecasting_charts": [
-                                        {{
-                                            "title": "[heading]",
-                                            "plotly": {{
-                                                "data": [
-                                                    {{
-                                                        "x": ["historical_dates"],
-                                                        "y": [historical_values],
-                                                        "type": "scatter",
-                                                        "mode": "lines+markers",
-                                                        "marker": {{"color": "#2ecc71"}},
-                                                        "name": "Historical Data"
-                                                    }},
-                                                    {{
-                                                        "x": ["future_dates"],
-                                                        "y": [predicted_values],
-                                                        "type": "scatter",
-                                                        "mode": "lines+markers",
-                                                        "marker": {{"color": "#f39c12", "symbol": "diamond"}},
-                                                        "name": "Forecasted Values"
-                                                    }},
-                                                    {{
-                                                        "x": ["future_dates"],
-                                                        "y": [upper_confidence_values],
-                                                        "type": "scatter",
-                                                        "mode": "lines",
-                                                        "line": {{"dash": "dash", "color": "#95a5a6"}},
-                                                        "name": "Upper Confidence",
-                                                        "showlegend": false
-                                                    }},
-                                                    {{
-                                                        "x": ["future_dates"],
-                                                        "y": [lower_confidence_values],
-                                                        "type": "scatter",
-                                                        "mode": "lines",
-                                                        "line": {{"dash": "dash", "color": "#95a5a6"}},
-                                                        "fill": "tonexty",
-                                                        "fillcolor": "rgba(149, 165, 166, 0.2)",
-                                                        "name": "Confidence Interval"
-                                                    }}
-                                                ],
-                                                "layout": {{
-                                                    "title": "[title]",
-                                                    "xaxis": {{"title": "Date"}},
-                                                    "yaxis": {{"title": "Predicted Values"}},
-                                                    "paper_bgcolor": "#fafafa",
-                                                    "plot_bgcolor": "#ffffff"
+                                    }},
+                                    {{
+                                        "title": "Seasonal Pattern and Future Projections",
+                                        "plotly": {{
+                                            "data": [
+                                                {{
+                                                    "x": ["[HISTORICAL_TIME_PERIODS]"],
+                                                    "y": "[SEASONAL_COMPONENT_VALUES]",
+                                                    "type": "scatter",
+                                                    "mode": "lines",
+                                                    "marker": {{"color": "#9b59b6"}},
+                                                    "name": "Historical Seasonal Pattern"
+                                                }},
+                                                {{
+                                                    "x": ["[FORECASTED_TIME_PERIODS]"],
+                                                    "y": "[FORECASTED_SEASONAL_VALUES]",
+                                                    "type": "scatter",
+                                                    "mode": "lines+markers",
+                                                    "marker": {{"color": "#e67e22"}},
+                                                    "name": "Projected Seasonal Pattern"
                                                 }}
-                                            }}
-                                        }},
-                                        {{
-                                            "title": "[heading]",
-                                            "plotly": {{
-                                                "data": [
-                                                    {{
-                                                        "x": ["time_periods"],
-                                                        "y": [seasonal_trend],
-                                                        "type": "scatter",
-                                                        "mode": "lines",
-                                                        "marker": {{"color": "#9b59b6"}},
-                                                        "name": "Seasonal Trend"
-                                                    }},
-                                                    {{
-                                                        "x": ["time_periods"],
-                                                        "y": [forecasted_seasonal],
-                                                        "type": "scatter",
-                                                        "mode": "lines+markers",
-                                                        "marker": {{"color": "#e67e22"}},
-                                                        "name": "Forecasted Seasonal Pattern"
-                                                    }}
-                                                ],
-                                                "layout": {{
-                                                    "title": "[title]",
-                                                    "xaxis": {{"title": "Time Period"}},
-                                                    "yaxis": {{"title": "Seasonal Values"}},
-                                                    "paper_bgcolor": "#fafafa",
-                                                    "plot_bgcolor": "#ffffff"
-                                                }}
+                                            ],
+                                            "layout": {{
+                                                "title": "Seasonal Decomposition and [FORECAST_PERIODS] Period Projection",
+                                                "xaxis": {{"title": "Time Period"}},
+                                                "yaxis": {{"title": "Seasonal Component"}},
+                                                "paper_bgcolor": "#fafafa",
+                                                "plot_bgcolor": "#ffffff"
                                             }}
                                         }}
-                                    ]
-                                }}
+                                    }}
+                                ]
                             }}
                         }}
-                            FORECASTING REQUIREMENTS:
-                            1. Use appropriate time series forecasting methods (ARIMA, Exponential Smoothing, or Seasonal Decomposition)
-                            2. Generate predictions for the next 6-12 periods based on available data
-                            3. Include confidence intervals (80% and 95%) for predictions
-                            4. Identify seasonal patterns if present in the data
-                            5. Provide forecast accuracy metrics where possible
-                            6. Use actual data values, dates, and column names from the dataset
-                            7. Ensure all chart data points are realistic and based on actual data patterns
 
-                            DYNAMIC REPORT STRUCTURE:
-                            - Vary the order of analysis vs forecasting charts
-                            - Rotate between different visualization types (bar, line, scatter, etc.)
-                            - Change color schemes for each request
-                            - Alternate table structures and metrics shown
-                            - Randomize which forecasting method emphasis to show first
+                        CRITICAL IMPLEMENTATION STEPS FOR UNIVERSAL DATE HANDLING:
+                        1. **STEP 1**: Load data.csv and scan ALL columns for potential date/timestamp formats from {df.head(1)} to {df.tail(1)}.
+                        2. **STEP 2**: Parse ANY date format (timestamp, UTC, ISO, simple date) and standardize internally
+                        3. **STEP 3**: Determine original data frequency and decide on aggregation strategy:
+                        - Seconds/Minutes/Hours → Aggregate to Daily → Monthly forecasting
+                        - Daily → Direct monthly forecasting  
+                        - Weekly/Monthly → Direct period forecasting
+                        4. **STEP 4**: Apply intelligent aggregation:
+                        - For sub-daily: Calculate daily averages from all timestamps within each day
+                        - For monthly forecasts: Average all daily values within each month
+                        5. **STEP 5**: Find the EXACT last date after proper aggregation
+                        6. **STEP 6**: Generate realistic future dates maintaining logical sequence
+                        7. **STEP 7**: Apply appropriate forecasting model considering aggregated data patterns
+                        8. **STEP 8**: Replace ALL placeholders with actual aggregated values and realistic forecasts
 
-                            Generate a comprehensive report with forecasting for: {query}
+                        AGGREGATION EXAMPLES:
+                        - **Input**: "01-05-2025 08:00:30", "01-05-2025 14:30:15", "01-05-2025 20:45:00"
+                        - **Process**: Average all values for 01-05-2025 → Single daily value
+                        - **Output**: One data point for "01-05-2025" representing daily average
 
-                            The report must include:
-                            - 4 Bullet points (2 lines each): three for current analysis, one for forecasting insights with related headings and all.
-                            - 1 summary table with forecasting metrics and all other analysis metrics
-                            - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
-                            - 2 forecasting charts with predictions and confidence intervals with main heading of Forecast.
-                            - All visualizations must use actual data from the CSV file
-                            - Forecasting should predict realistic future values based on historical patterns
+                        - **UTC Input**: "2025-01-05T08:00:30Z", "2025-01-05T14:30:15Z" 
+                        - **Process**: Convert to local dates, aggregate by day → Daily averages
+                        - **Output**: Daily aggregated values for forecasting
+
+                        FORECASTING ACCURACY REQUIREMENTS:
+                        - Use actual column names and aggregated values from the CSV
+                        - Ensure forecasted dates follow logical progression after aggregation
+                        - Generate realistic predictions based on aggregated historical patterns
+                        - Include proper confidence intervals for aggregated forecasts
+                        - Provide business insights relevant to the aggregation level chosen
+                        
+
+                        Generate a comprehensive report with intelligent date handling and forecasting for: {query}
+
+                        The report must include proper universal date format handling, intelligent aggregation, and realistic forecasting based entirely on the processed CSV data.
                             """)
             
             print("Analysed the above things,,,,,,,,,going to generate the code")
@@ -3897,37 +3942,53 @@ async def database_chat(request: ChatRequest):
 
 async def llm_format_response(user_query: str, response: str) -> str:
     """
-    Formats the LLM response to include user query and response in a structured way.
+    Formats the LLM response to include user query and response in a structured HTML format.
+    Always returns response in <p> + <ul>/<li> format.
     """
     prompt = f"""
-                You are a helpful formatting assistant.
-            The user asked the following question:
-            "{user_query}"
+    You are a helpful formatting assistant that ALWAYS formats responses in a specific HTML structure.
 
-            Here is the raw response:
-            \"\"\"{json.dumps(response)}\"\"\"
+    The user asked: "{user_query}"
 
-            -Just consider the "data" key only in the raw respose.
+    Here is the raw response:
+    \"\"\"{json.dumps(response)}\"\"\"
 
-            Determine if the user expects the response in:
-            - bullet points (if asking for "list", "top items", "options", etc.)
-            - a table (if asking for "comparison", "tabular", "table", "data", etc.)
-            - plain answer otherwise
-            
-            -You can add a one liner explanation before the response about the response.
-            Convert the response to that format using HTML (use <ul>/<li> for lists, <table> for tables, <p> for plain).
-            Reply with only the formatted HTML content.
-            """
+    IMPORTANT FORMATTING RULES:
+    1. ONLY consider the "data" key from the raw response
+    2. ALWAYS format your response using this exact structure:
+       - Start with a <p> tag containing a brief one-line explanation
+       - Follow with a <ul> containing <li> items for all data points
+    3. Use <strong> tags for field names/labels
+    4. For nested data, use nested <ul>/<li> structures
+    5. Return ONLY the HTML content, no markdown or other formatting
+    6. Do not include any text outside of the HTML tags
+
+    Example format:
+    <p>Brief explanation about the data:</p>
+    <ul>
+      <li><strong>Field Name:</strong> Value</li>
+      <li><strong>Another Field:</strong> Value</li>
+      <li><strong>Nested Data:</strong>
+        <ul>
+          <li>Item 1</li>
+          <li>Item 2</li>
+        </ul>
+      </li>
+    </ul>
+
+    Convert the response data to this exact format.
+    """
 
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model="gpt-4.1-mini",  # Fixed the model name
         messages=[
-            {"role": "system", "content": "you are a responsive formatting assistant"},
+            {"role": "system", "content": "You are a formatting assistant that ALWAYS returns responses in HTML format with <p> and <ul>/<li> structure only."},
             {"role": "user", "content": prompt}
         ]
     )
 
     return response.choices[0].message.content.strip()
+
 
 
 #Database table getting and reading
