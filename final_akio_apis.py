@@ -3282,227 +3282,146 @@ async def senior_data_analysis(
             # Generate report-specific prompt
             prompt_eng = (
                 f"""
-                           You are a Senior data analyst generating a comprehensive report with advanced analytics and forecasting capabilities. 
-                        Always strictly adhere to the following rules: 
+                    You are a Senior data analyst generating a comprehensive report with advanced analytics capabilities. 
+                    Always strictly adhere to the following rules: 
 
-                        The metadata required for your analysis: {metadata_str}
-                        Dataset location: data.csv only. No data assumptions can be taken.Consider all the data from {df.head(1)} to {df.tail(1)}.Do not assume any data outside this range.
+                    The metadata required for your analysis: {metadata_str}
+                    Dataset location: data.csv only. No data assumptions can be taken. Consider all the data from {df.head(1)} to {df.tail(1)}. Do not assume any data outside this range.
 
-                        UNIVERSAL DATE HANDLING AND FORECASTING REQUIREMENTS:
-                        1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
-                        - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
-                        - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
-                        - ISO Format: "2025-01-05T08:00:30+00:00"
-                        - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
-                        - Any other datetime format
+                    UNIVERSAL DATE HANDLING AND ANALYSIS REQUIREMENTS:
+                    1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
+                    - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
+                    - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
+                    - ISO Format: "2025-01-05T08:00:30+00:00"
+                    - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
+                    - Any other datetime format
 
-                        2. **Intelligent Data Aggregation Strategy**:
-                        - **High-frequency data (seconds/minutes/hours)**: 
-                            * Convert all timestamps to ISO format internally
-                            * Calculate daily averages from all timestamps within each day
-                            * For monthly forecasts: Average all daily values within each month
-                            * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
-                            → Calculate single daily average for 01-05-2025
-                        
-                        - **UTC/ISO Timestamps**:
-                            * Parse UTC timestamps and convert to local date representation
-                            * Apply same daily → monthly aggregation logic
-                            * Maintain timezone awareness for accurate date grouping
+                    2. **Intelligent Data Aggregation Strategy**:
+                    - **High-frequency data (seconds/minutes/hours)**: 
+                        * Convert all timestamps to ISO format internally
+                        * Calculate daily averages from all timestamps within each day
+                        * For monthly analysis: Average all daily values within each month
+                        * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
+                        → Calculate single daily average for 01-05-2025
+                    
+                    - **UTC/ISO Timestamps**:
+                        * Parse UTC timestamps and convert to local date representation
+                        * Apply same daily → monthly aggregation logic
+                        * Maintain timezone awareness for accurate date grouping
 
-                        3. **Forecasting Logic Based on Data Frequency**:
-                        - **Sub-daily data** → Aggregate to daily → Forecast 10 of daily values
-                        - **Daily data** → Direct forecasting for 1 to 2 months
-                        - **Weekly/Monthly data** → Direct forecasting for 6-12 periods
+                    3. **Analysis Logic Based on Data Frequency**:
+                    - **Sub-daily data** → Aggregate to daily → Provide daily and monthly insights
+                    - **Daily data** → Direct analysis with daily and monthly patterns
+                    - **Weekly/Monthly data** → Direct analysis for periodic patterns
 
-                        4. **Date Processing Pipeline**:
-                        - Step 1: Detect all possible date/timestamp columns
-                        - Step 2: Parse and standardize ALL date formats to ISO internally
-                        - Step 3: Determine original data frequency (seconds, minutes, hours, days)
-                        - Step 4: Apply appropriate aggregation (if needed)
-                        - Step 5: Find the EXACT last date after aggregation
-                        - Step 6: Generate future dates with proper intervals based on the original frequency dates and consider the last historical date as {df.tail(1)}
+                    4. **Date Processing Pipeline**:
+                    - Step 1: Detect all possible date/timestamp columns
+                    - Step 2: Parse and standardize ALL date formats to ISO internally
+                    - Step 3: Determine original data frequency (seconds, minutes, hours, days)
+                    - Step 4: Apply appropriate aggregation (if needed)
+                    - Step 5: Analyze patterns across the complete date range from {df.head(1)} to {df.tail(1)}
+                    - Step 6: Generate insights based on temporal patterns and trends
 
-                        ###IMPORTANT: You MUST return the response in this EXACT JSON format:
-                        {{
-                            "title": "[Concise, descriptive title for the analysis]",
-                            "description": "[Brief one sentence summary of what the analysis covers]",
-                            "report": {{
-                                "heading": "[Suitable Heading Based on Data Analysis]",
-                                "paragraphs": [
-                                    "First Bullet Point: Analyzed [DATA_FREQUENCY] data from [START_DATE] to [END_DATE] with [TOTAL_RECORDS] records. Data shows [AGGREGATION_METHOD] applied to convert [ORIGINAL_FREQUENCY] timestamps to [FINAL_FREQUENCY] intervals. Quality assessment reveals [DATA_QUALITY_INSIGHTS] with [MISSING_DATA_PERCENTAGE]% missing values. Key patterns include [TREND_DIRECTION] trend with [VOLATILITY_LEVEL] volatility observed across the time series.",
-                                    "Second Bullet Point: Time series exhibits [STATISTICAL_SUMMARY] with mean value of [MEAN_VALUE] and standard deviation of [STD_DEVIATION]. Distribution analysis shows [DISTRIBUTION_TYPE] pattern with [SKEWNESS_DIRECTION] skewness. Correlation analysis between temporal features reveals [CORRELATION_INSIGHTS]. Outlier detection identified [OUTLIER_COUNT] anomalous points representing [OUTLIER_PERCENTAGE]% of total observations.",
-                                    "Third Bullet Point: Historical trend analysis indicates [TREND_ANALYSIS] with [GROWTH_RATE]% average change over the period. Seasonal decomposition reveals [SEASONALITY_PATTERN] patterns with [SEASONAL_STRENGTH] seasonal component strength. Weekly/monthly cyclical behavior shows [CYCLICAL_INSIGHTS]. Moving average analysis confirms [MOVING_AVERAGE_INSIGHTS] suggesting [TREND_STABILITY] in underlying patterns.",
-                                    "Fourth Bullet Point: Applied [FORECASTING_METHOD] model to predict [FORECAST_HORIZON] future values from [FORECAST_START_DATE] to [FORECAST_END_DATE]. Model incorporates [SEASONAL_COMPONENTS] and achieves [ACCURACY_METRICS] accuracy on validation data. Confidence intervals calculated at 80%, 90%, and 95% levels show [CONFIDENCE_INSIGHTS]. Business recommendations include [ACTIONABLE_RECOMMENDATIONS] based on projected [FORECAST_TREND] trend."
-                                ],
-                                "table": {{
-                                    "headers": ["Metric", "Last Actual Value ([LAST_DATE])", "Forecasted Value ([FORECAST_END_DATE])", "Change %", "Confidence Level"],
-                                    "rows": [
-                                        ["[PRIMARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE]", "[PREDICTED_VALUE]", "[PERCENTAGE_CHANGE]", "95%"],
-                                        ["[SECONDARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE_2]", "[PREDICTED_VALUE_2]", "[PERCENTAGE_CHANGE_2]", "90%"],
-                                        ["[TERTIARY_METRIC_NAME]", "[ACTUAL_LAST_VALUE_3]", "[PREDICTED_VALUE_3]", "[PERCENTAGE_CHANGE_3]", "85%"]
-                                    ]
-                                }},
-                                "analysis_charts": [
-                                    {{
-                                        "title": "Data Distribution and Aggregation Analysis",
-                                        "plotly": {{
-                                            "data": [{{
-                                                "x": ["[ACTUAL_CATEGORIES_OR_TIME_BINS]"],
-                                                "y": "[AGGREGATED_VALUES_FROM_DATA]",
-                                                "type": "bar",
-                                                "marker": {{"color": "#3498db"}},
-                                                "name": "Aggregated Distribution"
-                                            }}],
-                                            "layout": {{
-                                                "title": "[METRIC_NAME] Distribution After [AGGREGATION_TYPE] Aggregation",
-                                                "xaxis": {{"title": "[TIME_PERIOD_OR_CATEGORY]"}},
-                                                "yaxis": {{"title": "Aggregated [VALUE_NAME]"}},
-                                                "paper_bgcolor": "#fafafa",
-                                                "plot_bgcolor": "#ffffff"
-                                            }}
-                                        }}
-                                    }},
-                                    {{
-                                        "title": "Historical Trend Analysis",
-                                        "plotly": {{
-                                            "data": [{{
-                                                "x": ["[PROCESSED_DATES_SEQUENCE]"],
-                                                "y": "[AGGREGATED_TIME_SERIES_VALUES]",
-                                                "type": "scatter",
-                                                "mode": "lines+markers",
-                                                "marker": {{"color": "#e74c3c"}},
-                                                "name": "Historical Trend (Aggregated)"
-                                            }}],
-                                            "layout": {{
-                                                "title": "Time Series Trend from [START_DATE] to [END_DATE] ([AGGREGATION_LEVEL])",
-                                                "xaxis": {{"title": "Date ([FINAL_FREQUENCY])"}},
-                                                "yaxis": {{"title": "[AGGREGATED_METRIC_NAME]"}},
-                                                "paper_bgcolor": "#fafafa",
-                                                "plot_bgcolor": "#ffffff"
-                                            }}
-                                        }}
-                                    }}
-                                ],
-                                "forecasting_charts": [
-                                    {{
-                                        "title": "Comprehensive Forecast with Confidence Intervals",
-                                        "plotly": {{
-                                            "data": [
-                                                {{
-                                                    "x": ["[HISTORICAL_DATES_AGGREGATED]"],
-                                                    "y": "[HISTORICAL_VALUES_AGGREGATED]",
-                                                    "type": "scatter",
-                                                    "mode": "lines+markers",
-                                                    "marker": {{"color": "#2ecc71"}},
-                                                    "name": "Historical Data (Aggregated)"
-                                                }},
-                                                {{
-                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
-                                                    "y": "[FORECASTED_VALUES_REALISTIC]",
-                                                    "type": "scatter",
-                                                    "mode": "lines+markers",
-                                                    "marker": {{"color": "#f39c12", "symbol": "diamond"}},
-                                                    "name": "Forecasted Values"
-                                                }},
-                                                {{
-                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
-                                                    "y": "[UPPER_CONFIDENCE_VALUES]",
-                                                    "type": "scatter",
-                                                    "mode": "lines",
-                                                    "line": {{"dash": "dash", "color": "#95a5a6"}},
-                                                    "name": "Upper Confidence (95%)",
-                                                    "showlegend": false
-                                                }},
-                                                {{
-                                                    "x": ["[FUTURE_DATES_SEQUENTIAL]"],
-                                                    "y": "[LOWER_CONFIDENCE_VALUES]",
-                                                    "type": "scatter",
-                                                    "mode": "lines",
-                                                    "line": {{"dash": "dash", "color": "#95a5a6"}},
-                                                    "fill": "tonexty",
-                                                    "fillcolor": "rgba(149, 165, 166, 0.2)",
-                                                    "name": "Confidence Interval (95%)"
-                                                }}
-                                            ],
-                                            "layout": {{
-                                                "title": "[FORECAST_HORIZON] Forecast from [LAST_ACTUAL_DATE]",
-                                                "xaxis": {{"title": "Date"}},
-                                                "yaxis": {{"title": "[FORECASTED_METRIC]"}},
-                                                "paper_bgcolor": "#fafafa",
-                                                "plot_bgcolor": "#ffffff"
-                                            }}
-                                        }}
-                                    }},
-                                    {{
-                                        "title": "Seasonal Pattern and Future Projections",
-                                        "plotly": {{
-                                            "data": [
-                                                {{
-                                                    "x": ["[HISTORICAL_TIME_PERIODS]"],
-                                                    "y": "[SEASONAL_COMPONENT_VALUES]",
-                                                    "type": "scatter",
-                                                    "mode": "lines",
-                                                    "marker": {{"color": "#9b59b6"}},
-                                                    "name": "Historical Seasonal Pattern"
-                                                }},
-                                                {{
-                                                    "x": ["[FORECASTED_TIME_PERIODS]"],
-                                                    "y": "[FORECASTED_SEASONAL_VALUES]",
-                                                    "type": "scatter",
-                                                    "mode": "lines+markers",
-                                                    "marker": {{"color": "#e67e22"}},
-                                                    "name": "Projected Seasonal Pattern"
-                                                }}
-                                            ],
-                                            "layout": {{
-                                                "title": "Seasonal Decomposition and [FORECAST_PERIODS] Period Projection",
-                                                "xaxis": {{"title": "Time Period"}},
-                                                "yaxis": {{"title": "Seasonal Component"}},
-                                                "paper_bgcolor": "#fafafa",
-                                                "plot_bgcolor": "#ffffff"
-                                            }}
-                                        }}
-                                    }}
+                    ###IMPORTANT: You MUST return the response in this EXACT JSON format:
+                    {{
+                        "title": "[Concise, descriptive title for the analysis]",
+                        "description": "[Brief one sentence summary of what the analysis covers]",
+                        "report": {{
+                            "heading": "[Suitable Heading Based on Data Analysis]",
+                            "paragraphs": [
+                                "First Bullet Point: Analyzed [DATA_FREQUENCY] data from [START_DATE] to [END_DATE] with [TOTAL_RECORDS] records. Data shows [AGGREGATION_METHOD] applied to convert [ORIGINAL_FREQUENCY] timestamps to [FINAL_FREQUENCY] intervals. Quality assessment reveals [DATA_QUALITY_INSIGHTS] with [MISSING_DATA_PERCENTAGE]% missing values. Key patterns include [TREND_DIRECTION] trend with [VOLATILITY_LEVEL] volatility observed across the time series.",
+                                "Second Bullet Point: Time series exhibits [STATISTICAL_SUMMARY] with mean value of [MEAN_VALUE] and standard deviation of [STD_DEVIATION]. Distribution analysis shows [DISTRIBUTION_TYPE] pattern with [SKEWNESS_DIRECTION] skewness. Correlation analysis between temporal features reveals [CORRELATION_INSIGHTS]. Outlier detection identified [OUTLIER_COUNT] anomalous points representing [OUTLIER_PERCENTAGE]% of total observations.",
+                                "Third Bullet Point: Historical trend analysis indicates [TREND_ANALYSIS] with [GROWTH_RATE]% average change over the period. Seasonal decomposition reveals [SEASONALITY_PATTERN] patterns with [SEASONAL_STRENGTH] seasonal component strength. Weekly/monthly cyclical behavior shows [CYCLICAL_INSIGHTS]. Moving average analysis confirms [MOVING_AVERAGE_INSIGHTS] suggesting [TREND_STABILITY] in underlying patterns.",
+                                "Fourth Bullet Point: Peak performance occurred during [PEAK_PERIOD] with maximum value of [MAX_VALUE] on [MAX_DATE]. Minimum values were observed during [LOW_PERIOD] with [MIN_VALUE] on [MIN_DATE]. Recent performance shows [RECENT_TREND] with [RECENT_CHANGE]% change in the last [TIME_PERIOD]. Data consistency analysis reveals [CONSISTENCY_INSIGHTS] with [STABILITY_METRICS] indicating [OVERALL_PATTERN_ASSESSMENT]."
+                            ],
+                            "table": {{
+                                "headers": ["Metric", "Current Value ([LAST_DATE])", "Period Average", "Peak Value", "Growth Rate", "Data Quality"],
+                                "rows": [
+                                    ["[PRIMARY_METRIC_NAME]", "[CURRENT_VALUE]", "[PERIOD_AVERAGE]", "[PEAK_VALUE]", "[GROWTH_RATE]%", "[QUALITY_SCORE]%"],
+                                    ["[SECONDARY_METRIC_NAME]", "[CURRENT_VALUE_2]", "[PERIOD_AVERAGE_2]", "[PEAK_VALUE_2]", "[GROWTH_RATE_2]%", "[QUALITY_SCORE_2]%"],
+                                    ["[TERTIARY_METRIC_NAME]", "[CURRENT_VALUE_3]", "[PERIOD_AVERAGE_3]", "[PEAK_VALUE_3]", "[GROWTH_RATE_3]%", "[QUALITY_SCORE_3]%"]
                                 ]
-                            }}
+                            }},
+                            "analysis_charts": [
+                                {{
+                                    "title": "Data Distribution and Aggregation Analysis",
+                                    "plotly": {{
+                                        "data": [{{
+                                            "x": ["[ACTUAL_CATEGORIES_OR_TIME_BINS]"],
+                                            "y": "[AGGREGATED_VALUES_FROM_DATA]",
+                                            "type": "bar",
+                                            "marker": {{"color": "#3498db"}},
+                                            "name": "Aggregated Distribution"
+                                        }}],
+                                        "layout": {{
+                                            "title": "[METRIC_NAME] Distribution After [AGGREGATION_TYPE] Aggregation",
+                                            "xaxis": {{"title": "[TIME_PERIOD_OR_CATEGORY]"}},
+                                            "yaxis": {{"title": "Aggregated [VALUE_NAME]"}},
+                                            "paper_bgcolor": "#fafafa",
+                                            "plot_bgcolor": "#ffffff"
+                                        }}
+                                    }}
+                                }},
+                                {{
+                                    "title": "Historical Trend Analysis",
+                                    "plotly": {{
+                                        "data": [{{
+                                            "x": ["[PROCESSED_DATES_SEQUENCE]"],
+                                            "y": "[AGGREGATED_TIME_SERIES_VALUES]",
+                                            "type": "scatter",
+                                            "mode": "lines+markers",
+                                            "marker": {{"color": "#e74c3c"}},
+                                            "name": "Historical Trend (Aggregated)"
+                                        }}],
+                                        "layout": {{
+                                            "title": "Time Series Trend from [START_DATE] to [END_DATE] ([AGGREGATION_LEVEL])",
+                                            "xaxis": {{"title": "Date ([FINAL_FREQUENCY])"}},
+                                            "yaxis": {{"title": "[AGGREGATED_METRIC_NAME]"}},
+                                            "paper_bgcolor": "#fafafa",
+                                            "plot_bgcolor": "#ffffff"
+                                        }}
+                                    }}
+                                }}
+                            ]
                         }}
+                    }}
 
-                        CRITICAL IMPLEMENTATION STEPS FOR UNIVERSAL DATE HANDLING:
-                        1. **STEP 1**: Load data.csv and scan ALL columns for potential date/timestamp formats from {df.head(1)} to {df.tail(1)}.
-                        2. **STEP 2**: Parse ANY date format (timestamp, UTC, ISO, simple date) and standardize internally
-                        3. **STEP 3**: Determine original data frequency and decide on aggregation strategy:
-                        - Seconds/Minutes/Hours → Aggregate to Daily → Monthly forecasting
-                        - Daily → Direct monthly forecasting  
-                        - Weekly/Monthly → Direct period forecasting
-                        4. **STEP 4**: Apply intelligent aggregation:
-                        - For sub-daily: Calculate daily averages from all timestamps within each day
-                        - For monthly forecasts: Average all daily values within each month
-                        5. **STEP 5**: Find the EXACT last date after proper aggregation
-                        6. **STEP 6**: Generate realistic future dates maintaining logical sequence
-                        7. **STEP 7**: Apply appropriate forecasting model considering aggregated data patterns
-                        8. **STEP 8**: Replace ALL placeholders with actual aggregated values and realistic forecasts
+                    CRITICAL IMPLEMENTATION STEPS FOR UNIVERSAL DATE HANDLING:
+                    1. **STEP 1**: Load data.csv and scan ALL columns for potential date/timestamp formats from {df.head(1)} to {df.tail(1)}.
+                    2. **STEP 2**: Parse ANY date format (timestamp, UTC, ISO, simple date) and standardize internally
+                    3. **STEP 3**: Determine original data frequency and decide on aggregation strategy:
+                    - Seconds/Minutes/Hours → Aggregate to Daily → Monthly analysis
+                    - Daily → Direct daily and monthly analysis  
+                    - Weekly/Monthly → Direct period analysis
+                    4. **STEP 4**: Apply intelligent aggregation:
+                    - For sub-daily: Calculate daily averages from all timestamps within each day
+                    - For monthly analysis: Average all daily values within each month
+                    5. **STEP 5**: Perform comprehensive statistical analysis on aggregated data
+                    6. **STEP 6**: Generate insights about patterns, trends, and anomalies
+                    7. **STEP 7**: Create visualizations showing historical patterns and distributions
+                    8. **STEP 8**: Replace ALL placeholders with actual aggregated values and insights
 
-                        AGGREGATION EXAMPLES:
-                        - **Input**: "01-05-2025 08:00:30", "01-05-2025 14:30:15", "01-05-2025 20:45:00"
-                        - **Process**: Average all values for 01-05-2025 → Single daily value
-                        - **Output**: One data point for "01-05-2025" representing daily average
+                    AGGREGATION EXAMPLES:
+                    - **Input**: "01-05-2025 08:00:30", "01-05-2025 14:30:15", "01-05-2025 20:45:00"
+                    - **Process**: Average all values for 01-05-2025 → Single daily value
+                    - **Output**: One data point for "01-05-2025" representing daily average
 
-                        - **UTC Input**: "2025-01-05T08:00:30Z", "2025-01-05T14:30:15Z" 
-                        - **Process**: Convert to local dates, aggregate by day → Daily averages
-                        - **Output**: Daily aggregated values for forecasting
+                    - **UTC Input**: "2025-01-05T08:00:30Z", "2025-01-05T14:30:15Z" 
+                    - **Process**: Convert to local dates, aggregate by day → Daily averages
+                    - **Output**: Daily aggregated values for analysis
 
-                        FORECASTING ACCURACY REQUIREMENTS:
-                        - Use actual column names and aggregated values from the CSV
-                        - Ensure forecasted dates follow logical progression after aggregation
-                        - Generate realistic predictions based on aggregated historical patterns
-                        - Include proper confidence intervals for aggregated forecasts
-                        - Provide business insights relevant to the aggregation level chosen
-                        
+                    ANALYSIS ACCURACY REQUIREMENTS:
+                    - Use actual column names and aggregated values from the CSV
+                    - Generate insights based on aggregated historical patterns
+                    - Include proper statistical analysis for aggregated data
+                    - Provide business insights relevant to the aggregation level chosen
+                    - Focus on descriptive and diagnostic analytics (what happened and why)
+                    - Include trend analysis, seasonality detection, and anomaly identification
 
-                        Generate a comprehensive report with intelligent date handling and forecasting for: {query}
+                    Generate a comprehensive report with intelligent date handling and analysis for: {query}
 
-                        The report must include proper universal date format handling, intelligent aggregation, and realistic forecasting based entirely on the processed CSV data.
-                            """)
+                    The report must include proper universal date format handling, intelligent aggregation, and realistic insights based entirely on the processed CSV data.
+                        """)
             
             print("Analysed the above things,,,,,,,,,going to generate the code")
             code = generate_data_code(prompt_eng)
