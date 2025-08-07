@@ -3842,6 +3842,7 @@ async def database_chat(request: ChatRequest):
 
     try:
         response = await multi_db_agent.process_message(session_id, request.message)
+        print(response.response)
 
         formatted_response=await llm_format_response(user_query=request.message, response=response.response)
         print(f"Formatted response: {formatted_response}")
@@ -3875,7 +3876,7 @@ async def llm_format_response(user_query: str, response: str) -> str:
                 Here is the raw response:
                 \"\"\"{json.dumps(response)}\"\"\"
 
-                MANDATORY FORMATTING RULES:
+                ### IMPORTANT MANDATORY FORMATTING RULES:
                 1. ONLY consider the "response" key from the raw data
                 2. ALWAYS format your response using this EXACT structure:
                 - Start with a <p> tag containing a brief one-line explanation
@@ -3891,25 +3892,14 @@ async def llm_format_response(user_query: str, response: str) -> str:
 
                 SPECIFIC HANDLING FOR DATABASE/TABLE DATA:
                 - If you see table data like [('table1',), ('table2',)], convert it to:
-                <li><strong>Tables:</strong>
-                    <ul>
-                    <li>table1</li>
-                    <li>table2</li>
-                    </ul>
-                </li>
+                <li><strong>Tables:</strong>\\n  <ul>\\n    <li>table1</li>\\n    <li>table2</li>\\n  </ul>\\n</li>
 
-                EXACT OUTPUT FORMAT REQUIRED:
-                <p>Brief explanation about the data:</p>
-                <ul>
-                <li><strong>Field Name:</strong> Value</li>
-                <li><strong>Another Field:</strong> Value</li>
-                <li><strong>Lists/Arrays:</strong>
-                    <ul>
-                    <li>Item 1</li>
-                    <li>Item 2</li>
-                    </ul>
-                </li>
-                </ul>
+                HTML CONTENT FORMAT REQUIRED:
+                <p>Brief explanation about the data:</p>\\n<ul>\\n<li><strong>Field Name:</strong> Value</li>\\n<li><strong>Another Field:</strong> Value</li>\\n<li><strong>Lists/Arrays:</strong>\\n  <ul>\\n    <li>Item 1</li>\\n    <li>Item 2</li>\\n  </ul>\\n</li>\\n</ul>
+               
+                ### IMPORTANT:
+                - Properly escape newlines as \\n in the response field
+                - Properly escape quotes as \\" in the response field
 
                 Convert the response data to this exact format. Clean up any tuple formatting and present lists as individual items.
                 """
