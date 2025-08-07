@@ -3970,6 +3970,7 @@ async def llm_format_response(user_query: str, response: str) -> str:
                 ### IMPORTANT:
                 - Properly escape newlines as \\n in the response field
                 - Properly escape quotes as \\" in the response field
+                - Do not include "metadata" and "Timestamp" in the html format
 
                 Convert the response data to this exact format. Clean up any tuple formatting and present lists as individual items.
                 """
