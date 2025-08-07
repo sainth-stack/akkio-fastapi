@@ -274,7 +274,7 @@ def extrapolate_from_seed(seed_df: pd.DataFrame, target_rows: int, time_columns:
 
 
 # ----------------- Step 4: Robust Final Generator ---------------------
-def generate_data_from_text(prompt: str) -> Tuple[str, pd.DataFrame]:
+def generate_data_from_text(prompt: str) ->  pd.DataFrame:
     try:
         # Parse metadata with enhanced parser
         meta = parse_prompt_metadata(prompt)
@@ -312,7 +312,7 @@ def generate_data_from_text(prompt: str) -> Tuple[str, pd.DataFrame]:
         file_path = "data_output.xlsx"
         df_final.to_excel(file_path, index=False)
 
-        return file_path, df_final
+        return  df_final
 
     except Exception as e:
         error_msg = f"Error generating data: {str(e)}"
@@ -451,7 +451,7 @@ def extract_num_pages_tool(prompt: str) -> int:
 
 
 # -----------------------------------------------------------------------------------------------------------------
-def excel_generator_tool(prompt: str) -> tuple[str, DataFrame]:
+def excel_generator_tool(prompt: str) -> DataFrame:
 
     return generate_data_from_text(prompt)
 
