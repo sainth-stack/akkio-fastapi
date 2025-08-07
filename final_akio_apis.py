@@ -3418,7 +3418,7 @@ async def senior_data_analysis(
 
                     Generate a comprehensive report with intelligent date handling and analysis for: {query}
                     The report must include:
-                        - 4 Bullet points (2 lines each): current analysis with related headings and all.
+                        - 4 Bullet points (2 lines each): current analysis of the data.
                         - 1 summary table  and all other analysis metrics
                         - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
 
