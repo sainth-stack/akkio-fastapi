@@ -3331,9 +3331,7 @@ async def senior_data_analysis(
                             "paragraphs": [
                                 "First Bullet Point: Analyzed [DATA_FREQUENCY] data from [START_DATE] to [END_DATE] with [TOTAL_RECORDS] records. Data shows [AGGREGATION_METHOD] applied to convert [ORIGINAL_FREQUENCY] timestamps to [FINAL_FREQUENCY] intervals. Quality assessment reveals [DATA_QUALITY_INSIGHTS] with [MISSING_DATA_PERCENTAGE]% missing values. Key patterns include [TREND_DIRECTION] trend with [VOLATILITY_LEVEL] volatility observed across the time series.",
                                 "Second Bullet Point: Time series exhibits [STATISTICAL_SUMMARY] with mean value of [MEAN_VALUE] and standard deviation of [STD_DEVIATION]. Distribution analysis shows [DISTRIBUTION_TYPE] pattern with [SKEWNESS_DIRECTION] skewness. Correlation analysis between temporal features reveals [CORRELATION_INSIGHTS]. Outlier detection identified [OUTLIER_COUNT] anomalous points representing [OUTLIER_PERCENTAGE]% of total observations.",
-                                "Third Bullet Point: Historical trend analysis indicates [TREND_ANALYSIS] with [GROWTH_RATE]% average change over the period. Seasonal decomposition reveals [SEASONALITY_PATTERN] patterns with [SEASONAL_STRENGTH] seasonal component strength. Weekly/monthly cyclical behavior shows [CYCLICAL_INSIGHTS]. Moving average analysis confirms [MOVING_AVERAGE_INSIGHTS] suggesting [TREND_STABILITY] in underlying patterns.",
-                                "Fourth Bullet Point: Peak performance occurred during [PEAK_PERIOD] with maximum value of [MAX_VALUE] on [MAX_DATE]. Minimum values were observed during [LOW_PERIOD] with [MIN_VALUE] on [MIN_DATE]. Recent performance shows [RECENT_TREND] with [RECENT_CHANGE]% change in the last [TIME_PERIOD]. Data consistency analysis reveals [CONSISTENCY_INSIGHTS] with [STABILITY_METRICS] indicating [OVERALL_PATTERN_ASSESSMENT]."
-                            ],
+                               ],
                             "table": {{
                                 "headers": ["Metric", "Current Value ([LAST_DATE])", "Period Average", "Peak Value", "Growth Rate", "Data Quality"],
                                 "rows": [
@@ -3419,6 +3417,10 @@ async def senior_data_analysis(
                     - Include trend analysis, seasonality detection, and anomaly identification
 
                     Generate a comprehensive report with intelligent date handling and analysis for: {query}
+                    The report must include:
+                        - 4 Bullet points (2 lines each): current analysis with related headings and all.
+                        - 1 summary table  and all other analysis metrics
+                        - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
 
                     The report must include proper universal date format handling, intelligent aggregation, and realistic insights based entirely on the processed CSV data.
                         """)
