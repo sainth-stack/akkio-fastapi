@@ -2199,24 +2199,28 @@ async def create_data_with_data_scout(
         if data_type == "excel":
             agent1 = DataScout_agent()
             result = agent1.invoke({"input": prompt})
+            print("result is", result)
 
             if isinstance(result, dict) and "output" in result:
                 output = result["output"]
                 print("output is", output)
-                # Handle DataFrame conversion
-                if hasattr(output, 'to_dict'):  # Check if it's a DataFrame
-                    # Convert DataFrame to dictionary
-                    data_dict = output.to_dict('records')  # List of dictionaries
+                
+                if hasattr(output, 'to_dict'):
+                    # Use pandas' built-in JSON serialization with date formatting
+                    json_str = output.to_json(orient='records', date_format='iso')
+                    data_dict = json.loads(json_str)
+                    
                     return JSONResponse(content={
                         "message": "Data generated successfully",
                         "data": data_dict,
-                        "shape": output.shape,
+                        "shape": list(output.shape),
                         "columns": output.columns.tolist()
                     })
                 else:
-                    # Handle string or other serializable output
-                    return JSONResponse(content={"message": str(output)})
-
+                    return JSONResponse(content={
+                        "message": "Output is not a DataFrame",
+                        "output_type": str(type(output))
+                    })
 
         elif data_type == "pdf":
             raw_prompt = prompt
