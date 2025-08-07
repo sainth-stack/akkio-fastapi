@@ -2847,13 +2847,83 @@ async def handle_pdf_generation(
 
 
 def infer_datetime_column(df: pd.DataFrame) -> Optional[str]:
+    print(df.columns)
+    
     for col in df.columns:
-        try:
-            parsed = pd.to_datetime(df[col], errors='coerce')
-            if parsed.notna().sum() > len(df) * 0.8:
-                return col
-        except Exception:
-            continue
+        if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+            # Skip if column has too many nulls
+            non_null_ratio = df[col].notna().mean()
+            if non_null_ratio < 0.5:  # Skip if more than 50% nulls
+                continue
+            
+            # Get a sample of non-null values for testing
+            sample_values = df[col].dropna().head(min(100, len(df[col].dropna())))
+            
+            # Try multiple datetime parsing approaches
+            parsing_methods = [
+                # Method 1: Formats matching your data (DD-MM-YYYY HH:MM)
+                lambda x: pd.to_datetime(x, format='%d-%m-%Y %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d-%m-%Y %H:%M:%S', errors='coerce'),
+                
+                # Method 2: Similar formats with different separators
+                lambda x: pd.to_datetime(x, format='%d/%m/%Y %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d/%m/%Y %H:%M:%S', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d.%m.%Y %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d.%m.%Y %H:%M:%S', errors='coerce'),
+                
+                # Method 3: US format variations
+                lambda x: pd.to_datetime(x, format='%m-%d-%Y %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%m-%d-%Y %H:%M:%S', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%m/%d/%Y %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%m/%d/%Y %H:%M:%S', errors='coerce'),
+                
+                # Method 4: ISO-like formats
+                lambda x: pd.to_datetime(x, format='%Y-%m-%d %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y-%m-%d %H:%M:%S', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y/%m/%d %H:%M', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y/%m/%d %H:%M:%S', errors='coerce'),
+                
+                # Method 5: Date-only formats
+                lambda x: pd.to_datetime(x, format='%d-%m-%Y', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d/%m/%Y', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%m/%d/%Y', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y-%m-%d', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y%m%d', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%d.%m.%Y', errors='coerce'),
+                
+                # Method 6: With milliseconds
+                lambda x: pd.to_datetime(x, format='%d-%m-%Y %H:%M:%S.%f', errors='coerce'),
+                lambda x: pd.to_datetime(x, format='%Y-%m-%d %H:%M:%S.%f', errors='coerce'),
+                
+                # Method 7: pandas infer_datetime_format
+                lambda x: pd.to_datetime(x, infer_datetime_format=True, errors='coerce'),
+                
+                # Method 8: Flexible parsing (most permissive)
+                lambda x: pd.to_datetime(x, errors='coerce', dayfirst=True),  # European format first
+                lambda x: pd.to_datetime(x, errors='coerce', dayfirst=False), # US format
+            ]
+            
+            for method in parsing_methods:
+                try:
+                    parsed_dates = method(sample_values)
+                    
+                    # Check if a significant portion was successfully parsed
+                    success_ratio = parsed_dates.notna().mean()
+                    
+                    if success_ratio >= 0.8:  # At least 80% successfully parsed
+                        # Additional validation: check if parsed dates seem reasonable
+                        valid_dates = parsed_dates.dropna()
+                        if len(valid_dates) > 0:
+                            # Check date range reasonableness (between 1900 and 2100)
+                            min_date = valid_dates.min()
+                            max_date = valid_dates.max()
+                            
+                            if (min_date.year >= 1900 and max_date.year <= 2100):
+                                return col
+                
+                except Exception:
+                    continue
+    
     return None
 
 
