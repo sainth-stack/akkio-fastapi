@@ -241,92 +241,67 @@ async def delete_selected_tables_by_name(
         )
 
 
-# 4.Get flespi data---------------------------------it is for the flespi data---------- total 4(existing)
-@app.post("/api/download_flespi_data")
-async def download_flespi_data(
-        flespi_URL: str = Form(...),
-        flespi_token: str = Form(...)
-) -> JSONResponse:
+import paho.mqtt.client as mqtt
+
+# In-memory buffer for data (with thread safety for demo purposes)
+mqtt_data_buffer = []
+
+# MQTT message handler
+def on_message(client, userdata, message):
     try:
-        # Get current time in IST
-        current_datetime = datetime.now(tz=ZoneInfo('Asia/Kolkata'))
+        payload = json.loads(message.payload.decode())
+        # Optionally parse/flatten the payload as needed.
+        # Save to global buffer for processing later
+        mqtt_data_buffer.append(payload)
+    except Exception as exc:
+        print("Error decoding MQTT payload:", exc)
 
-        # Calculate start time (1 week ago)
-        start_of_day = (current_datetime - timedelta(weeks=1)).replace(
-            hour=current_datetime.hour,
-            minute=current_datetime.minute,
-            second=0,
-            microsecond=0
-        )
+def connect_and_listen(broker_url, flespi_token, topic, max_messages=100, timeout=10):
+    client = mqtt.Client(transport="websockets")
+    client.username_pw_set(flespi_token, password="")  # Password must be empty
+    client.on_message = on_message
+    # Extract host and port from broker_url e.g wss://mqtt.flespi.io:443
+    if broker_url.startswith('wss://'):
+        hostport = broker_url[6:]
+    elif broker_url.startswith('mqtt://'):
+        hostport = broker_url[7:]
+    else:
+        hostport = broker_url
+    host, port = hostport.split(':')
+    print(f"Connecting to MQTT broker at {host}:{port} with topic '{topic}'")
+    client.connect(host, int(port))
+    client.subscribe(topic)
+    client.loop_start()
+    # Collect messages up to a limit, or for a fixed timeout
+    start_time = datetime.datetime.now()
+    while len(mqtt_data_buffer) < max_messages and (datetime.datetime.now() - start_time).seconds < timeout:
+        asyncio.sleep(0.2)
+    client.loop_stop()
+    client.disconnect()
+    print(f"Collected {len(mqtt_data_buffer)} messages from MQTT broker.")
+    return mqtt_data_buffer.copy()
 
-        # Make API request to Flespi
-        response = requests.get(
-            f'{flespi_URL}?data=%7B%22from%22%3A{start_of_day.timestamp()}%2C%22to%22%3A{datetime.now().timestamp()}%7D',
-            headers={
-                'Authorization': f'FlespiToken {flespi_token}'
-            }
-        )
-        response.raise_for_status()  # Raises exception for 4XX/5XX responses
-
-        # Process the data
-        multi_data = response.json()['result']
-        multi_data = pre_process_multi_data(multi_data)
-        multi_data = convert_to_hourly(multi_data)
-
-        return JSONResponse(
-            content=multi_data.to_dict(orient="records"),
-            status_code=200
-        )
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=502,  # Bad Gateway
-            detail=f"Flespi API request failed: {str(e)}"
-        )
-    except KeyError as e:
-        raise HTTPException(
-            status_code=422,  # Unprocessable Entity
-            detail=f"Invalid Flespi API response format: {str(e)}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing Flespi data: {str(e)}"
-        )
-
-
-# Preprocess multi data
+# Preprocess multi data – same as before
 def pre_process_multi_data(multi_data):
     for idx, record in enumerate(multi_data):
-        multi_data[idx].update({
-            "timestamp": datetime.fromtimestamp(multi_data[idx]["timestamp"],
-                                                tz=ZoneInfo('Asia/Kolkata')).strftime("%Y-%m-%d %H-%M-%S"),
-            "server.timestamp": datetime.fromtimestamp(multi_data[idx]["server.timestamp"],
-                                                       tz=ZoneInfo('Asia/Kolkata')).strftime(
-                "%Y-%m-%d %H-%M-%S")
+        record_ts = record.get("timestamp")
+        server_ts = record.get("server.timestamp")
+        record.update({
+            "timestamp": datetime.datetime.fromtimestamp(record_ts,
+                                                        tz=ZoneInfo('Asia/Kolkata')).strftime("%Y-%m-%d %H-%M-%S") if record_ts else None,
+            "server.timestamp": datetime.datetime.fromtimestamp(server_ts,
+                                                               tz=ZoneInfo('Asia/Kolkata')).strftime("%Y-%m-%d %H-%M-%S") if server_ts else None
         })
     return multi_data
 
-
-# conversion of data to hourly.
 def convert_to_hourly(data):
-    # Convert the list of dictionaries to a DataFrame
     df = pd.DataFrame(data)
-
-    # Convert the 'timestamp' column to datetime
+    print("DataFrame preview before processing:", df.head(5))
     df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H-%M-%S')
-
-    # Extract the hour for grouping
     df['hour'] = df['timestamp'].dt.floor('H')
-
-    # Define columns for aggregation
     value_columns = ['Current', 'Humidity', 'Power', 'Temperature', 'Voltage']
-
-    # Flatten nested dictionaries for easier aggregation
     for col in value_columns:
-        df[f'{col}_value'] = df[col].apply(lambda x: x['value'])
-
-    # Aggregate values by hour
+        df[f'{col}_value'] = df[col].apply(lambda x: x['value'] if isinstance(x, dict) and 'value' in x else None)
     hourly_data = df.groupby('hour').agg(
         Current_avg=('Current_value', 'mean'),
         Humidity_avg=('Humidity_value', 'mean'),
@@ -334,14 +309,30 @@ def convert_to_hourly(data):
         Temperature_avg=('Temperature_value', 'mean'),
         Voltage_avg=('Voltage_value', 'mean'),
     ).reset_index()
-
-    hourly_data['hour'] = pd.to_datetime(hourly_data['hour'], unit='ms')
-
-    # Now, if you want a specific format (e.g., 'YYYY-MM-DD HH:MM:SS')
+    hourly_data['hour'] = pd.to_datetime(hourly_data['hour'])
     hourly_data['hour'] = hourly_data['hour'].dt.strftime('%Y-%m-%d %H:%M:%S')
-
     return hourly_data
 
+
+@app.post("/api/download_flespi_data_mqtt")
+async def download_flespi_data_mqtt(
+    broker_url: str = Form(...),      # e.g. "wss://mqtt.flespi.io:443"
+    flespi_token: str = Form(...),    # Your Flespi token
+    topic: str = Form(...)            # e.g. "flespi/message/gw/devices/#"
+) -> JSONResponse:
+    global mqtt_data_buffer
+    try:
+        mqtt_data_buffer.clear()
+        result = await asyncio.to_thread(
+            connect_and_listen, broker_url, flespi_token, topic, max_messages=100, timeout=10
+        )
+        if not result:
+            raise HTTPException(status_code=504, detail="No MQTT messages received from Flespi.")
+        result = pre_process_multi_data(result)
+        result = convert_to_hourly(result)
+        return JSONResponse(content=result.to_dict(orient="records"), status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"MQTT connection or data processing failed: {str(e)}")
 
 # 5.Dashboard apis--------------------Dashboard related api for generating the dynamic graphs---------- 5. Have to modify
 # Dashboard configuration
@@ -353,9 +344,7 @@ FIXED_CHART_FILENAMES = [
     "chart_1.json",
     "chart_2.json",
     "chart_3.json",
-    "chart_4.json",
-    "chart_5.json",
-    "chart_6.json"
+    "chart_4.json"
 ]
 
 
@@ -369,8 +358,8 @@ async def gen_plotly_response() -> JSONResponse:
         # Clean column names
         df.columns = df.columns.str.strip()
 
-        num_plots = 6  # Number of plots to generate per topic
-        basic_plots=3
+        num_plots = 4  # Number of plots to generate per topic
+        basic_plots=2
         file_path = csv_file_path
         sample_data = df.head(10).to_string()
         data_types_info = df.dtypes.to_string()
@@ -390,7 +379,7 @@ async def gen_plotly_response() -> JSONResponse:
 
                         Your task is to:
                         1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
-                        2.You have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
+                        2.You *MUST* have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
                         3. Consider the data source as: {file_path}
                         4. For each chart:
                            - Use a short, meaningful chart title (as the dictionary key).
@@ -693,12 +682,18 @@ async def analyze_chart(
             prompt = (
                 f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
                 f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
-                f"Follow this output structure with exactly 4 key observations:\n\n"
+                f"Follow this output structure with exactly 5 key observations with 2 bullet points for each heading:\n\n"
                 f"Core Insight\n"
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
                 f"Pattern Analysis\n"
                 f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                f"Give the response in markdown format with proper headings in 'h4' and bullet points."
+                f"Business Context\n"
+                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
+                f"Action Recommendations\n"
+                f"• Only describe what you observe. Do not invent data. Use the exact format shown above.\n\n"
+                f"Actions\n"
+                f"• Provide actions for acheiving the action recommendations based on the chart data.\n\n"
+                f"Give the response in markdown format with proper headings in 'h4' and  with *2* bullet points per topic."
             )
             summary = generate_text(prompt)
             SUMMARY_CACHE[chart_id] = summary
@@ -727,7 +722,7 @@ async def analyze_chart(
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
                 f" if the user asks about Action Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
-                f"Give the response in markdown format with proper headings in 'h4' format and bullet points."
+                f"Give the response in markdown format with proper headings in 'h4' format and  with *2* bullet points."
             )
             answer = generate_text(prompt)
 
@@ -1186,7 +1181,7 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
         # Use messages as context for the LLM
         # Handle forecasting requests
         if 'forecast' in prompt.lower():
-            data = extract_forecast_details_llm(prompt, df.columns)
+            data = extract_forecast_details_llm(prompt, df.columns,df)
             print("data printed")
             stat, data, img_data = arima_train(df, data['target_variable'], data)
 
@@ -1380,7 +1375,7 @@ def load_pipeline(save_path="model_pipeline.pkl"):
     return pipeline
 
 
-def extract_forecast_details_llm(prompt, column_names):
+def extract_forecast_details_llm(prompt, column_names, df):
     try:
         system_prompt = f""" You are an AI assistant that extracts forecast details from a user's prompt. Given a 
         natural language input and the following column names from the input data, return the following in JSON format:
@@ -1400,7 +1395,8 @@ def extract_forecast_details_llm(prompt, column_names):
 
             - Input: "I want to predict CO2 levels for 7 days."
               Output: {{"target_variable": "CO2 levels", "forecast_horizon": 7, "time_unit": "days"}}
-
+            
+            -You have to start the forecasting based on the last available date point in the dataset i.e the date at {df.tail(1)}.You do not consider the current date as the starting point for forecasting.
             Ensure that the "target_variable" matches one of the available column names, even if the user misspells it.
             """
         forecast_details = ''
@@ -2448,7 +2444,7 @@ def updatedtypes(df):
         if datatypes[col] == 'object':
             try:
                 pd.to_datetime(df[col],utc=True)
-                df.drop(col, axis=1, inplace=True)
+                # df.drop(col, axis=1, inplace=True)
                 print(df.columns)
             except Exception as e:
                 pass
@@ -3534,6 +3530,11 @@ async def senior_data_analysis(
                     Generate clear visualisations based on the data.csv given to you.
                 4. KPI related questions:
                     Generate the kpis regarding the dataset given.
+                5. Statistical Analysis:
+                    Perform statistical analysis on the data.csv file and return the results in the JSON format above.
+                6. Data Analysis:
+                    Perform data analysis on the data.csv file and return the results in the JSON format above.
+                
                 And there are more number of tasks you have to do whatever the senior data analyst can do.
                 Answer for all the queries in a meaningful manner.
 
@@ -3561,6 +3562,28 @@ async def senior_data_analysis(
                 - If you got any analysis like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
                 - Do not mention the headings at any cost.
                 - All the statistics and summary should be present in the tabular format only.
+
+                ### VERY IMPORTANT:
+                UNIVERSAL DATE HANDLING AND ANALYSIS REQUIREMENTS:
+                1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
+                - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
+                - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
+                - ISO Format: "2025-01-05T08:00:30+00:00"
+                - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
+                - Any other datetime format
+
+                2. **Intelligent Data Aggregation Strategy**:
+                - **High-frequency data (seconds/minutes/hours)**: 
+                    * Convert all timestamps to ISO format internally
+                    * Calculate daily averages from all timestamps within each day
+                    * For monthly analysis: Average all daily values within each month
+                    * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
+                    → Calculate single daily average for 01-05-2025
+                
+                - **UTC/ISO Timestamps**:
+                    * Parse UTC timestamps and convert to local date representation
+                    * Apply same daily → monthly aggregation logic
+                    * Maintain timezone awareness for accurate date grouping
 
                 User query is {query}.
             """
@@ -3918,12 +3941,12 @@ async def database_chat(request: ChatRequest):
         response = await multi_db_agent.process_message(session_id, request.message)
         print(response.response)
 
-        formatted_response=await llm_format_response(user_query=request.message, response=response.response)
-        print(f"Formatted response: {formatted_response}")
+        #formatted_response=await llm_format_response(user_query=request.message, response=response.response)
+        # print(f"Formatted response: {formatted_response}")
         return JSONResponse(
             content={
                 "session_id": session_id,
-                "response":formatted_response,
+                "response":json.loads(response.response),
             },
             status_code=200
         )
@@ -3936,59 +3959,59 @@ async def database_chat(request: ChatRequest):
         )
 
 
-async def llm_format_response(user_query: str, response: str) -> str:
-    """
-    Formats the LLM response to include user query and response in a structured HTML format.
-    Always returns response in <p> + <ul>/<li> format.
-    """
-    prompt = f"""
-                You are a helpful formatting assistant that ALWAYS formats responses in a specific HTML structure.
+# async def llm_format_response(user_query: str, response: str) -> str:
+#     """
+#     Formats the LLM response to include user query and response in a structured HTML format.
+#     Always returns response in <p> + <ul>/<li> format.
+#     """
+#     prompt = f"""
+#                 You are a helpful formatting assistant that ALWAYS formats responses in a specific HTML structure.
 
-                The user asked the following question:
-                "{user_query}"
+#                 The user asked the following question:
+#                 "{user_query}"
 
-                Here is the raw response:
-                \"\"\"{json.dumps(response)}\"\"\"
+#                 Here is the raw response:
+#                 \"\"\"{json.dumps(response)}\"\"\"
 
-                ### IMPORTANT MANDATORY FORMATTING RULES:
-                1. ONLY consider the "response" key from the raw data
-                2. ALWAYS format your response using this EXACT structure:
-                - Start with a <p> tag containing a brief one-line explanation
-                - Follow with a <ul> containing <li> items for all data points
-                3. Use <strong> tags for field names/labels
-                4. For any lists or arrays in the data:
-                - Extract individual items from tuples/arrays
-                - Format each item as a separate <li> element
-                - Remove any tuple formatting like ('item',) and just show: item
-                5. For nested data, use nested <ul>/<li> structures
-                6. Return ONLY the HTML content, no markdown or other formatting
-                7. Do not include any text outside of the HTML tags
+#                 ### IMPORTANT MANDATORY FORMATTING RULES:
+#                 1. ONLY consider the "response" key from the raw data
+#                 2. ALWAYS format your response using this EXACT structure:
+#                 - Start with a <p> tag containing a brief one-line explanation
+#                 - Follow with a <ul> containing <li> items for all data points
+#                 3. Use <strong> tags for field names/labels
+#                 4. For any lists or arrays in the data:
+#                 - Extract individual items from tuples/arrays
+#                 - Format each item as a separate <li> element
+#                 - Remove any tuple formatting like ('item',) and just show: item
+#                 5. For nested data, use nested <ul>/<li> structures
+#                 6. Return ONLY the HTML content, no markdown or other formatting
+#                 7. Do not include any text outside of the HTML tags
 
-                SPECIFIC HANDLING FOR DATABASE/TABLE DATA:
-                - If you see table data like [('table1',), ('table2',)], convert it to:
-                <li><strong>Tables:</strong>\\n  <ul>\\n    <li>table1</li>\\n    <li>table2</li>\\n  </ul>\\n</li>
+#                 SPECIFIC HANDLING FOR DATABASE/TABLE DATA:
+#                 - If you see table data like [('table1',), ('table2',)], convert it to:
+#                 <li><strong>Tables:</strong>\\n  <ul>\\n    <li>table1</li>\\n    <li>table2</li>\\n  </ul>\\n</li>
 
-                HTML CONTENT FORMAT REQUIRED:
-                <p>Brief explanation about the data:</p>\\n<ul>\\n<li><strong>Field Name:</strong> Value</li>\\n<li><strong>Another Field:</strong> Value</li>\\n<li><strong>Lists/Arrays:</strong>\\n  <ul>\\n    <li>Item 1</li>\\n    <li>Item 2</li>\\n  </ul>\\n</li>\\n</ul>
+#                 HTML CONTENT FORMAT REQUIRED:
+#                 <p>Brief explanation about the data:</p>\\n<ul>\\n<li><strong>Field Name:</strong> Value</li>\\n<li><strong>Another Field:</strong> Value</li>\\n<li><strong>Lists/Arrays:</strong>\\n  <ul>\\n    <li>Item 1</li>\\n    <li>Item 2</li>\\n  </ul>\\n</li>\\n</ul>
                
-                ### IMPORTANT:
-                - Properly escape newlines as \\n in the response field
-                - Properly escape quotes as \\" in the response field
-                - Do not include "metadata" and "Timestamp" in the html format
+#                 ### IMPORTANT:
+#                 - Properly escape newlines as \\n in the response field
+#                 - Properly escape quotes as \\" in the response field
+#                 - Do not include "metadata" and "Timestamp" in the html format
 
-                Convert the response data to this exact format. Clean up any tuple formatting and present lists as individual items.
-                """
+#                 Convert the response data to this exact format. Clean up any tuple formatting and present lists as individual items.
+#                 """
 
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",  # Fixed the model name
-        messages=[
-            {"role": "system", "content": "You are a formatting assistant that ALWAYS returns responses in HTML format with <p> and <ul>/<li> structure only in tabular format."},
-            {"role": "user", "content": prompt}
-        ]
-    )
+#     response = client.chat.completions.create(
+#         model="gpt-4.1-mini",  # Fixed the model name
+#         messages=[
+#             {"role": "system", "content": "You are a formatting assistant that ALWAYS returns responses in HTML format with <p> and <ul>/<li> structure only in tabular format."},
+#             {"role": "user", "content": prompt}
+#         ]
+#     )
 
-    return response.choices[0].message.content.strip()
+#     return response.choices[0].message.content.strip()
 
 
 
