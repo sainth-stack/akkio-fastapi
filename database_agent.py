@@ -17,6 +17,11 @@ from datetime import datetime
 import logging
 from enum import Enum
 from typing import Dict, Any, Optional, List
+from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+import requests
+import pandas as pd 
+import ast
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -229,10 +234,8 @@ class MultiDatabaseAgent:
                 **Active Systems:** [list_of_connected_systems]"
 
                 ### Connection Failure:
-                "**Connection Failed to [System]**
-                **Issue:** [specific_error_description]
-                **Solutions:** [step_by_step_troubleshooting]
-                **Try:** [alternative_approaches]"
+                Connection Failed to [System]
+                Issue: [specific_error_description]
 
                 ### Query Success:
                 "**Query Executed Successfully**
@@ -461,37 +464,33 @@ class MultiDatabaseAgent:
                     print(f"Raw tables result: {tables_result}")
                     
                     
-                    # ------------------------------------------------------------------ #
-                    # 1. Parse iterable results  (preferred format returned by LangChain)
-                    # ------------------------------------------------------------------ #
-                    tables_data: list[dict[str, str]] = []
-                    if isinstance(tables_result, (list, tuple)):
+                    tables_data = []
+
+                    # Handle different response formats
+                    if isinstance(tables_result, str):
+                        try:
+                            # Try to parse as python list of tuples
+                            parsed = ast.literal_eval(tables_result)
+                            tables_data = [tup[0] for tup in parsed if tup and len(tup) > 0]
+                        except Exception as e:
+                            print(f"Error parsing table string: {e}")
+                            # fallback to line splitting (rarely needed)
+                            lines = [ln.strip() for ln in tables_result.splitlines() if ln.strip()]
+                            for ln in lines:
+                                if ln.lower() == "table_name" or ln.startswith("-"):
+                                    continue
+                                if "|" in ln:
+                                    ln = ln.split("|")[1].strip()
+                                ln = ln.strip("() ,'")
+                                if ln:
+                                    tables_data.append(ln)
+                    # Case 2: If result is already a tuple/list
+                    elif isinstance(tables_result, (list, tuple)):
                         for row in tables_result:
-                            # row can be ('table_name',)  OR  ('table_name', 'schema')
-                            if not row:                              # skip empty rows
+                            if not row:
                                 continue
-                            table_name = str(row[0]).strip()
-                            schema     = str(row[1]).strip() if len(row) > 1 else "public"
-                            if table_name:
-                                tables_data.append({"table_name": table_name, "schema": schema})
-
-                    # ------------------------------------------------------------------ #
-                    # 2. Parse a single string (some DB drivers return pretty-printed text)
-                    # ------------------------------------------------------------------ #
-                    if not tables_data and isinstance(tables_result, str):
-                        lines = [ln.strip() for ln in tables_result.splitlines() if ln.strip()]
-                        for ln in lines:
-                            if ln.lower() == "table_name" or ln.startswith("-"):
-                                continue
-                            if "|" in ln:       #  | table_name | schema |
-                                ln = ln.split("|")[1].strip()
-                            ln = ln.strip("() ,")
-                            if ln:
-                                tables_data.append({"table_name": ln, "schema": "public"})
-
-                    # ------------------------------------------------------------------ #
-                    # 3. Fallback: use LangChain helper if still empty
-                    # ------------------------------------------------------------------ #
+                            tables_data.append(str(row[0]).strip())
+                    # Fallback to LangChain helper if still empty
                     if not tables_data:
                         try:
                             names = database.get_usable_table_names()
@@ -508,7 +507,7 @@ class MultiDatabaseAgent:
                             "database_name": uri_parts.get('database', 'N/A'),
                             'password': uri_parts.get('password', 'N/A'),
                             "total_tables": total_tables,
-                            "tables": tables_data if tables_data else None
+                            "tables": tables_data
                         },
                         metadata={
                             "session_state" : session["state"],
@@ -692,8 +691,7 @@ class MultiDatabaseAgent:
                     data={"error_details": str(e)}
                 )
                 return json.dumps(response, indent=2)
-
-
+       
         # Handle database queries
         elif "EXECUTE_QUERY:" in llm_response:
             try:
@@ -1142,6 +1140,5 @@ def create_standard_response( data: Optional[Dict[str, Any]] = None,metadata: Op
         "metadata": metadata or {},
         "timestamp": datetime.now().isoformat()
     }
-
 
 
