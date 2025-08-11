@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 import re
 from langchain.tools import Tool, StructuredTool
 from langchain.agents import initialize_agent, AgentType
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 import requests
 from PIL import Image
 from io import BytesIO

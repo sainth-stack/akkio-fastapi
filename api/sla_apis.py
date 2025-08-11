@@ -10,6 +10,7 @@ import traceback
 from difflib import get_close_matches
 import re
 import ast
+import textwrap
 from uuid import uuid4
 from collections import defaultdict
 import threading
@@ -103,9 +104,27 @@ def safe_execute_pandas_code(code: str, df: pd.DataFrame):
         ValueError: If the code contains forbidden operations, fails to parse, or if a
                     required library (like Plotly) is not available when needed.
     """
+    # Normalize and sanitize code to avoid indentation and fence issues
+    def normalize_code(text: str) -> str:
+        text = text.replace('\u00A0', ' ').replace('\u200b', '').replace('\ufeff', '')
+        if '\\n' in text and text.count('\n') <= 1:
+            try:
+                text = bytes(text, 'utf-8').decode('unicode_escape')
+            except Exception:
+                pass
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = text.strip()
+        text = re.sub(r'^```[a-zA-Z]*\n', '', text)
+        text = text.replace('```', '')
+        text = textwrap.dedent(text).expandtabs(4).lstrip('\n')
+        text = '\n'.join([ln.rstrip() for ln in text.split('\n')])
+        return text
+
+    code_clean = normalize_code(code)
+
     # 1. Determine if Plotly is needed before attempting to import it
     plotly_keywords = ['px.', 'go.', 'ff.', 'plotly']
-    is_plotly_needed = any(keyword in code.lower() for keyword in plotly_keywords)
+    is_plotly_needed = any(keyword in code_clean.lower() for keyword in plotly_keywords)
     px = go = ff = np = None
 
     if is_plotly_needed:
@@ -156,23 +175,35 @@ def safe_execute_pandas_code(code: str, df: pd.DataFrame):
         'import os', 'import sys', 'subprocess', 'shutil', 'open', 'eval', 'exec',
         'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr'
     ]
-    if any(pattern in code for pattern in forbidden_patterns):
+    if any(pattern in code_clean for pattern in forbidden_patterns):
         raise ValueError(f"Execution failed: Use of a forbidden keyword or function was detected.")
 
     try:
         # 5. Parse the code to check for syntax errors before execution
-        ast.parse(code)
+        try:
+            ast.parse(code_clean)
+        except (IndentationError, TabError, SyntaxError):
+            lines = code_clean.split('\n')
+            non_empty = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith('#')]
+            if non_empty:
+                def leading_spaces(s: str) -> int:
+                    return len(s) - len(s.lstrip(' '))
+                min_indent = min(leading_spaces(ln) for ln in non_empty)
+                if min_indent > 0:
+                    lines = [ln[min_indent:] if ln.startswith(' ' * min_indent) else ln for ln in lines]
+                    code_clean = '\n'.join(lines)
+            ast.parse(code_clean)
 
         # Execute the code in the sandboxed environment
         local_vars = {}
-        exec(code, safe_globals, local_vars)
+        exec(code_clean, safe_globals, local_vars)
 
         # 6. Refined result retrieval
         if 'result' in local_vars:
             return local_vars['result']
 
         # If no 'result' variable, try to eval the last line if it's an expression
-        lines = code.strip().split('\n')
+        lines = code_clean.strip().split('\n')
         last_line = lines[-1].strip()
         if last_line and not last_line.startswith('#'):
             try:
@@ -646,3 +677,6 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
         print(f"An unexpected error occurred: {traceback.format_exc()}")
         return JSONResponse(content={"error": str(e), "session_id": session_id if 'session_id' in locals() else None},
                             status_code=500)
+
+
+

@@ -118,8 +118,12 @@ class PostgresDatabase:
             return {}
 
     def get_user_tables(self, user):
-        df = self.read()
-        return list(df[df['email'] == user]['name']) if not df.empty else []
+        # Optimize by querying only required column instead of reading entire table
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (user,))
+            rows = cursor.fetchall()
+        return [row[0] for row in rows]
 
     def get_table_data(self, table_name):
         df = self.read()

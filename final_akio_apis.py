@@ -62,9 +62,10 @@ import json
 from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 import shutil
-from sla_apis import sla_router
+from api.sla_apis import sla_router
+from api.explore_api import explore_router
 # Calculate comprehensive metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
@@ -96,6 +97,7 @@ db = PostgresDatabase()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
+app.include_router(explore_router)
 
 
 # 1.File upload only-------- It is  useful for uploading the file
@@ -766,15 +768,18 @@ def generate_text(prompt: str) -> str:
 @app.post("/api/fill_missed_data")
 async def missing_data() -> JSONResponse:
     try:
+        # Resolve absolute paths relative to this file
+        base_dir = Path(__file__).resolve().parent
+        csv_file_path = base_dir / 'data.csv'
+
         # Load and validate data
-        csv_file_path = 'data.csv'
-        if not os.path.exists(csv_file_path):
+        if not csv_file_path.exists():
             raise HTTPException(
                 status_code=404,
                 detail="Data file not found"
             )
 
-        df = pd.read_csv(csv_file_path)
+        df = pd.read_csv(str(csv_file_path))
         print("Original data preview:")
         print(df.head(5))
 
@@ -782,12 +787,15 @@ async def missing_data() -> JSONResponse:
         new_df, html_df, summary = process_missing_data(df.copy())
 
         # Save processed data
-        processed_path = os.path.join('uploads', 'processed_data.csv')
-        new_df.to_csv(processed_path, index=False)
-        new_df.to_csv("data.csv", index=False)
+        uploads_dir = base_dir / 'uploads'
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        processed_path = uploads_dir / 'processed_data.csv'
+        new_df.to_csv(str(processed_path), index=False)
+        new_df.to_csv(str(csv_file_path), index=False)
 
         # Save HTML representation
-        with open(os.path.join('mvt_data.json'), 'w') as fp:
+        mvt_json_path = base_dir / 'mvt_data.json'
+        with open(str(mvt_json_path), 'w') as fp:
             json.dump({'data': html_df}, fp, indent=4)
 
         return JSONResponse(
@@ -863,42 +871,57 @@ def handle_missing_data(df):
 
         # Identify numeric and datetime columns
         numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
-        date_time_cols = df.select_dtypes(include=['datetime64']).columns
+        # Be robust to different pandas datetime dtypes
+        date_time_cols = df.select_dtypes(include=['datetime64[ns]', 'datetimetz', 'datetime']).columns
         ignored_cols = df.select_dtypes(include=ignore_types).columns
         int_like_cols = [col for col in numeric_cols if is_integer_like(df[col])]
+
+        # Snapshot missing-value mask BEFORE any imputations/fills
+        pre_missing_flags = df.isnull().copy()
 
         for col in ignored_cols:
             ignored_columns_info[col] = f"Ignored because of optional data"
 
-        # Impute numeric columns and track which cells were imputed
-        imputer = KNNImputer(n_neighbors=5)
-        imputed_numeric = imputer.fit_transform(df[numeric_cols])
-        imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols).round(2)
+        # Impute numeric columns (if any) and track which cells were imputed based on pre-missing
+        if len(numeric_cols) > 0:
+            imputer = KNNImputer(n_neighbors=5)
+            imputed_numeric = imputer.fit_transform(df[numeric_cols])
+            imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols, index=df.index).round(2)
 
-        for col in numeric_cols:
-            if col in int_like_cols:
-                imputed_numeric_df[col] = imputed_numeric_df[col].round().astype("Int64")
+            for col in numeric_cols:
+                if col in int_like_cols:
+                    imputed_numeric_df[col] = imputed_numeric_df[col].round().astype("Int64")
 
-        # Mark imputed cells (True if the original cell was NaN)
-        imputed_flags = df[numeric_cols].isnull()
-        imputed_flags = imputed_flags.applymap(lambda x: x if x else False)
+            # Update DataFrame with imputed values
+            df[numeric_cols] = imputed_numeric_df
 
-        # Update DataFrame with imputed values
-        df[numeric_cols] = imputed_numeric_df
+        # Initialize imputed flags as the pre-operation missing mask for all columns
+        imputed_flags = pre_missing_flags.copy()
 
         for col in df.select_dtypes(include='category').columns:
             if df[col].isnull().any():
                 mode_val = df[col].mode().iloc[0] if not df[col].mode().empty else "Unknown"
+                # Mark where values were missing prior to fill
+                prior_missing = pre_missing_flags[col]
                 df[col].fillna(mode_val, inplace=True)
-                imputed_flags[col] = df[col].isnull()
+                imputed_flags.loc[prior_missing, col] = True
         for col in df.select_dtypes(include='bool').columns:
             if df[col].isnull().any():
+                prior_missing = pre_missing_flags[col]
                 df[col].fillna(df[col].mode().iloc[0], inplace=True)
+                imputed_flags.loc[prior_missing, col] = True
 
         # Handle datetime columns by forward filling missing values
         for col in date_time_cols:
             df[col] = pd.to_datetime(df[col])
             time_diffs = df[col].diff().dropna()
+            # If we cannot infer a reasonable average diff, just forward-fill
+            if len(time_diffs) == 0 or pd.isna(time_diffs.mean()):
+                prior_missing = pre_missing_flags[col]
+                df[col] = df[col].ffill()
+                imputed_flags.loc[prior_missing, col] = True
+                continue
+
             avg_diff_sec = time_diffs.mean().total_seconds()
             minute_sec = 60
             hour_sec = 3600
@@ -922,23 +945,37 @@ def handle_missing_data(df):
                 time_unit = "years"
                 avg_diff = pd.DateOffset(years=round(avg_diff_sec / year_sec))
 
+            prior_missing = pre_missing_flags[col]
             for i in range(1, len(df)):
                 if pd.isnull(df[col].iloc[i]):
                     df.loc[i, col] = df[col].iloc[i - 1] + avg_diff
-                    imputed_flags.loc[i, col] = True
-
-            imputed_flags.fillna(False, inplace=True)
+            # Mark originally missing positions as imputed
+            imputed_flags.loc[prior_missing, col] = True
 
         # Convert the DataFrame into a JSON-serializable format with flags
         data = []
 
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             row_data = {}
             for col in df.columns:
+                value = row[col]
+                # Normalize to JSON-friendly value
+                if isinstance(value, pd.Timestamp):
+                    norm_value = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif pd.isna(value):
+                    norm_value = None
+                elif isinstance(value, np.generic):
+                    norm_value = value.item()
+                elif isinstance(value, (datetime, date, time)):
+                    norm_value = value.isoformat()
+                elif isinstance(value, Decimal):
+                    norm_value = float(value)
+                else:
+                    norm_value = value
+
                 row_data[col] = {
-                    "value": row[col].strftime('%Y-%m-%d %H:%M:%S') if isinstance(row[col], pd.Timestamp) else row[col],
-                    "is_imputed": str(imputed_flags[col].get(_, False)) if col in imputed_flags else str(False)
-                    # Check if cell was imputed
+                    "value": norm_value,
+                    "is_imputed": bool(imputed_flags.at[idx, col]) if col in imputed_flags else False
                 }
             data.append(row_data)
         missing_values_summary = summarize_missing_values(imputed_flags)
@@ -3318,8 +3355,8 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
     except Exception:
         return None
 
-# 11.Explore api
-@app.post("/api/Explore")
+# 11.Explore api (moved to api/explore_api.py)
+# @app.post("/api/Explore")
 async def senior_data_analysis(
         query: str = Form(...)
 ) -> JSONResponse:
