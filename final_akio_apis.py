@@ -242,100 +242,6 @@ async def delete_selected_tables_by_name(
             detail=f"An error occurred: {str(e)}"
         )
 
-
-import paho.mqtt.client as mqtt
-
-# In-memory buffer for data (with thread safety for demo purposes)
-mqtt_data_buffer = []
-
-# MQTT message handler
-def on_message(client, userdata, message):
-    try:
-        payload = json.loads(message.payload.decode())
-        # Optionally parse/flatten the payload as needed.
-        # Save to global buffer for processing later
-        mqtt_data_buffer.append(payload)
-    except Exception as exc:
-        print("Error decoding MQTT payload:", exc)
-
-def connect_and_listen(broker_url, flespi_token, topic, max_messages=100, timeout=10):
-    client = mqtt.Client(transport="websockets")
-    client.username_pw_set(flespi_token, password="")  # Password must be empty
-    client.on_message = on_message
-    # Extract host and port from broker_url e.g wss://mqtt.flespi.io:443
-    if broker_url.startswith('wss://'):
-        hostport = broker_url[6:]
-    elif broker_url.startswith('mqtt://'):
-        hostport = broker_url[7:]
-    else:
-        hostport = broker_url
-    host, port = hostport.split(':')
-    print(f"Connecting to MQTT broker at {host}:{port} with topic '{topic}'")
-    client.connect(host, int(port))
-    client.subscribe(topic)
-    client.loop_start()
-    # Collect messages up to a limit, or for a fixed timeout
-    start_time = datetime.datetime.now()
-    while len(mqtt_data_buffer) < max_messages and (datetime.datetime.now() - start_time).seconds < timeout:
-        asyncio.sleep(0.2)
-    client.loop_stop()
-    client.disconnect()
-    print(f"Collected {len(mqtt_data_buffer)} messages from MQTT broker.")
-    return mqtt_data_buffer.copy()
-
-# Preprocess multi data – same as before
-def pre_process_multi_data(multi_data):
-    for idx, record in enumerate(multi_data):
-        record_ts = record.get("timestamp")
-        server_ts = record.get("server.timestamp")
-        record.update({
-            "timestamp": datetime.datetime.fromtimestamp(record_ts,
-                                                        tz=ZoneInfo('Asia/Kolkata')).strftime("%Y-%m-%d %H-%M-%S") if record_ts else None,
-            "server.timestamp": datetime.datetime.fromtimestamp(server_ts,
-                                                               tz=ZoneInfo('Asia/Kolkata')).strftime("%Y-%m-%d %H-%M-%S") if server_ts else None
-        })
-    return multi_data
-
-def convert_to_hourly(data):
-    df = pd.DataFrame(data)
-    print("DataFrame preview before processing:", df.head(5))
-    df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H-%M-%S')
-    df['hour'] = df['timestamp'].dt.floor('H')
-    value_columns = ['Current', 'Humidity', 'Power', 'Temperature', 'Voltage']
-    for col in value_columns:
-        df[f'{col}_value'] = df[col].apply(lambda x: x['value'] if isinstance(x, dict) and 'value' in x else None)
-    hourly_data = df.groupby('hour').agg(
-        Current_avg=('Current_value', 'mean'),
-        Humidity_avg=('Humidity_value', 'mean'),
-        Power_avg=('Power_value', 'mean'),
-        Temperature_avg=('Temperature_value', 'mean'),
-        Voltage_avg=('Voltage_value', 'mean'),
-    ).reset_index()
-    hourly_data['hour'] = pd.to_datetime(hourly_data['hour'])
-    hourly_data['hour'] = hourly_data['hour'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    return hourly_data
-
-
-@app.post("/api/download_flespi_data_mqtt")
-async def download_flespi_data_mqtt(
-    broker_url: str = Form(...),      # e.g. "wss://mqtt.flespi.io:443"
-    flespi_token: str = Form(...),    # Your Flespi token
-    topic: str = Form(...)            # e.g. "flespi/message/gw/devices/#"
-) -> JSONResponse:
-    global mqtt_data_buffer
-    try:
-        mqtt_data_buffer.clear()
-        result = await asyncio.to_thread(
-            connect_and_listen, broker_url, flespi_token, topic, max_messages=100, timeout=10
-        )
-        if not result:
-            raise HTTPException(status_code=504, detail="No MQTT messages received from Flespi.")
-        result = pre_process_multi_data(result)
-        result = convert_to_hourly(result)
-        return JSONResponse(content=result.to_dict(orient="records"), status_code=200)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"MQTT connection or data processing failed: {str(e)}")
-
 # 5.Dashboard apis--------------------Dashboard related api for generating the dynamic graphs---------- 5. Have to modify
 # Dashboard configuration
 CHARTS_DIR = "generated_charts"
@@ -681,8 +587,10 @@ async def analyze_chart(
                 )
 
             # Generate and cache a new summary
+        if question=="summary":
             prompt = (
                 f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
+
                 f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
                 f"Follow this output structure with exactly 5 key observations with 2 bullet points for each heading:\n\n"
                 f"Core Insight\n"
@@ -691,7 +599,7 @@ async def analyze_chart(
                 f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
                 f"Business Context\n"
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f"Action Recommendations\n"
+                f"Recommendations\n"
                 f"• Only describe what you observe. Do not invent data. Use the exact format shown above.\n\n"
                 f"Actions\n"
                 f"• Provide actions for acheiving the action recommendations based on the chart data.\n\n"
@@ -714,7 +622,6 @@ async def analyze_chart(
         else:
             prompt = (
                 f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
-                f"User Question: '{question}'\n\n"
                 f"Follow this output structure with exactly 4 key observations:\n\n"
                 f"if the user asks about Core Insight\n"
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
@@ -722,7 +629,7 @@ async def analyze_chart(
                 f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
                 f" if the user asks about Business Context\n"
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f" if the user asks about Action Recommendations\n"
+                f" if the user asks about Actions & Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
                 f"Give the response in markdown format with proper headings in 'h4' format and  with *2* bullet points."
             )
@@ -1472,6 +1379,7 @@ def extract_forecast_details_rf(prompt, column_names):
             5. **Always Return All Three Fields**: Even if one or more are empty, the response **must always** contain "features", "missing_columns", and "target_column".
 
             ### Expected Output Formats:
+            Return the output strictly as a Python dictionary:
 
             #### a) All features and target column provided:
             Input: "Predict CO2 level. The temperature is 25 and humidity is 45."
@@ -1683,22 +1591,21 @@ def arima_train(data, target_col, bot_query=None):
             if not date_column:
                 raise ValueError("No datetime column could be parsed from the dataset")
 
-            # Handle any remaining NaT values (invalid dates)
-            if data[date_column].isnull().any():
-                print(f"Warning: {data[date_column].isnull().sum()} invalid dates found")
-                data = data.dropna(subset=[date_column])
+            data[date_column] = pd.to_datetime(data[date_column], errors='coerce', utc=False)
+
+            # If some values are tz-aware Python datetime objects, strip tz without shifting
+            def strip_tz(x):
+                if isinstance(x, datetime) and x.tzinfo is not None:
+                    return x.replace(tzinfo=None)
+                return x
+
+            # Apply the function
+            data[date_column] = data[date_column].map(strip_tz)
 
             # Standardize the format and set as index
-            print(f"Standardizing datetime format for column '{date_column}'")
-            data[date_column] = pd.to_datetime(data[date_column])
-            data.set_index(date_column, inplace=True)
-
-            # Sort by datetime index
-            data = data.sort_index()
-
+            data[date_column] = pd.to_datetime(data[date_column],errors='coerce', utc=False)
             try:
-                data_actual = data[[target_col]]
-                data_actual.reset_index(inplace=True)
+                data_actual = data[[date_column,target_col]].copy()
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
 
@@ -1711,10 +1618,12 @@ def arima_train(data, target_col, bot_query=None):
                     data_actual = data_actual.groupby(data_actual.index).mean()
 
                 train_models(data_actual, target_col)
+                print("Getting from the train_models function................")
 
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({
                         'data_freq': train_frequency,
+                        'date_column': date_column,
                         'start_date': str(data_actual.index.min()),
                         'end_date': str(data_actual.index.max())
                     }, fp, indent=4)
@@ -1735,21 +1644,20 @@ def arima_train(data, target_col, bot_query=None):
             'days': 'D',
             'weeks': 'W',
             'months': 'MS',
-            'quarters': 'QS',
             'years': 'YS'
         }
 
-        forecasted_data = forecast(loaded_model, periods, freq_map[frequency])
+        forecasted_data = arima_forecast(loaded_model, periods, freq_map[frequency],target_col)
         print(forecasted_data)
 
-        result_graph = plot_graph(forecasted_data)
+        result_graph = plot_graph(forecasted_data,target_col)
 
         print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
         return True, forecasted_data, result_graph
 
     except Exception as e:
-        print("ARIMA error:", e)
-        return False, pd.DataFrame(), ""
+        print(e)
+        return False, pd.DataFrame, ''
 
 
 def load_forecast_model(model_path):
@@ -1761,13 +1669,18 @@ def load_forecast_model(model_path):
         return None
 
 
-def plot_graph(data):
+def plot_graph(data, target_col):
     try:
 
         # Create Plotly figure
         fig = go.Figure()
         try:
-            data['date'] = data['date'].dt.strftime('%Y-%m-%d')
+            if (data['date'].dt.time != pd.to_datetime('00:00:00').time()).any():
+                # If any row has time info other than midnight, include hours
+                data['date'] = data['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                # Otherwise, keep only the date
+                data['date'] = data['date'].dt.strftime('%Y-%m-%d')
         except Exception as e:
             print(e)
         # Actual Data Line
@@ -1786,7 +1699,7 @@ def plot_graph(data):
 
         # Layout Settings
         fig.update_layout(
-            title=f'Forecast Values Over Time',
+            title=f'Forecasted {target_col} values Over Time',
             xaxis_title='Date',
             yaxis_title='Values',
             xaxis=dict(tickangle=-45, type='category', tickformat='%Y-%m-%d'),
@@ -1803,13 +1716,44 @@ def plot_graph(data):
         return str(e)
 
 
-def forecast(model, periods, freq):
-    future = pd.date_range(start=pd.Timestamp.now(), periods=periods, freq=freq)
-    future = future.to_series().dt.date.tolist()
+def arima_forecast(model, periods, freq,target_col):
+    freq_map = {
+        'hours': 'H',
+        'days': 'D',
+        'weeks': 'W',
+        'months': 'M',
+        'years': 'YS'
+    }
+    data_path= os.path.join('models', 'arima', target_col, target_col + '_results.json')
+
+    try:
+        with open(data_path, 'r') as f:
+            data = json.load(f)  # Now data is a dictionary
+    except FileNotFoundError:
+        print(f"Results file not found: {data_path}")
+        return None
+    except json.JSONDecodeError:
+        print(f"Invalid JSON in file: {data_path}")
+        return None
+
+    end_date = data.get('end_date')
+    try:
+        frequency = freq_map[data.get('data_freq').lower()]
+        start_date = pd.to_datetime(end_date) + pd.tseries.frequencies.to_offset(frequency)
+    except Exception as e:
+        start_date = pd.to_datetime(end_date) + pd.tseries.frequencies.to_offset(freq)
+                 
+    future = pd.date_range(start=start_date, periods=periods, freq=freq)
+    if (freq=="H") and ((future.hour != 0).any() or (future.minute != 0).any() or (future.second != 0).any()):
+        # Include time in formatting
+        future = future.strftime('%Y-%m-%d %H:%M:%S').tolist()
+    else:
+        # Only date
+        future = future.strftime('%Y-%m-%d').tolist()
+    
 
     model_type = str(type(model))
     print(f"Detected model type: {model_type}")
-
     try:
         if 'Prophet' in model_type:
             future_df = pd.DataFrame({'ds': future})
@@ -1844,23 +1788,41 @@ def forecast(model, periods, freq):
 
 
 def check_data_frequency(train):
-    data_freq = {'D': 'Days', 'W': 'Weeks', "H": "Hours", "Q": "Quarters", 'A': 'Years'}
+    data_freq = {'D': 'Days', 'W': 'Weeks', "H": "Hours", 'A': 'Years', "M": "Months", "MS": "Months",
+                 'A-JAN': 'Years'}
     m = pd.infer_freq(train.index)
-    if m in ['15T', '30T', "H", "D", "W", "M", "Q", "A"]:
-        print("Date Frequency is", m)
-        return data_freq[m]
+    if m in ['15T', '30T', "H", "D", "W", "M", "A", "MS", 'A-JAN']:
+        return data_freq.get(m)
     else:
-        print('Unsupported frequency')
+        return 'Unsupported frequency'
 
 
 def train_models(df, target_col):
-    frequencies = ['hours', 'days', 'weeks', 'months', 'years']
+    frequencies = ['hours', 'days', 'weeks', 'months','years']
     for freq in frequencies:
         print(f"\nTraining {freq} models...")
 
         # Resample the data for each frequency
         resampled_df = resample_data(df, freq)
+        print(f"Resampled data for {freq}:\n", resampled_df.head())
+        
+        # Check if we have enough data for training
+        min_samples_required = 10  # Adjust this threshold as needed
+        if len(resampled_df) < min_samples_required:
+            print(f"Insufficient data for {freq} frequency. Need at least {min_samples_required} samples, got {len(resampled_df)}. Skipping...")
+            continue
+        
+        # Ensure we have enough data for train-test split
+        if len(resampled_df) < 5:  # Minimum for meaningful split
+            print(f"Not enough data points ({len(resampled_df)}) for {freq} frequency training. Skipping...")
+            continue
+
         train, test = train_test_split(resampled_df, test_size=0.2, shuffle=False)
+        
+        # Additional check after split
+        if len(train) == 0 or len(test) == 0:
+            print(f"Train-test split resulted in empty sets for {freq}. Skipping...")
+            continue
 
         trend = detect_trend(train)
         print("Trend is", trend)
@@ -1886,7 +1848,7 @@ def train_models(df, target_col):
                 best_model_name = "XGBoost"
 
         # Scenario 2: Seasonality only
-        if seasonality and not trend:
+        elif seasonality and not trend:  # Added 'elif' for better logic
             scenario = "Seasonality only"
             prophet_model, prophet_error = train_prophet(train, test)
             arima_model, arima_error = train_arima(train, test)
@@ -1899,7 +1861,7 @@ def train_models(df, target_col):
                 best_model_name = "ARIMA"
 
         # Scenario 3: Trend + Seasonality
-        if trend and seasonality:
+        elif trend and seasonality:  # Added 'elif' for better logic
             scenario = "Trend + Seasonality"
             prophet_model, prophet_error = train_prophet(train, test)
             arima_model, arima_error = train_arima(train, test)
@@ -1913,7 +1875,7 @@ def train_models(df, target_col):
                 best_model_name = "ARIMA"
 
         # Scenario 4: No Trend or Seasonality
-        if not trend and not seasonality:
+        else:  # Changed to 'else' since it's the remaining case
             scenario = "No trend or seasonality"
             xgb_model, xgb_error = train_xgboost(train, test)
             rf_model, rf_error = train_randomforest(train, test)
@@ -1937,6 +1899,8 @@ def train_models(df, target_col):
                 json.dump({"scenario": scenario, "model_name": best_model_name}, f)
 
             print(f"\n{freq.capitalize()} Training complete. Scenario: {scenario}, Model: {best_model_name}")
+        else:
+            print(f"No model could be trained for {freq} frequency")
 
 
 def train_arima(train, test):
@@ -2033,7 +1997,7 @@ def resample_data(df, freq):
     elif freq == 'months':
         return df.resample('M').mean().ffill()
     elif freq == 'years':
-        return df.resample('A').mean().ffill()
+        return df.resample('YE').mean().ffill()
     else:
         raise ValueError("Unsupported frequency")
 
@@ -3356,429 +3320,6 @@ def extract_pdf_prompt_semantics(user_prompt: str) -> Optional[int]:
         return None
 
 # 11.Explore api (moved to api/explore_api.py)
-# @app.post("/api/Explore")
-async def senior_data_analysis(
-        query: str = Form(...)
-) -> JSONResponse:
-    try:
-        # Load and validate data
-        csv_file_path = 'data.csv'
-        if not os.path.exists(csv_file_path):
-            raise HTTPException(
-                status_code=404,
-                detail="Data file not found"
-            )
-
-        df = pd.read_csv(csv_file_path)
-        if df.empty:
-            raise HTTPException(
-                status_code=400,
-                detail="Dataset is empty"
-            )
-
-        # Generate metadata
-        metadata_str = ", ".join(df.columns.tolist())
-
-        # Check if query is report-related
-        is_report_query = any(keyword in query.lower() for keyword in
-                              ['report', 'summary report', 'analysis report', 'detailed report',
-                               'comprehensive report', 'summary_report', 'analysis_report', 'detailed_report',
-                               'Comprehensive_report'])
-
-        if is_report_query:
-            # Generate report-specific prompt
-            prompt_eng = (
-                f"""
-                    You are a Senior data analyst generating a comprehensive report with advanced analytics capabilities. 
-                    Always strictly adhere to the following rules: 
-
-                    The metadata required for your analysis: {metadata_str}
-                    Dataset location: data.csv only. No data assumptions can be taken. Consider all the data from {df.head(1)} to {df.tail(1)}. Do not assume any data outside this range.
-
-                    UNIVERSAL DATE HANDLING AND ANALYSIS REQUIREMENTS:
-                    1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
-                    - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
-                    - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
-                    - ISO Format: "2025-01-05T08:00:30+00:00"
-                    - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
-                    - Any other datetime format
-
-                    2. **Intelligent Data Aggregation Strategy**:
-                    - **High-frequency data (seconds/minutes/hours)**: 
-                        * Convert all timestamps to ISO format internally
-                        * Calculate daily averages from all timestamps within each day
-                        * For monthly analysis: Average all daily values within each month
-                        * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
-                        → Calculate single daily average for 01-05-2025
-                    
-                    - **UTC/ISO Timestamps**:
-                        * Parse UTC timestamps and convert to local date representation
-                        * Apply same daily → monthly aggregation logic
-                        * Maintain timezone awareness for accurate date grouping
-
-                    3. **Analysis Logic Based on Data Frequency**:
-                    - **Sub-daily data** → Aggregate to daily → Provide daily and monthly insights
-                    - **Daily data** → Direct analysis with daily and monthly patterns
-                    - **Weekly/Monthly data** → Direct analysis for periodic patterns
-
-                    4. **Date Processing Pipeline**:
-                    - Step 1: Detect all possible date/timestamp columns
-                    - Step 2: Parse and standardize ALL date formats to ISO internally
-                    - Step 3: Determine original data frequency (seconds, minutes, hours, days)
-                    - Step 4: Apply appropriate aggregation (if needed)
-                    - Step 5: Analyze patterns across the complete date range from {df.head(1)} to {df.tail(1)}
-                    - Step 6: Generate insights based on temporal patterns and trends
-
-                    ###IMPORTANT: You MUST return the response in this EXACT JSON format:
-                    {{
-                        "title": "[Concise, descriptive title for the analysis]",
-                        "description": "[Brief one sentence summary of what the analysis covers]",
-                        "report": {{
-                            "heading": "[Suitable Heading Based on Data Analysis]",
-                            "paragraphs": [
-                                "First Bullet Point: Analyzed [DATA_FREQUENCY] data from [START_DATE] to [END_DATE] with [TOTAL_RECORDS] records. Data shows [AGGREGATION_METHOD] applied to convert [ORIGINAL_FREQUENCY] timestamps to [FINAL_FREQUENCY] intervals. Quality assessment reveals [DATA_QUALITY_INSIGHTS] with [MISSING_DATA_PERCENTAGE]% missing values. Key patterns include [TREND_DIRECTION] trend with [VOLATILITY_LEVEL] volatility observed across the time series.",
-                                "Second Bullet Point: Time series exhibits [STATISTICAL_SUMMARY] with mean value of [MEAN_VALUE] and standard deviation of [STD_DEVIATION]. Distribution analysis shows [DISTRIBUTION_TYPE] pattern with [SKEWNESS_DIRECTION] skewness. Correlation analysis between temporal features reveals [CORRELATION_INSIGHTS]. Outlier detection identified [OUTLIER_COUNT] anomalous points representing [OUTLIER_PERCENTAGE]% of total observations.",
-                               ],
-                            "table": {{
-                                "headers": ["Metric", "Current Value ([LAST_DATE])", "Period Average", "Peak Value", "Growth Rate", "Data Quality"],
-                                "rows": [
-                                    ["[PRIMARY_METRIC_NAME]", "[CURRENT_VALUE]", "[PERIOD_AVERAGE]", "[PEAK_VALUE]", "[GROWTH_RATE]%", "[QUALITY_SCORE]%"],
-                                    ["[SECONDARY_METRIC_NAME]", "[CURRENT_VALUE_2]", "[PERIOD_AVERAGE_2]", "[PEAK_VALUE_2]", "[GROWTH_RATE_2]%", "[QUALITY_SCORE_2]%"],
-                                    ["[TERTIARY_METRIC_NAME]", "[CURRENT_VALUE_3]", "[PERIOD_AVERAGE_3]", "[PEAK_VALUE_3]", "[GROWTH_RATE_3]%", "[QUALITY_SCORE_3]%"]
-                                ]
-                            }},
-                            "analysis_charts": [
-                                {{
-                                    "title": "Data Distribution and Aggregation Analysis",
-                                    "plotly": {{
-                                        "data": [{{
-                                            "x": ["[ACTUAL_CATEGORIES_OR_TIME_BINS]"],
-                                            "y": "[AGGREGATED_VALUES_FROM_DATA]",
-                                            "type": "bar",
-                                            "marker": {{"color": "#3498db"}},
-                                            "name": "Aggregated Distribution"
-                                        }}],
-                                        "layout": {{
-                                            "title": "[METRIC_NAME] Distribution After [AGGREGATION_TYPE] Aggregation",
-                                            "xaxis": {{"title": "[TIME_PERIOD_OR_CATEGORY]"}},
-                                            "yaxis": {{"title": "Aggregated [VALUE_NAME]"}},
-                                            "paper_bgcolor": "#fafafa",
-                                            "plot_bgcolor": "#ffffff"
-                                        }}
-                                    }}
-                                }},
-                                {{
-                                    "title": "Historical Trend Analysis",
-                                    "plotly": {{
-                                        "data": [{{
-                                            "x": ["[PROCESSED_DATES_SEQUENCE]"],
-                                            "y": "[AGGREGATED_TIME_SERIES_VALUES]",
-                                            "type": "scatter",
-                                            "mode": "lines+markers",
-                                            "marker": {{"color": "#e74c3c"}},
-                                            "name": "Historical Trend (Aggregated)"
-                                        }}],
-                                        "layout": {{
-                                            "title": "Time Series Trend from [START_DATE] to [END_DATE] ([AGGREGATION_LEVEL])",
-                                            "xaxis": {{"title": "Date ([FINAL_FREQUENCY])"}},
-                                            "yaxis": {{"title": "[AGGREGATED_METRIC_NAME]"}},
-                                            "paper_bgcolor": "#fafafa",
-                                            "plot_bgcolor": "#ffffff"
-                                        }}
-                                    }}
-                                }}
-                            ]
-                        }}
-                    }}
-
-                    CRITICAL IMPLEMENTATION STEPS FOR UNIVERSAL DATE HANDLING:
-                    1. **STEP 1**: Load data.csv and scan ALL columns for potential date/timestamp formats from {df.head(1)} to {df.tail(1)}.
-                    2. **STEP 2**: Parse ANY date format (timestamp, UTC, ISO, simple date) and standardize internally
-                    3. **STEP 3**: Determine original data frequency and decide on aggregation strategy:
-                    - Seconds/Minutes/Hours → Aggregate to Daily → Monthly analysis
-                    - Daily → Direct daily and monthly analysis  
-                    - Weekly/Monthly → Direct period analysis
-                    4. **STEP 4**: Apply intelligent aggregation:
-                    - For sub-daily: Calculate daily averages from all timestamps within each day
-                    - For monthly analysis: Average all daily values within each month
-                    5. **STEP 5**: Perform comprehensive statistical analysis on aggregated data
-                    6. **STEP 6**: Generate insights about patterns, trends, and anomalies
-                    7. **STEP 7**: Create visualizations showing historical patterns and distributions
-                    8. **STEP 8**: Replace ALL placeholders with actual aggregated values and insights
-
-                    AGGREGATION EXAMPLES:
-                    - **Input**: "01-05-2025 08:00:30", "01-05-2025 14:30:15", "01-05-2025 20:45:00"
-                    - **Process**: Average all values for 01-05-2025 → Single daily value
-                    - **Output**: One data point for "01-05-2025" representing daily average
-
-                    - **UTC Input**: "2025-01-05T08:00:30Z", "2025-01-05T14:30:15Z" 
-                    - **Process**: Convert to local dates, aggregate by day → Daily averages
-                    - **Output**: Daily aggregated values for analysis
-
-                    ANALYSIS ACCURACY REQUIREMENTS:
-                    - Use actual column names and aggregated values from the CSV
-                    - Generate insights based on aggregated historical patterns
-                    - Include proper statistical analysis for aggregated data
-                    - Provide business insights relevant to the aggregation level chosen
-                    - Focus on descriptive and diagnostic analytics (what happened and why)
-                    - Include trend analysis, seasonality detection, and anomaly identification
-
-                    Generate a comprehensive report with intelligent date handling and analysis for: {query}
-                    The report must include:
-                        - 4 Bullet points (2 lines each): current analysis of the data.
-                        - 1 summary table  and all other analysis metrics
-                        - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
-
-                    The report must include proper universal date format handling, intelligent aggregation, and realistic insights based entirely on the processed CSV data.
-                        """)
-            
-            print("Analysed the above things,,,,,,,,,going to generate the code")
-            code = generate_data_code(prompt_eng)
-            print("code_generated and going for execution,,,,,,,,")
-            result = simulate_and_format_with_llm(code, df)
-            print("executed_result is", result)
-            cleaned_result = clean_json_response(result)
-
-            return JSONResponse(
-                content={
-                    "report": cleaned_result["report"],
-                    "title": cleaned_result["title"],
-                    "description": cleaned_result["description"]
-                },
-                status_code=200
-            )
-        else:
-            # Generate regular analysis prompt
-            prompt_eng = (
-                f"""
-                You are a Senior data analyst which can handle any type of {query} the user asks. Always strictly adhere to the following rules: 
-                The metadata required for your analysis is here:{metadata_str} and the dataset you have to look should be in data.csv only.No data assumptions can be taken.
-
-                ###IMPORTANT: You MUST return the response in this EXACT JSON format with "answer" as the key:
-                {{
-                    "answer": {{"Your analysis result here..."}}
-                }}
-
-                1. Generic Queries:
-                    If the user's query is generic and not related to data, respond with a concise and appropriate answer in the JSON format above.
-                2. Data-Related Queries:
-                    If the query is about data processing, assume the file data.csv is the data source and contains the following columns: {metadata_str}.
-                3. Visualisation related questions:
-                    Generate clear visualisations based on the data.csv given to you.
-                4. KPI related questions:
-                    Generate the kpis regarding the dataset given.
-                5. Statistical Analysis:
-                    Perform statistical analysis on the data.csv file and return the results in the JSON format above.
-                6. Data Analysis:
-                    Perform data analysis on the data.csv file and return the results in the JSON format above.
-                
-                And there are more number of tasks you have to do whatever the senior data analyst can do.
-                Answer for all the queries in a meaningful manner.
-
-                Never reply with: "Understood!" or similar confirmations. Always directly respond to the query following the above rules.
-
-                ### Code Safety & Execution Guidelines:
-                - Do NOT use undefined variables like `boxprops`, `medianprops`, `whiskerprops`, etc., unless you explicitly define them before use.
-                - Always use self-contained code that runs without dependencies on undefined names or external files.
-                - If plotting with matplotlib/seaborn:
-                    - Use basic arguments only (e.g., `x`, `y`, `data`)
-                    - Avoid customizing with advanced style props unless necessary
-                    - Use `plt.show()` after plotting
-                - Avoid using `os`, `sys`, `open()`, `input()`, or external packages not listed.
-                - Always print results with `print()` — never rely on implicit outputs.
-                - The final line of your code should print something meaningful (DataFrame, value, message).
-                - Never use `plt.savefig()` or attempt to write files.
-
-                ### You MUST assume:
-                - The data required for your analysis can be always there in data.csv. 
-                - consider the metadata as it is in {metadata_str}.
-                - Your code is being `exec()`'d in a secure Python environment
-                ### IMPORTANT:
-                - You have to behave like CHATGPT.You dont have to discuss about the internal details such as dataset name,what are the internal things that you are doing to get those results,Just give the clean code.
-                - You dont even have to give the explanation i.e how you did for getting that results.
-                - If you got any analysis like statistics,summary table etc in the tabular format,,then return the code in the tabular format also in the <table> ,<td>,tr> tags.
-                - Do not mention the headings at any cost.
-                - All the statistics and summary should be present in the tabular format only.
-
-                ### VERY IMPORTANT:
-                UNIVERSAL DATE HANDLING AND ANALYSIS REQUIREMENTS:
-                1. **Multi-Format Date Detection**: Automatically detect and parse ANY date format:
-                - Timestamp: "01-05-2025 08:00:30", "2025-01-05 08:00:30"
-                - UTC Format: "2025-01-05T08:00:30Z", "2025-01-05T08:00:30.123Z"
-                - ISO Format: "2025-01-05T08:00:30+00:00"
-                - Simple Date: "01-05-2025", "2025-01-05", "05/01/2025"
-                - Any other datetime format
-
-                2. **Intelligent Data Aggregation Strategy**:
-                - **High-frequency data (seconds/minutes/hours)**: 
-                    * Convert all timestamps to ISO format internally
-                    * Calculate daily averages from all timestamps within each day
-                    * For monthly analysis: Average all daily values within each month
-                    * Example: If you have 01-05-2025 08:00, 01-05-2025 09:00, 01-05-2025 10:00
-                    → Calculate single daily average for 01-05-2025
-                
-                - **UTC/ISO Timestamps**:
-                    * Parse UTC timestamps and convert to local date representation
-                    * Apply same daily → monthly aggregation logic
-                    * Maintain timezone awareness for accurate date grouping
-
-                User query is {query}.
-            """
-            )
-
-        # Generate and execute analysis code
-        print("Analysed the above things,,,,,,,,,going to generate the code")
-        code = generate_data_code(prompt_eng)
-        print("code_generated and going for execution,,,,,,,,")
-        result = simulate_and_format_with_llm(code, df)
-        print("executed_result is", result)
-
-        return JSONResponse(
-            content=clean_json_response(result),
-            status_code=200
-        )
-
-    except pd.errors.EmptyDataError:
-        raise HTTPException(
-            status_code=400,
-            detail="Data file is corrupt"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {str(e)}"
-        )
-
-from universal_prompts import prompt_for_data_analyst
-
-
-# Function to generate code from OpenAI API
-def generate_data_code(prompt_eng):
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": prompt_for_data_analyst},
-            {"role": "user", "content": prompt_eng}
-        ]
-    )
-    all_text = ""
-    for choice in response.choices:
-        message = choice.message
-        chunk_message = message.content if message else ''
-        all_text += chunk_message
-    print(all_text)
-    if "```python" in all_text:
-        code_start = all_text.find("```python") + 9
-        code_end = all_text.find("```", code_start)
-        code = all_text[code_start:code_end]
-    else:
-        code = all_text
-    return code
-
-
-from universal_prompts import Prompt_for_code_execution, Visualisation_intelligence_engine
-def simulate_and_format_with_llm(
-        code_to_simulate: str,
-        dataframe: pd.DataFrame
-) -> str:
-    info_buffer = io.StringIO()
-    dataframe.info(buf=info_buffer)
-    df_info = info_buffer.getvalue()
-    df_head = dataframe.head().to_string()
-
-    # Step 2: Construct the detailed user prompt.
-    # This prompt gives the LLM its task, the code, and the context.
-    user_prompt = f"""
-    You are the Universal Code Execution Environment. Your task is to simulate the execution of the following Python code and generate a complete report based on your system instructions.
-    ### DATA CONTEXT:
-    The code operates on a pandas DataFrame named `df`.you MUST Consider this 'df' throughout the total process and will give the exact and existing results.
-    The code operates on a pandas DataFrame named `df`. Here is its metadata and a sample of its first few rows:
-
-    #### DataFrame Info (`df.info()`):
-    ```
-    {df_info}
-    ```
-
-    #### DataFrame Head (`df.head()`):
-    ```
-    {df_head}
-    ```
-    Rules for Code generation while working with data:
-     - Perform operations directly on the dataset using the full dataframe (df), not just the preview.
-     - The preview is for context only - your code should work on the complete dataset.
-     - Handle both header-based queries and content-based queries (filtering by specific values in rows).
-     - Only return results filtered exactly as per the query.
-    ### PYTHON CODE TO SIMULATE:
-    You must simulate the execution of this code. Do not just describe it; act as if you have run it and are now reporting the results.
-    ```
-    {code_to_simulate}
-    ```
-    You have to use the engines based on the usage.
-    If you have the graph related code,then you can use the {Visualisation_intelligence_engine} else {Prompt_for_code_execution}
-
-    ### YOUR TASK:
-    1.  **Simulate Execution:** Mentally run the code against the provided data context.
-    2.  **Predict Output:** Determine what `print()` statements would produce and what a generated plot would look like.
-    3.  **Generate Report:** Produce a single, complete report that STRICTLY follows rules whatever required and formatting defined in your system prompt that should be in the JSON format.You have to follow the required rules wherever necessary.
-
-    ### IMPORTANT:
-   - The report should be very informative and Don't include the internal functionings for the generation of the reports,Only the analysis related content and the graph related things and summaries and everything which is not executed internally can be given to the Output.
-   - Do not include the internal headings like "**LANGUAGE:** Python | **MODE:** Simulation | **STATUS:** Success\n\n⚡ **EXECUTION OUTPUT:**\n".Do not include any of these ,,Just include the headings in the middle of the content only.
-   - Report can be present in the markdown format.
-   - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
-            {"role": "user", "content": user_prompt}
-        ]
-    )
-
-    # Step 4: Extract and return the final formatted text.
-    all_text = ""
-    for choice in response.choices:
-        message = choice.message
-        chunk_message = message.content if message else ''
-        all_text += chunk_message
-
-    return all_text
-
-
-
-def clean_json_response(response_text):
-    """
-    Extract clean JSON from a response that may contain markdown code blocks
-    and additional text explanations.
-    """
-    try:
-        # Method 1: Try to extract JSON from markdown code blocks
-        json_pattern = r'```json\s*(\{.*?\})\s*```'
-        match = re.search(json_pattern, response_text, re.DOTALL)
-
-        if match:
-            json_str = match.group(1)
-            # Parse and return as clean JSON
-            json_data = json.loads(json_str)
-            return json_data
-
-        # Method 2: If no markdown blocks, try to find JSON object directly
-        json_pattern2 = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        matches = re.findall(json_pattern2, response_text, re.DOTALL)
-
-        for match in matches:
-            try:
-                json_data = json.loads(match)
-                return json_data
-            except json.JSONDecodeError:
-                continue
-
-        return None
-
-    except Exception as e:
-        print(f"Error cleaning JSON: {e}")
-        return None
 
 
 # Report related apis like sending and saving and sending.
@@ -3996,62 +3537,6 @@ async def database_chat(request: ChatRequest):
         )
 
 
-# async def llm_format_response(user_query: str, response: str) -> str:
-#     """
-#     Formats the LLM response to include user query and response in a structured HTML format.
-#     Always returns response in <p> + <ul>/<li> format.
-#     """
-#     prompt = f"""
-#                 You are a helpful formatting assistant that ALWAYS formats responses in a specific HTML structure.
-
-#                 The user asked the following question:
-#                 "{user_query}"
-
-#                 Here is the raw response:
-#                 \"\"\"{json.dumps(response)}\"\"\"
-
-#                 ### IMPORTANT MANDATORY FORMATTING RULES:
-#                 1. ONLY consider the "response" key from the raw data
-#                 2. ALWAYS format your response using this EXACT structure:
-#                 - Start with a <p> tag containing a brief one-line explanation
-#                 - Follow with a <ul> containing <li> items for all data points
-#                 3. Use <strong> tags for field names/labels
-#                 4. For any lists or arrays in the data:
-#                 - Extract individual items from tuples/arrays
-#                 - Format each item as a separate <li> element
-#                 - Remove any tuple formatting like ('item',) and just show: item
-#                 5. For nested data, use nested <ul>/<li> structures
-#                 6. Return ONLY the HTML content, no markdown or other formatting
-#                 7. Do not include any text outside of the HTML tags
-
-#                 SPECIFIC HANDLING FOR DATABASE/TABLE DATA:
-#                 - If you see table data like [('table1',), ('table2',)], convert it to:
-#                 <li><strong>Tables:</strong>\\n  <ul>\\n    <li>table1</li>\\n    <li>table2</li>\\n  </ul>\\n</li>
-
-#                 HTML CONTENT FORMAT REQUIRED:
-#                 <p>Brief explanation about the data:</p>\\n<ul>\\n<li><strong>Field Name:</strong> Value</li>\\n<li><strong>Another Field:</strong> Value</li>\\n<li><strong>Lists/Arrays:</strong>\\n  <ul>\\n    <li>Item 1</li>\\n    <li>Item 2</li>\\n  </ul>\\n</li>\\n</ul>
-               
-#                 ### IMPORTANT:
-#                 - Properly escape newlines as \\n in the response field
-#                 - Properly escape quotes as \\" in the response field
-#                 - Do not include "metadata" and "Timestamp" in the html format
-
-#                 Convert the response data to this exact format. Clean up any tuple formatting and present lists as individual items.
-#                 """
-
-
-#     response = client.chat.completions.create(
-#         model="gpt-4.1-mini",  # Fixed the model name
-#         messages=[
-#             {"role": "system", "content": "You are a formatting assistant that ALWAYS returns responses in HTML format with <p> and <ul>/<li> structure only in tabular format."},
-#             {"role": "user", "content": prompt}
-#         ]
-#     )
-
-#     return response.choices[0].message.content.strip()
-
-
-
 #Database table getting and reading
 from sqlalchemy import create_engine
 def get_engine(db_type: str, host: str, database: str, username: str, password: str):
@@ -4115,5 +3600,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("final_akio_apis:app", host="127.0.0.1", port=8000, reload=True)
-
-
