@@ -94,29 +94,31 @@ class PostgresDatabase:
                 """, (email, tb_name_clean, datetime.now(), datetime.now(), psycopg2.Binary(blob_data)))
                 return "inserted"
 
-    def read(self):
+    def read(self, table_name):
         self.ensure_connection()
         with self.connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM akio_data_fastapi")
-            rows = cursor.fetchall()
-        cols = ['id', 'email', 'name', 'lastupdate', 'datecreated', 'fileobj']
-        return pd.DataFrame(rows, columns=cols)
+            cursor.execute(
+                "SELECT id, email, name, lastupdate, datecreated, fileobj "
+                "FROM akio_data_fastapi WHERE name = %s LIMIT 1",
+                (table_name,)
+            )
+            row = cursor.fetchone()
 
-    def get_tables_info(self):
+        if not row:
+            return None
+
+        cols = ['id', 'email', 'name', 'lastupdate', 'datecreated', 'fileobj']
+        return pd.DataFrame([row], columns=cols)
+
+    def get_tables_info(self,table_name):
         """Returns table info, gracefully handles missing table."""
-        try:
-            df = self.read()
-            if df.empty:
-                return {}
-            df['lastupdate'] = df['lastupdate'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
-            df['datecreated'] = df['datecreated'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
-            return df.iloc[:, :-1].to_dict(orient="records")
-        except psycopg2.errors.UndefinedTable:
-            print("Table does not exist, returning empty info.")
+        df = self.read(table_name)
+        if df.empty:
             return {}
-        except Exception as e:
-            print(f"Unexpected error in get_tables_info: {e}")
-            return {}
+        df['lastupdate'] = df['lastupdate'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
+        df['datecreated'] = df['datecreated'].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
+        return df.iloc[:, :-1].to_dict(orient="records")
+
 
     def get_user_tables(self, user):
         # Optimize by querying only required column instead of reading entire table
@@ -128,11 +130,8 @@ class PostgresDatabase:
 
     def get_table_data(self, table_name):
         self.ensure_connection()
-        df = self.read()
-        matched_rows = df.query('name == @table_name')
-        if matched_rows.empty:
-            raise HTTPException(status_code=404, detail="Table not found")
-        bytes_data = matched_rows['fileobj'].iloc[0]
+        df = self.read(table_name)
+        bytes_data = df['fileobj'].iloc[0]
         table_data = pickle.loads(bytes_data)
         if isinstance(table_data, pd.DataFrame):
             return table_data
