@@ -5,6 +5,7 @@ import base64
 import psycopg2.errors
 from datetime import datetime
 from fastapi import HTTPException
+import io
 
 class PostgresDatabase:
     def __init__(self):
@@ -126,18 +127,18 @@ class PostgresDatabase:
         return [row[0] for row in rows]
 
     def get_table_data(self, table_name):
+        self.ensure_connection()
         df = self.read()
         row = df[df['name'] == table_name]["fileobj"]
         if row.empty:
             raise HTTPException(status_code=404, detail="Table not found")
+        # Use BytesIO for better memory handling
+        bytes_data = row.values[0].tobytes()
+        buffer = io.BytesIO(bytes_data)
+        table_data = pickle.load(buffer)  # Slightly faster than loads()
         
-        # Load the pickled data
-        table_data = pickle.loads(row.values[0].tobytes())
-        
-        # Ensure it's a DataFrame
         if not isinstance(table_data, pd.DataFrame):
-            table_data = pd.DataFrame(table_data)
-            
+            table_data = pd.DataFrame(table_data)   
         return table_data
 
     def delete_tables_data(self, email, table_names):
