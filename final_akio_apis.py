@@ -1725,6 +1725,7 @@ def arima_forecast(model, periods, freq,target_col):
         'years': 'YS'
     }
     data_path= os.path.join('models', 'arima', target_col, target_col + '_results.json')
+    print(f"Loading results from: {data_path}")
 
     try:
         with open(data_path, 'r') as f:
