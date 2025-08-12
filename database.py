@@ -129,17 +129,14 @@ class PostgresDatabase:
     def get_table_data(self, table_name):
         self.ensure_connection()
         df = self.read()
-        row = df[df['name'] == table_name]["fileobj"]
-        if row.empty:
+        matched_rows = df.query('name == @table_name')
+        if matched_rows.empty:
             raise HTTPException(status_code=404, detail="Table not found")
-        # Use BytesIO for better memory handling
-        bytes_data = row.values[0].tobytes()
-        buffer = io.BytesIO(bytes_data)
-        table_data = pickle.load(buffer)  # Slightly faster than loads()
-        
-        if not isinstance(table_data, pd.DataFrame):
-            table_data = pd.DataFrame(table_data)   
-        return table_data
+        bytes_data = matched_rows['fileobj'].iloc[0]
+        table_data = pickle.loads(bytes_data)
+        if isinstance(table_data, pd.DataFrame):
+            return table_data
+        return pd.DataFrame(table_data)
 
     def delete_tables_data(self, email, table_names):
         if not table_names:
