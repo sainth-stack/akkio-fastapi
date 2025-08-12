@@ -164,10 +164,11 @@ async def read_data(tablename: str = Form(...)):
         df = db.get_table_data(tablename)
         if df.empty:
             return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
-
+        print(f"Processing table: {tablename}")
         # Ultra-safe conversion using pandas built-in JSON handling
-        result = ultra_safe_conversion(df)
-        
+        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
+        result = json.loads(json_str)
+        print(f"Data for table '{tablename}' processed successfully.")
         # Save CSV files (in background)
         df.to_csv('data.csv', index=False)
         
@@ -183,22 +184,6 @@ async def read_data(tablename: str = Form(...)):
             status_code=500
         )
 
-
-def ultra_safe_conversion(df):
-    """
-    Uses pandas' built-in JSON conversion which handles most edge cases
-    """
-    if df.empty:
-        return []
-    
-    try:
-        # Let pandas handle the JSON conversion with proper date formatting
-        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
-        return json.loads(json_str)
-    except Exception as e:
-        # Fallback to manual conversion
-        return str(e)
-    
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
 @app.post("/api/delete_selected_tables")
@@ -2347,7 +2332,6 @@ async def perform_statistical_analysis() -> JSONResponse:
 
         # Remove single value columns
         single_value_columns = [col for col in df.columns if df[col].nunique() == 1]
-        df.drop(single_value_columns, axis=1, inplace=True)
 
         # Initialize variables for analysis
         timestamp = 'N'
@@ -3573,7 +3557,8 @@ async def read_data_from_db(
         if df.empty:
             return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
 
-        ultra_safe_conversion(df)
+        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
+        json.loads(json_str)
 
         # Save shared CSV
         df.to_csv('data.csv', index=False)
