@@ -1878,7 +1878,7 @@ def arima_train(data, target_col, bot_query=None):
 
         result_graph = plot_graph(forecasted_data,target_col)
 
-        print(f"Results saved to {os.path.join('models', 'arima', target_col, target_col + '_results.json')}")
+        print(f"Results saved to {os.path.join('models', 'Arima', target_col, target_col + '_results.json')}")
         return True, forecasted_data, result_graph
 
     except Exception as e:
@@ -1950,7 +1950,7 @@ def arima_forecast(model, periods, freq,target_col):
         'months': 'M',
         'years': 'YS'
     }
-    data_path= os.path.join('models', 'arima', target_col, target_col + '_results.json')
+    data_path= os.path.join('models', 'Arima', target_col, target_col + '_results.json')
     print(f"Loading results from: {data_path}")
 
     try:
