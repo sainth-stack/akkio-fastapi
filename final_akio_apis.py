@@ -939,9 +939,6 @@ async def models(input: ModelRequest):
     try:
         # Load and clean data
         df = pd.read_csv('data.csv')
-        single_value_columns = [col for col in df.columns if df[col].nunique() == 1]
-        df.drop(single_value_columns, axis=1, inplace=True)
-
         numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
         print(numeric_cols)
         if len(numeric_cols) < 1:
