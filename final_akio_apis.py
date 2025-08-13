@@ -38,7 +38,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder,LabelEncoder
 from starlette.responses import HTMLResponse, JSONResponse
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
@@ -1209,7 +1209,7 @@ async def models(input: ModelRequest):
         raise HTTPException(500, str(e))
 
 
-# Model predict for Random forest
+#Random Forest model prediction api
 @app.post("/api/model_predict")
 async def model_predict(request: Request):
     try:
@@ -1233,13 +1233,14 @@ async def model_predict(request: Request):
 
         # Extract features (exclude form_name and targetColumn)
         features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
-        df_predict = pd.DataFrame([features])
-
-        # Load pipeline and deployment data paths
+        
+        # Load model paths
         model_dir = os.path.join("models", "rf", targetcol)
         pipeline_path = os.path.join(model_dir, "pipeline.pkl")
         deployment_path = os.path.join(model_dir, "deployment.json")
+        label_encoder_path = os.path.join(model_dir, "label_encoder.pkl")
 
+        # Check if model files exist
         if not os.path.exists(pipeline_path):
             raise HTTPException(
                 status_code=404,
@@ -1252,44 +1253,154 @@ async def model_predict(request: Request):
                 detail=f"Model deployment metadata not found for target column '{targetcol}'"
             )
 
-        # Load model pipeline
-        loaded_pipeline = load_pipeline(pipeline_path)
-
-        # Load deployment metadata
+        # Load deployment metadata first to understand model type
         with open(deployment_path, "r") as f:
             deployment_data = json.load(f)
+        
         model_stats = deployment_data.get("stats", {})
+        feature_names = deployment_data.get('feature_names', [])
+        is_classification = deployment_data.get('is_classification', False)
+        model_type = deployment_data.get('model_type', 'Unknown')
+
+        # Load model pipeline
+        loaded_pipeline = joblib.load(pipeline_path)
+
+        # Load label encoder if it exists (for categorical targets)
+        label_encoder = None
+        if os.path.exists(label_encoder_path):
+            label_encoder = joblib.load(label_encoder_path)
+
+        # Prepare input data with proper feature ordering
+        df_predict = pd.DataFrame([features])
+        
+        # Ensure all required features are present
+        missing_features = set(feature_names) - set(df_predict.columns)
+        if missing_features:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required features: {list(missing_features)}"
+            )
+        
+        # Reorder columns to match training data
+        df_predict = df_predict[feature_names]
+
+        # Convert numeric strings to appropriate types
+        for col in df_predict.columns:
+            if col in deployment_data.get('numerical_features', []):
+                try:
+                    df_predict[col] = pd.to_numeric(df_predict[col])
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
+                    )
 
         # Make prediction
         predictions = loaded_pipeline.predict(df_predict)
+        predicted_value = predictions[0]
 
-        # Try to get prediction confidence if available
+        # Handle prediction probabilities and confidence for classification
         prediction_proba = None
-        if hasattr(loaded_pipeline, 'predict_proba'):
-            try:
-                prediction_proba = loaded_pipeline.predict_proba(df_predict)
-            except Exception as e:
-                print(f"Warning: predict_proba failed: {e}")
+        confidence = None
+        predicted_class_proba = None
+        
+        if is_classification:
+            # Get prediction probabilities
+            if hasattr(loaded_pipeline, 'predict_proba'):
+                try:
+                    proba = loaded_pipeline.predict_proba(df_predict)[0]
+                    classes = loaded_pipeline.classes_
+                    prediction_proba = dict(zip(classes, proba))
+                    confidence = float(max(proba))
+                    
+                    # Get probability for the predicted class
+                    predicted_class_proba = float(proba[list(classes).index(predicted_value)])
+                    
+                except Exception as e:
+                    print(f"Warning: predict_proba failed: {e}")
 
-        # Compute feature importance and impact
-        feature_importance = get_feature_importance(loaded_pipeline, features.keys())
-        feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features)
+            # Decode prediction if label encoder was used
+            if label_encoder is not None:
+                predicted_value = label_encoder.inverse_transform([predicted_value])[0]
+                
+                # Also decode probability classes
+                if prediction_proba:
+                    decoded_proba = {}
+                    for encoded_class, prob in prediction_proba.items():
+                        decoded_class = label_encoder.inverse_transform([encoded_class])[0]
+                        decoded_proba[str(decoded_class)] = float(prob)
+                    prediction_proba = decoded_proba
+
+        # Compute feature importance
+        feature_importance = get_feature_importance(loaded_pipeline, feature_names)
+        
+        # Calculate feature impact
+        feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
+
+        # Prepare response based on model type
+        if is_classification:
+            prediction_result = {
+                "predicted_value": str(predicted_value),
+                "predicted_class": str(predicted_value),
+                "target_column": targetcol,
+                "model_type": model_type,
+                "confidence": confidence,
+                "class_probabilities": prediction_proba
+            }
+            
+            # Add top predicted classes
+            if prediction_proba:
+                sorted_proba = sorted(prediction_proba.items(), key=lambda x: x[1], reverse=True)
+                prediction_result["top_predictions"] = [
+                    {"class": class_name, "probability": round(prob * 100, 2)} 
+                    for class_name, prob in sorted_proba[:3]
+                ]
+        else:
+            prediction_result = {
+                "predicted_value": round(float(predicted_value), 4),
+                "target_column": targetcol,
+                "model_type": model_type,
+                "confidence": None  # Regression doesn't have confidence in the same way
+            }
+
+        # Prepare model performance metrics
+        model_performance = {
+            "model_type": model_type,
+            "total_samples": model_stats.get("total_samples", "N/A"),
+            "cross_validation": {
+                "mean_score": model_stats.get("cross_val_mean", "N/A"),
+                "std_score": model_stats.get("cross_val_std", "N/A")
+            },
+            "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+        }
+
+        # Add specific metrics based on model type
+        metrics = model_stats.get("metrics", {})
+        if is_classification:
+            model_performance["classification_metrics"] = {
+                "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
+                "precision": f"{metrics.get('precision', 'N/A')}%",
+                "recall": f"{metrics.get('recall', 'N/A')}%",
+                "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
+            }
+        else:
+            model_performance["regression_metrics"] = {
+                "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
+                "mae": metrics.get('mae', 'N/A'),
+                "rmse": metrics.get('rmse', 'N/A')
+            }
 
         response = {
-            "prediction_result": {
-                "predicted_value": round(float(predictions[0]), 2),
-                "target_column": targetcol,
-                "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
-            },
-            "model_performance": {
-                "overall_accuracy": model_stats.get("accuracy", "N/A"),
-                "performance_metrics": model_stats.get("metrics", {}),
-                "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
-            },
+            "prediction_result": prediction_result,
+            "model_performance": model_performance,
             "feature_analysis": {
-                "top_fields": feature_importance,
+                "top_influencing_features": feature_importance,
                 "input_features": features,
-                "feature_impact": feature_impact
+                "feature_impact": feature_impact,
+                "feature_types": {
+                    "categorical": deployment_data.get('categorical_features', []),
+                    "numerical": deployment_data.get('numerical_features', [])
+                }
             }
         }
 
@@ -1373,73 +1484,199 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             model_path = os.path.join("models", "rf", data['target_column'])
             pipeline_path = os.path.join(model_path, "pipeline.pkl")
             deployment_path = os.path.join(model_path, "deployment.json")
+            label_encoder_path = os.path.join(model_path, "label_encoder.pkl")
 
             # Check and retrain model if needed
             if not os.path.exists(deployment_path) or not os.path.exists(pipeline_path):
                 df = pd.read_csv('data.csv')
-                model_stats = random_forest(df, data.get('target_column'))
+                model_stats, _ = random_forest(df, data.get('target_column'))
+                # Reload deployment data after training
+                with open(deployment_path, 'r', encoding='utf-8') as f:
+                    deployment_data = json.load(f)
             else:
-                # Load existing model statistics
-                with open(deployment_path, 'r') as f:
-                    model_stats = json.load(f)
+                # Load existing model statistics and deployment data
+                with open(deployment_path, 'r', encoding='utf-8') as f:
+                    deployment_data = json.load(f)
+                model_stats = deployment_data.get('stats', {})
+
+            # Get model metadata
+            is_classification = deployment_data.get('is_classification', False)
+            model_type = deployment_data.get('model_type', 'Unknown')
+            feature_names = deployment_data.get('feature_names', [])
+
+            # Load the trained pipeline
+            loaded_pipeline = load_pipeline(pipeline_path)
+
+            # Load label encoder if it exists (for categorical targets)
+            label_encoder = None
+            if os.path.exists(label_encoder_path):
+                label_encoder = joblib.load(label_encoder_path)
+
+            # Prepare prediction data with proper feature ordering
+            features = data.get('features', {})
+            df_predict = pd.DataFrame([features])
+            
+            # Ensure all required features are present and reorder columns
+            if feature_names:
+                # Check for missing features
+                missing_features = set(feature_names) - set(df_predict.columns)
+                if missing_features:
+                    error_msg = f'Missing required features: {list(missing_features)}'
+                    bot_content = json.dumps({'text_pre_code_response': error_msg})
+                    async with CHAT_MEMORY_LOCK:
+                        CHAT_MEMORY[session_id].append(
+                            {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                    return JSONResponse({
+                        'text_pre_code_response': error_msg,
+                        'session_id': session_id
+                    })
+                
+                # Reorder columns to match training data
+                df_predict = df_predict[feature_names]
+
+            # Convert numeric strings to appropriate types for numerical features
+            numerical_features = deployment_data.get('numerical_features', [])
+            for col in df_predict.columns:
+                if col in numerical_features:
+                    try:
+                        df_predict[col] = pd.to_numeric(df_predict[col])
+                    except ValueError:
+                        error_msg = f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
+                        bot_content = json.dumps({'text_pre_code_response': error_msg})
+                        async with CHAT_MEMORY_LOCK:
+                            CHAT_MEMORY[session_id].append(
+                                {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                        return JSONResponse({
+                            'text_pre_code_response': error_msg,
+                            'session_id': session_id
+                        })
 
             # Make prediction
-            df_predict = pd.DataFrame([data.get('features')])
-            loaded_pipeline = load_pipeline(pipeline_path)
             predictions = loaded_pipeline.predict(df_predict)
+            predicted_value = predictions[0]
 
-            # Get prediction probability/confidence if available
+            # Handle prediction probabilities and confidence for classification
             prediction_proba = None
-            if hasattr(loaded_pipeline, 'predict_proba'):
-                try:
-                    prediction_proba = loaded_pipeline.predict_proba(df_predict)
-                except:
-                    pass
+            confidence = None
+            class_probabilities = None
+            
+            if is_classification:
+                # Get prediction probabilities for classification
+                if hasattr(loaded_pipeline, 'predict_proba'):
+                    try:
+                        proba = loaded_pipeline.predict_proba(df_predict)[0]
+                        classes = loaded_pipeline.classes_
+                        prediction_proba = dict(zip(classes, proba))
+                        confidence = float(max(proba))
+                    except Exception as e:
+                        print(f"Warning: predict_proba failed: {e}")
 
-            # Calculate feature importance and top contributing fields
-            feature_importance = get_feature_importance(loaded_pipeline, data.get('features').keys())
+                # Decode prediction if label encoder was used
+                if label_encoder is not None:
+                    predicted_value = label_encoder.inverse_transform([predicted_value])[0]
+                    
+                    # Also decode probability classes
+                    if prediction_proba:
+                        decoded_proba = {}
+                        for encoded_class, prob in prediction_proba.items():
+                            decoded_class = label_encoder.inverse_transform([encoded_class])[0]
+                            decoded_proba[str(decoded_class)] = float(prob)
+                        class_probabilities = decoded_proba
+                else:
+                    class_probabilities = prediction_proba
 
-            bot_content = json.dumps({
-                "prediction_result": {
-                    "predicted_value": round(predictions[0], 2),
+            # Calculate feature importance and impact
+            feature_importance = get_feature_importance(loaded_pipeline, feature_names or features.keys())
+            feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
+
+            # Prepare response based on model type
+            if is_classification:
+                prediction_result = {
+                    "predicted_value": str(predicted_value),
+                    "predicted_class": str(predicted_value),
                     "target_column": data.get('target_column'),
-                    "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
+                    "model_type": model_type,
+                    "confidence": confidence,
+                    "class_probabilities": class_probabilities
+                }
+                
+                # Add top predicted classes
+                if class_probabilities:
+                    sorted_proba = sorted(class_probabilities.items(), key=lambda x: x[1], reverse=True)
+                    prediction_result["top_predictions"] = [
+                        {"class": class_name, "probability": round(prob * 100, 2)} 
+                        for class_name, prob in sorted_proba[:3]
+                    ]
+                
+                # Text response for classification
+                text_response = f"Predicted {data.get('target_column')} class is '{predicted_value}'"
+                if confidence:
+                    text_response += f" with {round(confidence * 100, 1)}% confidence"
+            else:
+                prediction_result = {
+                    "predicted_value": round(float(predicted_value), 4),
+                    "target_column": data.get('target_column'),
+                    "model_type": model_type,
+                    "confidence": None
+                }
+                
+                # Text response for regression
+                text_response = f"Predicted {data.get('target_column')} value is {round(float(predicted_value), 2)}"
+
+            # Prepare model performance metrics
+            model_performance = {
+                "model_type": model_type,
+                "total_samples": model_stats.get("total_samples", "N/A"),
+                "cross_validation": {
+                    "mean_score": model_stats.get("cross_val_mean", "N/A"),
+                    "std_score": model_stats.get("cross_val_std", "N/A")
                 },
-                "model_performance": {
-                    "overall_accuracy": model_stats.get('accuracy', 'N/A'),
-                    "performance_metrics": model_stats.get('metrics', {}),
-                    "baseline_comparison": model_stats.get('baseline_comparison', 'N/A')
-                },
-                "feature_analysis": {
-                    "top_fields": feature_importance,
-                    "input_features": data.get('features'),
-                    "feature_impact": calculate_feature_impact(loaded_pipeline, df_predict, data.get('features'))
-                },
-                "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}"
-            })
+                "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+            }
+
+            # Add specific metrics based on model type
+            metrics = model_stats.get("metrics", {})
+            if is_classification:
+                model_performance["classification_metrics"] = {
+                    "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
+                    "precision": f"{metrics.get('precision', 'N/A')}%",
+                    "recall": f"{metrics.get('recall', 'N/A')}%",
+                    "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
+                }
+            else:
+                model_performance["regression_metrics"] = {
+                    "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
+                    "mae": metrics.get('mae', 'N/A'),
+                    "rmse": metrics.get('rmse', 'N/A')
+                }
+
+            # Prepare feature analysis
+            feature_analysis = {
+                "top_influencing_features": feature_importance,
+                "input_features": features,
+                "feature_impact": feature_impact,
+                "feature_types": {
+                    "categorical": deployment_data.get('categorical_features', []),
+                    "numerical": deployment_data.get('numerical_features', [])
+                }
+            }
+
+            # Create response
+            response_data = {
+                "prediction_result": prediction_result,
+                "model_performance": model_performance,
+                "feature_analysis": feature_analysis,
+                "text_pre_code_response": text_response,
+                'session_id': session_id
+            }
+
+            bot_content = json.dumps(response_data)
             async with CHAT_MEMORY_LOCK:
                 CHAT_MEMORY[session_id].append(
                     {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
 
-            return JSONResponse({
-                "prediction_result": {
-                    "predicted_value": round(predictions[0], 2),
-                    "target_column": data.get('target_column'),
-                    "confidence": get_prediction_confidence(prediction_proba) if prediction_proba is not None else None
-                },
-                "model_performance": {
-                    "overall_accuracy": model_stats.get('accuracy', 'N/A'),
-                    "performance_metrics": model_stats.get('metrics', {}),
-                    "baseline_comparison": model_stats.get('baseline_comparison', 'N/A')
-                },
-                "feature_analysis": {
-                    "top_fields": feature_importance,
-                    "input_features": data.get('features'),
-                    "feature_impact": calculate_feature_impact(loaded_pipeline, df_predict, data.get('features'))
-                },
-                "text_pre_code_response": f"Predicted {data.get('target_column')} value is {round(predictions[0], 2)}",
-                'session_id': session_id
-            })
+            return JSONResponse(response_data)
+
 
         # Handle general data analysis requests
         else:
@@ -1674,29 +1911,50 @@ def process_genai_response(response):
         text_post_code = all_text[code_end:]
     return text_pre_code, text_post_code, code
 
-
 def get_feature_importance(pipeline, feature_names):
     """Extract feature importance from the trained model"""
     try:
-        # For RandomForest models
-        if hasattr(pipeline.named_steps['model'], 'feature_importances_'):
-            importances = pipeline.named_steps['model'].feature_importances_
-            feature_importance = list(zip(feature_names, importances))
-            # Sort by importance descending
-            feature_importance.sort(key=lambda x: x[1], reverse=True)
-
-            # Format as percentage and return top fields
-            top_fields = []
-            for feature, importance in feature_importance[:5]:  # Top 5 features
-                top_fields.append({
-                    "field_name": feature,
-                    "importance_percentage": round(importance * 100, 1),
-                    "contribution": importance
-                })
-            return top_fields
-    except:
-        pass
+        # Get the model from the pipeline
+        model = pipeline.named_steps['model']
+        
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+            
+            # Get feature names after preprocessing
+            preprocessor = pipeline.named_steps['preprocessor']
+            feature_names_transformed = []
+            
+            # Handle numerical features
+            if hasattr(preprocessor, 'named_transformers_'):
+                if 'num' in preprocessor.named_transformers_:
+                    num_features = preprocessor.named_transformers_['num'].feature_names_in_
+                    feature_names_transformed.extend(num_features)
+                
+                # Handle categorical features (one-hot encoded)
+                if 'cat' in preprocessor.named_transformers_:
+                    cat_transformer = preprocessor.named_transformers_['cat']
+                    if hasattr(cat_transformer.named_steps['onehot'], 'get_feature_names_out'):
+                        cat_features = cat_transformer.named_steps['onehot'].get_feature_names_out()
+                        feature_names_transformed.extend(cat_features)
+            
+            # If we can't get transformed names, use original names
+            if not feature_names_transformed:
+                feature_names_transformed = feature_names[:len(importances)]
+            
+            # Create importance pairs and sort
+            importance_pairs = list(zip(feature_names_transformed, importances))
+            importance_pairs.sort(key=lambda x: x[1], reverse=True)
+            
+            # Return top 10 features
+            return [
+                {"feature": feature, "importance": round(importance * 100, 2)}
+                for feature, importance in importance_pairs[:10]
+            ]
+    except Exception as e:
+        print(f"Error getting feature importance: {e}")
+    
     return []
+
 
 
 def get_prediction_confidence(prediction_proba):
@@ -1707,41 +1965,60 @@ def get_prediction_confidence(prediction_proba):
     return None
 
 
-def calculate_feature_impact(pipeline, df_predict, features):
+def calculate_feature_impact(pipeline, df_predict, original_features, is_classification, label_encoder):
     """Calculate the impact of each feature on the prediction"""
-    feature_impacts = {}
-    base_prediction = pipeline.predict(df_predict)[0]
-
-    for feature_name, feature_value in features.items():
-        # Create a copy with this feature set to mean/mode
-        df_modified = df_predict.copy()
-        try:
-            # For numerical features, use mean; for categorical, use most frequent
-            if isinstance(feature_value, (int, float)):
-                df_modified[feature_name] = df_modified[feature_name].mean() if not df_modified[
-                    feature_name].isna().all() else 0
-            else:
-                df_modified[feature_name] = "baseline_value"
-
-            modified_prediction = pipeline.predict(df_modified)[0]
-            impact = abs(base_prediction - modified_prediction)
-            impact_percentage = round((impact / abs(base_prediction) * 100), 1) if base_prediction != 0 else 0
-
-            feature_impacts[feature_name] = {
-                "impact_value": round(impact, 2),
-                "impact_percentage": f"{impact_percentage}%",
-                "direction": "positive" if base_prediction > modified_prediction else "negative"
-            }
-        except:
-            feature_impacts[feature_name] = {"impact_value": 0, "impact_percentage": "0%", "direction": "neutral"}
-
-    return feature_impacts
+    try:
+        base_prediction = pipeline.predict(df_predict)[0]
+        feature_impacts = {}
+        
+        for feature, value in original_features.items():
+            # Create a copy of the dataframe
+            df_modified = df_predict.copy()
+            
+            # Try to modify the feature value to see impact
+            if feature in df_predict.columns:
+                # For numerical features, try mean imputation
+                if df_predict[feature].dtype in ['int64', 'float64']:
+                    df_modified[feature] = df_predict[feature].mean()
+                else:
+                    # For categorical, use mode or a default value
+                    df_modified[feature] = 'unknown'
+                
+                try:
+                    modified_prediction = pipeline.predict(df_modified)[0]
+                    
+                    if is_classification:
+                        # For classification, show if prediction changed
+                        if label_encoder is not None:
+                            base_pred_decoded = label_encoder.inverse_transform([base_prediction])[0]
+                            mod_pred_decoded = label_encoder.inverse_transform([modified_prediction])[0]
+                            impact = "Changed" if base_pred_decoded != mod_pred_decoded else "No change"
+                        else:
+                            impact = "Changed" if base_prediction != modified_prediction else "No change"
+                    else:
+                        # For regression, show numerical difference
+                        impact = round(float(base_prediction - modified_prediction), 4)
+                    
+                    feature_impacts[feature] = {
+                        "current_value": str(value),
+                        "impact": impact
+                    }
+                except Exception:
+                    feature_impacts[feature] = {
+                        "current_value": str(value),
+                        "impact": "Unable to calculate"
+                    }
+        
+        return feature_impacts
+    except Exception as e:
+        print(f"Error calculating feature impact: {e}")
+        return {}
 
 
 def make_serializable(obj):
     if isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, pd.Timestamp):  # ✅ Fix for your issue
+    elif isinstance(obj, pd.Timestamp):
         return obj.isoformat()
     elif isinstance(obj, dict):
         return {k: make_serializable(v) for k, v in obj.items()}
@@ -2227,6 +2504,22 @@ def detect_seasonality(df):
     autocorr = df['value'].autocorr(lag=1)
     return abs(autocorr) > 0.3  # If autocorr > 0.3 → Seasonality exists
 
+def is_categorical_target(series):
+    """Better detection for categorical vs numerical targets"""
+    # Check data type first
+    if series.dtype == 'object' or series.dtype.name == 'category':
+        return True
+    
+    # For numeric types, check if it's likely categorical
+    unique_count = series.nunique()
+    total_count = len(series)
+    
+    # If unique values are less than 10% of total or max 20 unique values
+    if unique_count <= max(10, total_count * 0.1) and unique_count <= 20:
+        return True
+    
+    return False
+
 
 def random_forest(data, target_column):
     try:
@@ -2240,9 +2533,22 @@ def random_forest(data, target_column):
             X = data.drop(columns=[target_column])
             y = data[target_column]
 
+            # Better categorical detection for target
+            is_classification = is_categorical_target(y)
+
             # Detect categorical and numerical features
             categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
             numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+
+            # For categorical targets, ensure proper encoding
+            label_encoder = None
+            label_mapping = None
+            if is_classification and y.dtype == 'object':
+                label_encoder = LabelEncoder()
+                y = label_encoder.fit_transform(y)
+                # Convert numpy arrays to lists for JSON serialization
+                label_mapping = {str(cls): int(label_encoder.transform([cls])[0]) 
+                               for cls in label_encoder.classes_}
 
             # Preprocessing pipelines for numerical and categorical data
             numerical_transformer = Pipeline(steps=[
@@ -2263,14 +2569,19 @@ def random_forest(data, target_column):
                 ])
 
             # Choose Random Forest type based on target type
-            if y.nunique() <= 5:  # Classification
+            if is_classification:
                 model_type = 'Classification'
-                model = RandomForestClassifier(random_state=42)
-                is_classification = True
-            else:  # Regression
+                model = RandomForestClassifier(
+                    n_estimators=100,
+                    random_state=42,
+                    class_weight='balanced'  # Handle imbalanced classes
+                )
+            else:
                 model_type = 'Regression'
-                model = RandomForestRegressor(random_state=42)
-                is_classification = False
+                model = RandomForestRegressor(
+                    n_estimators=100,
+                    random_state=42
+                )
 
             # Create pipeline
             pipeline = Pipeline(steps=[
@@ -2308,7 +2619,7 @@ def random_forest(data, target_column):
                 recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
                 f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
             else:
-                r2 = r2_score(y_test, predictions)  # R² for regression
+                r2 = r2_score(y_test, predictions)
                 mae = mean_absolute_error(y_test, predictions)
                 rmse = np.sqrt(mean_squared_error(y_test, predictions))
 
@@ -2317,15 +2628,13 @@ def random_forest(data, target_column):
                 try:
                     if is_classification:
                         if len(set(y_true)) > 1:
-                            # baseline accuracy is accuracy of always predicting most frequent class
                             baseline_accuracy = max(np.bincount(y_true)) / len(y_true)
                             model_accuracy = accuracy_score(y_true, y_pred)
                             improvement = ((model_accuracy - baseline_accuracy) / baseline_accuracy) * 100
-                            return f"{round(improvement, 1)}% better than baseline"
+                            return f"{round(improvement, 2)}% better than baseline"
                         else:
                             return "Baseline comparison unavailable (only one class)"
                     else:
-                        # For regression, compare with mean baseline (mean of targets)
                         baseline_mae = mean_absolute_error(y_true, [np.mean(y_true)] * len(y_true))
                         model_mae = mean_absolute_error(y_true, y_pred)
                         improvement = ((baseline_mae - model_mae) / baseline_mae) * 100
@@ -2353,10 +2662,10 @@ def random_forest(data, target_column):
             # Create comprehensive model statistics
             model_stats = {
                 "model_type": model_type,
-                "total_samples": len(y_test),
+                "total_samples": int(len(y_test)),  # Ensure it's a regular int
                 "correct_predictions": int(sum(y_test == predictions)) if is_classification else None,
-                "cross_val_mean": round(scores.mean(), 4),
-                "cross_val_std": round(scores.std(), 4),
+                "cross_val_mean": round(float(scores.mean()), 4),  # Convert numpy float to Python float
+                "cross_val_std": round(float(scores.std()), 4),    # Convert numpy float to Python float
                 "baseline_comparison": baseline_comparison,
                 "metrics": model_metrics,
             }
@@ -2365,31 +2674,46 @@ def random_forest(data, target_column):
             joblib.dump(pipeline, os.path.join(model_dir, "pipeline.pkl"))
             print(f'Pipeline saved to: {os.path.join(model_dir, "pipeline.pkl")}')
 
+            # Save label encoder if used
+            if label_encoder is not None:
+                joblib.dump(label_encoder, os.path.join(model_dir, "label_encoder.pkl"))
+
             # Save enhanced deployment information with statistics
+            # Convert all data to JSON-serializable formats
             deployment_data = {
-                "columns": list(X_train.columns),
-                "model_type": model_type,
-                "target_column": target_column,
+                "columns": [str(col) for col in X_train.columns],  # Ensure strings
+                "model_type": str(model_type),
+                "target_column": str(target_column),
                 "stats": model_stats,
-                "feature_names": list(X.columns),
-                "categorical_features": categorical_cols,
-                "numerical_features": numerical_cols
+                "feature_names": [str(col) for col in X.columns],  # Ensure strings
+                "categorical_features": [str(col) for col in categorical_cols],  # Ensure strings
+                "numerical_features": [str(col) for col in numerical_cols],     # Ensure strings
+                "label_mapping": label_mapping,
+                "is_classification": bool(is_classification)  # Ensure it's a regular bool
             }
 
-            with open(deployment_path, "w") as fp:
+            # Write JSON with proper encoding to handle special characters
+            with open(deployment_path, "w", encoding='utf-8') as fp:
                 json.dump(deployment_data, fp, indent=4)
 
-            return model_stats, list(X_train.columns)
+            return model_stats, [str(col) for col in X_train.columns]
         else:
-            # Load existing model data and statistics
-            with open(deployment_path, "r") as fp:
-                deployment_data = json.load(fp)
-            return deployment_data.get('stats', {}), deployment_data['columns']
+            # Load existing model data and statistics with proper encoding
+            try:
+                with open(deployment_path, "r", encoding='utf-8') as fp:
+                    deployment_data = json.load(fp)
+                return deployment_data.get('stats', {}), deployment_data.get('columns', [])
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                print(f"Error reading deployment file: {e}")
+                # If the file is corrupted, delete it and retrain
+                os.remove(deployment_path)
+                print("Corrupted deployment file deleted. Retraining model...")
+                # Recursively call the function to retrain
+                return random_forest(data, target_column)
 
     except Exception as e:
         print(f"Error in random_forest: {e}")
         return False, []
-
 
 # 9.Data scout api----------------------Data scout api for generating the data------------- 9
 @app.post("/api/data_scout")
