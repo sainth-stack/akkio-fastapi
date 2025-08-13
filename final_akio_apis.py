@@ -83,6 +83,7 @@ from api.sharepoint import (
     get_sharepoint_automation_status,
     process_latest_if_new,
 )
+from api.chat2doc_fastapi import chat2doc
 # Calculate comprehensive metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
@@ -159,6 +160,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
 app.include_router(explore_router)
+app.include_router(chat2doc)
 
 
 # 1.File upload only-------- It is  useful for uploading the file

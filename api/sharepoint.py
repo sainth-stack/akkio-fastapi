@@ -7,10 +7,10 @@ from urllib.parse import quote
 import re
 
 # Load from environment, fallback to corrected values from .env
-SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID", "7e337a70-d10b-4e93-8d09-91d548c90832")
-SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET", "4wo8Q~lcsBPk4KS2t.dvU83Jh3.zOAyc6Vd9ubvT")
-SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID", "63448fe6-32a4-4c6e-b69a-0dbd1eb57300")
-SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL", "netorgft5470365.sharepoint.com/sites/TM_SELE_ProEn")
+SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID")
+SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
+SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
+SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL")
 # Default to folders at the drive root. You can override with full paths via env.
 # IMPORTANT: Paths here are relative to the default document library drive root
 # (which corresponds to "Shared Documents" in the SharePoint UI). Do not prefix
