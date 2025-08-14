@@ -1184,19 +1184,12 @@ async def models(input: ModelRequest):
 
         # Handle ARIMA
         elif input.model == 'Arima':
-            if not input.frequency or not input.tenure:
-                raise HTTPException(400, "Missing frequency or tenure for ARIMA")
-            stat, data, img_data = arima_train(df, input.col, {
-                'time_unit': input.frequency,
-                'forecast_horizon': input.tenure
-            })
+            stat= arima_train_only(df, input.col)
             return {
                 'columns': list(df.columns),
                 'status': stat,
                 'arima': True,
-                'path': str(img_data),
-                'data': json.loads(data.to_json()),
-                'description': generate_text_from_json(json.loads(data.to_json()))
+                'message': 'ARIMA model trained successfully.'
             }
 
         # Handle unsupported models
@@ -1209,18 +1202,18 @@ async def models(input: ModelRequest):
         raise HTTPException(500, str(e))
 
 
-#Random Forest model prediction api
 @app.post("/api/model_predict")
 async def model_predict(request: Request):
     try:
         form_data = await request.form()
         form_data = dict(form_data)
 
-        # Validate form_name
-        if form_data.get('form_name') != 'rf':
+        # Validate form_name for both RF and ARIMA
+        form_name = form_data.get('form_name')
+        if form_name not in ['rf', 'arima']:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid form type, expected 'rf'"
+                detail="Invalid form type, expected 'rf' or 'arima'"
             )
 
         # Validate targetColumn
@@ -1231,180 +1224,13 @@ async def model_predict(request: Request):
                 detail="Target column (targetColumn) is required"
             )
 
-        # Extract features (exclude form_name and targetColumn)
-        features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
+        # Handle Random Forest Prediction
+        if form_name == 'rf':
+            return await handle_rf_prediction(form_data, targetcol)
         
-        # Load model paths
-        model_dir = os.path.join("models", "rf", targetcol)
-        pipeline_path = os.path.join(model_dir, "pipeline.pkl")
-        deployment_path = os.path.join(model_dir, "deployment.json")
-        label_encoder_path = os.path.join(model_dir, "label_encoder.pkl")
-
-        # Check if model files exist
-        if not os.path.exists(pipeline_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Model pipeline not found for target column '{targetcol}'"
-            )
-
-        if not os.path.exists(deployment_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Model deployment metadata not found for target column '{targetcol}'"
-            )
-
-        # Load deployment metadata first to understand model type
-        with open(deployment_path, "r") as f:
-            deployment_data = json.load(f)
-        
-        model_stats = deployment_data.get("stats", {})
-        feature_names = deployment_data.get('feature_names', [])
-        is_classification = deployment_data.get('is_classification', False)
-        model_type = deployment_data.get('model_type', 'Unknown')
-
-        # Load model pipeline
-        loaded_pipeline = joblib.load(pipeline_path)
-
-        # Load label encoder if it exists (for categorical targets)
-        label_encoder = None
-        if os.path.exists(label_encoder_path):
-            label_encoder = joblib.load(label_encoder_path)
-
-        # Prepare input data with proper feature ordering
-        df_predict = pd.DataFrame([features])
-        
-        # Ensure all required features are present
-        missing_features = set(feature_names) - set(df_predict.columns)
-        if missing_features:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Missing required features: {list(missing_features)}"
-            )
-        
-        # Reorder columns to match training data
-        df_predict = df_predict[feature_names]
-
-        # Convert numeric strings to appropriate types
-        for col in df_predict.columns:
-            if col in deployment_data.get('numerical_features', []):
-                try:
-                    df_predict[col] = pd.to_numeric(df_predict[col])
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
-                    )
-
-        # Make prediction
-        predictions = loaded_pipeline.predict(df_predict)
-        predicted_value = predictions[0]
-
-        # Handle prediction probabilities and confidence for classification
-        prediction_proba = None
-        confidence = None
-        predicted_class_proba = None
-        
-        if is_classification:
-            # Get prediction probabilities
-            if hasattr(loaded_pipeline, 'predict_proba'):
-                try:
-                    proba = loaded_pipeline.predict_proba(df_predict)[0]
-                    classes = loaded_pipeline.classes_
-                    prediction_proba = dict(zip(classes, proba))
-                    confidence = float(max(proba))
-                    
-                    # Get probability for the predicted class
-                    predicted_class_proba = float(proba[list(classes).index(predicted_value)])
-                    
-                except Exception as e:
-                    print(f"Warning: predict_proba failed: {e}")
-
-            # Decode prediction if label encoder was used
-            if label_encoder is not None:
-                predicted_value = label_encoder.inverse_transform([predicted_value])[0]
-                
-                # Also decode probability classes
-                if prediction_proba:
-                    decoded_proba = {}
-                    for encoded_class, prob in prediction_proba.items():
-                        decoded_class = label_encoder.inverse_transform([encoded_class])[0]
-                        decoded_proba[str(decoded_class)] = float(prob)
-                    prediction_proba = decoded_proba
-
-        # Compute feature importance
-        feature_importance = get_feature_importance(loaded_pipeline, feature_names)
-        
-        # Calculate feature impact
-        feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
-
-        # Prepare response based on model type
-        if is_classification:
-            prediction_result = {
-                "predicted_value": str(predicted_value),
-                "predicted_class": str(predicted_value),
-                "target_column": targetcol,
-                "model_type": model_type,
-                "confidence": confidence,
-                "class_probabilities": prediction_proba
-            }
-            
-            # Add top predicted classes
-            if prediction_proba:
-                sorted_proba = sorted(prediction_proba.items(), key=lambda x: x[1], reverse=True)
-                prediction_result["top_predictions"] = [
-                    {"class": class_name, "probability": round(prob * 100, 2)} 
-                    for class_name, prob in sorted_proba[:3]
-                ]
-        else:
-            prediction_result = {
-                "predicted_value": round(float(predicted_value), 4),
-                "target_column": targetcol,
-                "model_type": model_type,
-                "confidence": None  # Regression doesn't have confidence in the same way
-            }
-
-        # Prepare model performance metrics
-        model_performance = {
-            "model_type": model_type,
-            "total_samples": model_stats.get("total_samples", "N/A"),
-            "cross_validation": {
-                "mean_score": model_stats.get("cross_val_mean", "N/A"),
-                "std_score": model_stats.get("cross_val_std", "N/A")
-            },
-            "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
-        }
-
-        # Add specific metrics based on model type
-        metrics = model_stats.get("metrics", {})
-        if is_classification:
-            model_performance["classification_metrics"] = {
-                "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
-                "precision": f"{metrics.get('precision', 'N/A')}%",
-                "recall": f"{metrics.get('recall', 'N/A')}%",
-                "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
-            }
-        else:
-            model_performance["regression_metrics"] = {
-                "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
-                "mae": metrics.get('mae', 'N/A'),
-                "rmse": metrics.get('rmse', 'N/A')
-            }
-
-        response = {
-            "prediction_result": prediction_result,
-            "model_performance": model_performance,
-            "feature_analysis": {
-                "top_influencing_features": feature_importance,
-                "input_features": features,
-                "feature_impact": feature_impact,
-                "feature_types": {
-                    "categorical": deployment_data.get('categorical_features', []),
-                    "numerical": deployment_data.get('numerical_features', [])
-                }
-            }
-        }
-
-        return JSONResponse(content=response)
+        # Handle ARIMA Forecasting
+        elif form_name == 'arima':
+            return await handle_arima_forecast(form_data, targetcol)
 
     except HTTPException:
         raise
@@ -1415,6 +1241,344 @@ async def model_predict(request: Request):
             detail="Prediction failed",
             headers={"X-Error-Details": str(e)}
         )
+
+
+async def handle_rf_prediction(form_data, targetcol):
+    """Handle Random Forest prediction logic"""
+    # Extract features (exclude form_name and targetColumn)
+    features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
+    
+    # Load model paths
+    model_dir = os.path.join("models", "rf", targetcol)
+    pipeline_path = os.path.join(model_dir, "pipeline.pkl")
+    deployment_path = os.path.join(model_dir, "deployment.json")
+    label_encoder_path = os.path.join(model_dir, "label_encoder.pkl")
+
+    # Check if model files exist
+    if not os.path.exists(pipeline_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model pipeline not found for target column '{targetcol}'"
+        )
+
+    if not os.path.exists(deployment_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model deployment metadata not found for target column '{targetcol}'"
+        )
+
+    # Load deployment metadata first to understand model type
+    with open(deployment_path, "r") as f:
+        deployment_data = json.load(f)
+    
+    model_stats = deployment_data.get("stats", {})
+    feature_names = deployment_data.get('feature_names', [])
+    is_classification = deployment_data.get('is_classification', False)
+    model_type = deployment_data.get('model_type', 'Unknown')
+
+    # Load model pipeline
+    loaded_pipeline = joblib.load(pipeline_path)
+
+    # Load label encoder if it exists (for categorical targets)
+    label_encoder = None
+    if os.path.exists(label_encoder_path):
+        label_encoder = joblib.load(label_encoder_path)
+
+    # Prepare input data with proper feature ordering
+    df_predict = pd.DataFrame([features])
+    
+    # Ensure all required features are present
+    missing_features = set(feature_names) - set(df_predict.columns)
+    if missing_features:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required features: {list(missing_features)}"
+        )
+    
+    # Reorder columns to match training data
+    df_predict = df_predict[feature_names]
+
+    # Convert numeric strings to appropriate types
+    for col in df_predict.columns:
+        if col in deployment_data.get('numerical_features', []):
+            try:
+                df_predict[col] = pd.to_numeric(df_predict[col])
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
+                )
+
+    # Make prediction
+    predictions = loaded_pipeline.predict(df_predict)
+    predicted_value = predictions[0]
+
+    # Handle prediction probabilities and confidence for classification
+    prediction_proba = None
+    confidence = None
+    predicted_class_proba = None
+    
+    if is_classification:
+        # Get prediction probabilities
+        if hasattr(loaded_pipeline, 'predict_proba'):
+            try:
+                proba = loaded_pipeline.predict_proba(df_predict)[0]
+                classes = loaded_pipeline.classes_
+                prediction_proba = dict(zip(classes, proba))
+                confidence = float(max(proba))
+                
+                # Get probability for the predicted class
+                predicted_class_proba = float(proba[list(classes).index(predicted_value)])
+                
+            except Exception as e:
+                print(f"Warning: predict_proba failed: {e}")
+
+        # Decode prediction if label encoder was used
+        if label_encoder is not None:
+            predicted_value = label_encoder.inverse_transform([predicted_value])[0]
+            
+            # Also decode probability classes
+            if prediction_proba:
+                decoded_proba = {}
+                for encoded_class, prob in prediction_proba.items():
+                    decoded_class = label_encoder.inverse_transform([encoded_class])[0]
+                    decoded_proba[str(decoded_class)] = float(prob)
+                prediction_proba = decoded_proba
+
+    # Compute feature importance
+    feature_importance = get_feature_importance(loaded_pipeline, feature_names)
+    
+    # Calculate feature impact
+    feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
+
+    # Prepare response based on model type
+    if is_classification:
+        prediction_result = {
+            "predicted_value": str(predicted_value),
+            "predicted_class": str(predicted_value),
+            "target_column": targetcol,
+            "model_type": model_type,
+            "confidence": confidence,
+            "class_probabilities": prediction_proba
+        }
+        
+        # Add top predicted classes
+        if prediction_proba:
+            sorted_proba = sorted(prediction_proba.items(), key=lambda x: x[1], reverse=True)
+            prediction_result["top_predictions"] = [
+                {"class": class_name, "probability": round(prob * 100, 2)} 
+                for class_name, prob in sorted_proba[:3]
+            ]
+    else:
+        prediction_result = {
+            "predicted_value": round(float(predicted_value), 4),
+            "target_column": targetcol,
+            "model_type": model_type,
+            "confidence": None  # Regression doesn't have confidence in the same way
+        }
+
+    # Prepare model performance metrics
+    model_performance = {
+        "model_type": model_type,
+        "total_samples": model_stats.get("total_samples", "N/A"),
+        "cross_validation": {
+            "mean_score": model_stats.get("cross_val_mean", "N/A"),
+            "std_score": model_stats.get("cross_val_std", "N/A")
+        },
+        "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+    }
+
+    # Add specific metrics based on model type
+    metrics = model_stats.get("metrics", {})
+    if is_classification:
+        model_performance["classification_metrics"] = {
+            "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
+            "precision": f"{metrics.get('precision', 'N/A')}%",
+            "recall": f"{metrics.get('recall', 'N/A')}%",
+            "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
+        }
+    else:
+        model_performance["regression_metrics"] = {
+            "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
+            "mae": metrics.get('mae', 'N/A'),
+            "rmse": metrics.get('rmse', 'N/A')
+        }
+
+    response = {
+        "prediction_result": prediction_result,
+        "model_performance": model_performance,
+        "feature_analysis": {
+            "top_influencing_features": feature_importance,
+            "input_features": features,
+            "feature_impact": feature_impact,
+            "feature_types": {
+                "categorical": deployment_data.get('categorical_features', []),
+                "numerical": deployment_data.get('numerical_features', [])
+            }
+        }
+    }
+
+    return JSONResponse(content=response)
+
+
+async def handle_arima_forecast(form_data, targetcol):
+    """Handle ARIMA forecasting logic"""
+    
+    # Validate ARIMA-specific parameters
+    frequency = form_data.get('frequency')
+    tenure = form_data.get('tenure')
+    
+    if not frequency:
+        raise HTTPException(
+            status_code=400,
+            detail="Frequency parameter is required for ARIMA forecasting"
+        )
+    
+    if not tenure:
+        raise HTTPException(
+            status_code=400,
+            detail="Tenure (forecast horizon) parameter is required for ARIMA forecasting"
+        )
+
+    try:
+        tenure = int(tenure)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Tenure must be a valid integer"
+        )
+
+    # Validate that ARIMA model exists
+    model_base_path = os.path.join("models", 'Arima', targetcol)
+    if not os.path.exists(model_base_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"ARIMA model not found for column '{targetcol}'"
+        )
+
+    # Load model metadata
+    results_path = os.path.join(model_base_path, f"{targetcol}_results.json")
+    if not os.path.exists(results_path):
+        raise HTTPException(
+            status_code=404,
+            detail="ARIMA model metadata not found"
+        )
+
+    with open(results_path, 'r') as fp:
+        model_metadata = json.load(fp)
+
+    # Perform ARIMA forecasting
+    try:
+        stat, forecasted_data, img_data = arima_forecast_only(
+            targetcol, 
+            {
+                'time_unit': frequency,
+                'forecast_horizon': tenure
+            }
+        )
+
+        if not stat:
+            raise HTTPException(
+                status_code=500,
+                detail="ARIMA forecasting failed"
+            )
+
+        # Prepare ARIMA response
+        forecast_result = {
+            "target_column": targetcol,
+            "model_type": "ARIMA",
+            "frequency": frequency,
+            "forecast_horizon": tenure,
+            "forecast_data": json.loads(forecasted_data.to_json()),
+            "chart_path": str(img_data),
+            "description": generate_text_from_json(json.loads(forecasted_data.to_json()))
+        }
+
+        # Prepare model metadata response
+        model_info = {
+            "model_type": "ARIMA",
+            "data_frequency": model_metadata.get('data_freq', 'N/A'),
+            "training_period": {
+                "start_date": model_metadata.get('start_date', 'N/A'),
+                "end_date": model_metadata.get('end_date', 'N/A')
+            },
+            "trained_at": model_metadata.get('trained_at', 'N/A')
+        }
+
+        response = {
+            "prediction_result": forecast_result,
+            "model_performance": model_info,
+            "forecast_analysis": {
+                "forecast_summary": {
+                    "periods_forecasted": tenure,
+                    "frequency": frequency,
+                    "model_path": str(img_data)
+                },
+                "input_parameters": {
+                    "target_column": targetcol,
+                    "frequency": frequency,
+                    "tenure": tenure
+                }
+            }
+        }
+
+        return JSONResponse(content=response)
+
+    except Exception as e:
+        print(f"ARIMA forecasting error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"ARIMA forecasting failed: {str(e)}"
+        )
+
+
+def arima_forecast_only(target_col, bot_query):
+    """
+    Load trained ARIMA model and perform forecasting
+    """
+    try:
+        print('ARIMA Forecasting Phase')
+        
+        # Load model metadata
+        metadata_path = os.path.join("models", 'Arima', target_col, target_col + '_results.json')
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"Model metadata not found for {target_col}")
+
+        with open(metadata_path, 'r') as fp:
+            model_metadata = json.load(fp)
+
+        frequency = bot_query['time_unit']
+        periods = bot_query['forecast_horizon']
+        
+        # Load the trained model
+        model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
+        print("Model path:", model_path)
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Trained model not found for frequency '{frequency}'")
+
+        loaded_model = load_forecast_model(model_path)
+        
+        freq_map = {
+            'hours': 'H',
+            'days': 'D',
+            'weeks': 'W',
+            'months': 'MS',
+            'years': 'YS'
+        }
+
+        # Generate forecast
+        forecasted_data = arima_forecast(loaded_model, periods, freq_map[frequency], target_col)
+        print("Forecast generated:", forecasted_data.shape)
+
+        # Generate visualization
+        result_graph = plot_graph(forecasted_data, target_col)
+
+        return True, forecasted_data, result_graph
+
+    except Exception as e:
+        print(f"Forecasting error: {e}")
+        return False, pd.DataFrame(), ''
 
 
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
@@ -1446,22 +1610,61 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
         # Use messages as context for the LLM
         # Handle forecasting requests
         if 'forecast' in prompt.lower():
-            data = extract_forecast_details_llm(prompt, df.columns,df)
+            data = extract_forecast_details_llm(prompt, df.columns, df)
             print("data printed")
-            stat, data, img_data = arima_train(df, data['target_variable'], data)
+            
+            # Check if ARIMA model already exists for this target variable
+            target_col = data['target_variable']
+            model_base_path = os.path.join("models", 'Arima', target_col)
+            
+            # Step 1: Train model if it doesn't exist
+            if not os.path.exists(model_base_path) or not os.path.exists(os.path.join(model_base_path, f"{target_col}_results.json")):
+                print(f"Training ARIMA model for {target_col}...")
+                train_stat = arima_train_only(df, target_col)
+                
+                if not train_stat:
+                    return JSONResponse({
+                        'error': f'ARIMA model training failed for {target_col}',
+                        'session_id': session_id
+                    }, status_code=500)
+                
+                print(f"ARIMA model training completed for {target_col}")
+            
+            # Step 2: Perform forecasting
+            print(f"Generating forecast for {target_col}...")
+            forecast_stat, forecasted_data, img_data = arima_forecast_only(target_col, data)
+            
+            if not forecast_stat:
+                return JSONResponse({
+                    'error': f'ARIMA forecasting failed for {target_col}',
+                    'session_id': session_id
+                }, status_code=500)
 
             # Store bot response
-            bot_content = json.dumps({'data': json.loads(data.to_json()), 'plot': make_serializable(img_data)})
+            bot_content = json.dumps({
+                'data': json.loads(forecasted_data.to_json()), 
+                'plot': make_serializable(img_data),
+                'model_trained': not os.path.exists(model_base_path),  # Indicates if training occurred
+                'target_column': target_col
+            })
+            
             async with CHAT_MEMORY_LOCK:
                 CHAT_MEMORY[session_id].append(
                     {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
 
             return JSONResponse({
-                'data': json.loads(data.to_json()),
+                'data': json.loads(forecasted_data.to_json()),
                 'plot': make_serializable(img_data),
                 'session_id': session_id,
-                'description': generate_text_from_json(json.loads(data.to_json()))
+                'description': generate_text_from_json(json.loads(forecasted_data.to_json())),
+                'model_info': {
+                    'target_column': target_col,
+                    'frequency': data.get('time_unit', 'N/A'),
+                    'forecast_horizon': data.get('forecast_horizon', 'N/A'),
+                    'model_trained_this_session': not os.path.exists(model_base_path)
+                }
             })
+
 
         # Handle prediction requests
         elif 'predict' in prompt.lower():
@@ -2027,29 +2230,204 @@ def make_serializable(obj):
     return obj
 
 
-def parse_mixed_dates(date_series):
-    """Parse a series containing mixed date formats"""
-    parsed_dates = []
-    for date_str in date_series:
-        try:
-            # Try parsing with dateutil's flexible parser
-            parsed_date = parse(str(date_str), dayfirst=False, yearfirst=False)
-            parsed_dates.append(parsed_date)
-        except Exception as e:
-            print(f"Could not parse date: {date_str} - {e}")
-            parsed_dates.append(pd.NaT)  # Not-a-Time for invalid dates
-
-    return pd.to_datetime(parsed_dates)
-
-
-def arima_train(data, target_col, bot_query=None):
+def parse_mixed_dates_with_format_detection(date_series):
+    """
+    Enhanced date parsing that detects and handles different date formats
+    """
     try:
-        print('ArimaTrain')
+        # Common date formats to try
+        date_formats = [
+            '%d-%m-%Y',      # day-month-year (12-05-2025)
+            '%d/%m/%Y',      # day/month/year (12/05/2025)
+            '%d.%m.%Y',      # day.month.year (12.05.2025)
+            '%d-%m-%y',      # day-month-year short (12-05-25)
+            '%d/%m/%y',      # day/month/year short (12/05/25)
+            '%m-%d-%Y',      # month-day-year (05-12-2025)
+            '%m/%d/%Y',      # month/day/year (05/12/2025)
+            '%Y-%m-%d',      # year-month-day (2025-05-12)
+            '%Y/%m/%d',      # year/month/day (2025/05/12)
+            '%d %b %Y',      # day month year (12 May 2025)
+            '%d %B %Y',      # day month year full (12 May 2025)
+            '%b %d, %Y',     # month day, year (May 12, 2025)
+            '%B %d, %Y',     # month day, year full (May 12, 2025)
+        ]
+        
+        # Get a sample of non-null values to test formats
+        sample_dates = date_series.dropna().head(10).astype(str)
+        
+        print(f"Sample dates for format detection: {list(sample_dates)}")
+        
+        successful_format = None
+        
+        # Try each format
+        for date_format in date_formats:
+            try:
+                print(f"Trying format: {date_format}")
+                # Test with first few samples
+                test_parsed = pd.to_datetime(sample_dates, format=date_format, errors='raise')
+                successful_format = date_format
+                print(f"Successfully detected format: {date_format}")
+                break
+            except (ValueError, TypeError) as e:
+                continue
+        
+        # If no specific format worked, try pandas' automatic parsing with dayfirst=True
+        if successful_format is None:
+            print("No specific format worked, trying automatic parsing with dayfirst=True")
+            try:
+                # For day-first formats (common in many countries)
+                parsed_dates = pd.to_datetime(date_series, dayfirst=True, errors='coerce')
+                
+                # Validate that we got reasonable results
+                if not parsed_dates.isnull().all():
+                    print("Automatic parsing with dayfirst=True succeeded")
+                    return parsed_dates
+            except Exception as e:
+                print(f"Automatic parsing with dayfirst=True failed: {e}")
+        
+        # If we found a successful format, parse the entire series
+        if successful_format:
+            try:
+                parsed_dates = pd.to_datetime(date_series, format=successful_format, errors='coerce')
+                
+                # Validate results
+                valid_count = (~parsed_dates.isnull()).sum()
+                total_count = len(date_series)
+                success_rate = valid_count / total_count if total_count > 0 else 0
+                
+                print(f"Format {successful_format}: {valid_count}/{total_count} dates parsed ({success_rate:.1%})")
+                
+                if success_rate > 0.8:  # At least 80% success rate
+                    return parsed_dates
+                    
+            except Exception as e:
+                print(f"Error parsing with format {successful_format}: {e}")
+        
+        # Last resort: try pandas default parsing
+        print("Falling back to pandas default parsing")
+        return pd.to_datetime(date_series, errors='coerce')
+        
+    except Exception as e:
+        print(f"Error in enhanced date parsing: {e}")
+        return pd.to_datetime(date_series, errors='coerce')
+
+
+
+# def arima_train(data, target_col, bot_query=None):
+#     try:
+#         print('ArimaTrain')
+#         print("Column dtypes:\n", data.dtypes)
+
+#         # Identify date column
+#         date_column = None
+#         results = {}
+
+#         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
+#             for col in data.columns:
+#                 print(f"Checking column '{col}' for dates")
+#                 if data.dtypes[col] == 'object':
+#                     try:
+#                         # First check if it's already datetime
+#                         if pd.api.types.is_datetime64_any_dtype(data[col]):
+#                             date_column = col
+#                             break
+
+#                         # Try parsing with mixed formats handler
+#                         print(f"Attempting to parse mixed formats in column '{col}'")
+#                         data[col] = parse_mixed_dates(data[col])
+
+#                         # Check if we successfully parsed any dates
+#                         if not data[col].isnull().all():
+#                             date_column = col
+#                             print(f"Successfully parsed datetime column: {col}")
+#                             break
+
+#                     except Exception as e:
+#                         print(f"Error parsing column '{col}': {e}")
+#                         continue
+
+#             if not date_column:
+#                 raise ValueError("No datetime column could be parsed from the dataset")
+
+#             data[date_column] = pd.to_datetime(data[date_column], errors='coerce', utc=False)
+
+#             # If some values are tz-aware Python datetime objects, strip tz without shifting
+#             def strip_tz(x):
+#                 if isinstance(x, datetime) and x.tzinfo is not None:
+#                     return x.replace(tzinfo=None)
+#                 return x
+
+#             # Apply the function
+#             data[date_column] = data[date_column].map(strip_tz)
+
+#             # Standardize the format and set as index
+#             data[date_column] = pd.to_datetime(data[date_column],errors='coerce', utc=False)
+#             try:
+#                 data_actual = data[[date_column,target_col]].copy()
+#                 data_actual.columns = ["datetime", 'value']
+#                 data_actual.set_index("datetime", inplace=True)
+
+#                 # Check for frequency and handle any irregularities
+#                 train_frequency = check_data_frequency(data_actual)
+
+#                 # Ensure no duplicate indices
+#                 if data_actual.index.duplicated().any():
+#                     print("Warning: Duplicate datetime indices found - aggregating")
+#                     data_actual = data_actual.groupby(data_actual.index).mean()
+
+#                 train_models(data_actual, target_col)
+#                 print("Getting from the train_models function................")
+
+#                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
+#                     json.dump({
+#                         'data_freq': train_frequency,
+#                         'date_column': date_column,
+#                         'start_date': str(data_actual.index.min()),
+#                         'end_date': str(data_actual.index.max())
+#                     }, fp, indent=4)
+
+#             except Exception as e:
+#                 print(f"Error during model training: {e}")
+#                 raise
+
+#         # Forecasting logic remains the same
+#         frequency = bot_query['time_unit']
+#         periods = bot_query['forecast_horizon']
+#         model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
+#         print("model_path", model_path)
+
+#         loaded_model = load_forecast_model(model_path)
+#         freq_map = {
+#             'hours': 'H',
+#             'days': 'D',
+#             'weeks': 'W',
+#             'months': 'MS',
+#             'years': 'YS'
+#         }
+
+#         forecasted_data = arima_forecast(loaded_model, periods, freq_map[frequency],target_col)
+#         print(forecasted_data)
+
+#         result_graph = plot_graph(forecasted_data,target_col)
+
+#         print(f"Results saved to {os.path.join('models', 'Arima', target_col, target_col + '_results.json')}")
+#         return True, forecasted_data, result_graph
+
+#     except Exception as e:
+#         print(e)
+#         return False, pd.DataFrame, ''
+
+
+def arima_train_only(data, target_col):
+    """
+    Train ARIMA model and save it without forecasting
+    """
+    try:
+        print('ARIMA Training Phase')
         print("Column dtypes:\n", data.dtypes)
 
         # Identify date column
         date_column = None
-        results = {}
 
         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
             for col in data.columns:
@@ -2063,7 +2441,7 @@ def arima_train(data, target_col, bot_query=None):
 
                         # Try parsing with mixed formats handler
                         print(f"Attempting to parse mixed formats in column '{col}'")
-                        data[col] = parse_mixed_dates(data[col])
+                        data[col] = parse_mixed_dates_with_format_detection(data[col])
 
                         # Check if we successfully parsed any dates
                         if not data[col].isnull().all():
@@ -2078,73 +2456,61 @@ def arima_train(data, target_col, bot_query=None):
             if not date_column:
                 raise ValueError("No datetime column could be parsed from the dataset")
 
-            data[date_column] = pd.to_datetime(data[date_column], errors='coerce', utc=False)
-
-            # If some values are tz-aware Python datetime objects, strip tz without shifting
+            # Strip timezone information
             def strip_tz(x):
                 if isinstance(x, datetime) and x.tzinfo is not None:
                     return x.replace(tzinfo=None)
                 return x
 
-            # Apply the function
             data[date_column] = data[date_column].map(strip_tz)
-
-            # Standardize the format and set as index
-            data[date_column] = pd.to_datetime(data[date_column],errors='coerce', utc=False)
+            
             try:
-                data_actual = data[[date_column,target_col]].copy()
+                data_actual = data[[date_column, target_col]].copy()
                 data_actual.columns = ["datetime", 'value']
                 data_actual.set_index("datetime", inplace=True)
+                
+                # Remove any duplicate indices and sort
+                data_actual = data_actual[~data_actual.index.duplicated(keep='first')]
+                data_actual = data_actual.sort_index()
 
-                # Check for frequency and handle any irregularities
+                # Enhanced frequency detection
                 train_frequency = check_data_frequency(data_actual)
+                print(f"Detected frequency: {train_frequency}")
 
-                # Ensure no duplicate indices
-                if data_actual.index.duplicated().any():
-                    print("Warning: Duplicate datetime indices found - aggregating")
-                    data_actual = data_actual.groupby(data_actual.index).mean()
+                print("First 10 rows after processing:")
+                print(data_actual.head(10))
+                print("\nLast 10 rows after processing:")
+                print(data_actual.tail(10))
 
+                # Train models for all frequencies
                 train_models(data_actual, target_col)
-                print("Getting from the train_models function................")
+                print("Model training completed successfully")
 
+                # Save metadata with enhanced information
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({
                         'data_freq': train_frequency,
                         'date_column': date_column,
-                        'start_date': str(data_actual.index.min()),
-                        'end_date': str(data_actual.index.max())
+                        'start_date': str(data_actual.index[0]),
+                        'end_date': str(data_actual.index[-1]),
+                        'trained_at': str(datetime.now()),
+                        'data_points': len(data_actual),
+                        'date_range_days': (data_actual.index.max() - data_actual.index.min()).days
                     }, fp, indent=4)
+
+                return True
 
             except Exception as e:
                 print(f"Error during model training: {e}")
                 raise
 
-        # Forecasting logic remains the same
-        frequency = bot_query['time_unit']
-        periods = bot_query['forecast_horizon']
-        model_path = os.path.join(os.getcwd(), 'models', 'Arima', target_col, frequency, "best_model.pkl")
-        print("model_path", model_path)
-
-        loaded_model = load_forecast_model(model_path)
-        freq_map = {
-            'hours': 'H',
-            'days': 'D',
-            'weeks': 'W',
-            'months': 'MS',
-            'years': 'YS'
-        }
-
-        forecasted_data = arima_forecast(loaded_model, periods, freq_map[frequency],target_col)
-        print(forecasted_data)
-
-        result_graph = plot_graph(forecasted_data,target_col)
-
-        print(f"Results saved to {os.path.join('models', 'Arima', target_col, target_col + '_results.json')}")
-        return True, forecasted_data, result_graph
+        else:
+            print(f"Model for {target_col} already exists")
+            return True
 
     except Exception as e:
-        print(e)
-        return False, pd.DataFrame, ''
+        print(f"Training error: {e}")
+        return False
 
 
 def load_forecast_model(model_path):
@@ -2275,120 +2641,181 @@ def arima_forecast(model, periods, freq,target_col):
         print(f"Prediction Error: {e}")
 
 
-def check_data_frequency(train):
-    data_freq = {'D': 'Days', 'W': 'Weeks', "H": "Hours", 'A': 'Years', "M": "Months", "MS": "Months",
-                 'A-JAN': 'Years'}
-    m = pd.infer_freq(train.index)
-    if m in ['15T', '30T', "H", "D", "W", "M", "A", "MS", 'A-JAN']:
-        return data_freq.get(m)
-    else:
-        return 'Unsupported frequency'
+def check_data_frequency(data_actual):
+    """
+    Enhanced frequency detection with multiple fallback methods
+    """
+    try:
+        # Method 1: Use pandas infer_freq
+        inferred_freq = pd.infer_freq(data_actual.index)
+        if inferred_freq is not None:
+            return inferred_freq
+        
+        print("pandas infer_freq failed, trying manual detection...")
+        
+        # Method 2: Calculate most common time difference
+        time_diffs = data_actual.index.to_series().diff().dropna()
+        
+        if len(time_diffs) == 0:
+            return "Single data point"
+        
+        # Get the most common time difference
+        most_common_diff = time_diffs.mode()
+        
+        if len(most_common_diff) > 0:
+            diff_seconds = most_common_diff.iloc[0].total_seconds()
+            
+            # Map common intervals to frequency strings
+            freq_mapping = {
+                60: '1min',           # 1 minute
+                300: '5min',          # 5 minutes
+                600: '10min',         # 10 minutes
+                900: '15min',         # 15 minutes
+                1800: '30min',        # 30 minutes
+                3600: '1H',           # 1 hour
+                86400: '1D',          # 1 day
+                604800: '1W',         # 1 week
+                2629746: '1M',        # 1 month (average)
+                31556952: '1Y'        # 1 year (average)
+            }
+            
+            if diff_seconds in freq_mapping:
+                return freq_mapping[diff_seconds]
+            
+            # For other intervals, create a descriptive string
+            if diff_seconds < 3600:
+                minutes = int(diff_seconds / 60)
+                return f"{minutes}min"
+            elif diff_seconds < 86400:
+                hours = int(diff_seconds / 3600)
+                return f"{hours}H"
+            elif diff_seconds < 604800:
+                days = int(diff_seconds / 86400)
+                return f"{days}D"
+            else:
+                return "Irregular"
+        
+        # Method 3: Analyze the time span and data points
+        total_duration = data_actual.index.max() - data_actual.index.min()
+        total_points = len(data_actual)
+        
+        if total_points > 1:
+            avg_interval_seconds = total_duration.total_seconds() / (total_points - 1)
+            
+            if avg_interval_seconds < 3600:
+                minutes = int(avg_interval_seconds / 60)
+                return f"~{minutes}min"
+            elif avg_interval_seconds < 86400:
+                hours = int(avg_interval_seconds / 3600)
+                return f"~{hours}H"
+            else:
+                days = int(avg_interval_seconds / 86400)
+                return f"~{days}D"
+        
+        return "Irregular frequency"
+        
+    except Exception as e:
+        print(f"Error in frequency detection: {e}")
+        return "Unknown frequency"
+
 
 
 def train_models(df, target_col):
     frequencies = ['hours', 'days', 'weeks', 'months','years']
-    for freq in frequencies:
-        print(f"\nTraining {freq} models...")
+    try:
+        for freq in frequencies:
+            try:
+                print(f"\nTraining {freq} models...")
 
-        # Resample the data for each frequency
-        resampled_df = resample_data(df, freq)
-        print(f"Resampled data for {freq}:\n", resampled_df.head())
-        
-        # Check if we have enough data for training
-        min_samples_required = 10  # Adjust this threshold as needed
-        if len(resampled_df) < min_samples_required:
-            print(f"Insufficient data for {freq} frequency. Need at least {min_samples_required} samples, got {len(resampled_df)}. Skipping...")
-            continue
-        
-        # Ensure we have enough data for train-test split
-        if len(resampled_df) < 5:  # Minimum for meaningful split
-            print(f"Not enough data points ({len(resampled_df)}) for {freq} frequency training. Skipping...")
-            continue
+                # Resample the data for each frequency
+                resampled_df = resample_data(df, freq)
+                print(f"Resampled data for {freq}:\n", resampled_df.head())
+                
+                train, test = train_test_split(resampled_df, test_size=0.2, shuffle=False)
 
-        train, test = train_test_split(resampled_df, test_size=0.2, shuffle=False)
-        
-        # Additional check after split
-        if len(train) == 0 or len(test) == 0:
-            print(f"Train-test split resulted in empty sets for {freq}. Skipping...")
-            continue
+                trend = detect_trend(train)
+                print("Trend is", trend)
+                seasonality = detect_seasonality(train)
+                print("Seasonality is", seasonality)
 
-        trend = detect_trend(train)
-        print("Trend is", trend)
-        seasonality = detect_seasonality(train)
-        print("Seasonality is", seasonality)
+                best_model = None
+                best_error = float('inf')
+                best_model_name = ""
+                scenario = ""
 
-        best_model = None
-        best_error = float('inf')
-        best_model_name = ""
-        scenario = ""
+                # Scenario 1: Trend only
+                if trend and not seasonality:
+                    scenario = "Trend only"
+                    arima_model, arima_error = train_arima(train, test)
+                    xgb_model, xgb_error = train_xgboost(train, test)
 
-        # Scenario 1: Trend only
-        if trend and not seasonality:
-            scenario = "Trend only"
-            arima_model, arima_error = train_arima(train, test)
-            xgb_model, xgb_error = train_xgboost(train, test)
+                    if arima_error < xgb_error:
+                        best_model, best_error = arima_model, arima_error
+                        best_model_name = "ARIMA"
+                    else:
+                        best_model, best_error = xgb_model, xgb_error
+                        best_model_name = "XGBoost"
 
-            if arima_error < xgb_error:
-                best_model, best_error = arima_model, arima_error
-                best_model_name = "ARIMA"
-            else:
-                best_model, best_error = xgb_model, xgb_error
-                best_model_name = "XGBoost"
+                # Scenario 2: Seasonality only
+                elif seasonality and not trend:  # Added 'elif' for better logic
+                    scenario = "Seasonality only"
+                    prophet_model, prophet_error = train_prophet(train, test)
+                    arima_model, arima_error = train_arima(train, test)
 
-        # Scenario 2: Seasonality only
-        elif seasonality and not trend:  # Added 'elif' for better logic
-            scenario = "Seasonality only"
-            prophet_model, prophet_error = train_prophet(train, test)
-            arima_model, arima_error = train_arima(train, test)
+                    if prophet_error < arima_error:
+                        best_model, best_error = prophet_model, prophet_error
+                        best_model_name = "Prophet"
+                    else:
+                        best_model, best_error = arima_model, arima_error
+                        best_model_name = "ARIMA"
 
-            if prophet_error < arima_error:
-                best_model, best_error = prophet_model, prophet_error
-                best_model_name = "Prophet"
-            else:
-                best_model, best_error = arima_model, arima_error
-                best_model_name = "ARIMA"
+                # Scenario 3: Trend + Seasonality
+                elif trend and seasonality:  # Added 'elif' for better logic
+                    scenario = "Trend + Seasonality"
+                    prophet_model, prophet_error = train_prophet(train, test)
+                    arima_model, arima_error = train_arima(train, test)
 
-        # Scenario 3: Trend + Seasonality
-        elif trend and seasonality:  # Added 'elif' for better logic
-            scenario = "Trend + Seasonality"
-            prophet_model, prophet_error = train_prophet(train, test)
-            arima_model, arima_error = train_arima(train, test)
+                    min_error = min(prophet_error, arima_error)
+                    if min_error == prophet_error:
+                        best_model, best_error = prophet_model, prophet_error
+                        best_model_name = "Prophet"
+                    elif min_error == arima_error:
+                        best_model, best_error = arima_model, arima_error
+                        best_model_name = "ARIMA"
 
-            min_error = min(prophet_error, arima_error)
-            if min_error == prophet_error:
-                best_model, best_error = prophet_model, prophet_error
-                best_model_name = "Prophet"
-            elif min_error == arima_error:
-                best_model, best_error = arima_model, arima_error
-                best_model_name = "ARIMA"
+                # Scenario 4: No Trend or Seasonality
+                else:  # Changed to 'else' since it's the remaining case
+                    scenario = "No trend or seasonality"
+                    xgb_model, xgb_error = train_xgboost(train, test)
+                    rf_model, rf_error = train_randomforest(train, test)
 
-        # Scenario 4: No Trend or Seasonality
-        else:  # Changed to 'else' since it's the remaining case
-            scenario = "No trend or seasonality"
-            xgb_model, xgb_error = train_xgboost(train, test)
-            rf_model, rf_error = train_randomforest(train, test)
+                    if xgb_error < rf_error:
+                        best_model, best_error = xgb_model, xgb_error
+                        best_model_name = "XGBoost"
+                    else:
+                        best_model, best_error = rf_model, rf_error
+                        best_model_name = "RandomForest"
 
-            if xgb_error < rf_error:
-                best_model, best_error = xgb_model, xgb_error
-                best_model_name = "XGBoost"
-            else:
-                best_model, best_error = rf_model, rf_error
-                best_model_name = "RandomForest"
+                # Save the best model
+                if best_model:
+                    model_dir = f'models/Arima/{target_col}/{freq}'
+                    os.makedirs(model_dir, exist_ok=True)
+                    model_path = os.path.join(model_dir, 'best_model.pkl')
+                    save_best_model(best_model, model_path)
 
-        # Save the best model
-        if best_model:
-            model_dir = f'models/Arima/{target_col}/{freq}'
-            os.makedirs(model_dir, exist_ok=True)
-            model_path = os.path.join(model_dir, 'best_model.pkl')
-            save_best_model(best_model, model_path)
+                    # Save Scenario with Model Name
+                    with open(f'scenario_{freq}.json', 'w') as f:
+                        json.dump({"scenario": scenario, "model_name": best_model_name}, f)
 
-            # Save Scenario with Model Name
-            with open(f'scenario_{freq}.json', 'w') as f:
-                json.dump({"scenario": scenario, "model_name": best_model_name}, f)
-
-            print(f"\n{freq.capitalize()} Training complete. Scenario: {scenario}, Model: {best_model_name}")
-        else:
-            print(f"No model could be trained for {freq} frequency")
+                    print(f"\n{freq.capitalize()} Training complete. Scenario: {scenario}, Model: {best_model_name}")
+                else:
+                    print(f"No model could be trained for {freq} frequency")
+            except Exception as e:
+                print(e)
+        return True
+    except Exception as e:
+        print(f"Error during model training: {e}")
+        return False
 
 
 def train_arima(train, test):
@@ -2477,7 +2904,7 @@ def save_best_model(model, model_path):
 def resample_data(df, freq):
     print(f"Resampling data to {freq} frequency")
     if freq == 'hours':
-        return df.resample('H').mean().ffill()
+        return df.resample('h').mean().ffill()
     elif freq == 'days':
         return df.resample('D').mean().ffill()
     elif freq == 'weeks':
