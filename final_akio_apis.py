@@ -256,7 +256,7 @@ async def gen_plotly_response() -> JSONResponse:
         num_plots = 4  # Number of plots to generate per topic
         basic_plots=2
         file_path = csv_file_path
-        sample_data = df.head(10).to_string()
+        sample_data = df.head(5).to_string()
         data_types_info = df.dtypes.to_string()
         chart_responses = []
 
@@ -528,19 +528,22 @@ def make_serializable(obj):
 
 # 6..Get summary api-------------getting the summary of the above generated graphs-----------6-----pending.
 # In-memory cache for summaries
+ #In-memory cache and memory (replace with persistent storage for production)
 SUMMARY_CACHE: Dict[str, str] = {}
+CHART_MEMORY: Dict[str, List[Dict[str, str]]] = {}
+MAX_HISTORY = 5  # How many previous Q&A pairs to remember for context
 
 
 @app.post("/api/analyze_chart")
 async def analyze_chart(
-        chart_id: str = Form(...),
-        question: Optional[str] = Form(None)
+    chart_id: str = Form(...),
+    question: Optional[str] = Form(None)
 ) -> JSONResponse:
     try:
         # 1. Validate Chart ID
         try:
             chart_num = int(chart_id)
-            if not 1 <= chart_num <= 6:
+            if not 1 <= chart_num <= 4:
                 raise ValueError
         except ValueError:
             raise HTTPException(
@@ -558,10 +561,17 @@ async def analyze_chart(
         with open(chart_path, "r", encoding="utf-8") as f:
             chart_json = json.load(f)
 
-        # 3. Determine action: Summarize or Answer Question
-        # --- CASE 1: No question provided -> Generate a detailed summary ---
-        if not question or not question.strip():
-            # Check cache for existing summary
+        # 3. Get full chart memory (short-term context)
+        history = CHART_MEMORY.get(chart_id, [])
+        recent_history = history[-MAX_HISTORY:]
+
+        # 4. IF NO question or question == "summary": GENERATE/RETURN SUMMARY
+        summary_request = (question is None or not question.strip()) or (
+            isinstance(question, str) and question.strip().lower() == "summary"
+        )
+
+        if summary_request:
+            # --- Check for cached summary ---
             if chart_id in SUMMARY_CACHE:
                 return JSONResponse(
                     content={
@@ -573,27 +583,45 @@ async def analyze_chart(
                     status_code=200,
                 )
 
-            # Generate and cache a new summary
-        if question=="summary":
-            prompt = (
-                f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
+            # --- Generate summary prompt (include last summary if exists, optional) ---
+            history_lines = []
+            for i, qa in enumerate(recent_history, start=1):
+                q = qa.get("question", "")
+                a = qa.get("answer", "")
+                if q and a:
+                    history_lines.append(f"Summary Memory Q{i}: {q}\nSummary A{i}: {a}")
+            history_text = "\n".join(history_lines)
+            summary_discussion = f"Here is previous summary discussion:\n{history_text}" if history_text else ""
 
-                f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
-                f"Follow this output structure with exactly 5 key observations with 2 bullet points for each heading:\n\n"
-                f"Core Insight\n"
-                f"• Start with the primary finding from the graph. Bold important terms.\n\n"
-                f"Pattern Analysis\n"
-                f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                f"Business Context\n"
-                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f"Recommendations\n"
-                f"• Only describe what you observe. Do not invent data. Use the exact format shown above.\n\n"
-                f"Actions\n"
-                f"• Provide actions for acheiving the action recommendations based on the chart data.\n\n"
-                f"Give the response in markdown format with proper headings in 'h4' and  with *2* bullet points per topic."
+            chart_json_str = json.dumps(chart_json)
+            prompt = (
+                "You are a data analyst AI. The user selected a chart represented by this Plotly JSON:\n"
+                f"{chart_json_str}\n\n"
+                f"{summary_discussion}\n\n"
+                "Analyze and summarize only the insights, patterns, and trends directly visible in the chart.\n\n"
+                "Follow this output structure, each with exactly 5 headings and 2 bullet points per heading:\n\n"
+                "Core Insight\n"
+                "• Start with the primary finding from the graph. Bold important terms.\n\n"
+                "Pattern Analysis\n"
+                "• Describe distribution patterns, outliers, clusters, or trends.\n\n"
+                "Business Context\n"
+                "• Explain what real-world behavior the graph appears to reflect.\n\n"
+                "Recommendations\n"
+                "• Only describe what you observe—do not invent data.\n\n"
+                "Actions\n"
+                "• Provide specific next steps based on the chart data.\n\n"
+                "Give the response in markdown with h4 headings and 2 bullet points per topic.\n"
             )
             summary = generate_text(prompt)
             SUMMARY_CACHE[chart_id] = summary
+
+            # Optionally, store summary as a "memory" entry for future context
+            if chart_id not in CHART_MEMORY:
+                CHART_MEMORY[chart_id] = []
+            CHART_MEMORY[chart_id].append({
+                "question": "summary",
+                "answer": summary
+            })
 
             return JSONResponse(
                 content={
@@ -605,10 +633,23 @@ async def analyze_chart(
                 status_code=200,
             )
 
-        # --- CASE 2: Question provided -> Generate a targeted answer ---
+        # 5. IF question is provided: GENERATE TARGETED Q&A (with memory)
         else:
+            # -- Build prompt with memory/context --
+            history_lines = []
+            for i, qa in enumerate(recent_history, start=1):
+                q = qa.get("question", "")
+                a = qa.get("answer", "")
+                if q and a:
+                    history_lines.append(f"Previous Q{i}: {q}\nA{i}: {a}")
+            history_text = "\n".join(history_lines)
+            chart_json_str = json.dumps(chart_json)
+
             prompt = (
-                f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
+                "You are a data analyst AI. Here is the recent discussion about this chart:\n"
+                f"{history_text}\n\n"
+                f"The user now asks: {question}\n\n"
+                f"Here is the Plotly chart as JSON:\n{chart_json_str}\n\n"
                 f"Follow this output structure with exactly 4 key observations:\n\n"
                 f"if the user asks about Core Insight\n"
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
@@ -622,6 +663,14 @@ async def analyze_chart(
             )
             answer = generate_text(prompt)
 
+            # Store the Q&A in memory
+            if chart_id not in CHART_MEMORY:
+                CHART_MEMORY[chart_id] = []
+            CHART_MEMORY[chart_id].append({
+                "question": question,
+                "answer": answer
+            })
+
             return JSONResponse(
                 content={
                     "chart_id": chart_id,
@@ -633,30 +682,30 @@ async def analyze_chart(
             )
 
     except HTTPException:
-        raise  # Re-raise exceptions with specific HTTP status codes
+        raise  # Use FastAPI's error directly
     except Exception as e:
-        # Catch-all for any other unexpected errors
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
 
 def markdown_to_html(md_text):
     html_text = markdown.markdown(md_text)
     return html_text
-
 
 def generate_text(prompt: str) -> str:
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system",
-             "content": "You are a helpful data analyst that explains data visualizations and user queries and write insightful summary for the given data.Generate the answers in the plain format with the nice headings and all."},
+             "content": (
+                "You are a helpful data analyst that explains data visualizations and user queries "
+                "and write insightful summary for the given data. Generate the answers in the plain format "
+                "with the nice headings and all."
+            )},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
         max_tokens=500
     )
     return response.choices[0].message.content.strip()
-
 
 # 7..Filling missing data------------------Evaluating the missed data in the dataframe----------- 7.
 @app.post("/api/fill_missed_data")
@@ -1356,6 +1405,9 @@ def arima_forecast_only(target_col, bot_query):
 
 
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
+CHAT_MEMORY: Dict[str, list] = {}
+CHAT_MEMORY_LOCK = asyncio.Lock()
+
 @app.post("/api/ai_bot")
 async def gen_ai_bot(request_body: GenAIBotRequest):
     try:
@@ -1365,10 +1417,11 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
         sample_data = df.head(2).to_dict(orient='records')
 
         prompt = request_body.prompt
-        session_id = str(uuid.uuid4())
+        # Accept session_id from request, or generate new if not provided
+        session_id = getattr(request_body, "session_id", None) or str(uuid.uuid4())
 
-        # Store the new user message in memory
-        async with CHAT_MEMORY_LOCK:  # <--- no error now!
+        # 1. Store the new user message in memory (append to session)
+        async with CHAT_MEMORY_LOCK:
             if session_id not in CHAT_MEMORY:
                 CHAT_MEMORY[session_id] = []
             CHAT_MEMORY[session_id].append({
@@ -1376,56 +1429,42 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 "content": prompt,
                 "timestamp": datetime.now().isoformat()
             })
-        # Build LLM messages with full chat history
-        messages = []
-        for msg in CHAT_MEMORY[session_id]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Use messages as context for the LLM
-        # Handle forecasting requests
+        # 2. Build messages context for LLM from full session history
+        messages = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in CHAT_MEMORY[session_id]
+        ]
+
+        # 3. Forecasting
         if 'forecast' in prompt.lower():
             data = extract_forecast_details_llm(prompt, df.columns, df)
-            print("data printed")
-            
-            # Check if ARIMA model already exists for this target variable
             target_col = data['target_variable']
             model_base_path = os.path.join("models", 'Arima', target_col)
-            
-            # Step 1: Train model if it doesn't exist
+            # Train if needed
             if not os.path.exists(model_base_path) or not os.path.exists(os.path.join(model_base_path, f"{target_col}_results.json")):
-                print(f"Training ARIMA model for {target_col}...")
                 train_stat = arima_train_only(df, target_col)
-                
                 if not train_stat:
                     return JSONResponse({
-                        'error': f'ARIMA model training failed for {target_col}',
+                        'error': f'ARIMA model training failed for {target_col}', 
                         'session_id': session_id
                     }, status_code=500)
-                
-                print(f"ARIMA model training completed for {target_col}")
-            
-            # Step 2: Perform forecasting
-            print(f"Generating forecast for {target_col}...")
+            # Forecast
             forecast_stat, forecasted_data, img_data = arima_forecast_only(target_col, data)
-            
             if not forecast_stat:
                 return JSONResponse({
                     'error': f'ARIMA forecasting failed for {target_col}',
                     'session_id': session_id
                 }, status_code=500)
-
-            # Store bot response
             bot_content = json.dumps({
                 'data': json.loads(forecasted_data.to_json()), 
                 'plot': make_serializable(img_data),
-                'model_trained': not os.path.exists(model_base_path),  # Indicates if training occurred
+                'model_trained': not os.path.exists(model_base_path),
                 'target_column': target_col
             })
-            
             async with CHAT_MEMORY_LOCK:
                 CHAT_MEMORY[session_id].append(
                     {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
-
             return JSONResponse({
                 'data': json.loads(forecasted_data.to_json()),
                 'plot': make_serializable(img_data),
@@ -1439,22 +1478,18 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 }
             })
 
-
-        # Handle prediction requests
+        # 4. Prediction
         elif 'predict' in prompt.lower():
             data = extract_forecast_details_rf(prompt, df.columns)
-
             if len(data.get('missing_columns', [])) > 0:
                 bot_content = json.dumps({'text_pre_code_response': (
-                    f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
-                    f'Please retry with all required inputs.')})
+                    f'Prediction failed due to missing fields: {data.get("missing_columns")}. Please retry with all required inputs.')})
                 async with CHAT_MEMORY_LOCK:
                     CHAT_MEMORY[session_id].append(
                         {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
                 return JSONResponse({
                     'text_pre_code_response': (
-                        f'Prediction failed due to missing fields: {data.get("missing_columns")}. '
-                        f'Please retry with all required inputs.'),
+                        f'Prediction failed due to missing fields: {data.get("missing_columns")}. Please retry with all required inputs.'),
                     'session_id': session_id
                 })
 
@@ -1463,39 +1498,30 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             deployment_path = os.path.join(model_path, "deployment.json")
             label_encoder_path = os.path.join(model_path, "label_encoder.pkl")
 
-            # Check and retrain model if needed
+            # Train if needed
             if not os.path.exists(deployment_path) or not os.path.exists(pipeline_path):
                 df = pd.read_csv('data.csv')
                 model_stats, _ = random_forest(df, data.get('target_column'))
-                # Reload deployment data after training
                 with open(deployment_path, 'r', encoding='utf-8') as f:
                     deployment_data = json.load(f)
             else:
-                # Load existing model statistics and deployment data
                 with open(deployment_path, 'r', encoding='utf-8') as f:
                     deployment_data = json.load(f)
                 model_stats = deployment_data.get('stats', {})
 
-            # Get model metadata
             is_classification = deployment_data.get('is_classification', False)
             model_type = deployment_data.get('model_type', 'Unknown')
             feature_names = deployment_data.get('feature_names', [])
 
-            # Load the trained pipeline
             loaded_pipeline = load_pipeline(pipeline_path)
-
-            # Load label encoder if it exists (for categorical targets)
             label_encoder = None
             if os.path.exists(label_encoder_path):
                 label_encoder = joblib.load(label_encoder_path)
 
-            # Prepare prediction data with proper feature ordering
             features = data.get('features', {})
             df_predict = pd.DataFrame([features])
-            
-            # Ensure all required features are present and reorder columns
+            # Feature order & validation
             if feature_names:
-                # Check for missing features
                 missing_features = set(feature_names) - set(df_predict.columns)
                 if missing_features:
                     error_msg = f'Missing required features: {list(missing_features)}'
@@ -1507,11 +1533,8 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                         'text_pre_code_response': error_msg,
                         'session_id': session_id
                     })
-                
-                # Reorder columns to match training data
                 df_predict = df_predict[feature_names]
 
-            # Convert numeric strings to appropriate types for numerical features
             numerical_features = deployment_data.get('numerical_features', [])
             for col in df_predict.columns:
                 if col in numerical_features:
@@ -1528,45 +1551,37 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                             'session_id': session_id
                         })
 
-            # Make prediction
             predictions = loaded_pipeline.predict(df_predict)
-            predicted_value = predictions[0]
-
-            # Handle prediction probabilities and confidence for classification
+            predicted_value = predictions
             prediction_proba = None
             confidence = None
             class_probabilities = None
-            
+
             if is_classification:
                 # Get prediction probabilities for classification
                 if hasattr(loaded_pipeline, 'predict_proba'):
                     try:
-                        proba = loaded_pipeline.predict_proba(df_predict)[0]
+                        proba = loaded_pipeline.predict_proba(df_predict)
                         classes = loaded_pipeline.classes_
                         prediction_proba = dict(zip(classes, proba))
                         confidence = float(max(proba))
                     except Exception as e:
                         print(f"Warning: predict_proba failed: {e}")
-
                 # Decode prediction if label encoder was used
                 if label_encoder is not None:
-                    predicted_value = label_encoder.inverse_transform([predicted_value])[0]
-                    
-                    # Also decode probability classes
+                    predicted_value = label_encoder.inverse_transform([predicted_value])
                     if prediction_proba:
                         decoded_proba = {}
                         for encoded_class, prob in prediction_proba.items():
-                            decoded_class = label_encoder.inverse_transform([encoded_class])[0]
+                            decoded_class = label_encoder.inverse_transform([encoded_class])
                             decoded_proba[str(decoded_class)] = float(prob)
                         class_probabilities = decoded_proba
                 else:
                     class_probabilities = prediction_proba
 
-            # Calculate feature importance and impact
             feature_importance = get_feature_importance(loaded_pipeline, feature_names or features.keys())
             feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
 
-            # Prepare response based on model type
             if is_classification:
                 prediction_result = {
                     "predicted_value": str(predicted_value),
@@ -1576,16 +1591,12 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                     "confidence": confidence,
                     "class_probabilities": class_probabilities
                 }
-                
-                # Add top predicted classes
                 if class_probabilities:
                     sorted_proba = sorted(class_probabilities.items(), key=lambda x: x[1], reverse=True)
                     prediction_result["top_predictions"] = [
                         {"class": class_name, "probability": round(prob * 100, 2)} 
                         for class_name, prob in sorted_proba[:3]
                     ]
-                
-                # Text response for classification
                 text_response = f"Predicted {data.get('target_column')} class is '{predicted_value}'"
                 if confidence:
                     text_response += f" with {round(confidence * 100, 1)}% confidence"
@@ -1596,11 +1607,8 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                     "model_type": model_type,
                     "confidence": None
                 }
-                
-                # Text response for regression
                 text_response = f"Predicted {data.get('target_column')} value is {round(float(predicted_value), 2)}"
 
-            # Prepare model performance metrics
             model_performance = {
                 "model_type": model_type,
                 "total_samples": model_stats.get("total_samples", "N/A"),
@@ -1610,8 +1618,6 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 },
                 "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
             }
-
-            # Add specific metrics based on model type
             metrics = model_stats.get("metrics", {})
             if is_classification:
                 model_performance["classification_metrics"] = {
@@ -1627,7 +1633,6 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                     "rmse": metrics.get('rmse', 'N/A')
                 }
 
-            # Prepare feature analysis
             feature_analysis = {
                 "top_influencing_features": feature_importance,
                 "input_features": features,
@@ -1637,8 +1642,6 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                     "numerical": deployment_data.get('numerical_features', [])
                 }
             }
-
-            # Create response
             response_data = {
                 "prediction_result": prediction_result,
                 "model_performance": model_performance,
@@ -1646,23 +1649,19 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 "text_pre_code_response": text_response,
                 'session_id': session_id
             }
-
             bot_content = json.dumps(response_data)
             async with CHAT_MEMORY_LOCK:
                 CHAT_MEMORY[session_id].append(
                     {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
-
             return JSONResponse(response_data)
 
-
-        # Handle general data analysis requests
+        # 5. General LLM-based data analysis using session memory
         else:
-            # Use full chat history as context for the LLM
+            # Messages contains full previous user-bot exchange history
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=messages
             )
-
             pre_code_text, post_code_text, code = process_genai_response(response)
             result: Dict[str, Any] = {}
             result.update({
@@ -1670,13 +1669,11 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 'code': code,
                 'text_post_code_response': post_code_text
             })
-
             if 'import' in code:
                 namespace = {}
                 try:
                     exec(code, namespace)
                     result['text_output'] = namespace.get('text_output')
-
                     fig = namespace.get('fig')
                     if fig and isinstance(fig, Figure):
                         result['chart_response'] = make_serializable(fig.to_plotly_json())
@@ -1689,13 +1686,10 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                         status_code=500,
                         detail=f"Code execution failed: {str(e)}"
                     )
-
-            # Store bot response
             bot_content = json.dumps(result)
             async with CHAT_MEMORY_LOCK:
                 CHAT_MEMORY[session_id].append(
                     {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
-
             result['session_id'] = session_id
             return JSONResponse(result)
 
@@ -1716,7 +1710,6 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             status_code=500,
             detail=f"An error occurred: {str(e)}"
         )
-
 
 def generate_text_from_json(json_data: dict) -> str:
     description = "You are a helpful data analyst. Given the following analysis output, describe the results to the user in plain English within 2 or 3 lines only.."
@@ -3139,7 +3132,7 @@ async def perform_statistical_analysis() -> JSONResponse:
 
     
         # **** Get the preview data (first 50 rows) ****
-        preview = df.head(50)
+        preview = df
         preview_data = json.loads(preview.to_json(orient='records'))
 
         # Build response
