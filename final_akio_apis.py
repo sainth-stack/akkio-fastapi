@@ -18,7 +18,7 @@ from dateutil.parser import parse
 import boto3
 from langchain_community.document_loaders import PyPDFLoader
 from PIL import Image
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 import dateutil.parser
 import markdown
 import plotly.graph_objects as go
@@ -66,6 +66,23 @@ from langchain_community.embeddings import OpenAIEmbeddings
 import shutil
 from api.sla_apis import sla_router
 from api.explore_api import explore_router
+from api.sharepoint import (
+    list_sharepoint_files as sp_list_sharepoint_files,
+    get_app_token as sp_get_app_token,
+    resolve_site_and_drive as sp_resolve_site_and_drive,
+    upload_file_to_folder as sp_upload_file_to_folder,
+    download_file_from_path as sp_download_file_from_path,
+    select_latest_file as sp_select_latest_file,
+    list_folder_children as sp_list_folder_children,
+    delete_drive_item as sp_delete_drive_item,
+    SHAREPOINT_INPUT_FOLDER,
+    SHAREPOINT_OUTPUT_FOLDER,
+    start_sharepoint_automation,
+    stop_sharepoint_automation,
+    run_sharepoint_automation_once,
+    get_sharepoint_automation_status,
+    process_latest_if_new,
+)
 # Calculate comprehensive metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
@@ -78,18 +95,62 @@ from decimal import Decimal
 load_dotenv()
 
 app = FastAPI()
+# Optionally start SharePoint automation on startup if enabled by env
+ENABLE_SHAREPOINT_AUTOMATION = os.getenv("ENABLE_SHAREPOINT_AUTOMATION", "0").strip() in {"1", "true", "TRUE", "yes", "YES"}
+
+@app.on_event("startup")
+async def _on_startup():
+    if ENABLE_SHAREPOINT_AUTOMATION:
+        # Default every 10 minutes; override via SHAREPOINT_AUTOMATION_MINUTES
+        try:
+            minutes = int(os.getenv("SHAREPOINT_AUTOMATION_MINUTES", "10"))
+        except ValueError:
+            minutes = 10
+        start_sharepoint_automation(every_minutes=minutes)
+
+@app.on_event("shutdown")
+async def _on_shutdown():
+    if ENABLE_SHAREPOINT_AUTOMATION:
+        stop_sharepoint_automation()
+
+# Automation control endpoints
+@app.get("/api/sharepoint/automation/status")
+async def sharepoint_automation_status():
+    return JSONResponse(content=get_sharepoint_automation_status())
+
+@app.post("/api/sharepoint/automation/start")
+async def sharepoint_automation_start(every_minutes: int = 10):
+    start_sharepoint_automation(every_minutes=every_minutes)
+    return JSONResponse(content={"message": "Automation started", **get_sharepoint_automation_status()})
+
+@app.post("/api/sharepoint/automation/stop")
+async def sharepoint_automation_stop():
+    stop_sharepoint_automation()
+    return JSONResponse(content={"message": "Automation stopped", **get_sharepoint_automation_status()})
+
+@app.post("/api/sharepoint/automation/run_once")
+async def sharepoint_automation_run_once():
+    run_sharepoint_automation_once()
+    return JSONResponse(content={"message": "Run once completed", **get_sharepoint_automation_status()})
 
 global connection_obj
 # Global variables for chat memory management
 CHAT_MEMORY: Dict[str, list] = {}  # In-memory store; replace as needed
 CHAT_MEMORY_LOCK = asyncio.Lock()
 
-# Enable CORS if needed (similar to Django's csrf_exempt)
+# Enable CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5001",
+        "http://127.0.0.1:3000", 
+        "http://127.0.0.1:5001",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 db = PostgresDatabase()
@@ -137,9 +198,174 @@ async def upload_only(
             "message": "File uploaded and data saved to database successfully",
             "db_insert_result": results
         })
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/sharepoint/input_files")
+async def get_sharepoint_input_files():
+    """Get list of files from SharePoint input folder"""
+    try:
+        result = sp_list_sharepoint_files(SHAREPOINT_INPUT_FOLDER)
+        return JSONResponse(content={
+            "success": True,
+            "folder": result.get("folder", SHAREPOINT_INPUT_FOLDER),
+            "files": result.get("items", []),
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.delete("/api/sharepoint/delete/{folder_type}/{file_id}")
+async def delete_sharepoint_file(folder_type: str, file_id: str):
+    """Delete a file from SharePoint by file ID in input or output folder."""
+    try:
+        if folder_type not in ["input", "output"]:
+            raise HTTPException(status_code=400, detail="Invalid folder type. Use 'input' or 'output'")
+        token = sp_get_app_token()
+        _, drive = sp_resolve_site_and_drive(token)
+        drive_id = drive["id"]
+        # Ensure the item exists and is in the expected folder (best-effort)
+        try:
+            item_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}"
+            headers = {"Authorization": f"Bearer {token}"}
+            item_res = requests.get(item_url, headers=headers)
+            if not item_res.ok:
+                raise HTTPException(status_code=404, detail="File not found")
+            item = item_res.json()
+            parent_path = ((item.get("parentReference") or {}).get("path") or "")
+            expected_folder = SHAREPOINT_INPUT_FOLDER if folder_type == "input" else SHAREPOINT_OUTPUT_FOLDER
+            # parent path comes like /drives/{id}/root:/<path>
+            if expected_folder not in parent_path:
+                # Not fatal; allow delete anyway if requested
+                pass
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        # Perform delete
+        sp_delete_drive_item(token, drive_id, file_id)
+        return JSONResponse(content={
+            "success": True,
+            "message": "File deleted successfully",
+            "folder_type": folder_type,
+            "file_id": file_id,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/sharepoint/output_files")
+async def get_sharepoint_output_files():
+    """Get list of files from SharePoint output folder"""
+    try:
+        result = sp_list_sharepoint_files(SHAREPOINT_OUTPUT_FOLDER)
+        return JSONResponse(content={
+            "success": True,
+            "folder": result.get("folder", SHAREPOINT_OUTPUT_FOLDER),
+            "files": result.get("items", []),
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/sharepoint/all_files")
+async def get_all_sharepoint_files():
+    """Get list of files from both input and output folders"""
+    try:
+        result = sp_list_sharepoint_files()  # Lists both folders
+        return JSONResponse(content={
+            "success": True,
+            "input": result.get("input", {"folder": SHAREPOINT_INPUT_FOLDER, "items": []}),
+            "output": result.get("output", {"folder": SHAREPOINT_OUTPUT_FOLDER, "items": []}),
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/sharepoint/download/{folder_type}/{file_id}")
+async def download_sharepoint_file(folder_type: str, file_id: str):
+    """Download a file from SharePoint by file ID"""
+    try:
+        # Validate folder type
+        if folder_type not in ["input", "output"]:
+            raise HTTPException(status_code=400, detail="Invalid folder type. Use 'input' or 'output'")
+        
+        folder_path = SHAREPOINT_INPUT_FOLDER if folder_type == "input" else SHAREPOINT_OUTPUT_FOLDER
+        
+        token = sp_get_app_token()
+        _, drive = sp_resolve_site_and_drive(token)
+        drive_id = drive["id"]
+        
+        # Get file details first
+        file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        file_response = requests.get(file_url, headers=headers)
+        
+        if not file_response.ok:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        file_info = file_response.json()
+        file_name = file_info.get("name", "download")
+        
+        # Download file content
+        download_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}/content"
+        content_response = requests.get(download_url, headers=headers)
+        
+        if not content_response.ok:
+            raise HTTPException(status_code=500, detail="Failed to download file content")
+        
+        # Return file as streaming response
+        return Response(
+            content=content_response.content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename={file_name}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post("/api/sharepoint/upload")
+async def upload_to_sharepoint_output(file: UploadFile = File(...)):
+    """Upload file to SharePoint output folder"""
+    try:
+        file_bytes = await file.read()
+        token = sp_get_app_token()
+        _, drive = sp_resolve_site_and_drive(token)
+        drive_id = drive["id"]
+        
+        print(f"📤 Uploading file to SharePoint output: {file.filename}")
+
+        # Idempotency check: skip if a file with the same name already exists
+        try:
+            existing = sp_list_folder_children(token, drive_id, SHAREPOINT_OUTPUT_FOLDER)
+            existing_items = (existing or {}).get("value", [])
+            if any((it.get("name") or "").strip().lower() == (file.filename or "").strip().lower() for it in existing_items):
+                return JSONResponse(content={
+                    "success": True,
+                    "message": "File already exists in SharePoint output folder. Skipping upload.",
+                    "folder": SHAREPOINT_OUTPUT_FOLDER,
+                    "filename": file.filename,
+                    "already_exists": True,
+                })
+        except Exception as _e:
+            # Non-fatal; continue to attempt upload
+            pass
+        uploaded_item = sp_upload_file_to_folder(
+            token=token,
+            drive_id=drive_id,
+            folder_path=SHAREPOINT_OUTPUT_FOLDER,
+            file_name=file.filename,
+            file_bytes=file_bytes,
+        )
+        return JSONResponse(content={
+            "success": True,
+            "message": "File uploaded to SharePoint output folder successfully",
+            "folder": SHAREPOINT_OUTPUT_FOLDER,
+            "filename": file.filename,
+            "item": uploaded_item,
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
