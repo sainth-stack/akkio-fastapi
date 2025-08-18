@@ -142,17 +142,10 @@ CHAT_MEMORY_LOCK = asyncio.Lock()
 # Enable CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5001",
-        "http://127.0.0.1:3000", 
-        "http://127.0.0.1:5001",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080"
-    ],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 db = PostgresDatabase()
 
