@@ -274,7 +274,7 @@ async def gen_plotly_response() -> JSONResponse:
 
                         Your task is to:
                         1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
-                        2.You *MUST* have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
+                        2.You *MUST AND SHOULD* have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
                         3. Consider the data source as: {file_path}
                         4. For each chart:
                            - Use a short, meaningful chart title (as the dictionary key).
@@ -284,7 +284,13 @@ async def gen_plotly_response() -> JSONResponse:
                              b. Converts the figure to JSON using fig.to_json(),
                              c. Saves it in a dictionary using chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}
                              d. Wraps the chart generation and JSON conversion in a try-except block using except Exception as e: (capital E).
-
+                        
+                             
+                        VERY VERY VERY IMPORTANT:
+                         - You must generate {num_plots} charts, with {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.It is mandatory whatever the situation may be.
+                         - The basic plots like line, bar,pie,histogram.
+                         - The advanced plots like scatter, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
+                         - For every request you have to generate the graphs dynamically based on the dataset given which will be new every time.
 
                         Instructions:
                         - Return *only valid Python code. Do **not* use markdown or bullet points.
@@ -599,18 +605,18 @@ async def analyze_chart(
                 f"{chart_json_str}\n\n"
                 f"{summary_discussion}\n\n"
                 "Analyze and summarize only the insights, patterns, and trends directly visible in the chart.\n\n"
-                "Follow this output structure, each with exactly 5 headings and 2 bullet points per heading:\n\n"
+                "Follow this output structure, each with exactly 5 headings and only 1 bullet point per heading:\n\n"
+                "Business Context\n"
+                "• Explain what real-world behavior the graph appears to reflect.\n\n"
                 "Core Insight\n"
                 "• Start with the primary finding from the graph. Bold important terms.\n\n"
                 "Pattern Analysis\n"
                 "• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                "Business Context\n"
-                "• Explain what real-world behavior the graph appears to reflect.\n\n"
                 "Recommendations\n"
                 "• Only describe what you observe—do not invent data.\n\n"
                 "Actions\n"
                 "• Provide specific next steps based on the chart data.\n\n"
-                "Give the response in markdown with h4 headings and 2 bullet points per topic.\n"
+                "Give the response in markdown with h4 headings and only 1 bullet point per topic.\n"
             )
             summary = generate_text(prompt)
             SUMMARY_CACHE[chart_id] = summary
@@ -650,7 +656,7 @@ async def analyze_chart(
                 f"{history_text}\n\n"
                 f"The user now asks: {question}\n\n"
                 f"Here is the Plotly chart as JSON:\n{chart_json_str}\n\n"
-                f"Follow this output structure with exactly 4 key observations:\n\n"
+                f"For example:\n"
                 f"if the user asks about Core Insight\n"
                 f"• Start with the primary finding from the graph. Bold important terms.\n\n"
                 f" if the user asks Pattern Analysis\n"
@@ -659,7 +665,7 @@ async def analyze_chart(
                 f"• Explain what real-world behavior the graph appears to reflect.\n\n"
                 f" if the user asks about Actions & Recommendations\n"
                 f"Only describe what you observe. Do not invent data. Use the exact format shown above."
-                f"Give the response in markdown format with proper headings in 'h4' format and  with *2* bullet points."
+                f"Give the response in markdown format with proper headings in 'h4' format and  with *1* bullet point."
             )
             answer = generate_text(prompt)
 
