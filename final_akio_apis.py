@@ -2258,8 +2258,8 @@ def arima_train_only(data, target_col):
                     json.dump({
                         'data_freq': train_frequency,
                         'date_column': date_column,
-                        'start_date': str(data_actual.index[0]),
-                        'end_date': str(data_actual.index[-1]),
+                        'start_date': str(data_actual.index.min()),
+                        'end_date': str(data_actual.index.max()),
                         'trained_at': str(datetime.now()),
                         'data_points': len(data_actual),
                         'date_range_days': (data_actual.index.max() - data_actual.index.min()).days
