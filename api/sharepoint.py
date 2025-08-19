@@ -334,15 +334,7 @@ def get_sharepoint_automation_status() -> dict:
 
 def list_sharepoint_files(folder: str = None):
     """List files for a given SharePoint folder path."""
-    # If caller is listing the configured input folder, also attempt a simple
-    # process cycle so that hitting this endpoint periodically (e.g. every 10m)
-    # both checks and processes the latest file when it changes.
-    try:
-        if folder and folder.strip() == SHAREPOINT_INPUT_FOLDER:
-            process_latest_if_new()
-    except Exception:
-        # Non-fatal for listing; still attempt to list below
-        pass
+    # Only list files; do not trigger any background processing from here.
 
     token = get_app_token()
     _, drive = resolve_site_and_drive(token)
