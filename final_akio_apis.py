@@ -3191,12 +3191,21 @@ async def perform_statistical_analysis() -> JSONResponse:
                 numeric_vars[col] = df[col].describe().to_dict()
             elif dtype_str == "object" and col not in ['Remark']:
                 categorical_vars.append({col: df[col].nunique()})
-            elif any(dt_format in dtype_str for dt_format in ['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns,']):
-                if col.upper() in ['DATE', "TIME", "DATE_TIME","START", "END"]:
-                    td = col
-                datetime_vars.append(col)
+            # elif any(dt_format in dtype_str for dt_format in ['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns,']):
+            #     if col.upper() in ['DATE', "TIME", "DATE_TIME","START", "END"]:
+            #         td = col
+            #     datetime_vars.append(col)
             elif dtype_str == "bool":
                 boolean_vars.append(col)
+
+        for col in df.columns:
+            if df[col].dtype == "object":
+                # Try to see if > 80% of values can be parsed as dates
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                if parsed.notnull().sum() / len(parsed) > 0.8:
+                    df[col] = parsed
+                    datetime_vars.append(df[col])
+
 
         # Additional analyses
         istextdata = 'Y' if len(text_data) > 0 else 'N'
