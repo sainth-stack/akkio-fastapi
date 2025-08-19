@@ -3198,15 +3198,9 @@ async def perform_statistical_analysis() -> JSONResponse:
             elif dtype_str == "bool":
                 boolean_vars.append(col)
 
-        for col in df.columns:
-            if df[col].dtype == "object":
-                # Try to see if > 80% of values can be parsed as dates
-                parsed = pd.to_datetime(df[col], errors="coerce")
-                if parsed.notnull().sum() / len(parsed) > 0.8:
-                    df[col] = parsed
-                    datetime_vars.append(df[col])
-
-
+        datetime_vars=infer_datetime_column(df)
+        print("Date time variable",datetime_vars)
+        
         # Additional analyses
         istextdata = 'Y' if len(text_data) > 0 else 'N'
         if len(datetime_vars) > 0:
