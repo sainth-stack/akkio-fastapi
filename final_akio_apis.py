@@ -2002,82 +2002,130 @@ def parse_mixed_dates_with_format_detection(date_series):
     Enhanced date parsing that detects and handles different date formats
     """
     try:
+        print(f"Original series type: {type(date_series)}, dtype: {date_series.dtype}")
+        print(f"Series length: {len(date_series)}, non-null count: {date_series.notna().sum()}")
+        
+        # Return early if already datetime
+        if pd.api.types.is_datetime64_any_dtype(date_series):
+            print("Series is already datetime type")
+            return date_series
+            
+        # Convert to string and clean up
+        date_series_clean = date_series.astype(str).str.strip()
+        
+        # Remove obviously invalid entries
+        date_series_clean = date_series_clean.replace(['nan', 'NaN', 'None', 'null', ''], pd.NA)
+        
+        # Get a sample of non-null values to test formats
+        non_null_mask = date_series_clean.notna() & (date_series_clean != 'nan')
+        sample_dates = date_series_clean[non_null_mask].head(20)
+        
+        if len(sample_dates) == 0:
+            print("No valid date samples found")
+            return pd.to_datetime(date_series, errors='coerce')
+        
+        print(f"Sample dates for format detection: {list(sample_dates.head(5))}")
+        
         # Common date formats to try
         date_formats = [
+            '%Y-%m-%d',      # year-month-day (2025-05-12) - ISO format first
             '%d-%m-%Y',      # day-month-year (12-05-2025)
             '%d/%m/%Y',      # day/month/year (12/05/2025)
+            '%m/%d/%Y',      # month/day/year (05/12/2025)
             '%d.%m.%Y',      # day.month.year (12.05.2025)
+            '%Y/%m/%d',      # year/month/day (2025/05/12)
             '%d-%m-%y',      # day-month-year short (12-05-25)
             '%d/%m/%y',      # day/month/year short (12/05/25)
             '%m-%d-%Y',      # month-day-year (05-12-2025)
-            '%m/%d/%Y',      # month/day/year (05/12/2025)
-            '%Y-%m-%d',      # year-month-day (2025-05-12)
-            '%Y/%m/%d',      # year/month/day (2025/05/12)
             '%d %b %Y',      # day month year (12 May 2025)
             '%d %B %Y',      # day month year full (12 May 2025)
             '%b %d, %Y',     # month day, year (May 12, 2025)
             '%B %d, %Y',     # month day, year full (May 12, 2025)
+            '%d-%b-%Y',      # day-month-year (12-May-2025)
+            '%d-%B-%Y',      # day-month-year full (12-May-2025)
         ]
         
-        # Get a sample of non-null values to test formats
-        sample_dates = date_series.dropna().head(10).astype(str)
-        
-        print(f"Sample dates for format detection: {list(sample_dates)}")
-        
         successful_format = None
+        best_success_rate = 0
+        best_parsed = None
         
         # Try each format
         for date_format in date_formats:
             try:
                 print(f"Trying format: {date_format}")
-                # Test with first few samples
-                test_parsed = pd.to_datetime(sample_dates, format=date_format, errors='raise')
-                successful_format = date_format
-                print(f"Successfully detected format: {date_format}")
-                break
+                # Test with sample first
+                test_parsed = pd.to_datetime(sample_dates, format=date_format, errors='coerce')
+                sample_success_rate = test_parsed.notna().sum() / len(sample_dates)
+                
+                print(f"Sample success rate for {date_format}: {sample_success_rate:.1%}")
+                
+                # If sample looks good, try full series
+                if sample_success_rate > 0.7:  # At least 70% of sample should work
+                    full_parsed = pd.to_datetime(date_series_clean, format=date_format, errors='coerce')
+                    full_success_rate = full_parsed.notna().sum() / len(date_series_clean[non_null_mask])
+                    
+                    print(f"Full success rate for {date_format}: {full_success_rate:.1%}")
+                    
+                    if full_success_rate > best_success_rate:
+                        best_success_rate = full_success_rate
+                        best_parsed = full_parsed
+                        successful_format = date_format
+                        
+                        # If we get very high success rate, use it immediately
+                        if full_success_rate > 0.95:
+                            break
+                            
             except (ValueError, TypeError) as e:
+                print(f"Format {date_format} failed: {e}")
                 continue
         
-        # If no specific format worked, try pandas' automatic parsing with dayfirst=True
-        if successful_format is None:
-            print("No specific format worked, trying automatic parsing with dayfirst=True")
-            try:
-                # For day-first formats (common in many countries)
-                parsed_dates = pd.to_datetime(date_series, dayfirst=True, errors='coerce')
-                
-                # Validate that we got reasonable results
-                if not parsed_dates.isnull().all():
-                    print("Automatic parsing with dayfirst=True succeeded")
-                    return parsed_dates
-            except Exception as e:
-                print(f"Automatic parsing with dayfirst=True failed: {e}")
+        # If we found a good format, use it
+        if successful_format and best_success_rate > 0.8:
+            print(f"Using format {successful_format} with {best_success_rate:.1%} success rate")
+            return best_parsed
         
-        # If we found a successful format, parse the entire series
-        if successful_format:
+        # Try automatic parsing approaches
+        parsing_attempts = [
+            ("dayfirst=True", {'dayfirst': True, 'errors': 'coerce'}),
+            ("dayfirst=False", {'dayfirst': False, 'errors': 'coerce'}),
+            ("infer_datetime_format=True", {'infer_datetime_format': True, 'errors': 'coerce'}),
+            ("default parsing", {'errors': 'coerce'})
+        ]
+        
+        for attempt_name, kwargs in parsing_attempts:
             try:
-                parsed_dates = pd.to_datetime(date_series, format=successful_format, errors='coerce')
+                print(f"Trying {attempt_name}")
+                parsed_dates = pd.to_datetime(date_series_clean, **kwargs)
                 
-                # Validate results
-                valid_count = (~parsed_dates.isnull()).sum()
-                total_count = len(date_series)
-                success_rate = valid_count / total_count if total_count > 0 else 0
+                success_rate = parsed_dates.notna().sum() / len(date_series_clean[non_null_mask])
+                print(f"{attempt_name} success rate: {success_rate:.1%}")
                 
-                print(f"Format {successful_format}: {valid_count}/{total_count} dates parsed ({success_rate:.1%})")
-                
-                if success_rate > 0.8:  # At least 80% success rate
+                if success_rate > best_success_rate:
+                    best_success_rate = success_rate
+                    best_parsed = parsed_dates
+                    
+                # If we get decent results, use them
+                if success_rate > 0.8:
+                    print(f"Using {attempt_name}")
                     return parsed_dates
                     
             except Exception as e:
-                print(f"Error parsing with format {successful_format}: {e}")
+                print(f"{attempt_name} failed: {e}")
+                continue
         
-        # Last resort: try pandas default parsing
-        print("Falling back to pandas default parsing")
+        # Return the best result we found
+        if best_parsed is not None:
+            print(f"Using best result with {best_success_rate:.1%} success rate")
+            return best_parsed
+        
+        # Last resort: return original series converted with coerce
+        print("All parsing attempts failed, returning with coerce errors")
         return pd.to_datetime(date_series, errors='coerce')
         
     except Exception as e:
         print(f"Error in enhanced date parsing: {e}")
+        print("Falling back to basic pandas parsing")
         return pd.to_datetime(date_series, errors='coerce')
-
 
 
 # def arima_train(data, target_col, bot_query=None):
@@ -2185,90 +2233,129 @@ def parse_mixed_dates_with_format_detection(date_series):
 #         return False, pd.DataFrame, ''
 
 
+
 def arima_train_only(data, target_col):
     """
-    Train ARIMA model and save it without forecasting
+    Train ARIMA model and save it without forecasting - with better date handling
     """
     try:
         print('ARIMA Training Phase')
         print("Column dtypes:\n", data.dtypes)
+        print("Data shape:", data.shape)
 
         # Identify date column
         date_column = None
 
         if not os.path.exists(os.path.join("models", 'Arima', target_col)):
+            
+            # First, look for columns that might already be datetime
             for col in data.columns:
-                print(f"Checking column '{col}' for dates")
-                if data.dtypes[col] == 'object':
-                    try:
-                        # First check if it's already datetime
-                        if pd.api.types.is_datetime64_any_dtype(data[col]):
-                            date_column = col
-                            break
+                if pd.api.types.is_datetime64_any_dtype(data[col]):
+                    date_column = col
+                    print(f"Found existing datetime column: {col}")
+                    break
+            
+            # If no datetime column found, try to parse object columns
+            if not date_column:
+                for col in data.columns:
+                    print(f"Checking column '{col}' for dates")
+                    if data[col].dtype == 'object':
+                        try:
+                            print(f"Sample values from '{col}': {list(data[col].dropna().head())}")
+                            
+                            # Try parsing with mixed formats handler
+                            print(f"Attempting to parse mixed formats in column '{col}'")
+                            parsed_col = parse_mixed_dates_with_format_detection(data[col])
 
-                        # Try parsing with mixed formats handler
-                        print(f"Attempting to parse mixed formats in column '{col}'")
-                        data[col] = parse_mixed_dates_with_format_detection(data[col])
+                            # Check if we successfully parsed any dates
+                            valid_dates = parsed_col.notna().sum()
+                            total_dates = len(data[col].dropna())
+                            
+                            print(f"Parsed {valid_dates}/{total_dates} dates in column '{col}'")
+                            
+                            if valid_dates > 0 and (valid_dates / total_dates) > 0.5:  # At least 50% success
+                                data[col] = parsed_col
+                                date_column = col
+                                print(f"Successfully parsed datetime column: {col}")
+                                break
 
-                        # Check if we successfully parsed any dates
-                        if not data[col].isnull().all():
-                            date_column = col
-                            print(f"Successfully parsed datetime column: {col}")
-                            break
-
-                    except Exception as e:
-                        print(f"Error parsing column '{col}': {e}")
-                        continue
+                        except Exception as e:
+                            print(f"Error parsing column '{col}': {e}")
+                            continue
 
             if not date_column:
                 raise ValueError("No datetime column could be parsed from the dataset")
 
-            # Strip timezone information
-            def strip_tz(x):
-                if isinstance(x, datetime) and x.tzinfo is not None:
-                    return x.replace(tzinfo=None)
-                return x
-
-            data[date_column] = data[date_column].map(strip_tz)
+            print(f"Using date column: {date_column}")
+            
+            # Check for any remaining NaT values
+            nat_count = data[date_column].isna().sum()
+            if nat_count > 0:
+                print(f"Found {nat_count} NaT values in date column, removing them")
+                data = data.dropna(subset=[date_column])
             
             try:
                 data_actual = data[[date_column, target_col]].copy()
                 data_actual.columns = ["datetime", 'value']
+                
+                # Additional cleaning
+                data_actual = data_actual.dropna()  # Remove any remaining NaN/NaT
+                
+                print(f"Data shape after cleaning: {data_actual.shape}")
+                print(f"Date range: {data_actual['datetime'].min()} to {data_actual['datetime'].max()}")
+                
                 data_actual.set_index("datetime", inplace=True)
                 
                 # Remove any duplicate indices and sort
                 data_actual = data_actual[~data_actual.index.duplicated(keep='first')]
                 data_actual = data_actual.sort_index()
 
+                print(f"Final data shape: {data_actual.shape}")
+                print(f"Index type: {type(data_actual.index)}")
+                print(f"Index dtype: {data_actual.index.dtype}")
+
                 # Enhanced frequency detection
                 train_frequency = check_data_frequency(data_actual)
                 print(f"Detected frequency: {train_frequency}")
-
-                print("First 10 rows after processing:")
-                print(data_actual.head(10))
-                print("\nLast 10 rows after processing:")
-                print(data_actual.tail(10))
 
                 # Train models for all frequencies
                 train_models(data_actual, target_col)
                 print("Model training completed successfully")
 
+                # Get start and end dates safely
+                if len(data_actual) > 0:
+                    start_date = data_actual.index.min()
+                    end_date = data_actual.index.max()
+                    
+                    print(f"Start date: {start_date}")
+                    print(f"End date: {end_date}")
+                    
+                    # Convert to string safely
+                    start_date_str = start_date.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(start_date) else "Unknown"
+                    end_date_str = end_date.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(end_date) else "Unknown"
+                else:
+                    start_date_str = "No data"
+                    end_date_str = "No data"
+
                 # Save metadata with enhanced information
+                os.makedirs(os.path.join("models", 'Arima', target_col), exist_ok=True)
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({
                         'data_freq': train_frequency,
                         'date_column': date_column,
-                        'start_date': str(data_actual.index.min()),
-                        'end_date': str(data_actual.index.max()),
-                        'trained_at': str(datetime.now()),
+                        'start_date': start_date_str,
+                        'end_date': end_date_str,
+                        'trained_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'data_points': len(data_actual),
-                        'date_range_days': (data_actual.index.max() - data_actual.index.min()).days
+                        'date_range_days': (data_actual.index.max() - data_actual.index.min()).days if len(data_actual) > 0 else 0
                     }, fp, indent=4)
 
                 return True
 
             except Exception as e:
                 print(f"Error during model training: {e}")
+                import traceback
+                traceback.print_exc()
                 raise
 
         else:
@@ -2277,6 +2364,8 @@ def arima_train_only(data, target_col):
 
     except Exception as e:
         print(f"Training error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
