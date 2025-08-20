@@ -294,7 +294,6 @@ async def gen_plotly_response() -> JSONResponse:
                 ### Charting Guidelines
                 - Mandatory: exactly {num_plots} charts with required split between basic and advanced.
                 - Always use real column names exactly as in dataset.
-                - Use aggregations (`.groupby().mean()`, `.sum()`, `.count()`) where helpful.
                 - Apply filters:
                 - Remove nulls or outliers.
                 - Mix chart types for diversity.
