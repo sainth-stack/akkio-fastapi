@@ -469,8 +469,7 @@ def generate_code4(prompt_eng):
                 """},
             {"role": "user", "content": prompt_eng}
         ],
-        temperature=0.7,  # Add some randomness for variety in chart generation
-        max_tokens=4000
+        temperature=0.7
     )
 
     all_text = ""
