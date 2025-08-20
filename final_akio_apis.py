@@ -266,64 +266,71 @@ async def gen_plotly_response() -> JSONResponse:
                 json.dump({}, f)
 
         # Process each topic to generate charts
-        prompt_eng = (f"""
-                You are a data visualization expert and Python Plotly developer. 
-                Your job is to dynamically analyze datasets and generate insightful charts.
+        prompt_eng = (
+           f"""
+            You are a data visualization expert and Python Plotly developer. 
+            Your job is to dynamically analyze datasets and generate insightful charts.
 
-                ### Task
-                1. Analyze the dataset from: {file_path}
-                2. Generate exactly {num_plots} charts:
-                - {basic_plots} basic plots (line, bar, pie, histogram),
-                - {num_plots-basic_plots} advanced plots (scatter, box, heatmap, area, violin, scatter3d, facet, or animated).
-                3. For each chart:
-                - Use a short, meaningful chart title (as dict key),
-                - Write a brief insight as a Python comment (# insight: ...),
-                - Create clean Python code that:
-                    a. Builds the Plotly chart,
-                    b. Converts it to JSON (fig.to_json()),
-                    c. Stores it in chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}},
-                    d. Wraps logic in try/except (use `except Exception as e:` only).
+            ### Task
+            1. Analyze the dataset from: {file_path}
+            2. Generate exactly {num_plots} charts:
+            - {basic_plots} basic plots (line, bar, pie, histogram),
+            - {num_plots-basic_plots} advanced plots (scatter, box, heatmap, area, violin, scatter3d, facet, or animated).
+            3. For each chart:
+            - Use a short, meaningful chart title (as dict key),
+            - Write a brief insight as a Python comment (# insight: ...),
+            - Create clean Python code that:
+                a. Builds the Plotly chart,
+                b. Converts it to JSON (fig.to_json()),
+                c. Stores it in chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}},
+                d. Wraps logic in try/except (use `except Exception as e:` only).
 
-                ### Dataset Preparation
-                - Always clean column names: `df.columns = df.columns.str.strip()`
-                - For datetime columns:
-                - MUST consider Date only *not time* included in the Date column.
-                - Strip: `df[col] = df[col].astype(str).str.strip()`
-                - Convert: `pd.to_datetime(df[col], errors='coerce', utc=True)`
-                - Drop failed parses: `df.dropna(subset=[col], inplace=True)`
+            ### Dataset Preparation
+            - Always clean column names: `df.columns = df.columns.str.strip()`
+            - For datetime columns:
+            - MUST only consider `Date` part in the Date column,Ignore time included.
+            - Strip: `df[col] = df[col].astype(str).str.strip()`
+            - Convert: `pd.to_datetime(df[col], errors='coerce', utc=True)`
+            - Drop failed parses: `df.dropna(subset=[col], inplace=True)`
 
-                ### Charting Guidelines
-                - Mandatory: exactly {num_plots} charts with required split between basic and advanced.
-                - Always use real column names exactly as in dataset.
-                - Apply filters:
-                - Remove nulls or outliers.
-                - Mix chart types for diversity.
-                - Use advanced Plotly features when useful:
-                - facet_row/facet_col,
-                - multi-series color=column,
-                - combo charts (bar+line),
-                - rolling averages,
-                - 3D scatter for numeric triples,
+            ### Charting Guidelines
+            - Mandatory: exactly {num_plots} charts with required split between basic and advanced.
+            - Always use real column names exactly as in dataset.
+            - Use aggregations (`.groupby().mean()`, `.sum()`, `.count()`) where helpful.
+            - Apply filters:
+            - Top N categories by value/frequency,
+            - Recent time windows,
+            - Remove nulls or outliers.
+            - Mix chart types for diversity.
+            - Use advanced Plotly features when useful:
+            - facet_row/facet_col,
+            - multi-series color=column,
+            - combo charts (bar+line),
+            - rolling averages,
+            - violin for distributions,
+            - 3D scatter for numeric triples,
+            - animations for time-series.
 
-                ### Insight Expectations
-                - Highlight high-value findings:
-                - Seasonality or cyclic patterns,
-                - Category contributions,
-                - Anomalies or gaps,
-                - Performance deviations.
+            ### Insight Expectations
+            - Highlight high-value findings:
+            - Seasonality or cyclic patterns,
+            - Category contributions,
+            - Anomalies or gaps,
+            - Performance deviations.
 
-                ### Input Preview
-                Dataset sample:
-                {sample_data}
+            ### Input Preview
+            Dataset sample:
+            {sample_data}
 
-                Column names and dtypes:
-                {data_types_info}
+            Column names and dtypes:
+            {data_types_info}
 
-                ### Output Instructions
-                - Return **only valid Python code**, starting with imports and chart_dict initialization.
-                - All explanations must be Python comments.
-                - Never use `except exception as e:` (only `except Exception as e:`).
-                """)
+            ### Output Instructions
+            - Return **only valid Python code**, starting with imports and chart_dict initialization.
+            - All explanations must be Python comments.
+            - Never use `except exception as e:` (only `except Exception as e:`).
+            """)
+
 
 
         try:
