@@ -297,7 +297,6 @@ async def gen_plotly_response() -> JSONResponse:
                 - Use aggregations (`.groupby().mean()`, `.sum()`, `.count()`) where helpful.
                 - Apply filters:
                 - categories by value/frequency,
-                - Recent time windows,
                 - Remove nulls or outliers.
                 - Mix chart types for diversity.
                 - Use advanced Plotly features when useful:
@@ -307,7 +306,6 @@ async def gen_plotly_response() -> JSONResponse:
                 - rolling averages,
                 - violin for distributions,
                 - 3D scatter for numeric triples,
-                - animations for time-series.
 
                 ### Insight Expectations
                 - Highlight high-value findings:
