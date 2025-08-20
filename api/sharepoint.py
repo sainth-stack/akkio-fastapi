@@ -1,10 +1,10 @@
 import os
 import threading
-import time
 from datetime import datetime, timezone
 import requests
 from urllib.parse import quote
 import re
+from pathlib import Path
 
 # Load from environment, fallback to corrected values from .env
 SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID")
@@ -24,8 +24,29 @@ SHAREPOINT_OUTPUT_FOLDER = os.getenv(
     "/CH_SELE_ProEn/EL_SLA/SLA_Output_File",
 )
 
+# Automation interval configuration (minutes)
+# Default to 1 minute for testing; override via env SHAREPOINT_AUTOMATION_MINUTES.
+AUTOMATION_DEFAULT_MINUTES = int(os.getenv("SHAREPOINT_AUTOMATION_MINUTES", "1"))
+
+# Reuse a single HTTP session for all Graph calls to reduce TLS/setup overhead
+_SESSION = requests.Session()
+_REQUEST_TIMEOUT = (5, 30)  # (connect, read) seconds - reduced for faster failure detection
+
+# Cache Graph token and drive resolution to avoid repeated calls
+_CACHED_ACCESS_TOKEN: str | None = None
+_TOKEN_EXPIRES_AT: float | None = None
+_CACHED_SITE: dict | None = None
+_CACHED_DRIVE: dict | None = None
+
+# Legacy persistence functions removed - now using main API's enhanced de-duplication
+
 def get_app_token() -> str:
-    """Acquire app-only token for Microsoft Graph."""
+    """Acquire app-only token for Microsoft Graph with simple in-process caching."""
+    global _CACHED_ACCESS_TOKEN, _TOKEN_EXPIRES_AT
+    from time import time as _now
+    if _CACHED_ACCESS_TOKEN and _TOKEN_EXPIRES_AT and _now() < _TOKEN_EXPIRES_AT - 60:
+        return _CACHED_ACCESS_TOKEN
+
     token_url = f"https://login.microsoftonline.com/{SHAREPOINT_TENANT_ID}/oauth2/v2.0/token"
     data = {
         "client_id": SHAREPOINT_CLIENT_ID,
@@ -33,27 +54,28 @@ def get_app_token() -> str:
         "scope": "https://graph.microsoft.com/.default",
         "grant_type": "client_credentials",
     }
-    
     print(f"🔄 Requesting token from: {token_url}")
-    print(f"Using Client ID: {SHAREPOINT_CLIENT_ID}")
-    print(f"Using Tenant ID: {SHAREPOINT_TENANT_ID}")
-    
-    resp = requests.post(token_url, data=data)
+    resp = _SESSION.post(token_url, data=data, timeout=_REQUEST_TIMEOUT)
     print(f"Token response status: {resp.status_code}")
-    
     if not resp.ok:
         print(f"❌ Token request failed: {resp.text}")
         raise RuntimeError(f"Token request failed: {resp.text}")
-    
+    payload = resp.json()
+    _CACHED_ACCESS_TOKEN = payload.get("access_token")
+    # Default token lifetime ~3600s. Respect expires_in if present.
+    try:
+        ttl = int(payload.get("expires_in", 3600))
+    except Exception:
+        ttl = 3600
+    _TOKEN_EXPIRES_AT = _now() + ttl
     print("✅ Access token obtained successfully")
-    return resp.json().get("access_token")
+    return _CACHED_ACCESS_TOKEN
 
 def graph_get(url: str, token: str) -> dict:
     """Make an authenticated GET request to Microsoft Graph API."""
     headers = {"Authorization": f"Bearer {token}"}
     print(f"🔄 Making Graph API request to: {url}")
-    
-    res = requests.get(url, headers=headers)
+    res = _SESSION.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
     print(f"Graph API response status: {res.status_code}")
     
     if not res.ok:
@@ -66,7 +88,7 @@ def graph_get_binary(url: str, token: str) -> bytes:
     """Make an authenticated GET request to Microsoft Graph API that returns raw bytes (e.g., file content)."""
     headers = {"Authorization": f"Bearer {token}"}
     print(f"🔄 Downloading binary content from: {url}")
-    res = requests.get(url, headers=headers)
+    res = _SESSION.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
     print(f"Binary response status: {res.status_code}")
     if not res.ok:
         print(f"❌ Binary download error: {res.text}")
@@ -75,6 +97,9 @@ def graph_get_binary(url: str, token: str) -> bytes:
 
 def resolve_site_and_drive(token: str):
     """Resolve site and drive information from SharePoint."""
+    global _CACHED_SITE, _CACHED_DRIVE
+    if _CACHED_SITE and _CACHED_DRIVE:
+        return _CACHED_SITE, _CACHED_DRIVE
     # Use the same format as working JS: host:/path
     site_url = SHAREPOINT_SITE_URL or ''
     # Accept full https URL or host:/path format
@@ -96,8 +121,8 @@ def resolve_site_and_drive(token: str):
     drive_endpoint = f"https://graph.microsoft.com/v1.0/sites/{site['id']}/drive"
     drive = graph_get(drive_endpoint, token)
     print(f"✅ Drive found: {drive.get('name', 'Unknown')}")
-    
-    return site, drive
+    _CACHED_SITE, _CACHED_DRIVE = site, drive
+    return _CACHED_SITE, _CACHED_DRIVE
 
 def list_folder_children(token: str, drive_id: str, folder_path: str) -> dict:
     """List files inside a given SharePoint folder path."""
@@ -105,6 +130,31 @@ def list_folder_children(token: str, drive_id: str, folder_path: str) -> dict:
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}:/children"
     print(f"🔄 Listing folder contents: {folder_path}")
     return graph_get(url, token)
+
+def try_get_item_by_path(token: str, drive_id: str, item_path: str) -> dict | None:
+    """Fast existence check by item path. Returns item JSON if exists else None.
+
+    This call should be fast and never block the main upload flow. On any error,
+    we log and return None so the caller proceeds to upload.
+    """
+    encoded = quote(item_path, safe="")
+    # Select minimal fields to speed up response
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}?$select=id,name" 
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        print(f"🔎 Checking item existence by path: {item_path}")
+        res = _SESSION.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
+        print(f"🔎 Existence check status: {res.status_code}")
+        if res.status_code == 200:
+            return res.json()
+        if res.status_code == 404:
+            return None
+        # For other statuses, treat as not-found to avoid blocking
+        print(f"ℹ️ Non-200/404 on existence check: {res.status_code} {res.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"⚠️ Existence check failed ({type(e).__name__}): {e}")
+        return None
 
 def ensure_folder_exists(token: str, drive_id: str, folder_path: str) -> bool:
     """Ensure a folder exists at the given path relative to drive root.
@@ -127,7 +177,7 @@ def ensure_folder_exists(token: str, drive_id: str, folder_path: str) -> bool:
             create_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             data = {"name": folder_name, "folder": {}}
-            response = requests.post(create_url, json=data, headers=headers)
+            response = _SESSION.post(create_url, json=data, headers=headers, timeout=_REQUEST_TIMEOUT)
             if response.ok:
                 print(f"✅ Folder created successfully: {folder_name}")
                 return True
@@ -147,24 +197,113 @@ def upload_file_to_folder(
 
     For files larger than ~4MB, a chunked upload session should be used instead.
     """
+    print(f"🔄 Starting upload process for: {file_name} ({len(file_bytes)} bytes)")
+    
+    print(f"🔄 Ensuring folder exists: {folder_path}")
     if not ensure_folder_exists(token, drive_id, folder_path):
         raise RuntimeError(f"Destination folder does not exist and could not be created: {folder_path}")
+    print(f"✅ Folder confirmed: {folder_path}")
 
     dest_path = f"{folder_path.rstrip('/')}/{file_name}"
     encoded = quote(dest_path, safe="")
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}:/content"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/octet-stream",
-    }
+    headers = {"Authorization": f"Bearer {token}"}
+    
     print(f"🔄 Uploading to: {dest_path}")
-    resp = requests.put(url, headers=headers, data=file_bytes)
-    if not resp.ok:
-        print(f"❌ Upload failed: {resp.status_code} {resp.text}")
-        raise RuntimeError(f"Upload failed: {resp.text}")
-    print("✅ Upload successful")
-    return resp.json()
+    print(f"🔄 Upload URL: {url}")
+    print(f"🔄 Starting PUT request with {len(file_bytes)} bytes...")
+    
+    try:
+        # Increase timeout for larger files - use longer timeout for upload
+        upload_timeout = (10, 120)  # 10s connect, 2min read timeout
+        print(f"🔄 Using timeout: {upload_timeout}")
+        
+        resp = _SESSION.put(url, headers=headers, data=file_bytes, timeout=upload_timeout)
+        print(f"🔄 PUT request completed. Status: {resp.status_code}")
+        
+        if not resp.ok:
+            error_text = resp.text[:500]  # Limit error text length
+            print(f"❌ Upload failed: {resp.status_code} {error_text}")
+            raise RuntimeError(f"Upload failed [{resp.status_code}]: {error_text}")
+        
+        result = resp.json()
+        print("✅ Upload successful")
+        print(f"✅ Uploaded item ID: {result.get('id', 'unknown')}")
+        return result
+        
+    except requests.exceptions.Timeout as e:
+        print(f"❌ Upload timed out: {e}")
+        raise RuntimeError(f"Upload timed out - file may be too large or connection is slow: {e}")
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ Connection error during upload: {e}")
+        raise RuntimeError(f"Connection error during upload: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request exception during upload: {e}")
+        raise RuntimeError(f"Request failed during upload: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected exception during upload: {type(e).__name__}: {e}")
+        raise RuntimeError(f"Unexpected error during upload: {e}")
 
+
+def ensure_folder_exists(token: str, drive_id: str, folder_path: str) -> bool:
+    """Ensure a folder exists at the given path relative to drive root.
+
+    Only supports a single-level root folder like "/FolderName". For nested paths,
+    set env vars accordingly or create them manually.
+    """
+    try:
+        # Try to fetch the folder
+        encoded = quote(folder_path, safe="")
+        folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}"
+        print(f"🔄 Checking/ensuring folder exists at: {folder_path}")
+        
+        # Add timeout to folder check
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = _SESSION.get(folder_url, headers=headers, timeout=_REQUEST_TIMEOUT)
+        
+        if resp.ok:
+            print(f"✅ Folder exists: {folder_path}")
+            return True
+        elif resp.status_code == 404:
+            # Folder doesn't exist, try to create it
+            print(f"📁 Folder not found, attempting to create: {folder_path}")
+        else:
+            print(f"⚠️ Unexpected response when checking folder: {resp.status_code} {resp.text[:200]}")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Error checking folder existence: {e}")
+        # Continue to try creating the folder
+    
+    # Create the folder
+    try:
+        folder_name = folder_path.strip("/")
+        if "/" in folder_name:
+            print(f"❌ Nested folder creation not supported: {folder_path}")
+            return False
+            
+        print(f"🔄 Creating root-level folder: {folder_name}")
+        create_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        data = {"name": folder_name, "folder": {}}
+        
+        response = _SESSION.post(create_url, json=data, headers=headers, timeout=_REQUEST_TIMEOUT)
+        
+        if response.ok:
+            print(f"✅ Folder created successfully: {folder_name}")
+            return True
+        elif response.status_code == 409:
+            # Folder already exists (race condition)
+            print(f"ℹ️ Folder already exists (created concurrently): {folder_name}")
+            return True
+        else:
+            print(f"❌ Failed to create folder {folder_name}: {response.status_code} {response.text[:200]}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Exception creating folder {folder_path}: {e}")
+        return False
+        
 def download_file_from_path(token: str, drive_id: str, file_path: str) -> bytes:
     """Download file bytes from a drive using a root-relative path (e.g., /Folder/Sub/file.xlsx)."""
     encoded = quote(file_path, safe="")
@@ -176,7 +315,7 @@ def delete_drive_item(token: str, drive_id: str, item_id: str) -> bool:
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
     headers = {"Authorization": f"Bearer {token}"}
     print(f"🗑️ Deleting drive item: {item_id}")
-    resp = requests.delete(url, headers=headers)
+    resp = _SESSION.delete(url, headers=headers, timeout=_REQUEST_TIMEOUT)
     print(f"Delete response status: {resp.status_code}")
     if resp.status_code in (200, 204):
         print("✅ Delete successful")
@@ -249,6 +388,16 @@ def run_automation_cycle():
         print(f"⏭️ Latest file already processed recently: {item_name}")
         return
 
+    # De-dup: skip if same source input name was processed already (check via main API's cache)
+    try:
+        from .. import final_akio_apis
+        if item_name and final_akio_apis._is_file_recently_processed(item_name):
+            print(f"⏭️ Skipping processing; input '{item_name}' already processed recently.")
+            return
+    except ImportError:
+        # Fallback to simple item ID check if main API not available
+        pass
+
     print(f"⬇️ Downloading latest file: {file_path}")
     file_bytes = download_file_from_path(token, drive_id, file_path)
 
@@ -263,6 +412,14 @@ def run_automation_cycle():
         file_name=out_name,
         file_bytes=out_bytes,
     )
+    # Mark the input file as processed in the main API's cache
+    try:
+        from .. import final_akio_apis
+        if item_name:
+            final_akio_apis._mark_file_as_processed(item_name)
+    except ImportError:
+        # Fallback: no-op if main API not available
+        pass
     _last_processed_item_id = item_id
     _last_run_time = datetime.now(timezone.utc)
     _last_error_message = None
@@ -294,7 +451,7 @@ def _automation_loop(interval_seconds: int):
         finally:
             _automation_stop.wait(interval_seconds)
 
-def start_sharepoint_automation(every_minutes: int = 10):
+def start_sharepoint_automation(every_minutes: int = AUTOMATION_DEFAULT_MINUTES):
     """Start background automation to process latest input file and upload report periodically."""
     global _automation_thread
     if _automation_thread and _automation_thread.is_alive():

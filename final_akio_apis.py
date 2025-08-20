@@ -88,9 +88,11 @@ from api.chat2doc_fastapi import chat2doc
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
 import threading
+import time
 import uuid
+from pathlib import Path
 from PyPDF2 import PdfReader
-from datetime import datetime, date, time
+from datetime import datetime, date
 from decimal import Decimal
 
 load_dotenv()
@@ -99,15 +101,104 @@ app = FastAPI()
 # Optionally start SharePoint automation on startup if enabled by env
 ENABLE_SHAREPOINT_AUTOMATION = os.getenv("ENABLE_SHAREPOINT_AUTOMATION", "0").strip() in {"1", "true", "TRUE", "yes", "YES"}
 
+# --- Enhanced server-side de-dup state for SharePoint uploads (file-based persistence) ---
+# Track multiple processed files with timestamps for better de-duplication
+PROCESSED_FILES_LOCK = threading.RLock()
+DEDUP_CACHE_HOURS = 24  # Keep processed files in cache for 24 hours
+PROCESSED_FILES_TXT = Path(__file__).resolve().parent / "uploads_sla" / "processed_files.txt"
+
+def _load_processed_files() -> Dict[str, float]:
+    """Load processed files from txt file"""
+    try:
+        if not PROCESSED_FILES_TXT.exists():
+            return {}
+        
+        processed_files = {}
+        with open(PROCESSED_FILES_TXT, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and '|' in line:
+                    try:
+                        filename, timestamp_str = line.split('|', 1)
+                        processed_files[filename] = float(timestamp_str)
+                    except (ValueError, IndexError):
+                        continue  # Skip malformed lines
+        return processed_files
+    except Exception as e:
+        print(f"⚠️ Error loading processed files: {e}")
+        return {}
+
+def _save_processed_files(processed_files: Dict[str, float]):
+    """Save processed files to txt file"""
+    try:
+        PROCESSED_FILES_TXT.parent.mkdir(parents=True, exist_ok=True)
+        with open(PROCESSED_FILES_TXT, 'w', encoding='utf-8') as f:
+            for filename, timestamp in processed_files.items():
+                f.write(f"{filename}|{timestamp}\n")
+    except Exception as e:
+        print(f"⚠️ Error saving processed files: {e}")
+
+def _cleanup_old_processed_files():
+    """Remove processed files older than DEDUP_CACHE_HOURS from cache"""
+    current_time = time.time()
+    cutoff_time = current_time - (DEDUP_CACHE_HOURS * 3600)
+    
+    with PROCESSED_FILES_LOCK:
+        processed_files = _load_processed_files()
+        original_count = len(processed_files)
+        
+        # Remove expired entries
+        processed_files = {filename: timestamp for filename, timestamp in processed_files.items() 
+                          if timestamp >= cutoff_time}
+        
+        if len(processed_files) < original_count:
+            _save_processed_files(processed_files)
+            removed_count = original_count - len(processed_files)
+            print(f"🧹 Cleaned up {removed_count} expired processed files from cache")
+
+def _is_file_recently_processed(filename: str) -> bool:
+    print(f"🔄 Checking if file was processed recently: {filename}")
+    if not filename:
+        return False
+    
+    normalized_filename = filename.strip().lower()
+    current_time = time.time()
+    cutoff_time = current_time - (DEDUP_CACHE_HOURS * 3600)
+    
+    with PROCESSED_FILES_LOCK:
+        processed_files = _load_processed_files()
+        # Directly apply cutoff without calling nested cleanup to avoid nested locking delays
+        timestamp = processed_files.get(normalized_filename)
+        if timestamp is not None and timestamp >= cutoff_time:
+            return True
+        # Opportunistic cleanup: remove any expired entries quickly
+        expired_keys = [k for k, ts in processed_files.items() if ts < cutoff_time]
+        if expired_keys:
+            for k in expired_keys:
+                processed_files.pop(k, None)
+            _save_processed_files(processed_files)
+    
+    return False
+
+def _mark_file_as_processed(filename: str):
+    """Mark a file as processed with current timestamp"""
+    if not filename:
+        return
+    
+    normalized_filename = filename.strip().lower()
+    current_time = time.time()
+    
+    with PROCESSED_FILES_LOCK:
+        processed_files = _load_processed_files()
+        processed_files[normalized_filename] = current_time
+        _save_processed_files(processed_files)
+        print(f"📝 Marked file as processed: {filename}")
+
 @app.on_event("startup")
 async def _on_startup():
     if ENABLE_SHAREPOINT_AUTOMATION:
-        # Default every 10 minutes; override via SHAREPOINT_AUTOMATION_MINUTES
-        try:
-            minutes = int(os.getenv("SHAREPOINT_AUTOMATION_MINUTES", "10"))
-        except ValueError:
-            minutes = 10
-        start_sharepoint_automation(every_minutes=minutes)
+        # Use backend's default automation interval (configurable in api/sharepoint.py)
+        start_sharepoint_automation()
 
 @app.on_event("shutdown")
 async def _on_shutdown():
@@ -320,21 +411,56 @@ async def download_sharepoint_file(folder_type: str, file_id: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/sharepoint/upload")
-async def upload_to_sharepoint_output(file: UploadFile = File(...)):
+async def upload_to_sharepoint_output(
+    file: UploadFile = File(...),
+    source_input_name: Optional[str] = Form(None),
+):
     """Upload file to SharePoint output folder"""
     try:
+        print(f"📤 Starting upload process for: {file.filename}")
+        
+        # Read file bytes
         file_bytes = await file.read()
+        size_bytes = len(file_bytes)
+        print(f"📤 File read successfully: {file.filename} ({size_bytes} bytes, {size_bytes/1024:.2f} KB)")
+        
+        # Import SharePoint functions with proper aliases
+        from api.sharepoint import (
+            get_app_token as sp_get_app_token,
+            resolve_site_and_drive as sp_resolve_site_and_drive,
+            upload_file_to_folder as sp_upload_file_to_folder,
+            try_get_item_by_path as sp_try_get_item_by_path,
+        )
+        
+        print("🔄 Getting SharePoint token...")
         token = sp_get_app_token()
+        print("✅ Token obtained")
+        
+        print("🔄 Resolving site and drive...")
         _, drive = sp_resolve_site_and_drive(token)
         drive_id = drive["id"]
-        
-        print(f"📤 Uploading file to SharePoint output: {file.filename}")
+        print(f"✅ Drive resolved: {drive_id}")
 
-        # Idempotency check: skip if a file with the same name already exists
+        # Enhanced de-duplication based on source input filename
+        if source_input_name and _is_file_recently_processed(source_input_name):
+            print(f"⏭️ Skipping upload - input file '{source_input_name}' already processed recently")
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Skip upload: input file '{source_input_name}' was already processed recently.",
+                "skipped": True,
+                "reason": "already_processed_input",
+                "source_input_name": source_input_name,
+            })
+
+        # Fast idempotency check: direct item-by-path lookup
+        print("🔄 Checking if file already exists...")
         try:
-            existing = sp_list_folder_children(token, drive_id, SHAREPOINT_OUTPUT_FOLDER)
-            existing_items = (existing or {}).get("value", [])
-            if any((it.get("name") or "").strip().lower() == (file.filename or "").strip().lower() for it in existing_items):
+            out_path = f"{SHAREPOINT_OUTPUT_FOLDER.rstrip('/')}/{(file.filename or '').strip()}"
+            print(f"🔎 Checking path: {out_path}")
+            
+            existing_item = sp_try_get_item_by_path(token, drive_id, out_path)
+            if existing_item:
+                print(f"⏭️ File already exists in SharePoint: {file.filename}")
                 return JSONResponse(content={
                     "success": True,
                     "message": "File already exists in SharePoint output folder. Skipping upload.",
@@ -342,7 +468,89 @@ async def upload_to_sharepoint_output(file: UploadFile = File(...)):
                     "filename": file.filename,
                     "already_exists": True,
                 })
-        except Exception as _e:
+        except Exception as e:
+            print(f"⚠️ Error checking existing file (non-fatal): {e}")
+            # Continue with upload
+
+        print("🔄 Starting SharePoint upload...")
+        
+        # Add timeout and error handling to the upload
+        try:
+            uploaded_item = sp_upload_file_to_folder(
+                token=token,
+                drive_id=drive_id,
+                folder_path=SHAREPOINT_OUTPUT_FOLDER,
+                file_name=file.filename,
+                file_bytes=file_bytes,
+            )
+            print("✅ Upload completed successfully")
+        except Exception as upload_error:
+            print(f"❌ Upload failed: {upload_error}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"SharePoint upload failed: {str(upload_error)}"
+            )
+
+        # Mark the source input file as processed for future de-duplication
+        if source_input_name:
+            print(f"✅ Marking input file as processed: {source_input_name}")
+            _mark_file_as_processed(source_input_name)
+            
+        print(f"✅ Upload process completed for: {file.filename}")
+        return JSONResponse(content={
+            "success": True,
+            "message": "File uploaded to SharePoint output folder successfully",
+            "folder": SHAREPOINT_OUTPUT_FOLDER,
+            "filename": file.filename,
+            "item": uploaded_item,
+            "source_input_name": source_input_name,
+        })
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as exc:
+        print(f"❌ Unexpected error in upload endpoint: {exc}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(exc)}")
+    """Upload file to SharePoint output folder"""
+    try:
+        file_bytes = await file.read()
+        token = sp_get_app_token()
+        _, drive = sp_resolve_site_and_drive(token)
+        drive_id = drive["id"]
+        
+        size_bytes = len(file_bytes)
+        print(
+            f"📤 Uploading file to SharePoint output: {file.filename} "
+            f"(size: {size_bytes} bytes, {size_bytes/1024:.2f} KB, {size_bytes/1024/1024:.2f} MB)"
+        )
+
+        # Enhanced de-duplication based on source input filename (in-memory with timestamps)
+        if source_input_name and _is_file_recently_processed(source_input_name):
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Skip upload: input file '{source_input_name}' was already processed recently.",
+                "skipped": True,
+                "reason": "already_processed_input",
+                "source_input_name": source_input_name,
+            })
+
+        # Fast idempotency check: direct item-by-path lookup
+        try:
+            # Build the output path under the drive root
+            out_path = f"{SHAREPOINT_OUTPUT_FOLDER.rstrip('/')}/{(file.filename or '').strip()}"
+            from api.sharepoint import try_get_item_by_path as sp_try_get_item_by_path
+            if sp_try_get_item_by_path(token, drive_id, out_path):
+                return JSONResponse(content={
+                    "success": True,
+                    "message": "File already exists in SharePoint output folder. Skipping upload.",
+                    "folder": SHAREPOINT_OUTPUT_FOLDER,
+                    "filename": file.filename,
+                    "already_exists": True,
+                })
+        except Exception:
             # Non-fatal; continue to attempt upload
             pass
         uploaded_item = sp_upload_file_to_folder(
@@ -352,12 +560,17 @@ async def upload_to_sharepoint_output(file: UploadFile = File(...)):
             file_name=file.filename,
             file_bytes=file_bytes,
         )
+
+        # Mark the source input file as processed for future de-duplication
+        if source_input_name:
+            _mark_file_as_processed(source_input_name)
         return JSONResponse(content={
             "success": True,
             "message": "File uploaded to SharePoint output folder successfully",
             "folder": SHAREPOINT_OUTPUT_FOLDER,
             "filename": file.filename,
             "item": uploaded_item,
+            "source_input_name": source_input_name,
         })
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
