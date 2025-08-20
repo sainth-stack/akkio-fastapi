@@ -285,11 +285,12 @@ async def gen_plotly_response() -> JSONResponse:
                              d. Wraps the chart generation and JSON conversion in a try-except block using except Exception as e: (capital E).
                         
                              
-                        VERY VERY VERY IMPORTANT:
+                        **VERY VERY VERY IMPORTANT**:
                          - You must generate {num_plots} charts, with {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.It is mandatory whatever the situation may be.
                          - The basic plots like line, bar,pie,histogram.
                          - The advanced plots like scatter, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
                          - For every request you have to generate the graphs dynamically based on the dataset given which will be new every time.
+                         - Give the titles very carefully based on the graphs you are generating and data you are using.
 
                         Instructions:
                         - Return *only valid Python code. Do **not* use markdown or bullet points.
