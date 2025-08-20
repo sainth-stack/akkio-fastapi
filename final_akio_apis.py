@@ -429,7 +429,7 @@ async def gen_plotly_response() -> JSONResponse:
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
     response = client.chat.completions.create(
-        model="gpt-5-mini",  # Updated model name
+        model="gpt-4.1-mini",  # Updated model name
         messages=[
             {"role": "system", "content": """
             You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
@@ -469,7 +469,8 @@ def generate_code4(prompt_eng):
                 """},
             {"role": "user", "content": prompt_eng}
         ],
-        temperature=0.7
+        temperature=0.7,  # Add some randomness for variety in chart generation
+        max_tokens=4000
     )
 
     all_text = ""
