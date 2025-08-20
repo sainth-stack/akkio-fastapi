@@ -287,6 +287,7 @@ async def gen_plotly_response() -> JSONResponse:
                 ### Dataset Preparation
                 - Always clean column names: `df.columns = df.columns.str.strip()`
                 - For datetime columns:
+                - MUST consider Date only *not time* included in the Date column.
                 - Strip: `df[col] = df[col].astype(str).str.strip()`
                 - Convert: `pd.to_datetime(df[col], errors='coerce', utc=True)`
                 - Drop failed parses: `df.dropna(subset=[col], inplace=True)`
