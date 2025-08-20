@@ -304,7 +304,6 @@ async def gen_plotly_response() -> JSONResponse:
                 - multi-series color=column,
                 - combo charts (bar+line),
                 - rolling averages,
-                - violin for distributions,
                 - 3D scatter for numeric triples,
 
                 ### Insight Expectations
@@ -430,7 +429,7 @@ async def gen_plotly_response() -> JSONResponse:
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",  # Updated model name
+        model="gpt-5-mini",  # Updated model name
         messages=[
             {"role": "system", "content": """
             You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
