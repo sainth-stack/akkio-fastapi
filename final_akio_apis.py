@@ -296,7 +296,6 @@ async def gen_plotly_response() -> JSONResponse:
                 - Always use real column names exactly as in dataset.
                 - Use aggregations (`.groupby().mean()`, `.sum()`, `.count()`) where helpful.
                 - Apply filters:
-                - categories by value/frequency,
                 - Remove nulls or outliers.
                 - Mix chart types for diversity.
                 - Use advanced Plotly features when useful:
