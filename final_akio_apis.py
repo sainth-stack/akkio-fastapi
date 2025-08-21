@@ -298,7 +298,7 @@ async def gen_plotly_response() -> JSONResponse:
             - Always use real column names exactly as in dataset.
             - Use aggregations (`.groupby().mean()`, `.sum()`, `.count()`) where helpful.
             - Apply filters:
-            - Top N categories by value/frequency,
+            - categories by value/frequency,
             - Recent time windows,
             - Remove nulls or outliers.
             - Mix chart types for diversity.
@@ -308,8 +308,7 @@ async def gen_plotly_response() -> JSONResponse:
             - combo charts (bar+line),
             - rolling averages,
             - violin for distributions,
-            - 3D scatter for numeric triples,
-            - animations for time-series.
+            - 3D scatter for numeric triples
 
             ### Insight Expectations
             - Highlight high-value findings:
