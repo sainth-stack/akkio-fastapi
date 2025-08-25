@@ -17,7 +17,7 @@ SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL")
 # these with "/Shared Documents" when using Graph drive endpoints.
 SHAREPOINT_INPUT_FOLDER = os.getenv(
     "SHAREPOINT_INPUT_FOLDER",
-    "/CH_SELE_ProEn/EL_SLA/SLA_Input_File",
+    "/CH_SELE_ProEn/EL_SLA/SLA_Input_File/Pwr_Auto_DL",
 )
 SHAREPOINT_OUTPUT_FOLDER = os.getenv(
     "SHAREPOINT_OUTPUT_FOLDER",
@@ -193,56 +193,154 @@ def upload_file_to_folder(
     file_name: str,
     file_bytes: bytes,
 ) -> dict:
-    """Upload a small file to the given folder in SharePoint using a simple PUT.
+    """Upload file to SharePoint output folder, using chunked session for large files.
 
-    For files larger than ~4MB, a chunked upload session should be used instead.
+    - Uses simple PUT for files <= 4 MB
+    - Uses Microsoft Graph upload session with chunked upload for larger files
     """
-    print(f"🔄 Starting upload process for: {file_name} ({len(file_bytes)} bytes)")
-    
+    total_size = len(file_bytes)
+    print(f"🔄 Starting upload process for: {file_name} ({total_size} bytes)")
+
     print(f"🔄 Ensuring folder exists: {folder_path}")
     if not ensure_folder_exists(token, drive_id, folder_path):
         raise RuntimeError(f"Destination folder does not exist and could not be created: {folder_path}")
     print(f"✅ Folder confirmed: {folder_path}")
 
+    # Route based on size
+    SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024  # 4 MB
+    if total_size <= SIMPLE_UPLOAD_MAX:
+        dest_path = f"{folder_path.rstrip('/')}/{file_name}"
+        encoded = quote(dest_path, safe="")
+        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}:/content"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        print(f"🔄 Uploading (simple) to: {dest_path}")
+        print(f"🔄 Upload URL: {url}")
+        print(f"🔄 Starting PUT request with {total_size} bytes...")
+
+        try:
+            upload_timeout = (10, 120)  # 10s connect, 2min read timeout
+            print(f"🔄 Using timeout: {upload_timeout}")
+
+            resp = _SESSION.put(url, headers=headers, data=file_bytes, timeout=upload_timeout)
+            print(f"🔄 PUT request completed. Status: {resp.status_code}")
+
+            if not resp.ok:
+                error_text = resp.text[:500]
+                print(f"❌ Upload failed: {resp.status_code} {error_text}")
+                raise RuntimeError(f"Upload failed [{resp.status_code}]: {error_text}")
+
+            result = resp.json()
+            print("✅ Upload successful")
+            print(f"✅ Uploaded item ID: {result.get('id', 'unknown')}")
+            # Log the uploaded item's final name as stored in SharePoint
+            uploaded_name = result.get('name') or file_name
+            print(f"📄 Uploaded item name: {uploaded_name}")
+            return result
+
+        except requests.exceptions.Timeout as e:
+            print(f"❌ Upload timed out: {e}")
+            raise RuntimeError(f"Upload timed out - file may be too large or connection is slow: {e}")
+        except requests.exceptions.ConnectionError as e:
+            print(f"❌ Connection error during upload: {e}")
+            raise RuntimeError(f"Connection error during upload: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Request exception during upload: {e}")
+            raise RuntimeError(f"Request failed during upload: {e}")
+        except Exception as e:
+            print(f"❌ Unexpected exception during upload: {type(e).__name__}: {e}")
+            raise RuntimeError(f"Unexpected error during upload: {e}")
+
+    # Large file path -> chunked upload session
     dest_path = f"{folder_path.rstrip('/')}/{file_name}"
     encoded = quote(dest_path, safe="")
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}:/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    print(f"🔄 Uploading to: {dest_path}")
-    print(f"🔄 Upload URL: {url}")
-    print(f"🔄 Starting PUT request with {len(file_bytes)} bytes...")
-    
+    session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encoded}:/createUploadSession"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    print(f"🔄 Creating upload session for: {dest_path}")
+    session_body = {
+        "item": {
+            "@microsoft.graph.conflictBehavior": "fail"
+        }
+    }
+
     try:
-        # Increase timeout for larger files - use longer timeout for upload
-        upload_timeout = (10, 120)  # 10s connect, 2min read timeout
-        print(f"🔄 Using timeout: {upload_timeout}")
-        
-        resp = _SESSION.put(url, headers=headers, data=file_bytes, timeout=upload_timeout)
-        print(f"🔄 PUT request completed. Status: {resp.status_code}")
-        
-        if not resp.ok:
-            error_text = resp.text[:500]  # Limit error text length
-            print(f"❌ Upload failed: {resp.status_code} {error_text}")
-            raise RuntimeError(f"Upload failed [{resp.status_code}]: {error_text}")
-        
-        result = resp.json()
-        print("✅ Upload successful")
-        print(f"✅ Uploaded item ID: {result.get('id', 'unknown')}")
-        return result
-        
-    except requests.exceptions.Timeout as e:
-        print(f"❌ Upload timed out: {e}")
-        raise RuntimeError(f"Upload timed out - file may be too large or connection is slow: {e}")
-    except requests.exceptions.ConnectionError as e:
-        print(f"❌ Connection error during upload: {e}")
-        raise RuntimeError(f"Connection error during upload: {e}")
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Request exception during upload: {e}")
-        raise RuntimeError(f"Request failed during upload: {e}")
+        session_resp = _SESSION.post(session_url, json=session_body, headers=headers, timeout=(10, 60))
+        if not session_resp.ok:
+            print(f"❌ Failed to create upload session: {session_resp.status_code} {session_resp.text[:300]}")
+            raise RuntimeError(f"CreateUploadSession failed [{session_resp.status_code}]: {session_resp.text}")
+        upload_url = session_resp.json().get("uploadUrl")
+        if not upload_url:
+            raise RuntimeError("Upload session URL missing in response")
+        print("✅ Upload session created")
+
+        # Chunked upload
+        # Start conservatively to avoid proxy/network write timeouts
+        chunk_size = 1 * 1024 * 1024  # 1 MB initial chunk size
+        min_chunk_size = 256 * 1024   # 256 KB minimum
+        bytes_sent = 0
+        attempt = 0
+        max_attempts_per_size = 3
+
+        while bytes_sent < total_size:
+            start = bytes_sent
+            end = min(start + chunk_size, total_size) - 1
+            chunk = file_bytes[start:end + 1]
+            content_length = end - start + 1
+            content_range = f"bytes {start}-{end}/{total_size}"
+            # Per Graph docs, uploadUrl is pre-authorized; no Authorization header needed
+            chunk_headers = {
+                "Content-Length": str(content_length),
+                "Content-Range": content_range,
+            }
+
+            try:
+                print(f"🔄 Uploading chunk {start}-{end} ({content_length} bytes)")
+                # Longer read timeout for uploading chunks (slow networks)
+                chunk_timeout = (20, 600)
+                resp = _SESSION.put(upload_url, headers=chunk_headers, data=chunk, timeout=chunk_timeout)
+
+                # 202 indicates more chunks to send; 200/201 indicates completion
+                if resp.status_code in (200, 201):
+                    result = resp.json()
+                    print("✅ Chunked upload completed successfully")
+                    print(f"✅ Uploaded item ID: {result.get('id', 'unknown')}")
+                    # Log the uploaded item's final name as stored in SharePoint
+                    uploaded_name = result.get('name') or file_name
+                    print(f"📄 Uploaded item name: {uploaded_name}")
+                    return result
+                if resp.status_code == 202:
+                    bytes_sent = end + 1
+                    attempt = 0  # reset attempt counter on success
+                    continue
+
+                # Other statuses -> error
+                print(f"❌ Chunk upload failed: {resp.status_code} {resp.text[:300]}")
+                raise RuntimeError(f"Chunk upload failed [{resp.status_code}]: {resp.text}")
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                attempt += 1
+                print(f"⚠️ Chunk upload error (attempt {attempt}/{max_attempts_per_size}) with chunk_size={chunk_size} bytes: {e}")
+                if attempt >= max_attempts_per_size:
+                    # Reduce chunk size and retry from same position
+                    new_chunk_size = max(min_chunk_size, chunk_size // 2)
+                    if new_chunk_size < chunk_size:
+                        print(f"↘️ Reducing chunk size from {chunk_size} to {new_chunk_size} bytes and retrying")
+                        chunk_size = new_chunk_size
+                        attempt = 0
+                    else:
+                        raise RuntimeError(f"Chunk upload failed after retries at minimum chunk size: {e}")
+                # Backoff before retry
+                import time as _time
+                _time.sleep(1.5 * attempt)
+                continue
+
+        # If loop exits without return, something went wrong
+        raise RuntimeError("Upload session ended unexpectedly without completion")
+
     except Exception as e:
-        print(f"❌ Unexpected exception during upload: {type(e).__name__}: {e}")
-        raise RuntimeError(f"Unexpected error during upload: {e}")
+        print(f"❌ Upload session error: {e}")
+        raise
 
 
 def ensure_folder_exists(token: str, drive_id: str, folder_path: str) -> bool:
