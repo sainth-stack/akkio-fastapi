@@ -467,9 +467,11 @@ def run_automation_cycle():
     children = list_folder_children(token, drive_id, SHAREPOINT_INPUT_FOLDER)
     items = children.get("value", [])
     print(f"📁 Found {len(items)} items in input folder")
-    latest = select_latest_file(items)
+    # Consider only HDA files
+    hda_items = [it for it in items if isinstance(it, dict) and it.get("file") is not None and (it.get("name") or "").lower().find("hda") != -1]
+    latest = select_latest_file(hda_items)
     if not latest:
-        print("ℹ️ No files found to process.")
+        print("ℹ️ No HDA files found to process.")
         return
 
     item_id = latest.get("id")
@@ -481,6 +483,15 @@ def run_automation_cycle():
     else:
         parent_rel = SHAREPOINT_INPUT_FOLDER
     file_path = f"{parent_rel}/{item_name}"
+
+    # Process only files whose names contain 'HDA' or 'hda'
+    try:
+        if not (isinstance(item_name, str) and ("hda" in item_name.lower())):
+            print(f"⏭️ Skipping file that does not match HDA filter: {item_name}")
+            return
+    except Exception:
+        print("⏭️ Skipping file due to invalid name for HDA check")
+        return
 
     if _last_processed_item_id == item_id:
         print(f"⏭️ Latest file already processed recently: {item_name}")

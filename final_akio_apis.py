@@ -300,6 +300,51 @@ async def get_sharepoint_input_files():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+@app.get("/api/sharepoint/sse")
+async def sharepoint_sse(request: Request):
+    async def eventgen():
+        last_seen_id = None
+        keepalive_counter = 0
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                result = sp_list_sharepoint_files(SHAREPOINT_INPUT_FOLDER)
+                items = result.get("items", []) or []
+                # Only consider files with 'hda' in the name
+                hda_items = [it for it in items if isinstance(it, dict) and it.get("file") is not None and (it.get("name") or "").lower().find("hda") != -1]
+                if hda_items:
+                    latest = sp_select_latest_file(hda_items)
+                    if latest:
+                        current_id = latest.get("id")
+                        if current_id and current_id != last_seen_id:
+                            last_seen_id = current_id
+                            # Only notify frontend about new file, don't process automatically
+                            payload = {
+                                "type": "new_file_detected",
+                                "latest": {
+                                    "id": latest.get("id"),
+                                    "name": latest.get("name"),
+                                    "lastModifiedDateTime": latest.get("lastModifiedDateTime"),
+                                    "@microsoft.graph.downloadUrl": latest.get("@microsoft.graph.downloadUrl"),
+                                    "size": latest.get("size"),
+                                },
+                            }
+                            yield f"data: {json.dumps(payload)}\n\n"
+                        else:
+                            keepalive_counter += 1
+                            if keepalive_counter % 3 == 0:
+                                yield ": keepalive\n\n"
+                else:
+                    keepalive_counter += 1
+                    if keepalive_counter % 3 == 0:
+                        yield ": keepalive\n\n"
+            except Exception as e:
+                err = {"type": "error", "message": str(e)}
+                yield f"data: {json.dumps(err)}\n\n"
+            await asyncio.sleep(5)
+    return StreamingResponse(eventgen(), media_type="text/event-stream")
+
 @app.delete("/api/sharepoint/delete/{folder_type}/{file_id}")
 async def delete_sharepoint_file(folder_type: str, file_id: str):
     """Delete a file from SharePoint by file ID in input or output folder."""
