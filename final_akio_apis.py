@@ -328,35 +328,50 @@ async def gen_plotly_response() -> JSONResponse:
                         - First, strip whitespace: `df[col] = df[col].astype(str).str.strip()`
                         - Use flexible datetime parsing: `df[col] = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True, utc=True)`
                         - Remove rows with invalid dates: `df = df.dropna(subset=[col])`
-                        - **CRITICAL**: After conversion, filter to actual date range in dataset:
+                        - **CRITICAL**: After conversion, filter to actual date range in dataset and validate data exists:
                           ```python
-                          # Get actual date range from the dataset
+                          # Get actual date range from the dataset - NO ASSUMPTIONS
                           min_date = df[col].min()
                           max_date = df[col].max()
-                          # Ensure we only work with data within this actual range
+                          print(f"Actual data date range: min_date to max_date")
+                          
+                          # STRICT: Only use data within actual range - no extensions
                           df = df[(df[col] >= min_date) & (df[col] <= max_date)]
+                          
+                          # Verify we have actual data points
+                          actual_dates = df[col].dropna().unique()
+                          print(f"Total unique dates in dataset: len(actual_dates)")
+                          
+                          # NEVER create date ranges - only use existing dates
+                          # Do NOT use pd.date_range() or similar functions
+                          # Do NOT fill missing dates or create artificial time series
                           ```
                         - For time-based visualizations, automatically detect and respect actual time intervals:
                           ```python
-                          # Calculate time span and determine appropriate grouping
+                          # Calculate time span using ONLY existing data
                           time_span = max_date - min_date
                           total_minutes = time_span.total_seconds() / 60
+                          data_points = len(df[col].dropna())
                           
+                          # IMPORTANT: Only aggregate existing data - never extend timeline
                           if total_minutes <= 120:  # Less than 2 hours
-                              # Group by minutes or use raw timestamps
-                              time_group = df[col].dt.floor('T')  # 'T' for minutes
+                              # Use existing timestamps as-is or group by minutes
+                              grouped_data = df.groupby(df[col].dt.floor('T'))
                           elif total_minutes <= 2880:  # Less than 2 days  
-                              # Group by hours
-                              time_group = df[col].dt.floor('H')
+                              # Group existing data by hours only
+                              grouped_data = df.groupby(df[col].dt.floor('H'))
                           elif time_span.days <= 60:  # Less than 2 months
-                              # Group by days
-                              time_group = df[col].dt.floor('D')
+                              # Group existing data by days only
+                              grouped_data = df.groupby(df[col].dt.floor('D'))
                           elif time_span.days <= 730:  # Less than 2 years
-                              # Group by weeks or months
-                              time_group = df[col].dt.to_period('M')
+                              # Group existing data by weeks/months only
+                              grouped_data = df.groupby(df[col].dt.to_period('M'))
                           else:
-                              # Group by quarters or years
-                              time_group = df[col].dt.to_period('Q')
+                              # Group existing data by quarters/years only
+                              grouped_data = df.groupby(df[col].dt.to_period('Q'))
+                          
+                          # NEVER use pd.date_range() or create artificial time points
+                          # NEVER fill gaps in time series - show only actual data points
                           ```
                         - Handle high-frequency time data (minutes/seconds):
                           - For minute-level data: Use `df[col].dt.floor('T')` for minute grouping
@@ -371,13 +386,20 @@ async def gen_plotly_response() -> JSONResponse:
                       ```
                     
                     - For time-based charts, use appropriate time grouping based on actual data frequency:
-                      - Automatically detect time resolution and choose optimal aggregation level
-                      - For minute-level data: Use minute, 5-minute, 15-minute, or hourly groupings
-                      - For hourly data: Use hourly, daily, or weekly groupings  
-                      - For daily data: Use daily, weekly, or monthly groupings
-                      - For monthly data: Use monthly, quarterly, or yearly groupings
-                      - Use pandas resampling for time aggregations: `df.set_index(date_col).resample('5T').mean()`
-                      - Never assume or extend beyond the actual date range in the dataset
+                    - For time-based charts, use appropriate time grouping based on actual data frequency:
+                      - **STRICT RULE**: ONLY use dates/times that exist in the actual dataset
+                      - **NEVER** use pd.date_range(), pd.DatetimeIndex(), or any function that creates new dates
+                      - **NEVER** fill missing dates or create continuous time series
+                      - **NEVER** assume future or past dates beyond the dataset boundaries
+                      - Automatically detect time resolution and choose optimal aggregation level from existing data only
+                      - For minute-level data: Use minute, 5-minute, 15-minute, or hourly groupings of existing data
+                      - For hourly data: Use hourly, daily, or weekly groupings of existing data
+                      - For daily data: Use daily, weekly, or monthly groupings of existing data
+                      - For monthly data: Use monthly, quarterly, or yearly groupings of existing data
+                      - Use pandas resampling ONLY on existing data: `df.set_index(date_col).resample('5T').mean()`
+                      - Before any time-based visualization, verify: `print(f"Using {len(df)} actual data points from df[date_col].min() to df[date_col].max()")`
+                      - If there are gaps in time series, leave them as gaps - do NOT fill or interpolate
+                      - **ABSOLUTE RULE**: Every timestamp in visualization must exist in original dataset
                 """
 
         try:
