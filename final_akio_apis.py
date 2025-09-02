@@ -461,6 +461,7 @@ def generate_code4(prompt_eng):
             Technical Requirements:
             - Return charts in a dictionary format: chart_dict[title] = {"plot_data": fig.to_plotly_json(), "description": "insight"}
             - Handle edge cases and data quality issues
+            - Use exact data from the provided dataset like date ranges, categories, numeric values.
             - Use exact column names from provided dataset
             - Ensure all generated code is immediately executable
             - Validate data types and handle datetime conversions properly
