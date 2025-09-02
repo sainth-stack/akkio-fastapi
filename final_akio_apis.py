@@ -274,7 +274,7 @@ async def gen_plotly_response() -> JSONResponse:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
                 2. Consider the data source as: {file_path}
                 3. For each chart:
-                   - Use a short, meaningful chart title (as the dictionary key).
+                   - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
                    - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
                      a. Creates the Plotly chart using the dataset,
@@ -292,10 +292,10 @@ async def gen_plotly_response() -> JSONResponse:
                 - Use a diverse range of charts like: `line`, `bar`, `scatter`, `pie`, `box`, `heatmap`, `area`, `violin`, `Scatter3d`, `facet`, or animated plots.
                 - Use **aggregations** like `.groupby(...).mean()`, `.count()`, `.sum()` where helpful.
                 - - Apply **filters** when helpful, such as:
-                  - Top N categories by value or count,
+                  - Top categories by value or count,
                   - Recent date ranges,
                   - Removal of nulls or extreme outliers.
-                  - Top 5 categories by frequency or value
+                  - Top categories by frequency or value
 
                 - Explore **advanced Plotly features**, such as:
                   - `facet_row`, `facet_col` for comparison grids,
