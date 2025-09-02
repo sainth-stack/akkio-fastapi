@@ -293,7 +293,6 @@ async def gen_plotly_response() -> JSONResponse:
                 - Use **aggregations** like `.groupby(...).mean()`, `.count()`, `.sum()` where helpful.
                 - - Apply **filters** when helpful, such as:
                   - Top categories by value or count,
-                  - Recent date ranges,
                   - Removal of nulls or extreme outliers.
                   - Top categories by frequency or value
 
