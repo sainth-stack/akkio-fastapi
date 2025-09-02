@@ -439,6 +439,7 @@ def generate_code4(prompt_eng):
             You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
 
             Your core responsibilities:
+            - Must consider the data from the file path provided in the prompt from first row to last row.Do not assume any data.
             - Generate complete, executable Python code for data visualization
             - Create diverse, insightful charts that reveal different data patterns
             - Use both plotly.express (px) and plotly.graph_objects (go) appropriately
@@ -473,7 +474,7 @@ def generate_code4(prompt_eng):
                 """},
             {"role": "user", "content": prompt_eng}
         ],
-        temperature=0.7,  # Add some randomness for variety in chart generation
+        temperature=0.5,  # Add some randomness for variety in chart generation
         max_tokens=4000
     )
 
