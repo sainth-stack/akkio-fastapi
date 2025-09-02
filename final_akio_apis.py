@@ -277,7 +277,7 @@ async def gen_plotly_response() -> JSONResponse:
                    - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
                    - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
-                     a. Creates the Plotly chart using the dataset,
+                     a. Creates the Plotly chart using the dataset.Take the data from the dataset in the required format only.Do not assume any data which is not present in the dataset,
                      b. Converts the figure to JSON using `fig.to_json()`,
                      c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}`
                      d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
@@ -322,7 +322,8 @@ async def gen_plotly_response() -> JSONResponse:
                     - After reading the CSV:
                     - Use `df.columns = df.columns.str.strip()` to remove leading/trailing spaces from column names.
                     - For datetime columns:
-                        - Consider the date in the date column wherever applicable in the dataset only.Do not assume the dates if not present.
+                        - Consider the date in the date column whatever applicable in the dataset only.Do not assume the dates if not present.
+                        - Must consider the time intervals also like hour, minutes, seconds if present in the dataset.
                         - Strip values using `df[col] = df[col].astype(str).str.strip()`
                         - Convert to datetime using `pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True,utc=True)`
                         - Drop rows where datetime conversion failed using `df.dropna(subset=[col], inplace=True)`
@@ -330,6 +331,7 @@ async def gen_plotly_response() -> JSONResponse:
 
                 NOTE:
                 - Strictly Consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.Do not assume any data which is not present in the dataset.
+                - 
                 """
 
 
