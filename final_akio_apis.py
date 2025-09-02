@@ -304,7 +304,6 @@ async def gen_plotly_response() -> JSONResponse:
                   - rolling averages or moving means,
                   - violin plots to show distributions,
                   - 3D scatter plots (`px.scatter_3d`) where 3 numeric dimensions exist,
-                  - animations (`animation_frame`, `animation_group`) if time-based trends are useful.
                 - Aim for **high-value insights**, like:
                   - Seasonality or cyclic patterns,
                   - Equipment performing worse than average,
@@ -324,6 +323,7 @@ async def gen_plotly_response() -> JSONResponse:
                     - After reading the CSV:
                     - Use `df.columns = df.columns.str.strip()` to remove leading/trailing spaces from column names.
                     - For datetime columns:
+                        - Consider the date in the date column wherever applicable in the dataset only.Do not assume the dates if not present.
                         - Strip values using `df[col] = df[col].astype(str).str.strip()`
                         - Convert to datetime using `pd.to_datetime(df[col], errors='coerce', utc=True)`
                         - Drop rows where datetime conversion failed using `df.dropna(subset=[col], inplace=True)`
