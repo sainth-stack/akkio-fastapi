@@ -268,7 +268,7 @@ async def gen_plotly_response() -> JSONResponse:
         prompt_eng = f"""
                 You are a data visualization expert and a Python Plotly developer.
 
-                I will provide you with a sample dataset.
+                I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
 
                 Your task is to:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
