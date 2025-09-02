@@ -266,78 +266,119 @@ async def gen_plotly_response() -> JSONResponse:
                 json.dump({}, f)
 
         
-        prompt_eng = (
-            f"""
-                        You are a data visualization expert and a Python Plotly developer.For Each request you have to generate the graphs dynamically based on the dataset given.
+        prompt_eng = f"""
+                You are a data visualization expert and a Python Plotly developer.
 
-                        I will provide you with a sample dataset.
+                I will provide you with a sample dataset. MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
 
-                        Your task is to:
-                        1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
-                        2.You *MUST AND SHOULD* have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
-                        3. Consider the data source as: {file_path}
-                        4. For each chart:
-                           - Use a short, meaningful chart title (as the dictionary key).
-                           - Write a brief insight about the chart as a Python comment (# insight: ...).
-                           - Generate clean Python code that:
-                             a. Creates the Plotly chart using the dataset,
-                             b. Converts the figure to JSON using fig.to_json(),
-                             c. Saves it in a dictionary using chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}
-                             d. Wraps the chart generation and JSON conversion in a try-except block using except Exception as e: (capital E).
-                        
-                             
-                        VERY VERY VERY IMPORTANT:
-                         - You must generate {num_plots} charts, with {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.It is mandatory whatever the situation may be.
-                         - The basic plots like line, bar,pie,histogram.
-                         - The advanced plots like scatter, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
-                         - For every request you have to generate the graphs dynamically based on the dataset given which will be new every time.
+                Your task is to:
+                1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
+                2. Consider the data source as: {file_path}
+                3. For each chart:
+                   - Use a short, meaningful chart title (as the dictionary key). Add titles very carefully.
+                   - Write a brief insight about the chart as a Python comment (`# insight: ...`).
+                   - Generate clean Python code that:
+                     a. Creates the Plotly chart using the dataset,
+                     b. Converts the figure to JSON using `fig.to_json()`,
+                     c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}`
+                     d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
+                     
 
-                        Instructions:
-                        - Return *only valid Python code. Do **not* use markdown or bullet points.
-                        - Begin with any required imports and initialization of chart_dict.
-                        - - Do not use except exception as e:. It is incorrect Python. Always use except Exception as e: (capital E). Any other form is invalid and will cause a runtime error.
-                        - All explanations must be in valid Python comments (# ...)
-                        - Do not add any extra text outside Python code.
-                        - Use a diverse range of charts like: line, bar, scatter, pie, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
-                        - Use *aggregations* like .groupby(...).mean(), .count(), .sum() where helpful.
-                        - - Apply *filters* when helpful, such as:
-                          - Recent date ranges or time windows,
-                          - Removal of nulls or extreme outliers.
-                          - Top 5 categories by frequency or value
+                Instructions:
+                - Return **only valid Python code**. Do **not** use markdown or bullet points.
+                - Begin with any required imports and initialization of `chart_dict`.
+                - Do not use `except exception as e:`. It is incorrect Python. Always use `except Exception as e:` (capital E). Any other form is invalid and will cause a runtime error.
+                - All explanations must be in valid Python comments (`# ...`)
+                - Do not add any extra text outside Python code.
+                - Use a diverse range of charts like: `bar`, `scatter`, `pie`, `box`, `heatmap`, `area`, `violin`, `Scatter3d`, `facet`, or animated plots.
+                - Use **aggregations** like `.groupby(...).mean()`, `.count()`, `.sum()` where helpful.
+                - Apply **filters** when helpful, such as:
+                  - Top categories by value or count,
+                  - Removal of nulls or extreme outliers.
+                  - Top categories by frequency or value
 
-                        - Explore *advanced Plotly features*, such as:
-                          - facet_row, facet_col for comparison grids,
-                          - multi-series (e.g. line or scatter with color=column),
-                          - combo charts (e.g., bar + line together),
-                          - rolling averages or moving means,
-                          - violin plots to show distributions,
-                          - 3D scatter plots (px.scatter_3d) where 3 numeric dimensions exist,
-                        - Aim for *high-value insights*, like:
-                          - Seasonality or cyclic patterns,
-                          - Equipment performing worse than average,
-                          - Category-wise contribution to deficit or emissions,
-                          - Any shocking anomalies or unexpected gaps.
+                - Explore **advanced Plotly features**, such as:
+                  - `facet_row`, `facet_col` for comparison grids,
+                  - multi-series charts,
+                  - combo charts (e.g., bar + line together),
+                  - rolling averages or moving means,
+                  - violin plots to show distributions,
+                  - 3D scatter plots (`px.scatter_3d`) where 3 numeric dimensions exist,
+                - Aim for **high-value insights**, like:
+                  - Seasonality or cyclic patterns,
+                  - Equipment performing worse than average,
+                  - Category-wise contribution to deficit or emissions,
+                  - Any shocking anomalies or unexpected gaps.
 
-                        - Use this preview of the dataset:
-                            {sample_data}
+                - Use this preview of the dataset:
+                    {sample_data}
 
-                        - Column names and data types:
-                            {data_types_info}
+                - Column names and data types:
+                    {data_types_info}
 
-                        IMPORTANT:
-                            - If you ever write except exception as e, your answer is wrong and must be corrected before use.
-                            - Ensure column names are used *exactly* as they appear in the dataset. *Do not change the case* or formatting of column names.
-                            - Always use df.columns = df.columns.str.strip() after loading the dataset to handle unwanted spaces.
-                            - After reading the CSV:
-                            - Use df.columns = df.columns.str.strip() to remove leading/trailing spaces from column names.
-                            - For datetime columns:
-                                - Strip values using df[col] = df[col].astype(str).str.strip()
-                                - Convert to datetime using pd.to_datetime(df[col], errors='coerce', utc=True)
-                                - Drop rows where datetime conversion failed using df.dropna(subset=[col], inplace=True)
-                            - Before using .dt, ensure the column is of datetime type using pd.to_datetime().
-                            - The basic plots should be simple and straightforward which can be easily understandable by the user, while the advanced plots should be more complex and insightful.
-                        """
-                      )
+                IMPORTANT DATE AND TIME HANDLING:
+                    - If you ever write `except exception as e`, your answer is wrong and must be corrected before use.
+                    - Ensure column names are used **exactly** as they appear in the dataset. **Do not change the case** or formatting of column names.
+                    - Always use `df.columns = df.columns.str.strip()` after loading the dataset to handle unwanted spaces.
+                    - After reading the CSV, implement robust date handling:
+                    
+                    # Handle all date/time columns with flexible parsing
+                    - Use `df.columns = df.columns.str.strip()` to remove leading/trailing spaces from column names.
+                    - For datetime columns (identify by keywords like 'date', 'time', 'timestamp', or datetime dtypes):
+                        - First, strip whitespace: `df[col] = df[col].astype(str).str.strip()`
+                        - Use flexible datetime parsing: `df[col] = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True, utc=True)`
+                        - Remove rows with invalid dates: `df = df.dropna(subset=[col])`
+                        - **CRITICAL**: After conversion, filter to actual date range in dataset:
+                          ```python
+                          # Get actual date range from the dataset
+                          min_date = df[col].min()
+                          max_date = df[col].max()
+                          # Ensure we only work with data within this actual range
+                          df = df[(df[col] >= min_date) & (df[col] <= max_date)]
+                          ```
+                        - For time-based visualizations, automatically detect and respect actual time intervals:
+                          ```python
+                          # Calculate time span and determine appropriate grouping
+                          time_span = max_date - min_date
+                          total_minutes = time_span.total_seconds() / 60
+                          
+                          if total_minutes <= 120:  # Less than 2 hours
+                              # Group by minutes or use raw timestamps
+                              time_group = df[col].dt.floor('T')  # 'T' for minutes
+                          elif total_minutes <= 2880:  # Less than 2 days  
+                              # Group by hours
+                              time_group = df[col].dt.floor('H')
+                          elif time_span.days <= 60:  # Less than 2 months
+                              # Group by days
+                              time_group = df[col].dt.floor('D')
+                          elif time_span.days <= 730:  # Less than 2 years
+                              # Group by weeks or months
+                              time_group = df[col].dt.to_period('M')
+                          else:
+                              # Group by quarters or years
+                              time_group = df[col].dt.to_period('Q')
+                          ```
+                        - Handle high-frequency time data (minutes/seconds):
+                          - For minute-level data: Use `df[col].dt.floor('T')` for minute grouping
+                          - For second-level data: Use `df[col].dt.floor('S')` for second grouping  
+                          - For sub-minute data: Consider `df[col].dt.floor('10S')` for 10-second intervals
+                          - Use appropriate resampling: `df.set_index(col).resample('5T').mean()` for 5-minute intervals
+                    
+                    - Before using `.dt` accessor, always verify the column is datetime type:
+                      ```python
+                      if pd.api.types.is_datetime64_any_dtype(df[col]):
+                          # Then use .dt accessor
+                      ```
+                    
+                    - For time-based charts, use appropriate time grouping based on actual data frequency:
+                      - Automatically detect time resolution and choose optimal aggregation level
+                      - For minute-level data: Use minute, 5-minute, 15-minute, or hourly groupings
+                      - For hourly data: Use hourly, daily, or weekly groupings  
+                      - For daily data: Use daily, weekly, or monthly groupings
+                      - For monthly data: Use monthly, quarterly, or yearly groupings
+                      - Use pandas resampling for time aggregations: `df.set_index(date_col).resample('5T').mean()`
+                      - Never assume or extend beyond the actual date range in the dataset
+                """
 
         try:
             # Generate code using AI
