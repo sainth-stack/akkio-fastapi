@@ -271,7 +271,7 @@ async def gen_plotly_response() -> JSONResponse:
                 I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
 
                 Your task is to:
-                1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
+                1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g.,patterns, distributions, correlations, anomalies).
                 2. Consider the data source as: {file_path}
                 3. For each chart:
                    - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
