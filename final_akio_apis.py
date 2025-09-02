@@ -237,48 +237,10 @@ os.makedirs(CHARTS_DIR, exist_ok=True)
 # Fixed filenames for the charts
 FIXED_CHART_FILENAMES = [
     "chart_1.json",
-    "chart_2.json", 
+    "chart_2.json",
     "chart_3.json",
     "chart_4.json"
 ]
-
-def analyze_dataset_structure(df):
-    """Analyze dataset to determine optimal visualization strategies"""
-    analysis = {
-        'total_rows': len(df),
-        'total_columns': len(df.columns),
-        'numeric_columns': df.select_dtypes(include=['number']).columns.tolist(),
-        'categorical_columns': df.select_dtypes(include=['object', 'category']).columns.tolist(),
-        'datetime_columns': [],
-        'high_cardinality_cols': [],
-        'low_cardinality_cols': [],
-        'has_nulls': df.isnull().any().any(),
-        'potential_target_cols': []
-    }
-    
-    # Detect datetime columns
-    for col in df.columns:
-        if any(keyword in col.lower() for keyword in ['date', 'time', 'timestamp', 'created', 'updated']):
-            try:
-                pd.to_datetime(df[col].head(100), errors='coerce')
-                analysis['datetime_columns'].append(col)
-            except:
-                pass
-    
-    # Analyze cardinality for categorical columns
-    for col in analysis['categorical_columns']:
-        unique_count = df[col].nunique()
-        if unique_count > 20:
-            analysis['high_cardinality_cols'].append(col)
-        else:
-            analysis['low_cardinality_cols'].append(col)
-    
-    # Identify potential target columns (numeric columns with interesting distributions)
-    for col in analysis['numeric_columns']:
-        if df[col].std() > 0:  # Has variance
-            analysis['potential_target_cols'].append(col)
-    
-    return analysis
 
 @app.post("/api/dashboard")
 async def gen_plotly_response() -> JSONResponse:
@@ -289,13 +251,11 @@ async def gen_plotly_response() -> JSONResponse:
 
         # Clean column names
         df.columns = df.columns.str.strip()
-        
-        # Analyze dataset structure
-        dataset_analysis = analyze_dataset_structure(df)
-        
-        num_plots = 4  # Number of plots to generate
+
+        num_plots = 4  # Number of plots to generate per topic
+        basic_plots=2
         file_path = csv_file_path
-        sample_data = df.head(10).to_string()  # Increased sample size
+        sample_data = df.head(5).to_string()
         data_types_info = df.dtypes.to_string()
         chart_responses = []
 
@@ -305,101 +265,70 @@ async def gen_plotly_response() -> JSONResponse:
             with open(chart_path, "w") as f:
                 json.dump({}, f)
 
+        
         prompt_eng = f"""
                 You are a data visualization expert and a Python Plotly developer.
 
-                I will provide you with a dataset. MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
-
-                DATASET ANALYSIS:
-                - Total rows: {dataset_analysis['total_rows']}
-                - Total columns: {dataset_analysis['total_columns']}
-                - Numeric columns: {dataset_analysis['numeric_columns']}
-                - Categorical columns: {dataset_analysis['categorical_columns']}
-                - DateTime columns: {dataset_analysis['datetime_columns']}
-                - Low cardinality categories: {dataset_analysis['low_cardinality_cols']}
-                - High cardinality categories: {dataset_analysis['high_cardinality_cols']}
+                I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
 
                 Your task is to:
-                1. Analyze the dataset and create exactly {num_plots} diverse, meaningful visualizations.
-                2. Automatically adapt chart types based on data characteristics:
-                   - For time series data: line charts, area charts with proper time grouping
-                   - For categorical data: bar charts, pie charts, treemaps
-                   - For numeric distributions: histograms, box plots, violin plots
-                   - For correlations: scatter plots, heatmaps, pair plots
-                   - For comparisons: grouped bar charts, faceted plots
+                1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
+                2. Consider the data source as: {file_path}
                 3. For each chart:
-                   - Use a short, meaningful chart title (as the dictionary key)
-                   - Write a brief insight about the chart as a Python comment (`# insight: ...`)
+                   - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
+                   - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
                      a. Creates the Plotly chart using the dataset,
                      b. Converts the figure to JSON using `fig.to_json()`,
-                     c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': fig.to_json(), 'description': '<insight_text>'}}`
+                     c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}`
                      d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
+                     
 
-                ADAPTIVE CHART SELECTION RULES:
-                - If datetime columns exist: Create at least 1 time-based visualization
-                - If numeric columns > 2: Create correlation or distribution analysis
-                - If categorical columns exist: Create categorical analysis (bar/pie charts)
-                - If mixed data types: Create comparison or segmentation charts
-                - Always ensure charts complement each other and tell a complete data story
-
-                STRICT CODING REQUIREMENTS:
-                - Return **only valid Python code**. Do **not** use markdown, explanations, or bullet points.
-                - Begin with: `import pandas as pd`, `import plotly.express as px`, `import plotly.graph_objects as go`, `chart_dict = {{}}`
-                - Do not use `except exception as e:`. Always use `except Exception as e:` (capital E).
+                Instructions:
+                - Return **only valid Python code**. Do **not** use markdown or bullet points.
+                - Begin with any required imports and initialization of `chart_dict`.
+                - - Do not use `except exception as e:`. It is incorrect Python. Always use `except Exception as e:` (capital E). Any other form is invalid and will cause a runtime error.
                 - All explanations must be in valid Python comments (`# ...`)
+                - Do not add any extra text outside Python code.
+                - Use a diverse range of charts like: `bar`, `scatter`, `pie`, `box`, `heatmap`, `area`, `violin`, `Scatter3d`, `facet`, or animated plots.
                 - Use **aggregations** like `.groupby(...).mean()`, `.count()`, `.sum()` where helpful.
-                - Apply **filters** when helpful: top categories, outlier removal, null handling
-                - Use diverse chart types: `bar`, `scatter`, `pie`, `box`, `heatmap`, `area`, `violin`, `scatter_3d`, `facet`
+                - - Apply **filters** when helpful, such as:
+                  - Top categories by value or count,
+                  - Removal of nulls or extreme outliers.
+                  - Top categories by frequency or value
 
-                DATETIME HANDLING (CRITICAL - NO DATE ASSUMPTIONS):
-                    - **ABSOLUTE RULE**: ONLY use dates/times that exist in the actual dataset
-                    - **NEVER** use pd.date_range(), pd.DatetimeIndex(), or create new dates
-                    - **NEVER** fill missing dates or extend timelines beyond actual data
+                - Explore **advanced Plotly features**, such as:
+                  - `facet_row`, `facet_col` for comparison grids,
+                  - multi-series charts,
+                  - combo charts (e.g., bar + line together),
+                  - rolling averages or moving means,
+                  - violin plots to show distributions,
+                  - 3D scatter plots (`px.scatter_3d`) where 3 numeric dimensions exist,
+                - Aim for **high-value insights**, like:
+                  - Seasonality or cyclic patterns,
+                  - Equipment performing worse than average,
+                  - Category-wise contribution to deficit or emissions,
+                  - Any shocking anomalies or unexpected gaps.
+
+                - Use this preview of the dataset:
+                    {sample_data}
+
+                - Column names and data types:
+                    {data_types_info}
+
+                IMPORTANT:
+                    - If you ever write `except exception as e`, your answer is wrong and must be corrected before use.
+                    - Ensure column names are used **exactly** as they appear in the dataset. **Do not change the case** or formatting of column names.
+                    - Always use `df.columns = df.columns.str.strip()` after loading the dataset to handle unwanted spaces.
+                    - After reading the CSV:
+                    - Use `df.columns = df.columns.str.strip()` to remove leading/trailing spaces from column names.
                     - For datetime columns:
-                        - Strip values: `df[col] = df[col].astype(str).str.strip()`
-                        - Convert: `df[col] = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True)`
-                        - Clean: `df = df.dropna(subset=[col])`
-                        - Validate range: 
-                          ```python
-                          min_date = df[col].min()
-                          max_date = df[col].max()
-                          df = df[(df[col] >= min_date) & (df[col] <= max_date)]
-                          ```
-                        - For time grouping, use only existing data:
-                          ```python
-                          time_span = max_date - min_date
-                          if time_span.total_seconds() <= 7200:  # 2 hours
-                              grouped = df.groupby(df[col].dt.floor('T'))  # minutes
-                          elif time_span.total_seconds() <= 172800:  # 2 days
-                              grouped = df.groupby(df[col].dt.floor('H'))  # hours  
-                          elif time_span.days <= 90:  # 3 months
-                              grouped = df.groupby(df[col].dt.floor('D'))  # days
-                          else:
-                              grouped = df.groupby(df[col].dt.to_period('M'))  # months
-                          ```
-
-                DATA QUALITY HANDLING:
-                - Remove or handle missing values appropriately for each chart type
-                - For high cardinality categorical data (>20 unique values): take top 10-15 categories
-                - For numeric outliers: consider filtering extreme values (beyond 3 standard deviations)
-                - Ensure sufficient data points for meaningful visualizations
-
-                CHART DIVERSITY REQUIREMENTS:
-                - Generate exactly {num_plots} different chart types
-                - Each chart must provide unique insights
-                - Avoid duplicate chart types unless data strongly supports it
-                - Prioritize charts that reveal patterns, trends, anomalies, or distributions
-
-                DATASET PREVIEW:
-                {sample_data}
-
-                COLUMN INFORMATION:
-                {data_types_info}
-
-                Generate Python code that creates {num_plots} insightful, diverse visualizations adapted to this specific dataset structure.
+                        - Consider the date in the date column wherever applicable in the dataset only.Do not assume the dates if not present.
+                        - Strip values using `df[col] = df[col].astype(str).str.strip()`
+                        - Convert to datetime using `pd.to_datetime(df[col], errors='coerce',infer_datetime_format=True, utc=True)`
+                        - Drop rows where datetime conversion failed using `df.dropna(subset=[col], inplace=True)`
+                    - Before using `.dt`, ensure the column is of datetime type using `pd.to_datetime()`.
                 """
-
         try:
             # Generate code using AI
             generated_code = generate_code4(prompt_eng)
@@ -408,15 +337,8 @@ async def gen_plotly_response() -> JSONResponse:
             if 'import' not in generated_code.lower():
                 raise ValueError("Invalid AI response - missing imports")
 
-            # Execute the generated code with enhanced error handling
-            namespace = {
-                'pd': pd, 
-                'px': px, 
-                'go': go, 
-                'df': df.copy(),  # Use copy to prevent modifications to original
-                'np': __import__('numpy')  # Add numpy for calculations
-            }
-            
+            # Execute the generated code
+            namespace = {'pd': pd, 'px': px, 'go': go, 'df': df}
             exec(generated_code, namespace)
 
             # Get the chart dictionary from executed code
@@ -426,7 +348,7 @@ async def gen_plotly_response() -> JSONResponse:
                 raise ValueError("No charts generated - chart_dict is empty")
 
             # Process each generated chart
-            chart_keys = list(chart_dict.keys())[:num_plots]
+            chart_keys = list(chart_dict.keys())[:num_plots]  # Ensure we only take 6 charts
 
             for i, chart_key in enumerate(chart_keys):
                 try:
@@ -452,56 +374,38 @@ async def gen_plotly_response() -> JSONResponse:
                         "chart_data": chart_data_serializable,
                         "chart_file": chart_filename,
                         "description": description,
-                        "status": "success",
-                        "data_insights": {
-                            "rows_used": len(namespace['df']),
-                            "columns_analyzed": len(namespace['df'].columns),
-                            "chart_type": "adaptive"
-                        }
+                        "status": "success"
                     })
 
                 except Exception as e:
                     print(f"Error processing chart '{chart_key}': {str(e)}")
-                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
-                    
-                    # Create fallback visualization for failed charts                
+                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(
+                        FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
                     chart_responses.append({
                         "chart_file": chart_filename,
                         "chart_title": chart_key if 'chart_key' in locals() else f"Chart {i + 1}",
-                        "status": "fallback",
-                        "error": str(e),
-                        "description": "Fallback visualization due to generation error"
+                        "status": "failed",
+                        "error": str(e)
                     })
 
         except Exception as e:
             print(f"Error in chart generation: {str(e)}")
-            # Create fallback charts for all positions
+            # Create fallback empty responses
             for i in range(num_plots):
                 chart_responses.append({
                     "chart_file": FIXED_CHART_FILENAMES[i],
-                    "chart_title": f"Dataset Overview {i + 1}",
-                    "status": "fallback",
-                    "error": str(e),
-                    "description": "Fallback visualization due to generation failure"
+                    "status": "failed",
+                    "error": str(e)
                 })
 
-        # Prepare final response with dataset insights
+            # Prepare final response
         success_count = len([c for c in chart_responses if c.get("status") == "success"])
         response_data = {
             "message": "Chart generation completed",
             "generated_charts": success_count,
             "total_charts": num_plots,
             "chart_files": FIXED_CHART_FILENAMES[:num_plots],
-            "charts": chart_responses,
-            "dataset_info": {
-                "total_rows": dataset_analysis['total_rows'],
-                "total_columns": dataset_analysis['total_columns'],
-                "data_types": {
-                    "numeric": len(dataset_analysis['numeric_columns']),
-                    "categorical": len(dataset_analysis['categorical_columns']),
-                    "datetime": len(dataset_analysis['datetime_columns'])
-                }
-            }
+            "charts": chart_responses
         }
 
         return JSONResponse(content=response_data, status_code=200)
@@ -509,12 +413,12 @@ async def gen_plotly_response() -> JSONResponse:
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail="Data file not found. Please ensure the CSV file exists."
+            detail="Data file not found"
         )
     except pd.errors.EmptyDataError:
         raise HTTPException(
             status_code=400,
-            detail="CSV file is empty or corrupt. Please check the file format."
+            detail="CSV file is empty or corrupt"
         )
     except Exception as e:
         raise HTTPException(
@@ -522,66 +426,45 @@ async def gen_plotly_response() -> JSONResponse:
             detail=f"Chart generation failed: {str(e)}"
         )
 
+
+# Function to generate code from OpenAI API
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # More reliable model
-            messages=[
-                {
-                    "role": "system", 
-                    "content": """You are an expert data visualization developer. Generate ONLY valid Python code.
-                    Rules:
-                    - Return pure Python code with no markdown formatting
-                    - Use try-except blocks for each chart with 'except Exception as e:'
-                    - Adapt visualizations to the specific dataset provided
-                    - Use existing data only - never create artificial data points
-                    - Handle all data types gracefully (numeric, categorical, datetime)
-                    """
-                },
-                {"role": "user", "content": prompt_eng}
-            ],
-            temperature=0.3,  # Lower temperature for more consistent code
-            max_tokens=4000
-        )
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": prompt_eng}
+        ],
+        temperature=0.2,  # Add some randomness for variety in chart generation
+        max_tokens=4000
+    )
 
-        all_text = ""
-        for choice in response.choices:
-            message = choice.message
-            chunk_message = message.content if message else ''
-            all_text += chunk_message
+    all_text = ""
+    for choice in response.choices:
+        message = choice.message
+        chunk_message = message.content if message else ''
+        all_text += chunk_message
 
-        print(f"AI Response: {all_text}")
+    print(f"AI Response: {all_text}")
 
-        # Extract Python code from response (improved extraction)
-        if "```python" in all_text:
-            code_start = all_text.find("```python") + 9
-            code_end = all_text.find("```", code_start)
-            if code_end == -1:
-                code_end = len(all_text)
-            code = all_text[code_start:code_end].strip()
-        elif "```" in all_text:
-            code_start = all_text.find("```") + 3
-            code_end = all_text.find("```", code_start)
-            if code_end == -1:
-                code_end = len(all_text)
-            code = all_text[code_start:code_end].strip()
-        else:
-            code = all_text.strip()
+    # Extract Python code from response
+    if "```python" in all_text:
+        code_start = all_text.find("```python") + 9
+        code_end = all_text.find("```", code_start)
+        if code_end == -1:
+            code_end = len(all_text)
+        code = all_text[code_start:code_end].strip()
+    elif "```" in all_text:
+        code_start = all_text.find("```") + 3
+        code_end = all_text.find("```", code_start)
+        if code_end == -1:
+            code_end = len(all_text)
+        code = all_text[code_start:code_end].strip()
+    else:
+        code = all_text.strip()
 
-        # Basic validation of generated code
-        if not code or len(code) < 50:
-            raise ValueError("Generated code is too short or empty")
-        
-        if 'chart_dict' not in code:
-            raise ValueError("Generated code missing chart_dict")
-
-        return code
-        
-    except Exception as e:
-        print(f"Error in AI code generation: {str(e)}")
-        # Return basic fallback code that will work with any dataset
-        return str(e)
+    return code
 
 
 def make_serializable(obj):
