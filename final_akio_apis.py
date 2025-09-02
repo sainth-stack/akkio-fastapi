@@ -431,12 +431,12 @@ async def gen_plotly_response() -> JSONResponse:
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",  # Updated model name
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a helpful assistant"},
             {"role": "user", "content": prompt_eng}
         ],
-        temperature=0.5,  # Add some randomness for variety in chart generation
+        temperature=0.2,  # Add some randomness for variety in chart generation
         max_tokens=4000
     )
 
