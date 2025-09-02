@@ -274,10 +274,10 @@ async def gen_plotly_response() -> JSONResponse:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g.,patterns, distributions, correlations, anomalies).
                 2. Consider the data source as: {file_path}
                 3. For each chart:
-                   - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
+                   - Use a short, meaningful chart title (as the dictionary key).MUST Add titles very very carefully based on the chart and chartdata.
                    - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
-                     a. Creates the Plotly chart using the dataset.Take the data and {df.columns} as it is from the dataset in the required format only.Do not assume any data which is not present in the dataset,
+                     a. Creates the Plotly chart using the dataset.Take the data and {df.columns} as it is from the dataset in the required format only.Do not assume any data which is not present in the dataset.X-axis labels with data and Y-axis labels with data must be based on the data only not generic.
                      b. Converts the figure to JSON using `fig.to_json()`,
                      c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}`
                      d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
