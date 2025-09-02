@@ -329,7 +329,7 @@ async def gen_plotly_response() -> JSONResponse:
                     - Before using `.dt`, ensure the column is of datetime type using `pd.to_datetime()`.
 
                 NOTE:
-                - Consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.Do not assume any data which is not present in the dataset.
+                - Strictly Consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.Do not assume any data which is not present in the dataset.
                 """
 
 
