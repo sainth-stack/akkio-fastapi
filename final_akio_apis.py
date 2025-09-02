@@ -300,7 +300,6 @@ async def gen_plotly_response() -> JSONResponse:
                   - `facet_row`, `facet_col` for comparison grids,
                   - multi-series charts,
                   - combo charts (e.g., bar + line together),
-                  - rolling averages or moving means,
                   - violin plots to show distributions,
                   - 3D scatter plots (`px.scatter_3d`) where 3 numeric dimensions exist,
                 - Aim for **high-value insights**, like:
