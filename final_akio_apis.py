@@ -268,7 +268,7 @@ async def gen_plotly_response() -> JSONResponse:
         prompt_eng = f"""
                 You are a data visualization expert and a Python Plotly developer.
 
-                I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
+                I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.The column names {df.columns} also consider as it is from the dataset.Do not assume any data which is not present in the dataset.
 
                 Your task is to:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g.,patterns, distributions, correlations, anomalies).
@@ -277,7 +277,7 @@ async def gen_plotly_response() -> JSONResponse:
                    - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
                    - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
-                     a. Creates the Plotly chart using the dataset.Take the data from the dataset in the required format only.Do not assume any data which is not present in the dataset,
+                     a. Creates the Plotly chart using the dataset.Take the data and {df.columns} as it is from the dataset in the required format only.Do not assume any data which is not present in the dataset,
                      b. Converts the figure to JSON using `fig.to_json()`,
                      c. Saves it in a dictionary using `chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}`
                      d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
@@ -330,7 +330,7 @@ async def gen_plotly_response() -> JSONResponse:
 
                 NOTE:
                 - Strictly Consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.Do not assume any data which is not present in the dataset.
-                - 
+                - The column names {df.columns} also consider as it is from the dataset.Do not assume any data which is not present in the dataset.
                 """
 
 
