@@ -269,13 +269,13 @@ async def gen_plotly_response() -> JSONResponse:
         prompt_eng = f"""
                 You are a data visualization expert and a Python Plotly developer.
 
-                I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
+                I will provide you with a sample dataset. MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.
 
                 Your task is to:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
                 2. Consider the data source as: {file_path}
                 3. For each chart:
-                   - Use a short, meaningful chart title (as the dictionary key).Add titles very carefully.
+                   - Use a short, meaningful chart title (as the dictionary key). Add titles very carefully.
                    - Write a brief insight about the chart as a Python comment (`# insight: ...`).
                    - Generate clean Python code that:
                      a. Creates the Plotly chart using the dataset,
@@ -287,12 +287,12 @@ async def gen_plotly_response() -> JSONResponse:
                 Instructions:
                 - Return **only valid Python code**. Do **not** use markdown or bullet points.
                 - Begin with any required imports and initialization of `chart_dict`.
-                - - Do not use `except exception as e:`. It is incorrect Python. Always use `except Exception as e:` (capital E). Any other form is invalid and will cause a runtime error.
+                - Do not use `except exception as e:`. It is incorrect Python. Always use `except Exception as e:` (capital E). Any other form is invalid and will cause a runtime error.
                 - All explanations must be in valid Python comments (`# ...`)
                 - Do not add any extra text outside Python code.
                 - Use a diverse range of charts like: `bar`, `scatter`, `pie`, `box`, `heatmap`, `area`, `violin`, `Scatter3d`, `facet`, or animated plots.
                 - Use **aggregations** like `.groupby(...).mean()`, `.count()`, `.sum()` where helpful.
-                - - Apply **filters** when helpful, such as:
+                - Apply **filters** when helpful, such as:
                   - Top categories by value or count,
                   - Removal of nulls or extreme outliers.
                   - Top categories by frequency or value
@@ -316,19 +316,44 @@ async def gen_plotly_response() -> JSONResponse:
                 - Column names and data types:
                     {data_types_info}
 
-                IMPORTANT:
+                IMPORTANT DATE AND TIME HANDLING:
                     - If you ever write `except exception as e`, your answer is wrong and must be corrected before use.
                     - Ensure column names are used **exactly** as they appear in the dataset. **Do not change the case** or formatting of column names.
                     - Always use `df.columns = df.columns.str.strip()` after loading the dataset to handle unwanted spaces.
-                    - After reading the CSV:
+                    - After reading the CSV, implement robust date handling:
+                    
+                    # Handle all date/time columns with flexible parsing
                     - Use `df.columns = df.columns.str.strip()` to remove leading/trailing spaces from column names.
-                    - For datetime columns:
-                        - Consider the date in the date column wherever applicable in the dataset only.Do not assume the dates if not present.
-                        - Strip values using `df[col] = df[col].astype(str).str.strip()`
-                        - Convert to datetime using `pd.to_datetime(df[col], errors='coerce',infer_datetime_format=True, utc=True)`
-                        - Drop rows where datetime conversion failed using `df.dropna(subset=[col], inplace=True)`
-                    - Before using `.dt`, ensure the column is of datetime type using `pd.to_datetime()`.
+                    - For datetime columns (identify by keywords like 'date', 'time', 'timestamp', or datetime dtypes):
+                        - First, strip whitespace: `df[col] = df[col].astype(str).str.strip()`
+                        - Use flexible datetime parsing: `df[col] = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True, utc=True)`
+                        - Remove rows with invalid dates: `df = df.dropna(subset=[col])`
+                        - **CRITICAL**: After conversion, filter to actual date range in dataset:
+                          ```python
+                          # Get actual date range from the dataset
+                          min_date = df[col].min()
+                          max_date = df[col].max()
+                          # Ensure we only work with data within this actual range
+                          df = df[(df[col] >= min_date) & (df[col] <= max_date)]
+                          ```
+                        - For time-based visualizations, respect the actual time intervals in the data:
+                          - If data spans days, use daily/weekly/monthly aggregations as appropriate
+                          - If data spans hours, use hourly aggregations
+                          - If data spans years, use monthly/quarterly/yearly aggregations
+                          - Always check the actual time span: `time_span = max_date - min_date`
+                    
+                    - Before using `.dt` accessor, always verify the column is datetime type:
+                      ```python
+                      if pd.api.types.is_datetime64_any_dtype(df[col]):
+                          # Then use .dt accessor
+                      ```
+                    
+                    - For time-based charts, use appropriate time grouping based on actual data frequency:
+                      - Check data frequency first: `freq = pd.infer_freq(df[col].sort_values())`
+                      - Group by appropriate intervals (hour, day, week, month, quarter, year) based on actual data span
+                      - Never assume or extend beyond the actual date range in the dataset
                 """
+
         try:
             # Generate code using AI
             generated_code = generate_code4(prompt_eng)
@@ -431,12 +456,49 @@ async def gen_plotly_response() -> JSONResponse:
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1-mini",  # Updated model name
         messages=[
-            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "system", "content": """
+            You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
+
+            Your core responsibilities:
+            - Must consider the data from the file path provided in the prompt from first row to last row.Do not assume any data.
+            - Generate complete, executable Python code for data visualization
+            - Create diverse, insightful charts that reveal different data patterns
+            - Use both plotly.express (px) and plotly.graph_objects (go) appropriately
+            - Apply data analysis techniques: grouping, filtering, aggregation, transformation
+
+            Code Generation Standards:
+            - Always start with necessary imports: pandas, plotly.express, plotly.graph_objects
+            - Generate ONLY valid Python code (no markdown, no text outside comments)
+            - Use proper exception handling: 'except Exception as e:' (capital E)
+            - Create complete, working code blocks with proper indentation
+            - Include meaningful chart titles and descriptions
+            - Apply best practices for data visualization
+
+            Chart Diversity Requirements:
+            - Create different chart types for comprehensive data exploration
+            - Use various Plotly features: faceting, animations, multi-series, custom styling
+            - Focus on actionable insights: trends, outliers, distributions, correlations
+            - Apply appropriate data transformations and filtering
+
+            Technical Requirements:
+            - Return charts in a dictionary format: chart_dict[title] = {"plot_data": fig.to_plotly_json(), "description": "insight"}
+            - Handle edge cases and data quality issues
+            - Use exact data from the provided dataset like date ranges, categories, numeric values.
+            - Use exact column names from provided dataset
+            - Ensure all generated code is immediately executable
+            - Validate data types and handle datetime conversions properly
+
+            Quality Assurance:
+            - Every chart must provide unique insights
+            - Code must be syntactically correct and complete
+            - No placeholder functions or incomplete logic
+            - Proper error handling for robustness
+                """},
             {"role": "user", "content": prompt_eng}
         ],
-        temperature=0.2,  # Add some randomness for variety in chart generation
+        temperature=0.5,  # Add some randomness for variety in chart generation
         max_tokens=4000
     )
 
