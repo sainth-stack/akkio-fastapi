@@ -336,11 +336,33 @@ async def gen_plotly_response() -> JSONResponse:
                           # Ensure we only work with data within this actual range
                           df = df[(df[col] >= min_date) & (df[col] <= max_date)]
                           ```
-                        - For time-based visualizations, respect the actual time intervals in the data:
-                          - If data spans days, use daily/weekly/monthly aggregations as appropriate
-                          - If data spans hours, use hourly aggregations
-                          - If data spans years, use monthly/quarterly/yearly aggregations
-                          - Always check the actual time span: `time_span = max_date - min_date`
+                        - For time-based visualizations, automatically detect and respect actual time intervals:
+                          ```python
+                          # Calculate time span and determine appropriate grouping
+                          time_span = max_date - min_date
+                          total_minutes = time_span.total_seconds() / 60
+                          
+                          if total_minutes <= 120:  # Less than 2 hours
+                              # Group by minutes or use raw timestamps
+                              time_group = df[col].dt.floor('T')  # 'T' for minutes
+                          elif total_minutes <= 2880:  # Less than 2 days  
+                              # Group by hours
+                              time_group = df[col].dt.floor('H')
+                          elif time_span.days <= 60:  # Less than 2 months
+                              # Group by days
+                              time_group = df[col].dt.floor('D')
+                          elif time_span.days <= 730:  # Less than 2 years
+                              # Group by weeks or months
+                              time_group = df[col].dt.to_period('M')
+                          else:
+                              # Group by quarters or years
+                              time_group = df[col].dt.to_period('Q')
+                          ```
+                        - Handle high-frequency time data (minutes/seconds):
+                          - For minute-level data: Use `df[col].dt.floor('T')` for minute grouping
+                          - For second-level data: Use `df[col].dt.floor('S')` for second grouping  
+                          - For sub-minute data: Consider `df[col].dt.floor('10S')` for 10-second intervals
+                          - Use appropriate resampling: `df.set_index(col).resample('5T').mean()` for 5-minute intervals
                     
                     - Before using `.dt` accessor, always verify the column is datetime type:
                       ```python
@@ -349,8 +371,12 @@ async def gen_plotly_response() -> JSONResponse:
                       ```
                     
                     - For time-based charts, use appropriate time grouping based on actual data frequency:
-                      - Check data frequency first: `freq = pd.infer_freq(df[col].sort_values())`
-                      - Group by appropriate intervals (hour, day, week, month, quarter, year) based on actual data span
+                      - Automatically detect time resolution and choose optimal aggregation level
+                      - For minute-level data: Use minute, 5-minute, 15-minute, or hourly groupings
+                      - For hourly data: Use hourly, daily, or weekly groupings  
+                      - For daily data: Use daily, weekly, or monthly groupings
+                      - For monthly data: Use monthly, quarterly, or yearly groupings
+                      - Use pandas resampling for time aggregations: `df.set_index(date_col).resample('5T').mean()`
                       - Never assume or extend beyond the actual date range in the dataset
                 """
 
