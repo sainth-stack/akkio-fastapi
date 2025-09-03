@@ -268,9 +268,7 @@ async def gen_plotly_response() -> JSONResponse:
         prompt_eng = f"""
                 You are a data visualization expert and a Python Plotly developer.
 
-
                 I will provide you with a sample dataset.MUST consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.The column names {df.columns} also consider as it is from the dataset.Do not assume any data which is not present in the dataset.
-
 
                 Your task is to:
                 1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g.,patterns, distributions, correlations, anomalies).
@@ -285,7 +283,6 @@ async def gen_plotly_response() -> JSONResponse:
                      d. Wraps the chart generation and JSON conversion in a `try-except` block using `except Exception as e:` (capital E).
                      
 
-
                 Instructions:
                 - Return **only valid Python code**. Do **not** use markdown or bullet points.
                 - Begin with any required imports and initialization of `chart_dict`.
@@ -299,7 +296,6 @@ async def gen_plotly_response() -> JSONResponse:
                   - Removal of nulls or extreme outliers.
                   - Top categories by frequency or value
 
-
                 - Explore **advanced Plotly features**, such as:
                   - `facet_row`, `facet_col` for comparison grids,
                   - multi-series charts,
@@ -312,28 +308,11 @@ async def gen_plotly_response() -> JSONResponse:
                   - Category-wise contribution to deficit or emissions,
                   - Any shocking anomalies or unexpected gaps.
 
-
                 - Use this preview of the dataset:
                     {sample_data}
 
-
                 - Column names and data types:
                     {data_types_info}
-
-
-                TIME INTERVAL AGGREGATION:
-                - **For high-frequency time series data** (e.g., minute-level, 5-minute intervals, hourly data):
-                  - Automatically detect if datetime data has intervals shorter than daily (minutes, hours)
-                  - Create aggregated views by computing daily, weekly, or monthly summaries
-                  - Use aggregation functions like `.resample('D').mean()`, `.resample('D').sum()`, `.resample('W').mean()` etc.
-                  - Generate charts showing both granular time patterns AND aggregated daily/weekly trends
-                  - For example: if 5-minute interval data exists, create charts showing:
-                    a. Intraday patterns (hourly averages within a day) for all days in the dataset
-                    b. Daily aggregated trends over time
-                    c. Weekly or monthly patterns if sufficient data exists
-                  - Use `.dt.hour`, `.dt.day_name()`, `.dt.month_name()` for temporal pattern analysis
-                  - Consider time-based grouping: `df.groupby([df['datetime_col'].dt.date, df['datetime_col'].dt.hour]).mean()`
-
 
                 IMPORTANT:
                     - If you ever write `except exception as e`, your answer is wrong and must be corrected before use.
@@ -347,17 +326,12 @@ async def gen_plotly_response() -> JSONResponse:
                         - Strip values using `df[col] = df[col].astype(str).str.strip()`
                         - Convert to datetime using `pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True,utc=True)`
                         - Drop rows where datetime conversion failed using `df.dropna(subset=[col], inplace=True)`
-                        - **Detect time intervals**: Check if data has sub-daily frequency using `df[datetime_col].diff().mode()[0]`
-                        - **Apply time aggregations**: For minute/hour data, create daily aggregations using `.resample('D')` operations
                     - Before using `.dt`, ensure the column is of datetime type using `pd.to_datetime()`.
-
 
                 NOTE:
                 - Strictly Consider the data from the file path: {file_path} from first row to last row i.e from {df.index[0]} to {df.index[-1]}.Do not assume any data which is not present in the dataset.
                 - The column names {df.columns} also consider as it is from the dataset.Do not assume any data which is not present in the dataset.
-                - **For time series data with high frequency**: Always include at least one chart showing daily aggregated patterns alongside granular time-based visualizations.
                 """
-
 
 
         try:
