@@ -8,6 +8,7 @@ import re
 import ast
 import textwrap
 import datetime as dt
+import html as html_lib
 from difflib import get_close_matches
 import pandas as pd
 import numpy as np
@@ -21,6 +22,160 @@ from universal_prompts import (
 )
 
 explore_router = APIRouter()
+
+# =========================
+# HTML helpers for text payloads
+# =========================
+def _format_text_as_html(title: str, description: str, body: str) -> str:
+    try:
+        safe_title = html_lib.escape(title or "")
+        safe_desc = html_lib.escape(description or "").strip()
+        safe_body = html_lib.escape(body or "")
+        
+        # Enhanced formatting for better structure
+        formatted_content = ""
+        
+        # Add title as h4 if present
+        if safe_title:
+            formatted_content += f"<h4 style=\"margin: 16px 0 8px 0; font-size: 18px; font-weight: 600; color: #1f2937;\">{safe_title}</h4>\n"
+        
+        # Add description as paragraph if present
+        if safe_desc:
+            formatted_content += f"<p style=\"margin: 0 0 16px 0; color: #6b7280; font-size: 14px; font-style: italic;\">{safe_desc}</p>\n"
+        
+        # Process body content with enhanced formatting
+        if safe_body:
+            # Split content into lines for better processing
+            lines = safe_body.split('\n')
+            processed_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    processed_lines.append("")
+                    continue
+                
+                # Handle numbered KPIs/items (e.g., "1. Average CO₂ Emissions")
+                if re.match(r'^\d+\.\s+\*\*.*\*\*', line):
+                    # Extract heading from bold markdown-style text
+                    heading_match = re.search(r'\*\*(.*?)\*\*', line)
+                    if heading_match:
+                        heading = heading_match.group(1)
+                        remaining = re.sub(r'\d+\.\s+\*\*.*?\*\*\s*', '', line)
+                        processed_lines.append(f"<h4 style=\"margin: 16px 0 8px 0; font-size: 16px; font-weight: 600; color: #1f2937;\">{heading}</h4>")
+                        if remaining.strip():
+                            processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{remaining}</p>")
+                    else:
+                        processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{line}</p>")
+                
+                # Handle bold headings (e.g., "**Average CO₂ Emissions**")
+                elif re.match(r'^\*\*.*\*\*', line):
+                    heading = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+                    processed_lines.append(f"<h4 style=\"margin: 16px 0 8px 0; font-size: 16px; font-weight: 600; color: #1f2937;\">{heading}</h4>")
+                
+                # Handle comma-separated KPI data (e.g., "Average CO2: 3091.58, Average Target: 3088.47")
+                elif ',' in line and ':' in line and line.count(',') >= 2:
+                    # Split by commas and process each KPI separately
+                    kpi_items = [item.strip() for item in line.split(',')]
+                    for kpi_item in kpi_items:
+                        if ':' in kpi_item:
+                            parts = kpi_item.split(':', 1)
+                            if len(parts) == 2:
+                                heading, value = parts
+                                processed_lines.append(f"<h4 style=\"margin: 12px 0 6px 0; font-size: 15px; font-weight: 600; color: #1f2937;\">{heading.strip()}</h4>")
+                                processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{value.strip()}</p>")
+                        else:
+                            processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{kpi_item}</p>")
+                
+                # Handle lines with colons (potential sub-headings)
+                elif ':' in line and not line.startswith(' ') and not line.startswith('-'):
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        heading, content = parts
+                        processed_lines.append(f"<h4 style=\"margin: 12px 0 6px 0; font-size: 15px; font-weight: 600; color: #1f2937;\">{heading.strip()}</h4>")
+                        if content.strip():
+                            processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{content.strip()}</p>")
+                    else:
+                        processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{line}</p>")
+                
+                # Handle bullet points or dashed lists
+                elif line.startswith('- ') or line.startswith('• ') or line.startswith('→ '):
+                    processed_lines.append(f"<p style=\"margin: 0 0 8px 0; color: #374151; font-size: 14px; line-height: 1.6; padding-left: 16px;\">{line}</p>")
+                
+                # Regular paragraphs
+                else:
+                    processed_lines.append(f"<p style=\"margin: 0 0 12px 0; color: #374151; font-size: 14px; line-height: 1.6;\">{line}</p>")
+            
+            # Join processed lines with newlines
+            formatted_content += '\n'.join(processed_lines)
+        
+        # Wrap in a container with proper styling
+        container = f"""<div class="text-answer" style="font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.5; color: #1f2937; padding: 16px; background: #f8fafc; border-radius: 8px; margin: 8px 0;">
+{formatted_content}
+</div>"""
+        
+        return container
+        
+    except Exception:
+        # Fallback to raw text if formatting fails
+        return str(body)
+
+
+def _extract_kpi_from_query(query: str) -> Optional[str]:
+    try:
+        q = (query or "").lower()
+        
+        # Special handling for direct KPI requests
+        if any(phrase in q for phrase in ['give', 'show', 'list', 'get']) and 'kpi' in q:
+            return "Key Performance Indicators"
+        
+        # Look for patterns like: kpi(s) of/for X, metrics for X, measure of X, analysis of X, show me X
+        patterns = [
+            r"kpis?\s*(?:for|of|on|about)?\s*[:\-]?\s*([a-z0-9_ %]+)",
+            r"metrics?\s*(?:for|of|on|about)?\s*[:\-]?\s*([a-z0-9_ %]+)",
+            r"measure\s*(?:for|of|on|about)?\s*[:\-]?\s*([a-z0-9_ %]+)",
+            r"analysis\s*(?:of|for|on)?\s*[:\-]?\s*([a-z0-9_ %]+)",
+            r"show\s+me\s+([a-z0-9_ %]+)",
+            r"what\s+is\s+([a-z0-9_ %]+)",
+            r"explain\s+([a-z0-9_ %]+)",
+            r"tell\s+me\s+about\s+([a-z0-9_ %]+)",
+            r"expand\s+([a-z0-9_ %]+)",
+            r"more\s+about\s+([a-z0-9_ %]+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, q)
+            if m:
+                heading = m.group(1).strip().strip("-:")
+                # Clean up common words
+                heading = re.sub(r'\b(and|or|the|a|an|in|on|at|to|for|of|with|by)\b', '', heading).strip()
+                # Limit overly long headings
+                if len(heading) > 50:
+                    heading = heading[:47] + "..."
+                if heading:  # Only return if we have something meaningful
+                    return heading.title()
+    except Exception:
+        pass
+    return None
+
+
+def _build_html_text_response(query: str, text_body: str) -> Dict[str, object]:
+    heading = _extract_kpi_from_query(query)
+    if heading:
+        title = heading
+        # Better descriptions based on query type
+        q = query.lower()
+        if 'explain' in q or 'expand' in q or 'more' in q:
+            description = f"Detailed explanation and insights for {heading.lower()}"
+        elif 'kpi' in q or 'metric' in q:
+            description = f"Key performance indicators and metrics overview"
+        else:
+            description = f"Analysis and insights for {heading.lower()}"
+    else:
+        # Only show title/description if we have meaningful content
+        title = None
+        description = None
+    html = _format_text_as_html(title, description, text_body)
+    return {"type": "text", "payload": html}
 
 def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, ...]) -> Optional[str]:
     try:
@@ -632,6 +787,10 @@ async def senior_data_analysis(
             if can_handle_directly and structured is not None:
                 intent, column = structured
                 simple_resp = handle_simple_query(df, intent, column)
+                # If simple query returns text or table, wrap text payloads as HTML
+                if simple_resp.get("type") == "text":
+                    html_payload = _build_html_text_response(query, simple_resp.get("payload", ""))
+                    return JSONResponse(content=jsonable_encoder(html_payload), status_code=200)
                 return JSONResponse(content=jsonable_encoder(simple_resp), status_code=200)
 
         # GRAPH agent: two-stage LLM flow → (1) extract clean data (2) plot with Plotly, both with retries
@@ -651,13 +810,15 @@ async def senior_data_analysis(
         payload = analysis_result.get("payload")
 
         if not response_type or not payload:
-            return JSONResponse(content=jsonable_encoder({"type": "text",
-                                         "payload": "I'm sorry, I couldn't process that request. Please try rephrasing."}),
-                                status_code=200)
+            error_message = "I'm sorry, I couldn't process that request. Please try rephrasing."
+            html_response = _build_html_text_response(query, error_message)
+            return JSONResponse(content=jsonable_encoder(html_response), status_code=200)
 
         # Conversational/text-only answer
         if response_type == "conversational_answer":
-            return JSONResponse(content=jsonable_encoder({"type": "text", "payload": payload}), status_code=200)
+            # Wrap conversational/text answers in HTML with heading/description
+            html_payload = _build_html_text_response(query, payload if isinstance(payload, str) else str(payload))
+            return JSONResponse(content=jsonable_encoder(html_payload), status_code=200)
 
         # Data analysis answer with code to execute
         if response_type == "data_analysis_answer":
@@ -665,9 +826,9 @@ async def senior_data_analysis(
             code = payload.get("code")
 
             if not code:
-                return JSONResponse(content={"type": "text",
-                                             "payload": explanation or "I understood your request but couldn't generate the right code. Please try again."},
-                                    status_code=200)
+                error_message = explanation or "I understood your request but couldn't generate the right code. Please try again."
+                html_response = _build_html_text_response(query, error_message)
+                return JSONResponse(content=jsonable_encoder(html_response), status_code=200)
 
             try:
                 exec_result = safe_execute_pandas_code(code, df)
@@ -682,16 +843,19 @@ async def senior_data_analysis(
                         formatted["explanation"] = biz_exp or (explanation or "")
                         return JSONResponse(content=formatted, status_code=200)
 
-                if explanation:
-                    formatted["explanation"] = explanation
+                # Apply HTML formatting to text responses
+                if formatted.get("type") == "text":
+                    text_payload = formatted.get("payload", "")
+                    formatted = _build_html_text_response(query, str(text_payload))
+
                 return JSONResponse(content=jsonable_encoder(formatted), status_code=200)
             except Exception as e:
-                return JSONResponse(content=jsonable_encoder({"type": "text",
-                                             "payload": f"There was an error executing the analysis: {str(e)}",
-                                             "explanation": explanation}), status_code=200)
+                html_error = _build_html_text_response(query, f"There was an error executing the analysis: {str(e)}")
+                return JSONResponse(content=jsonable_encoder(html_error), status_code=200)
 
         # Fallback
-        return JSONResponse(content=jsonable_encoder({"type": "text", "payload": f"Unrecognized response type: {response_type}"}), status_code=200)
+        html_payload = _build_html_text_response(query, f"Unrecognized response type: {response_type}")
+        return JSONResponse(content=jsonable_encoder(html_payload), status_code=200)
 
     except pd.errors.EmptyDataError:
         raise HTTPException(
@@ -707,7 +871,7 @@ async def senior_data_analysis(
 
 def generate_data_code(prompt_eng: str) -> str:
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model="gpt-5o-mini",
         messages=[
             {"role": "system", "content": prompt_for_data_analyst},
             {"role": "user", "content": prompt_eng}
@@ -1190,6 +1354,7 @@ def format_result_for_response(result):
             return {"type": "text", "payload": str(result)}
 
     # scalar/string
+    # Fallback: return plain text without generic headers
     return {"type": "text", "payload": str(result)}
 
 
