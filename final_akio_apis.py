@@ -246,6 +246,171 @@ app.include_router(sla_router)
 app.include_router(explore_router)
 app.include_router(chat2doc)
 
+# Simple SLA Processing API
+@app.post("/api/sla/process")
+async def process_sla_file_api(
+    file: UploadFile = File(...),
+    output_format: str = Form("excel"),
+    clean_format: bool = Form(True)
+):
+    """
+    Simple API to process SLA files with all business logic calculations.
+    
+    Accepts CSV or Excel files, processes them, and stores the result in the processed folder.
+    Returns success message with file location instead of the file itself.
+    
+    Parameters:
+    - output_format: "excel" or "csv" (default: "excel")
+    - clean_format: If True, truncates long text fields for better visibility (default: True)
+    """
+    try:
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+        
+        filename = file.filename
+        if not filename:
+            raise HTTPException(status_code=400, detail="File must have a filename")
+        
+        # Validate file extension
+        file_extension = filename.lower().split('.')[-1]
+        if file_extension not in ['csv', 'xlsx', 'xls']:
+            raise HTTPException(
+                status_code=400, 
+                detail="Unsupported file type. Only CSV, XLS, and XLSX files are supported."
+            )
+        
+        # Validate output format
+        if output_format.lower() not in ['excel', 'csv']:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid output_format. Must be 'excel' or 'csv'."
+            )
+        
+        print(f"📤 Processing SLA file: {filename}")
+        print(f"🔧 Parameters: output_format={output_format}, clean_format={clean_format}")
+        
+        # Read file bytes
+        file_bytes = await file.read()
+        print(f"📄 File read successfully: {len(file_bytes)} bytes")
+        
+        # Import and use SLA processor
+        from sla_processor import process_sla_file_enhanced
+        
+        # Process the file with new options
+        output_filename, processed_bytes = process_sla_file_enhanced(
+            file_bytes, filename, output_format, clean_format
+        )
+        print(f"✅ Processing completed: {output_filename}")
+        
+        # Create processed folder if it doesn't exist
+        processed_folder = "processed"
+        os.makedirs(processed_folder, exist_ok=True)
+        
+        # Save processed file to the processed folder
+        output_path = os.path.join(processed_folder, output_filename)
+        
+        with open(output_path, 'wb') as f:
+            f.write(processed_bytes)
+        
+        print(f"💾 File saved to: {output_path}")
+        
+        # Return success response with file information
+        return {
+            "success": True,
+            "message": "File processed successfully and saved",
+            "input_filename": filename,
+            "output_filename": output_filename,
+            "output_path": output_path,
+            "file_size_bytes": len(processed_bytes),
+            "output_format": output_format,
+            "clean_format": clean_format,
+            "processed_at": pd.Timestamp.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"❌ Error processing SLA file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+
+@app.get("/api/sla/processed")
+async def list_processed_files():
+    """
+    List all processed SLA files in the processed folder.
+    """
+    try:
+        processed_folder = "processed"
+        
+        if not os.path.exists(processed_folder):
+            return {
+                "success": True,
+                "message": "No processed files found",
+                "files": []
+            }
+        
+        files = []
+        for filename in os.listdir(processed_folder):
+            if filename.endswith('.xlsx'):
+                file_path = os.path.join(processed_folder, filename)
+                file_stats = os.stat(file_path)
+                files.append({
+                    "filename": filename,
+                    "path": file_path,
+                    "size_bytes": file_stats.st_size,
+                    "created_at": pd.Timestamp.fromtimestamp(file_stats.st_ctime).isoformat(),
+                    "modified_at": pd.Timestamp.fromtimestamp(file_stats.st_mtime).isoformat()
+                })
+        
+        # Sort by creation time (newest first)
+        files.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return {
+            "success": True,
+            "message": f"Found {len(files)} processed files",
+            "files": files,
+            "total_count": len(files)
+        }
+        
+    except Exception as e:
+        print(f"❌ Error listing processed files: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+
+
+@app.get("/api/sla/processed/{filename}")
+async def download_processed_file(filename: str):
+    """
+    Download a specific processed SLA file from the processed folder.
+    """
+    try:
+        processed_folder = "processed"
+        file_path = os.path.join(processed_folder, filename)
+        
+        # Security check: ensure filename doesn't contain path traversal
+        if '..' in filename or '/' in filename or '\\' in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Read and return file
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+        
+        return Response(
+            content=file_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error downloading processed file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)}")
+
 
 # 1.File upload only-------- It is  useful for uploading the file
 @app.post("/api/upload_only")

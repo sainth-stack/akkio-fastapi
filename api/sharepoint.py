@@ -434,18 +434,33 @@ def select_latest_file(items: list) -> dict | None:
     latest = max(file_items, key=lambda it: parse_dt(it.get("lastModifiedDateTime", "")))
     return latest
 
-def simple_process_to_report(input_bytes: bytes, source_name: str) -> tuple[str, bytes]:
-    """Return bytes unchanged but name output after input file with date-time.
+def process_sla_file_to_report(input_bytes: bytes, source_name: str) -> tuple[str, bytes]:
+    """Process SLA file with full business logic and return processed Excel.
 
-    Example: input "data_file.xlsx" -> "data_file_20250131_143015.xlsx"
+    Uses the dedicated SLA processor to apply all calculations and transformations.
     """
-    # Derive a safe base name from the source file (no extension, sanitized)
-    base = os.path.splitext(os.path.basename(source_name or "report"))[0]
-    safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("._-") or "report"
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_name = f"{safe_base}_{timestamp}.xlsx"
-    return out_name, input_bytes
+    try:
+        # Import the SLA processor (absolute import)
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+        from sla_processor import process_sla_file
+        
+        print(f"🔄 Processing SLA file with full business logic: {source_name}")
+        output_filename, processed_bytes = process_sla_file(input_bytes, source_name)
+        print(f"✅ SLA processing completed: {output_filename}")
+        
+        return output_filename, processed_bytes
+        
+    except Exception as e:
+        print(f"❌ Error in SLA processing: {e}")
+        # Fallback to simple processing if SLA processor fails
+        print("⚠️ Falling back to simple processing...")
+        base = os.path.splitext(os.path.basename(source_name or "report"))[0]
+        safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("._-") or "report"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_name = f"{safe_base}_{timestamp}.xlsx"
+        return out_name, input_bytes
 
 _automation_thread: threading.Thread | None = None
 _automation_stop = threading.Event()
@@ -511,7 +526,7 @@ def run_automation_cycle():
     file_bytes = download_file_from_path(token, drive_id, file_path)
 
     print("🛠️ Processing file to report format...")
-    out_name, out_bytes = simple_process_to_report(file_bytes, item_name)
+    out_name, out_bytes = process_sla_file_to_report(file_bytes, item_name)
 
     print(f"⬆️ Uploading report to output folder as: {out_name}")
     upload_file_to_folder(
