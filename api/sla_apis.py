@@ -16,7 +16,7 @@ from collections import defaultdict
 import threading
 from typing import List, Dict, Any
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import requests
 
@@ -36,13 +36,13 @@ except ImportError:
 
 sla_router = APIRouter()
 
-# Initialize the sentence transformer model for vector search
+# Initialize vector search availability (TF-IDF based)
 try:
-    vector_model = SentenceTransformer('all-MiniLM-L6-v2')
+    from sklearn.feature_extraction.text import TfidfVectorizer as _TFIDF_CHECK  # noqa: F401
     VECTOR_SEARCH_AVAILABLE = True
-except ImportError:
+except Exception:
     VECTOR_SEARCH_AVAILABLE = False
-    print("Warning: SentenceTransformers not available. Vector search will be disabled.")
+    print("Warning: scikit-learn not available. Vector search will be disabled.")
 
 @sla_router.post("/api/upload_processed_data")
 async def upload_processed_data(data: dict):
@@ -1363,7 +1363,7 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
         if not VECTOR_SEARCH_AVAILABLE:
             return JSONResponse(content={
                 "type": "text",
-                "payload": "Vector search functionality is not available. Please install sentence-transformers.",
+                "payload": "Vector search functionality is not available. Please ensure scikit-learn is installed.",
                 "session_id": session_id
             }, status_code=200)
 
@@ -1590,10 +1590,10 @@ def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
         search_keywords = extract_search_keywords(query)
         print(f"Extracted keywords for filtering: {search_keywords}")
         
-        # Limit dataset size for performance (use last 10000 rows if dataset is large)
-        if len(df) > 10000:
-            print(f"Large dataset detected ({len(df)} rows). Using last 10000 rows for faster processing.")
-            df_subset = df.tail(10000).copy()
+        # Limit dataset size for performance (use last 8000 rows if dataset is large)
+        if len(df) > 8000:
+            print(f"Large dataset detected ({len(df)} rows). Using last 8000 rows for faster processing.")
+            df_subset = df.tail(8000).copy()
         else:
             df_subset = df.copy()
         
@@ -1634,22 +1634,15 @@ def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
             return []
         
         print(f"Created search texts for {len(search_texts)} valid rows")
-        
-        # Generate embeddings for search texts and query
-        print("Generating embeddings...")
-        query_embedding = vector_model.encode([query])
-        
-        # Process embeddings in batches for better memory management
-        batch_size = 100
-        text_embeddings = []
-        for i in range(0, len(search_texts), batch_size):
-            batch = search_texts[i:i + batch_size]
-            batch_embeddings = vector_model.encode(batch)
-            text_embeddings.extend(batch_embeddings)
-        
+
+        # TF-IDF vectorization instead of sentence-transformers
+        print("Vectorizing texts with TF-IDF...")
+        vectorizer = TfidfVectorizer(lowercase=True, stop_words='english', ngram_range=(1, 2), max_features=50000)
+        text_matrix = vectorizer.fit_transform(search_texts)
+        query_vector = vectorizer.transform([query])
+
         print("Calculating similarities...")
-        # Calculate cosine similarity
-        similarities = cosine_similarity(query_embedding, text_embeddings)[0]
+        similarities = cosine_similarity(query_vector, text_matrix)[0]
         
         # Combine similarity scores with keyword matches for better ranking
         combined_scores = []

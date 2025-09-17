@@ -14,7 +14,6 @@ pandas
 scikit-learn
 xgboost
 joblib
-sentence-transformers
 
 # Time series forecasting
 prophet
