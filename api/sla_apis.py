@@ -1582,43 +1582,95 @@ def extract_search_keywords(query: str) -> List[str]:
 
 def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
     """
-    Perform vector-based similarity search on the dataset using only 'Request - Text Request' column
-    Returns unique tickets based on 'Request - ID' with higher similarity threshold
+    Perform vector-based similarity search on the dataset with flexible column detection
+    Returns unique tickets based on available ID column with reasonable similarity threshold
     """
     try:
         # Extract keywords for additional filtering
         search_keywords = extract_search_keywords(query)
         print(f"Extracted keywords for filtering: {search_keywords}")
         
-        # Limit dataset size for performance (use last 8000 rows if dataset is large)
-        if len(df) > 8000:
-            print(f"Large dataset detected ({len(df)} rows). Using last 8000 rows for faster processing.")
-            df_subset = df.tail(8000).copy()
-        else:
-            df_subset = df.copy()
+        # Print dataset info for debugging
+        print(f"Dataset shape: {df.shape}")
+        print(f"Available columns: {list(df.columns)}")
+        
+        # Use full dataset for better search coverage
+        df_subset = df.copy()
         
         print(f"Processing {len(df_subset)} rows for vector search...")
         
-        # Create search texts from ONLY 'Request - Text Request' column
+        # Flexible column detection - try multiple possible column names
+        text_columns = ['Request - Text Request', 'Request Description', 'Description', 'Issue Description', 
+                       'Text Request', 'Problem Description', 'Subject', 'Summary', 'Details']
+        id_columns = ['Request - ID', 'Ticket ID', 'ID', 'Request ID', 'ticketId', 'Ticket_ID']
+        
+        # Find the best text column
+        text_col = None
+        for col in text_columns:
+            if col in df.columns:
+                text_col = col
+                print(f"Using text column: {text_col}")
+                break
+        
+        # If no standard text column found, try to find columns with text content
+        if not text_col:
+            best_col = None
+            best_score = 0
+            
+            for col in df.columns:
+                if df[col].dtype == 'object':  # String columns
+                    non_null_count = df[col].notna().sum()
+                    if non_null_count > 0:
+                        sample_texts = df[col].dropna().head(10).astype(str).tolist()
+                        avg_length = sum(len(text) for text in sample_texts) / len(sample_texts) if sample_texts else 0
+                        
+                        # Score based on average length and non-null count
+                        score = avg_length * (non_null_count / len(df))
+                        
+                        if score > best_score and avg_length > 10:  # Minimum meaningful text length
+                            best_score = score
+                            best_col = col
+            
+            if best_col:
+                text_col = best_col
+                print(f"Using detected text column: {text_col} (avg length: {best_score:.1f})")
+        
+        # Find the best ID column
+        id_col = None
+        for col in id_columns:
+            if col in df.columns:
+                id_col = col
+                print(f"Using ID column: {id_col}")
+                break
+        
+        # Fallback to first column if no ID column found
+        if not id_col and len(df.columns) > 0:
+            id_col = df.columns[0]
+            print(f"Using fallback ID column: {id_col}")
+        
+        if not text_col:
+            print("No suitable text column found for vector search")
+            return []
+        
+        # Create search texts
         search_texts = []
         valid_rows = []
         keyword_matches = []
         request_ids = []
         
         for idx, (_, row) in enumerate(df_subset.iterrows()):
-            # Only use 'Request - Text Request' column for similarity calculation
-            request_text = row.get('Request - Text Request', '')
-            request_id = row.get('Request - ID', '')
+            # Get text content from the identified text column
+            request_text = row.get(text_col, '')
+            request_id = row.get(id_col, f'row_{idx}') if id_col else f'row_{idx}'
             
-            # Only include rows with meaningful request text and valid ID
+            # More flexible text validation - accept shorter texts too
             if (pd.notna(request_text) and str(request_text).strip() and 
-                len(str(request_text).strip()) > 10 and 
-                pd.notna(request_id) and str(request_id).strip()):
+                len(str(request_text).strip()) > 3):  # Reduced from 10 to 3 characters
                 
                 # Clean the request text
                 cleaned_text = str(request_text).strip()
                 
-                # Check for keyword matches in request text only
+                # Check for keyword matches in request text
                 text_lower = cleaned_text.lower()
                 keyword_score = 0
                 if search_keywords:
@@ -1630,7 +1682,21 @@ def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
                 request_ids.append(str(request_id).strip())
         
         if not search_texts:
-            print("No valid request text found for vector search")
+            print("ERROR: No valid request text found for vector search")
+            print(f"Text column used: {text_col}")
+            print(f"ID column used: {id_col}")
+            print("Sample data from text column:")
+            if text_col and text_col in df.columns:
+                sample_texts = df[text_col].dropna().head(5).tolist()
+                for i, text in enumerate(sample_texts):
+                    print(f"  Row {i}: '{str(text)[:100]}...' (length: {len(str(text))})")
+            else:
+                print("  Text column not found in dataset")
+            
+            print("\nDebugging info:")
+            print(f"Total rows in dataset: {len(df)}")
+            print(f"Text column '{text_col}' exists: {text_col in df.columns if text_col else False}")
+            print(f"Non-null values in text column: {df[text_col].notna().sum() if text_col and text_col in df.columns else 'N/A'}")
             return []
         
         print(f"Created search texts for {len(search_texts)} valid rows")
@@ -1660,8 +1726,8 @@ def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
         seen_request_ids = set()
         
         for idx, combined_score, original_sim, keyword_score, request_id in combined_scores:
-            # Higher similarity threshold - only keep very similar results
-            min_threshold = 0.3 if keyword_score > 0 else 0.5  # Increased from 0.05/0.1 to 0.3/0.4
+            # Reasonable similarity threshold - allow more matches for better search results
+            min_threshold = 0.1 if keyword_score > 0 else 0.15  # Reduced from 0.3/0.5 to 0.1/0.15 for better recall
             
             # Only include if similarity is above threshold and Request ID is unique
             if original_sim > min_threshold and request_id not in seen_request_ids:
@@ -1696,7 +1762,7 @@ def perform_vector_search(query: str, df: pd.DataFrame, top_k: int = 20):
                 if len(filtered_results) >= top_k:
                     break
         
-        print(f"Found {len(filtered_results)} unique similar results with higher similarity threshold")
+        print(f"Found {len(filtered_results)} unique similar results with threshold {min_threshold}")
         
         # Log some debug info about top results
         if filtered_results:
@@ -1796,16 +1862,31 @@ def get_vector_search_response(query: str, search_results: List[Dict], chat_hist
                         return str_val[:max_length] + "..."
                     return str_val
                 
+                # Use flexible column detection for table display
                 clean_result = {
-                    "Ticket_ID": clean_field(result.get('Request - ID', '')),
-                    "Subject": clean_field(result.get('Request - Subject description', ''), 100),
-                    "Request": clean_field(result.get('Request - Text Request', ''), 150),
-                    "Answer": clean_field(result.get('Request - Text Answer', ''), 150),
-                    "Status": clean_field(result.get('Req. Status - Description', '')),
-                    "Priority": clean_field(result.get('Request - Priority Description', '')),
-                    "Category": clean_field(result.get('Request - Category', '')),
                     "Similarity": f"{result.get('similarity_score', 0):.2f}"
                 }
+                
+                # Add available columns dynamically
+                possible_columns = {
+                    "Ticket_ID": ['Request - ID', 'Ticket ID', 'ID', 'Request ID', 'ticketId'],
+                    "Subject": ['Request - Subject description', 'Subject', 'Summary', 'Title'],
+                    "Request": ['Request - Text Request', 'Description', 'Issue Description', 'Problem Description'],
+                    "Answer": ['Request - Text Answer', 'Answer', 'Solution', 'Resolution'],
+                    "Status": ['Req. Status - Description', 'Status', 'Current Status', 'State'],
+                    "Priority": ['Request - Priority Description', 'Priority', 'Ticket Priority'],
+                    "Category": ['Request - Category', 'Category', 'Type']
+                }
+                
+                for display_name, possible_cols in possible_columns.items():
+                    for col in possible_cols:
+                        if col in result:
+                            max_length = 150 if display_name in ['Request', 'Answer'] else 100
+                            clean_result[display_name] = clean_field(result.get(col, ''), max_length)
+                            break
+                    else:
+                        # If no column found, add empty string
+                        clean_result[display_name] = ""
                 table_data.append(clean_result)
             
             return {
