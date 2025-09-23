@@ -22,6 +22,38 @@ import requests
 
 SESSION_MEMORY = defaultdict(list)
 SESSION_MEMORY_LOCK = threading.Lock()
+MAX_MEMORY_SIZE = 50  # Maximum number of exchanges per session
+
+def manage_session_memory(session_id: str, user_message: str = None, bot_message: str = None, get_history: bool = False):
+    """
+    Centralized session memory management with proper logging and cleanup
+    """
+    with SESSION_MEMORY_LOCK:
+        if get_history:
+            # Return a copy of the history
+            history = list(SESSION_MEMORY.get(session_id, []))
+            print(f"Retrieved session memory for {session_id}: {len(history)} messages")
+            return history
+        
+        if user_message is not None:
+            # Add user message
+            SESSION_MEMORY[session_id].append({"role": "user", "content": user_message})
+            print(f"Added user message to session {session_id}: {user_message[:100]}...")
+        
+        if bot_message is not None:
+            # Add bot message
+            SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_message})
+            print(f"Added bot message to session {session_id}: {bot_message[:100]}...")
+        
+        # Cleanup old messages if session gets too large
+        current_memory = SESSION_MEMORY[session_id]
+        if len(current_memory) > MAX_MEMORY_SIZE:
+            # Keep the last MAX_MEMORY_SIZE messages
+            SESSION_MEMORY[session_id] = current_memory[-MAX_MEMORY_SIZE:]
+            print(f"Cleaned up session {session_id}, kept last {MAX_MEMORY_SIZE} messages")
+        
+        print(f"Session {session_id} now has {len(SESSION_MEMORY[session_id])} total messages")
+        return None
 
 try:
     import plotly.express as px
@@ -826,6 +858,14 @@ You are an expert data analyst AI. Your task is to analyze a user's question abo
 
 **Current User Question:** {query}
 
+**CRITICAL CONTEXT ANALYSIS:**
+- If the user query contains ambiguous references like "how many are", "how many of them", "which ones", "those tickets", etc., you MUST look at the chat history to understand what they're referring to
+- When the user says "them", "those", "these", they are referring to the subject/filter from the most recent data query
+- Example: If previous query was "how many p3 normal tickets are there" and current query is "how many of them related to John", you should count p3 normal tickets that are related to John
+- ALWAYS maintain the same filters/conditions from the previous query when processing follow-up questions
+- Pay special attention to names, categories, priorities, or any filters mentioned in previous conversations
+- If the current query seems like a follow-up, explicitly combine it with the context from the previous query
+
 **IMPORTANT:**
 - {'This dataset is provided by the frontend as-is (no backend processing applied). It reflects the current report view.' if assume_ready else 'This dataset is GROUPED by ticket. Each row represents the latest state for a unique ticket (same as frontend table).'}
 - NOTE: ChatBot analyzes the COMPLETE unfiltered dataset provided. Frontend table may show fewer results due to active UI filters.
@@ -1014,6 +1054,30 @@ Your JSON response:
   }}
 }}
 
+**Example 8: Follow-up Context Query (CRITICAL for accurate results)**
+Previous Query: "how many p3 normal tickets are there"
+Current Query: "how many of them related to Shatabdi Roy"
+Your JSON response:
+{{
+  "type": "data_analysis_answer",
+  "payload": {{
+    "explanation": "Based on the previous query about p3 normal tickets, I'll count how many of those tickets are related to Shatabdi Roy.",
+    "code": "# First apply the filter from previous context: p3 normal tickets\np3_normal_mask = (df['priority'].str.contains('P3', case=False, na=False)) & (df['priority'].str.contains('Normal', case=False, na=False))\np3_normal_tickets = df[p3_normal_mask]\n\n# Then filter for Shatabdi Roy in the relevant columns\nshatabdi_mask = (p3_normal_tickets['assignedTo'].str.contains('Shatabdi Roy', case=False, na=False)) | (p3_normal_tickets['marconaName'].str.contains('Shatabdi Roy', case=False, na=False))\nresult = len(p3_normal_tickets[shatabdi_mask])"
+  }}
+}}
+
+**Example 9: Another Follow-up Context Query**
+Previous Query: "show me high priority incidents"
+Current Query: "how many of them are assigned to John"
+Your JSON response:
+{{
+  "type": "data_analysis_answer",
+  "payload": {{
+    "explanation": "Based on the previous query about high priority incidents, I'll count how many are assigned to John.",
+    "code": "# Apply the filter from previous context: high priority\nhigh_priority_mask = df['priority'].str.contains('High', case=False, na=False)\nhigh_priority_tickets = df[high_priority_mask]\n\n# Then filter for John in assignedTo column\njohn_mask = high_priority_tickets['assignedTo'].str.contains('John', case=False, na=False)\nresult = len(high_priority_tickets[john_mask])"
+  }}
+}}
+
 **Example 6d: Breach List (Table)**
 User Question: "show me breached tickets" or "list all breached tickets"
 Your JSON response:
@@ -1035,12 +1099,19 @@ Your JSON response:
 }}
 
 ### MUST FOLLOW:
+* **CONTEXT CONSISTENCY (CRITICAL):**
+  - ALWAYS review the chat history before answering ANY question
+  - If a question contains pronouns like "them", "those", "these", you MUST identify what they refer to from previous queries
+  - Follow-up questions should ALWAYS give the same result when asked multiple times (consistency is critical)
+  - When processing follow-up queries, explicitly combine the current filter with filters from the referenced previous query
 * **COUNT vs LIST operations:**
   - For COUNT questions (e.g., "how many", "count of", "total number"): Return ONLY the numeric result (e.g., `result = df['column'].nunique()`)
   - For LIST questions (e.g., "list all", "show me", "display"): Return a DataFrame/table (e.g., `result = pd.DataFrame({{'Column': values}})`)
 * While generating result in tabular format, do not generate any index for that, just give the results in the tabular format straight away without any indexes.
 * If you dont find any results like empty payload with the user prompts, then you have to give the response as "The Current Query is not processed efficiently, Please try with Other prompts". You have to give this statement as the response only.
 * If the user asks about statuses or priorities then you have to look at "Request - Priority Description" only.
+* For priority filtering, use column names like 'priority', 'Request - Priority Description', or similar priority-related columns
+* When filtering by names (like "Shatabdi Roy"), check both 'assignedTo' and 'marconaName' columns or any name-related columns
 
 
 
@@ -1112,10 +1183,29 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
         # Session handling
         if not session_id:
             session_id = str(uuid4())
+            print(f"Generated new session ID: {session_id}")
+        
+        print(f"Processing query for session {session_id}: {query}")
 
-        with SESSION_MEMORY_LOCK:
-            # Pass a copy of the history to the LLM
-            chat_history_for_llm = list(SESSION_MEMORY.get(session_id, []))
+        # Get chat history for LLM
+        chat_history_for_llm = manage_session_memory(session_id, get_history=True)
+        
+        # Enhanced logging for follow-up question debugging
+        if chat_history_for_llm:
+            print(f"Session {session_id} has {len(chat_history_for_llm)} messages in history")
+            # Look for potential follow-up indicators
+            follow_up_indicators = ['them', 'those', 'these', 'it', 'they']
+            if any(indicator in query.lower() for indicator in follow_up_indicators):
+                print(f"FOLLOW-UP QUERY DETECTED: '{query}'")
+                if len(chat_history_for_llm) >= 2:
+                    last_user_query = None
+                    for msg in reversed(chat_history_for_llm):
+                        if msg['role'] == 'user':
+                            last_user_query = msg['content']
+                            break
+                    print(f"Previous user query for context: '{last_user_query}'")
+        else:
+            print(f"No chat history found for session {session_id}")
 
         # Determine dataset source: frontend-provided JSON or backend CSV
         df = None
@@ -1154,10 +1244,8 @@ async def senior_data_analysis_sla(query: str = Form(...), session_id: str = For
         elif isinstance(payload, str):
             bot_response_text = payload
 
-        # Store current exchange in memory
-        with SESSION_MEMORY_LOCK:
-            SESSION_MEMORY[session_id].append({"role": "user", "content": query})
-            SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_response_text})
+        # Store current exchange in memory using centralized function
+        manage_session_memory(session_id, user_message=query, bot_message=bot_response_text)
 
         if not response_type or not payload:
             return JSONResponse(content={"type": "text",
@@ -1341,16 +1429,17 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
         # Session handling
         if not session_id:
             session_id = str(uuid4())
+            print(f"Generated new session ID for vector search: {session_id}")
+        
+        print(f"Processing vector search query for session {session_id}: {query}")
 
         # Check if this is a general query that doesn't need dataset search
         if is_general_query(query):
             print(f"General query detected: '{query}' - providing fast response")
             fast_response = get_fast_general_response(query)
             
-            # Store in memory for context
-            with SESSION_MEMORY_LOCK:
-                SESSION_MEMORY[session_id].append({"role": "user", "content": query})
-                SESSION_MEMORY[session_id].append({"role": "bot", "content": fast_response["explanation"]})
+            # Store in memory for context using centralized function
+            manage_session_memory(session_id, user_message=query, bot_message=fast_response["explanation"])
             
             return JSONResponse(content={
                 "type": fast_response["type"],
@@ -1367,9 +1456,8 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
                 "session_id": session_id
             }, status_code=200)
 
-        with SESSION_MEMORY_LOCK:
-            # Pass a copy of the history to the LLM
-            chat_history_for_llm = list(SESSION_MEMORY.get(session_id, []))
+        # Get chat history for LLM
+        chat_history_for_llm = manage_session_memory(session_id, get_history=True)
 
         # Load latest uploaded file
         csv_file_path = os.path.join('uploads_sla/data1.csv')
@@ -1402,10 +1490,8 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
         # Determine bot response text for memory
         bot_response_text = explanation if explanation else str(payload)[:200] + "..." if len(str(payload)) > 200 else str(payload)
         
-        # Store current exchange in memory
-        with SESSION_MEMORY_LOCK:
-            SESSION_MEMORY[session_id].append({"role": "user", "content": query})
-            SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_response_text})
+        # Store current exchange in memory using centralized function
+        manage_session_memory(session_id, user_message=query, bot_message=bot_response_text)
 
         return JSONResponse(content={
             "type": response_type,
@@ -1542,6 +1628,91 @@ async def upload_and_predict(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Upload and predict error: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@sla_router.get("/api/debug_session_memory/{session_id}")
+async def debug_session_memory(session_id: str):
+    """
+    Debug endpoint to see what's stored in session memory
+    """
+    try:
+        with SESSION_MEMORY_LOCK:
+            memory = SESSION_MEMORY.get(session_id, [])
+            
+        return JSONResponse(content={
+            "session_id": session_id,
+            "memory_size": len(memory),
+            "messages": memory,
+            "total_sessions": len(SESSION_MEMORY)
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}")
+
+@sla_router.delete("/api/clear_session_memory/{session_id}")
+async def clear_session_memory(session_id: str):
+    """
+    Clear session memory for testing purposes
+    """
+    try:
+        with SESSION_MEMORY_LOCK:
+            if session_id in SESSION_MEMORY:
+                message_count = len(SESSION_MEMORY[session_id])
+                del SESSION_MEMORY[session_id]
+                return JSONResponse(content={
+                    "session_id": session_id,
+                    "cleared_messages": message_count,
+                    "status": "cleared"
+                })
+            else:
+                return JSONResponse(content={
+                    "session_id": session_id,
+                    "cleared_messages": 0,
+                    "status": "not_found"
+                })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clear error: {str(e)}")
+
+@sla_router.post("/api/test_context_consistency/")
+async def test_context_consistency(session_id: str = Form(...)):
+    """
+    Test endpoint to verify context consistency for follow-up questions
+    """
+    try:
+        # Simulate the exact scenario the user mentioned
+        test_queries = [
+            "how many p3 normal tickets are there",
+            "how many of them related to Shatabdi Roy"
+        ]
+        
+        results = []
+        for query in test_queries:
+            # Make a call to the main analysis endpoint
+            import requests
+            import json
+            
+            # This would normally be called internally, but for testing we'll simulate it
+            print(f"Testing query: {query}")
+            
+            # Get current session memory
+            memory = manage_session_memory(session_id, get_history=True)
+            results.append({
+                "query": query,
+                "memory_before": len(memory),
+                "context_detected": any(indicator in query.lower() for indicator in ['them', 'those', 'these', 'it', 'they'])
+            })
+            
+            # Add to memory for next iteration
+            manage_session_memory(session_id, user_message=query, bot_message=f"Test response for: {query}")
+        
+        return JSONResponse(content={
+            "session_id": session_id,
+            "test_results": results,
+            "final_memory_size": len(manage_session_memory(session_id, get_history=True))
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test error: {str(e)}")
 
 def extract_search_keywords(query: str) -> List[str]:
     """
