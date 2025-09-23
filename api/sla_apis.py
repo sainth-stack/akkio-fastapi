@@ -2066,8 +2066,8 @@ def get_vector_search_response(query: str, search_results: List[Dict], chat_hist
                 "explanation": f"Found {len(search_results)} matching tickets. Showing top {len(table_data)} results."
             }
         
-        # Handle explanation queries and general queries
-        else:
+        # Handle explanation queries - only when explicitly asking for explanations
+        elif intent == 'explain':
             # Prepare context from search results
             context_info = []
             for i, result in enumerate(search_results[:5]):  # Use top 5 results for context
@@ -2120,6 +2120,54 @@ Now provide your response:
                 "type": "text",
                 "payload": content,
                 "explanation": f"Analysis based on {len(search_results)} similar cases found in the knowledge base."
+            }
+        
+        # Handle general queries (direct descriptions) - default to showing list of similar tickets
+        else:
+            # Clean up the search results for table display
+            table_data = []
+            for result in search_results[:20]:  # Show up to 20 results for general queries
+                
+                # Helper function to clean field values
+                def clean_field(value, max_length=None):
+                    if pd.isna(value) or value is None or value == "":
+                        return ""
+                    str_val = str(value).strip()
+                    if max_length and len(str_val) > max_length:
+                        return str_val[:max_length] + "..."
+                    return str_val
+                
+                # Use flexible column detection for table display
+                clean_result = {
+                    "Similarity": f"{result.get('similarity_score', 0):.2f}"
+                }
+                
+                # Add available columns dynamically
+                possible_columns = {
+                    "Ticket_ID": ['Request - ID', 'Ticket ID', 'ID', 'Request ID', 'ticketId'],
+                    "Subject": ['Request - Subject description', 'Subject', 'Summary', 'Title'],
+                    "Request": ['Request - Text Request', 'Description', 'Issue Description', 'Problem Description'],
+                    "Answer": ['Request - Text Answer', 'Answer', 'Solution', 'Resolution'],
+                    "Status": ['Req. Status - Description', 'Status', 'Current Status', 'State'],
+                    "Priority": ['Request - Priority Description', 'Priority', 'Ticket Priority'],
+                    "Category": ['Request - Category', 'Category', 'Type']
+                }
+                
+                for display_name, possible_cols in possible_columns.items():
+                    for col in possible_cols:
+                        if col in result:
+                            max_length = 150 if display_name in ['Request', 'Answer'] else 100
+                            clean_result[display_name] = clean_field(result.get(col, ''), max_length)
+                            break
+                    else:
+                        # If no column found, add empty string
+                        clean_result[display_name] = ""
+                table_data.append(clean_result)
+            
+            return {
+                "type": "table",
+                "payload": table_data,
+                "explanation": f"Found {len(search_results)} similar tickets for your description. Showing top {len(table_data)} results."
             }
             
     except Exception as e:
