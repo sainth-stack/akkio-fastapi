@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import requests
 from fastapi import FastAPI
-from fastapi import UploadFile, File, Form, HTTPException, Request, status
+from fastapi import UploadFile, File, Form, HTTPException, Request, status, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +65,7 @@ from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import OpenAIEmbeddings
 import shutil
 from api.sla_apis import sla_router
+from api.sla_tabs_api import sla_tabs_router
 from api.explore_api import explore_router
 from api.sharepoint import (
     list_sharepoint_files as sp_list_sharepoint_files,
@@ -243,6 +244,7 @@ db = PostgresDatabase()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
+app.include_router(sla_tabs_router)
 app.include_router(explore_router)
 app.include_router(chat2doc)
 
@@ -676,7 +678,10 @@ FIXED_CHART_FILENAMES = [
 
 
 @app.post("/api/dashboard")
-async def gen_plotly_response() -> JSONResponse:
+async def gen_plotly_response(
+    count: int = Query(default=4, ge=1, le=10, description="Number of charts to generate"),
+    type: str = Query(default="basic", regex="^(basic|advanced)$", description="Chart type: basic or advanced")
+) -> JSONResponse:
     try:
         # Load and process data
         csv_file_path = 'data.csv'
@@ -685,87 +690,120 @@ async def gen_plotly_response() -> JSONResponse:
         # Clean column names
         df.columns = df.columns.str.strip()
 
-        num_plots = 4  # Number of plots to generate per topic
-        basic_plots=2
+        num_plots = count
+        chart_type = type.lower()
         file_path = csv_file_path
-        sample_data = df.head(10).to_string()
+        
+        # Use more data for better insights, but limit to prevent token overflow
+        sample_size = min(100, len(df))
+        sample_data = df.head(sample_size).to_string()
         data_types_info = df.dtypes.to_string()
+        
+        # Get basic data statistics for better chart generation
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        
+        # Detect potential date columns
+        potential_date_cols = []
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Check if column contains date-like strings
+                sample_vals = df[col].dropna().head(5).astype(str).tolist()
+                for val in sample_vals:
+                    if any(char in val for char in ['-', '/', ' ']) and any(char.isdigit() for char in val):
+                        potential_date_cols.append(col)
+                        break
+        
+        data_shape = f"Rows: {len(df)}, Columns: {len(df.columns)}"
+        
         chart_responses = []
 
+        # Create dynamic chart filenames based on count
+        chart_filenames = [f"chart_{i+1}.json" for i in range(max(1, num_plots))]
+        
         # Initialize all chart files as empty
-        for filename in FIXED_CHART_FILENAMES:
+        for filename in chart_filenames:
             chart_path = os.path.join(CHARTS_DIR, filename)
             with open(chart_path, "w") as f:
                 json.dump({}, f)
 
-        # Process each topic to generate charts
-        prompt_eng = (f"""
-                        You are a data visualization expert and a Python Plotly developer.For Each request you have to generate the graphs dynamically based on the dataset given.
+        # Create optimized prompts based on chart type
+        if chart_type == "basic":
+            chart_types_instruction = """
+            Generate ONLY basic, easy-to-understand charts:
+            - Bar charts for categorical data comparisons
+            - Line charts for trends over time 
+            - Pie charts for proportion/percentage data
+            - Scatter plots for simple correlations
+            - Simple histograms for distributions
+            Focus on clarity and simplicity. Avoid complex features like faceting, animations, or 3D plots.
+            """
+        else:  # advanced
+            chart_types_instruction = """
+            Generate advanced, complex charts for deeper insights:
+            - Box plots and violin plots for distribution analysis
+            - Heatmaps for correlation matrices
+            - 3D scatter plots for multi-dimensional analysis
+            - Faceted plots for comparative analysis
+            - Animated charts for time-series trends
+            - Sunburst or treemap for hierarchical data
+            - Advanced statistical plots (regression lines, confidence intervals)
+            Use sophisticated Plotly features and statistical analysis.
+            """
 
-                        I will provide you with a sample dataset.
+        prompt_eng = f"""
+You are a data visualization expert. Generate {num_plots} {chart_type} charts using the provided dataset.
 
-                        Your task is to:
-                        1. Analyze the dataset and identify the top {num_plots} most insightful charts (e.g., trends, distributions, correlations, anomalies).
-                        2.You *MUST* have to generate {basic_plots} basic plots and {num_plots-basic_plots} advanced plots.
-                        3. Consider the data source as: {file_path}
-                        4. For each chart:
-                           - Use a short, meaningful chart title (as the dictionary key).
-                           - Write a brief insight about the chart as a Python comment (# insight: ...).
-                           - Generate clean Python code that:
-                             a. Creates the Plotly chart using the dataset,
-                             b. Converts the figure to JSON using fig.to_json(),
-                             c. Saves it in a dictionary using chart_dict[<chart_title>] = {{'plot_data': ..., 'description': ...}}
-                             d. Wraps the chart generation and JSON conversion in a try-except block using except Exception as e: (capital E).
+Dataset Info:
+- Shape: {data_shape}
+- Numeric columns: {numeric_cols}
+- Categorical columns: {categorical_cols}
+- Potential date columns: {potential_date_cols}
 
+{chart_types_instruction}
 
-                        Instructions:
-                        - Return *only valid Python code. Do **not* use markdown or bullet points.
-                        - Begin with any required imports and initialization of chart_dict.
-                        - - Do not use except exception as e:. It is incorrect Python. Always use except Exception as e: (capital E). Any other form is invalid and will cause a runtime error.
-                        - All explanations must be in valid Python comments (# ...)
-                        - Do not add any extra text outside Python code.
-                        - Use a diverse range of charts like: line, bar, scatter, pie, box, heatmap, area, violin, Scatter3d, facet, or animated plots.
-                        - Use *aggregations* like .groupby(...).mean(), .count(), .sum() where helpful.
-                        - - Apply *filters* when helpful, such as:
-                          - Top N categories by value or count,
-                          - Recent date ranges,
-                          - Removal of nulls or extreme outliers.
-                          - Top 5 categories by frequency or value
+Requirements:
+1. Return ONLY valid Python code (no markdown, no explanations outside comments)
+2. Initialize: chart_dict = {{}}
+3. For each chart:
+   - Use try-except blocks: except Exception as e: (capital E)
+   - Store as: chart_dict["Chart_Title"] = {{"plot_data": fig.to_json(), "description": "insight"}}
+   - Use exact column names from dataset
+   - Add meaningful titles and insights as comments
 
-                        - Explore *advanced Plotly features*, such as:
-                          - facet_row, facet_col for comparison grids,
-                          - multi-series (e.g. line or scatter with color=column),
-                          - combo charts (e.g., bar + line together),
-                          - rolling averages or moving means,
-                          - violin plots to show distributions,
-                          - 3D scatter plots (px.scatter_3d) where 3 numeric dimensions exist,
-                          - animations (animation_frame, animation_group) if time-based trends are useful.
-                        - Aim for *high-value insights*, like:
-                          - Seasonality or cyclic patterns,
-                          - Equipment performing worse than average,
-                          - Category-wise contribution to deficit or emissions,
-                          - Any shocking anomalies or unexpected gaps.
+4. Use the FULL dataset (df) for analysis, not just samples
+5. Apply data cleaning: df.columns = df.columns.str.strip()
+6. Use aggregations (.groupby(), .sum(), .count()) when appropriate
+7. Filter data intelligently (top N, remove outliers, date ranges)
 
-                        - Use this preview of the dataset:
-                            {sample_data}
+DATE FORMATTING REQUIREMENTS:
+8. For datetime columns on x-axis (especially: {potential_date_cols}):
+   - Convert to datetime: pd.to_datetime(df[col], errors='coerce')
+   - Use proper date formatting in Plotly:
+     * For daily data: fig.update_xaxes(tickformat='%Y-%m-%d')
+     * For monthly data: fig.update_xaxes(tickformat='%b %Y')
+     * For yearly data: fig.update_xaxes(tickformat='%Y')
+   - Set readable tick angles: fig.update_xaxes(tickangle=45)
+   - For time series, use: fig.update_xaxes(type='date')
 
-                        - Column names and data types:
-                            {data_types_info}
+9. Example date formatting code:
+   ```
+   fig.update_xaxes(
+       tickformat='%Y-%m-%d',
+       tickangle=45,
+       type='date'
+   )
+   ```
 
-                        IMPORTANT:
-                            - If you ever write except exception as e, your answer is wrong and must be corrected before use.
-                            - Ensure column names are used *exactly* as they appear in the dataset. *Do not change the case* or formatting of column names.
-                            - Always use df.columns = df.columns.str.strip() after loading the dataset to handle unwanted spaces.
-                            - After reading the CSV:
-                            - Use df.columns = df.columns.str.strip() to remove leading/trailing spaces from column names.
-                            - For datetime columns:
-                                - Strip values using df[col] = df[col].astype(str).str.strip()
-                                - Convert to datetime using pd.to_datetime(df[col], errors='coerce', utc=True)
-                                - Drop rows where datetime conversion failed using df.dropna(subset=[col], inplace=True)
-                            - Before using .dt, ensure the column is of datetime type using pd.to_datetime().
-                            - The basic plots should be simple and straightforward which can be easily understandable by the user, while the advanced plots should be more complex and insightful.
-                        """
-                      )
+Data preview:
+{sample_data}
+
+Column types:
+{data_types_info}
+
+Generate diverse, insightful {chart_type} charts that reveal different data patterns.
+IMPORTANT: Always format date axes properly for readability!
+"""
 
         try:
             # Generate code using AI
@@ -782,11 +820,12 @@ async def gen_plotly_response() -> JSONResponse:
             # Get the chart dictionary from executed code
             chart_dict = namespace.get("chart_dict", {})
 
-            if not chart_dict:
-                raise ValueError("No charts generated - chart_dict is empty")
+            if not chart_dict or not isinstance(chart_dict, dict):
+                raise ValueError("No charts generated - chart_dict is empty or invalid")
 
-            # Process each generated chart
-            chart_keys = list(chart_dict.keys())[:num_plots]  # Ensure we only take 6 charts
+            # Process each generated chart with improved error handling
+            chart_keys = list(chart_dict.keys())[:num_plots] if isinstance(chart_dict, dict) else []
+            failed_charts = []
 
             for i, chart_key in enumerate(chart_keys):
                 try:
@@ -799,7 +838,7 @@ async def gen_plotly_response() -> JSONResponse:
 
                     # Make data serializable
                     chart_data_serializable = make_serializable(chart_data)
-                    chart_filename = FIXED_CHART_FILENAMES[i]
+                    chart_filename = chart_filenames[i]
                     chart_path = os.path.join(CHARTS_DIR, chart_filename)
 
                     # Save individual chart file
@@ -817,8 +856,8 @@ async def gen_plotly_response() -> JSONResponse:
 
                 except Exception as e:
                     print(f"Error processing chart '{chart_key}': {str(e)}")
-                    chart_filename = FIXED_CHART_FILENAMES[i] if i < len(
-                        FIXED_CHART_FILENAMES) else f"chart_{i + 1}.json"
+                    chart_filename = chart_filenames[i] if i < len(chart_filenames) else f"chart_{i + 1}.json"
+                    failed_charts.append(i)
                     chart_responses.append({
                         "chart_file": chart_filename,
                         "chart_title": chart_key if 'chart_key' in locals() else f"Chart {i + 1}",
@@ -826,24 +865,80 @@ async def gen_plotly_response() -> JSONResponse:
                         "error": str(e)
                     })
 
+            # Attempt to regenerate failed charts individually (if any)
+            if failed_charts and isinstance(failed_charts, list) and len(failed_charts) < num_plots:
+                print(f"Attempting to regenerate {len(failed_charts)} failed charts...")
+                for failed_index in failed_charts:
+                    try:
+                        # Create a simpler prompt for individual chart regeneration
+                        simple_prompt = f"""
+Generate 1 simple {chart_type} chart for this dataset. Return only Python code.
+
+chart_dict = {{}}
+# Generate exactly 1 chart and store as:
+# chart_dict["Chart_Name"] = {{"plot_data": fig.to_json(), "description": "insight"}}
+
+Dataset info:
+{sample_data[:500]}...
+
+Use basic chart types: bar, line, pie, or scatter plot.
+
+IMPORTANT: For any date columns on x-axis, format them properly:
+- Convert to datetime: pd.to_datetime(df[col], errors='coerce')
+- Add formatting: fig.update_xaxes(tickformat='%Y-%m-%d', tickangle=45, type='date')
+"""
+                        regenerated_code = generate_code4(simple_prompt)
+                        namespace = {'pd': pd, 'px': px, 'go': go, 'df': df}
+                        exec(regenerated_code, namespace)
+                        
+                        regen_chart_dict = namespace.get("chart_dict", {})
+                        if regen_chart_dict:
+                            chart_key = list(regen_chart_dict.keys())[0]
+                            chart_info = regen_chart_dict[chart_key]
+                            chart_data = chart_info.get("plot_data")
+                            
+                            if chart_data:
+                                chart_data_serializable = make_serializable(chart_data)
+                                chart_filename = chart_filenames[failed_index]
+                                chart_path = os.path.join(CHARTS_DIR, chart_filename)
+                                
+                                with open(chart_path, "w", encoding="utf-8") as f:
+                                    json.dump(chart_data_serializable, f, indent=2, ensure_ascii=False)
+                                
+                                # Update the failed chart response
+                                chart_responses[failed_index] = {
+                                    "timestamp": datetime.now().isoformat(),
+                                    "chart_title": chart_key,
+                                    "chart_data": chart_data_serializable,
+                                    "chart_file": chart_filename,
+                                    "description": chart_info.get("description", ""),
+                                    "status": "success"
+                                }
+                                print(f"Successfully regenerated chart {failed_index + 1}")
+                    except Exception as e:
+                        print(f"Failed to regenerate chart {failed_index + 1}: {str(e)}")
+                        continue
+
         except Exception as e:
             print(f"Error in chart generation: {str(e)}")
             # Create fallback empty responses
-            for i in range(num_plots):
+            for i in range(max(1, num_plots)):
+                chart_filename = chart_filenames[i] if i < len(chart_filenames) else f"chart_{i+1}.json"
                 chart_responses.append({
-                    "chart_file": FIXED_CHART_FILENAMES[i],
+                    "chart_file": chart_filename,
                     "status": "failed",
                     "error": str(e)
                 })
 
-            # Prepare final response
-        success_count = len([c for c in chart_responses if c.get("status") == "success"])
+        # Prepare final response
+        success_count = len([c for c in chart_responses if c.get("status") == "success"]) if chart_responses else 0
         response_data = {
-            "message": "Chart generation completed",
+            "message": f"Chart generation completed - {chart_type} charts",
             "generated_charts": success_count,
             "total_charts": num_plots,
-            "chart_files": FIXED_CHART_FILENAMES[:num_plots],
-            "charts": chart_responses
+            "chart_type": chart_type,
+            "chart_files": chart_filenames if isinstance(chart_filenames, list) else [],
+            "charts": chart_responses if isinstance(chart_responses, list) else []
         }
 
         return JSONResponse(content=response_data, status_code=200)

@@ -12,6 +12,9 @@ from difflib import get_close_matches
 import pandas as pd
 import numpy as np
 from typing import Optional, List, Dict, Tuple
+from uuid import uuid4
+from collections import defaultdict
+import threading
 
 from openai import OpenAI
 from universal_prompts import (
@@ -20,7 +23,43 @@ from universal_prompts import (
     Visualisation_intelligence_engine,
 )
 
+# Session memory management
+SESSION_MEMORY = defaultdict(list)
+SESSION_MEMORY_LOCK = threading.Lock()
+MAX_MEMORY_SIZE = 50  # Maximum number of exchanges per session
+
 explore_router = APIRouter()
+
+def manage_session_memory(session_id: str, user_message: str = None, bot_message: str = None, get_history: bool = False):
+    """
+    Centralized session memory management with proper logging and cleanup
+    """
+    with SESSION_MEMORY_LOCK:
+        if get_history:
+            # Return a copy of the history
+            history = list(SESSION_MEMORY.get(session_id, []))
+            print(f"Retrieved session memory for {session_id}: {len(history)} messages")
+            return history
+        
+        if user_message is not None:
+            # Add user message
+            SESSION_MEMORY[session_id].append({"role": "user", "content": user_message})
+            print(f"Added user message to session {session_id}: {user_message[:100]}...")
+        
+        if bot_message is not None:
+            # Add bot message
+            SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_message})
+            print(f"Added bot message to session {session_id}: {bot_message[:100]}...")
+        
+        # Cleanup old messages if session gets too large
+        current_memory = SESSION_MEMORY[session_id]
+        if len(current_memory) > MAX_MEMORY_SIZE:
+            # Keep the last MAX_MEMORY_SIZE messages
+            SESSION_MEMORY[session_id] = current_memory[-MAX_MEMORY_SIZE:]
+            print(f"Cleaned up session {session_id}, kept last {MAX_MEMORY_SIZE} messages")
+        
+        print(f"Session {session_id} now has {len(SESSION_MEMORY[session_id])} total messages")
+        return None
 
 def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, ...]) -> Optional[str]:
     try:
@@ -446,8 +485,36 @@ except Exception:  # pragma: no cover - optional dependency
 async def senior_data_analysis(
     query: str = Form(...),
     dataset_path: Optional[str] = Form(None),
+    session_id: str = Form(None),
 ):
     try:
+        # Session handling
+        if not session_id:
+            session_id = str(uuid4())
+            print(f"Generated new session ID: {session_id}")
+        
+        print(f"Processing query for session {session_id}: {query}")
+
+        # Get chat history for LLM context
+        chat_history_for_llm = manage_session_memory(session_id, get_history=True)
+        
+        # Enhanced logging for follow-up question debugging
+        if chat_history_for_llm:
+            print(f"Session {session_id} has {len(chat_history_for_llm)} messages in history")
+            # Look for potential follow-up indicators
+            follow_up_indicators = ['them', 'those', 'these', 'it', 'they']
+            if any(indicator in query.lower() for indicator in follow_up_indicators):
+                print(f"FOLLOW-UP QUERY DETECTED: '{query}'")
+                if len(chat_history_for_llm) >= 2:
+                    last_user_query = None
+                    for msg in reversed(chat_history_for_llm):
+                        if msg['role'] == 'user':
+                            last_user_query = msg['content']
+                            break
+                    print(f"Previous user query for context: '{last_user_query}'")
+        else:
+            print(f"No chat history found for session {session_id}")
+
         # Load and validate data dynamically
         df = load_dataset(dataset_path)
 
@@ -615,11 +682,15 @@ async def senior_data_analysis(
             result = simulate_and_format_with_llm(code, df)
             cleaned_result = clean_json_response(result)
 
+            # Store report generation in memory
+            manage_session_memory(session_id, user_message=query, bot_message="Generated a comprehensive report based on your request.")
+            
             return JSONResponse(
                 content=jsonable_encoder({
                     "report": cleaned_result["report"],
                     "title": cleaned_result["title"],
-                    "description": cleaned_result["description"]
+                    "description": cleaned_result["description"],
+                    "session_id": session_id
                 }),
                 status_code=200
             )
@@ -632,32 +703,57 @@ async def senior_data_analysis(
             if can_handle_directly and structured is not None:
                 intent, column = structured
                 simple_resp = handle_simple_query(df, intent, column)
+                # Store simple query in memory
+                manage_session_memory(session_id, user_message=query, bot_message=f"Processed simple query about {column}.")
+                simple_resp["session_id"] = session_id
                 return JSONResponse(content=jsonable_encoder(simple_resp), status_code=200)
 
         # GRAPH agent: two-stage LLM flow → (1) extract clean data (2) plot with Plotly, both with retries
         if agent == "graph":
             try:
+                print(f"Attempting graph generation for session {session_id}: {query}")
                 formatted_graph = handle_graph_agent(query, df)
                 if formatted_graph is not None:
+                    print(f"Graph generation successful for session {session_id}")
+                    # Store graph generation in memory
+                    manage_session_memory(session_id, user_message=query, bot_message="Generated a graph visualization based on your request.")
+                    formatted_graph["session_id"] = session_id
                     return JSONResponse(content=jsonable_encoder(formatted_graph), status_code=200)
-            except Exception:
+                else:
+                    print(f"Graph agent returned None for session {session_id}, trying fallback")
+            except Exception as e:
                 # proceed to generic LLM path / rescue fallback below
+                print(f"Graph agent failed for session {session_id} with error: {str(e)}, falling back to generic LLM")
                 pass
 
-        # Use LLM to generate analysis code based on agent intent
-        analysis_result = get_llm_analysis_explore(query, df, mode=agent)
+        # Use LLM to generate analysis code based on agent intent with chat history
+        analysis_result = get_llm_analysis_explore(query, df, mode=agent, chat_history=chat_history_for_llm)
 
         response_type = analysis_result.get("type")
         payload = analysis_result.get("payload")
 
+        # Determine bot response text for memory
+        bot_response_text = "I have processed your request."
+        if response_type == "conversational_answer":
+            bot_response_text = str(payload) if payload else "I provided a conversational response."
+        elif response_type == "data_analysis_answer":
+            explanation = payload.get("explanation") if isinstance(payload, dict) else ""
+            bot_response_text = explanation or "I have generated the data analysis you requested."
+        elif isinstance(payload, str):
+            bot_response_text = payload
+
+        # Store current exchange in memory
+        manage_session_memory(session_id, user_message=query, bot_message=bot_response_text)
+
         if not response_type or not payload:
-            return JSONResponse(content=jsonable_encoder({"type": "text",
-                                         "payload": "I'm sorry, I couldn't process that request. Please try rephrasing."}),
-                                status_code=200)
+            error_msg = format_text_response("<h4>I'm sorry, I couldn't process that request.</h4><p>Please try rephrasing your question and I'll be happy to help you analyze your data.</p>")
+            return JSONResponse(content=jsonable_encoder({"type": "text", "payload": error_msg, "session_id": session_id}), status_code=200)
 
         # Conversational/text-only answer
         if response_type == "conversational_answer":
-            return JSONResponse(content=jsonable_encoder({"type": "text", "payload": payload}), status_code=200)
+            # Ensure HTML formatting for conversational responses
+            formatted_payload = format_text_response(str(payload)) if payload else payload
+            return JSONResponse(content=jsonable_encoder({"type": "text", "payload": formatted_payload, "session_id": session_id}), status_code=200)
 
         # Data analysis answer with code to execute
         if response_type == "data_analysis_answer":
@@ -665,9 +761,8 @@ async def senior_data_analysis(
             code = payload.get("code")
 
             if not code:
-                return JSONResponse(content={"type": "text",
-                                             "payload": explanation or "I understood your request but couldn't generate the right code. Please try again."},
-                                    status_code=200)
+                fallback_msg = format_text_response(f"<h4>I understood your request</h4><p>{explanation or 'I understood your request but couldn\'t generate the right code. Please try again with more specific details.'}</p>")
+                return JSONResponse(content={"type": "text", "payload": fallback_msg, "session_id": session_id}, status_code=200)
 
             try:
                 exec_result = safe_execute_pandas_code(code, df)
@@ -675,23 +770,29 @@ async def senior_data_analysis(
 
                 # If graph agent but no valid chart, attempt a robust server-side rescue chart
                 if agent == "graph" and formatted.get("type") != "plotly":
+                    print(f"Attempting rescue chart for session {session_id}")
                     rescue_fig, biz_exp = generate_rescue_chart(df, query)
                     if rescue_fig is not None:
+                        print(f"Rescue chart successful for session {session_id}")
                         formatted = format_result_for_response(rescue_fig)
                         # Prefer business-style explanation
                         formatted["explanation"] = biz_exp or (explanation or "")
+                        formatted["session_id"] = session_id
                         return JSONResponse(content=formatted, status_code=200)
+                    else:
+                        print(f"Rescue chart also failed for session {session_id}")
 
                 if explanation:
                     formatted["explanation"] = explanation
+                formatted["session_id"] = session_id
                 return JSONResponse(content=jsonable_encoder(formatted), status_code=200)
             except Exception as e:
-                return JSONResponse(content=jsonable_encoder({"type": "text",
-                                             "payload": f"There was an error executing the analysis: {str(e)}",
-                                             "explanation": explanation}), status_code=200)
+                error_msg = format_text_response(f"<h4>Analysis Error</h4><p>There was an error executing the analysis: {str(e)}</p><p>Please try rephrasing your question or provide more specific details.</p>")
+                return JSONResponse(content=jsonable_encoder({"type": "text", "payload": error_msg, "explanation": explanation, "session_id": session_id}), status_code=200)
 
         # Fallback
-        return JSONResponse(content=jsonable_encoder({"type": "text", "payload": f"Unrecognized response type: {response_type}"}), status_code=200)
+        fallback_msg = format_text_response(f"<h4>Unrecognized Response</h4><p>I encountered an unexpected response type: {response_type}</p><p>Please try rephrasing your question and I'll provide a better analysis.</p>")
+        return JSONResponse(content=jsonable_encoder({"type": "text", "payload": fallback_msg, "session_id": session_id}), status_code=200)
 
     except pd.errors.EmptyDataError:
         raise HTTPException(
@@ -699,6 +800,9 @@ async def senior_data_analysis(
             detail="Data file is corrupt"
         )
     except Exception as e:
+        # Ensure session_id is available for error responses
+        session_id_for_error = session_id if 'session_id' in locals() else None
+        print(f"Explore API error for session {session_id_for_error}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Analysis failed: {str(e)}"
@@ -836,7 +940,17 @@ def detect_agent(query: str) -> str:
     table_keywords = [
         'table', 'list', 'rows', 'records', 'show rows', 'display table', 'show table', 'top ', 'head', 'tail'
     ]
+    
+    # Enhanced detection for conversational queries that should stay as text
+    conversational_keywords = [
+        'what is', 'what are', 'how do', 'how can', 'explain', 'tell me about', 
+        'kpi', 'kpis', 'key performance indicator', 'metrics', 'help', 'understand',
+        'define', 'meaning', 'purpose', 'importance', 'benefits'
+    ]
 
+    # Priority: conversational queries should stay as text for better responses
+    if any(k in q for k in conversational_keywords):
+        return "text"
     if any(k in q for k in graph_keywords):
         return "graph"
     if any(k in q for k in table_keywords):
@@ -1063,6 +1177,42 @@ def _make_json_safe(obj):
     return str(obj)
 
 
+def format_text_response(text: str) -> str:
+    """
+    Ensure text responses have proper HTML formatting without gaps.
+    Adds HTML tags if not already present and removes unnecessary spacing.
+    """
+    if not text:
+        return text
+        
+    # If already contains HTML tags, clean up any gaps and return
+    if '<h4>' in text or '<p>' in text:
+        # Remove extra newlines between HTML tags to avoid gaps
+        text = re.sub(r'>\s*\n\s*<', '><', text)
+        # Remove any standalone newlines that might create gaps
+        text = re.sub(r'\n+', '', text)
+        return text
+        
+    # Simple text formatting - add basic HTML structure without gaps
+    lines = text.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            # Skip empty lines to avoid gaps
+            continue
+            
+        # If line looks like a title/heading (short and ends with :)
+        if len(line) < 80 and (line.endswith(':') or line.isupper()):
+            formatted_lines.append(f'<h4>{line}</h4>')
+        else:
+            formatted_lines.append(f'<p>{line}</p>')
+    
+    # Join without extra newlines to avoid gaps
+    return ''.join(formatted_lines)
+
+
 def format_result_for_response(result):
     """Format execution result into response-friendly structure."""
     # Plotly figure
@@ -1132,13 +1282,16 @@ def format_result_for_response(result):
                         valid_traces.append(trace)
 
             if not valid_traces:
-                return {"type": "text", "payload": "Chart could not be generated due to insufficient aggregated data."}
+                print("Chart validation failed: no valid traces found")
+                return {"type": "text", "payload": format_text_response("<h4>Chart Generation Issue</h4><p>Chart could not be generated due to insufficient aggregated data. Please try rephrasing your request or ensure your data contains the requested information.</p>")}
 
             fig_dict['data'] = valid_traces
+            print(f"Chart validation successful: {len(valid_traces)} valid traces")
             return {"type": "plotly", "payload": fig_dict}
-        except Exception:
+        except Exception as e:
             # Fall back to text if conversion/validation fails
-            return {"type": "text", "payload": "Chart generation failed unexpectedly. Please try a different view or metric."}
+            print(f"Chart conversion failed: {str(e)}")
+            return {"type": "text", "payload": format_text_response("<h4>Chart Generation Error</h4><p>Chart generation failed unexpectedly. Please try a different view or metric, or rephrase your question.</p>")}
 
     # pandas DataFrame
     if isinstance(result, pd.DataFrame):
@@ -1172,25 +1325,30 @@ def format_result_for_response(result):
             payload = df_result.to_dict(orient='records')
             return {"type": "table", "payload": _make_json_safe(payload)}
         except Exception:
-            return {"type": "text", "payload": str(result)}
+            formatted_text = format_text_response(str(result))
+            return {"type": "text", "payload": formatted_text}
 
     # list
     if isinstance(result, list):
         if len(result) > 0 and isinstance(result[0], dict):
             return {"type": "table", "payload": _make_json_safe(result)}
         else:
-            return {"type": "text", "payload": str(result)}
+            formatted_text = format_text_response(str(result))
+            return {"type": "text", "payload": formatted_text}
 
     # numpy arrays
     if hasattr(result, 'tolist'):
         try:
             list_result = result.tolist()
-            return {"type": "text", "payload": str(list_result)}
+            formatted_text = format_text_response(str(list_result))
+            return {"type": "text", "payload": formatted_text}
         except Exception:
-            return {"type": "text", "payload": str(result)}
+            formatted_text = format_text_response(str(result))
+            return {"type": "text", "payload": formatted_text}
 
     # scalar/string
-    return {"type": "text", "payload": str(result)}
+    formatted_text = format_text_response(str(result))
+    return {"type": "text", "payload": formatted_text}
 
 
 def classify_query_complexity(query: str, col_names: List[str]) -> Tuple[bool, Optional[Tuple[str, str]]]:
@@ -1228,7 +1386,8 @@ def handle_simple_query(df: pd.DataFrame, intent: str, column: str) -> Dict[str,
     try:
         if intent == "nunique":
             result = int(df[column].nunique())
-            return {"type": "text", "payload": f"There are {result} unique values in column '{column}'."}
+            payload = format_text_response(f"<h4>Unique Values Analysis</h4><p>There are <strong>{result}</strong> unique values in column '{column}'.</p>")
+            return {"type": "text", "payload": payload}
         elif intent == "unique" or intent == "list":
             result = df[column].dropna().unique().tolist()
             result = [str(v) if pd.notna(v) else None for v in result]
@@ -1236,35 +1395,44 @@ def handle_simple_query(df: pd.DataFrame, intent: str, column: str) -> Dict[str,
         elif intent == "sum":
             if df[column].dtype in ['int64', 'float64']:
                 result = float(df[column].sum())
-                return {"type": "text", "payload": f"The sum of column '{column}' is {result}."}
+                payload = format_text_response(f"<h4>Sum Calculation</h4><p>The sum of column '{column}' is <strong>{result:,.2f}</strong>.</p>")
+                return {"type": "text", "payload": payload}
             else:
-                return {"type": "text", "payload": f"Cannot calculate sum for non-numeric column '{column}'."}
+                payload = format_text_response(f"<h4>Sum Calculation Error</h4><p>Cannot calculate sum for non-numeric column '{column}'. Please ensure the column contains numeric values.</p>")
+                return {"type": "text", "payload": payload}
         elif intent == "mean":
             if df[column].dtype in ['int64', 'float64']:
                 result = float(df[column].mean())
-                return {"type": "text", "payload": f"The average of column '{column}' is {result:.2f}."}
+                payload = format_text_response(f"<h4>Average Calculation</h4><p>The average of column '{column}' is <strong>{result:.2f}</strong>.</p>")
+                return {"type": "text", "payload": payload}
             else:
-                return {"type": "text", "payload": f"Cannot calculate mean for non-numeric column '{column}'."}
+                payload = format_text_response(f"<h4>Average Calculation Error</h4><p>Cannot calculate mean for non-numeric column '{column}'. Please ensure the column contains numeric values.</p>")
+                return {"type": "text", "payload": payload}
         elif intent == "min":
             result = df[column].min()
-            return {"type": "text", "payload": f"The minimum value in column '{column}' is {result}."}
+            payload = format_text_response(f"<h4>Minimum Value</h4><p>The minimum value in column '{column}' is <strong>{result}</strong>.</p>")
+            return {"type": "text", "payload": payload}
         elif intent == "max":
             result = df[column].max()
-            return {"type": "text", "payload": f"The maximum value in column '{column}' is {result}."}
+            payload = format_text_response(f"<h4>Maximum Value</h4><p>The maximum value in column '{column}' is <strong>{result}</strong>.</p>")
+            return {"type": "text", "payload": payload}
         elif intent == "count":
             result = int(df[column].count())
-            return {"type": "text", "payload": f"There are {result} non-null records in column '{column}'."}
+            payload = format_text_response(f"<h4>Record Count</h4><p>There are <strong>{result}</strong> non-null records in column '{column}'.</p>")
+            return {"type": "text", "payload": payload}
         elif intent == "groupby":
             group_counts = df.groupby(column).size().reset_index(name='count')
             payload = group_counts.to_dict(orient='records')
             return {"type": "table", "payload": payload}
         else:
-            return {"type": "text", "payload": f"Intent '{intent}' not supported for direct handling."}
+            payload = format_text_response(f"<h4>Unsupported Operation</h4><p>Intent '{intent}' is not supported for direct handling. Please try rephrasing your question.</p>")
+            return {"type": "text", "payload": payload}
     except Exception as e:
-        return {"type": "text", "payload": f"Error processing query: {str(e)}"}
+        payload = format_text_response(f"<h4>Query Processing Error</h4><p>Error processing query: {str(e)}</p><p>Please try rephrasing your question with more specific details.</p>")
+        return {"type": "text", "payload": payload}
 
 
-def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str) -> Dict[str, object]:
+def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str, chat_history: List[Dict[str, str]] = None) -> Dict[str, object]:
     """
     Use LLM to analyze user's query and generate code to produce graph/table/text.
     Returns a JSON with keys: type and payload. For data analysis, payload has explanation and code.
@@ -1272,6 +1440,11 @@ def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str) -> Dict[st
     num_rows, num_cols = df.shape
     col_names = list(df.columns)
     sample_data = df.head(3).to_dict(orient='records')
+    
+    # Detect if it's a KPI-related query
+    kpi_keywords = ['kpi', 'kpis', 'key performance indicator', 'key performance indicators', 'metrics', 'performance metrics', 'dashboard metrics']
+    is_kpi_query = any(keyword in query.lower() for keyword in kpi_keywords)
+    
     dataset_info = f"""
 Dataset Information:
 - Shape: {num_rows} rows, {num_cols} columns
@@ -1280,10 +1453,24 @@ Dataset Information:
 """
 
     instructions_common = f"""
-You are an expert data analyst AI. You must respond with a single JSON object only (no markdown fences).
+You are a highly intelligent and conversational data analyst AI assistant, similar to ChatGPT. Your responses should be helpful, engaging, and human-like.
 
-If the response is conversational only: use type="conversational_answer" and payload as a string.
-If the response requires data processing: use type="data_analysis_answer" and payload as an object with keys "explanation" and "code".
+IMPORTANT FORMATTING RULES:
+- For conversational text responses, ALWAYS use HTML formatting:
+  * Use <h4> tags for headings/titles
+  * Use <p> tags for paragraphs
+  * Use \n for line breaks between sections
+  * Make responses well-structured and easy to read
+
+Response Types:
+1. If the response is conversational only: use type="conversational_answer" and payload as an HTML-formatted string
+2. If the response requires data processing: use type="data_analysis_answer" and payload as an object with keys "explanation" and "code"
+
+For conversational responses about KPIs or general questions:
+- Be comprehensive and informative like ChatGPT
+- Provide context and insights
+- Use proper HTML formatting (h4, p tags, \n)
+- Be helpful and engaging
 
 For any code you generate:
 - Use pandas only for data ops; for charts, use Plotly (px/go/ff) and set the final object to a variable named result.
@@ -1297,12 +1484,18 @@ For any code you generate:
     mode_instructions = ""
     if mode == "graph":
         mode_instructions = (
-            "Generate Plotly code that produces the best visualization for the user's question. "
-            "Compute the required aggregation first in pandas. Before creating the figure, ensure that axis arrays (e.g., x and y, or values) are non-empty and aligned in length. "
-            "Before plotting, strictly clean rows with empty-like values in graph columns: replace({'': np.nan}).dropna(subset=[<plot_columns>]) and also filter out 'null','none','undefined'. "
-            "If numeric values are stored as strings with units (e.g., '28.3kmph', '1959 psi', '214°C'), extract the numeric part with regex (e.g., df[col] = df[col].astype(str).str.extract(r'([-+]?\\d*\\.?\\d+)')[0].astype(float)) before plotting. "
-            "If you cannot generate a valid chart due to empty or invalid data, return a robust fallback: set result to a pandas DataFrame with a top-10 aggregated table relevant to the question (not None). "
-            "Avoid using geospatial columns such as 'latitude', 'longitude', 'lat', 'lon' unless the user explicitly asks for a map/geospatial chart."
+            "Generate high-quality Plotly code that produces the best visualization for the user's question. "
+            "CRITICAL CHART GENERATION STEPS: "
+            "1) First, compute the required aggregation/grouping in pandas (e.g., value_counts(), groupby(), pivot_table()). "
+            "2) Before creating any figure, ensure that axis arrays (x, y, values, etc.) are non-empty and properly aligned. "
+            "3) Clean data thoroughly: replace({'': np.nan, 'null': np.nan, 'none': np.nan, 'undefined': np.nan}).dropna() on relevant columns. "
+            "4) For string columns with numeric values and units (e.g., '28.3kmph', '1959 psi'), extract numeric parts using regex: df[col].astype(str).str.extract(r'([-+]?\\d*\\.?\\d+)')[0].astype(float). "
+            "5) Always set meaningful chart titles, axis labels, and legends. Use appropriate chart types (bar, line, pie, scatter, histogram, box, etc.). "
+            "6) Validate data before plotting: check len(data) > 0 and data contains valid values. "
+            "7) If chart generation fails or data is insufficient, return a meaningful pandas DataFrame with aggregated results as fallback (never return None). "
+            "8) Use proper color schemes and ensure charts are visually appealing and informative. "
+            "9) For time series data, ensure proper date parsing and chronological ordering. "
+            "10) Avoid geospatial columns unless explicitly requested for maps."
         )
     elif mode == "table":
         mode_instructions = (
@@ -1310,34 +1503,81 @@ For any code you generate:
             "Do not generate charts. Include necessary groupby/sort/limit operations based on the question."
         )
     else:  # text
-        mode_instructions = (
-            "If the question is conversational or generic, return a conversational_answer. "
-            "If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string."
-        )
+        if is_kpi_query:
+            mode_instructions = (
+                "This is a KPI (Key Performance Indicator) related query. Provide a comprehensive, conversational response about KPIs like ChatGPT would. "
+                "Format your response with proper HTML tags: <h4> for headings, <p> for paragraphs, and \n for line breaks. "
+                "Be informative, helpful, and explain what KPIs are, their importance, and how they can be used with this dataset. "
+                "Include insights about the available data columns and what KPIs could be derived from them. "
+                "Return type='conversational_answer' with an HTML-formatted payload."
+            )
+        else:
+            mode_instructions = (
+                "If the question is conversational, generic, or asks for explanations, return a conversational_answer with HTML formatting (h4, p tags, \n). "
+                "Be comprehensive and helpful like ChatGPT. If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string. "
+                "For conversational responses, use proper HTML formatting and be engaging and informative."
+            )
 
+    # Enhanced prompt for better conversational responses
+    conversation_context = ""
+    if is_kpi_query:
+        conversation_context = f"""
+KPI Context:
+- You have access to a dataset with {num_cols} columns: {col_names}
+- This data can be used to calculate various KPIs and performance metrics
+- Be specific about what KPIs can be derived from the available columns
+- Explain the business value and importance of KPIs
+"""
+    
+    # Add chat history context for follow-up questions
+    history_context = ""
+    if chat_history:
+        history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
+        history_context = f"""
+**Chat History (for context):**
+---
+{history_str}
+---
+
+**CRITICAL CONTEXT ANALYSIS:**
+- If the user query contains ambiguous references like "how many are", "how many of them", "which ones", "those", etc., you MUST look at the chat history to understand what they're referring to
+- When the user says "them", "those", "these", they are referring to the subject/filter from the most recent data query
+- Example: If previous query was "show me high priority tickets" and current query is "how many of them are assigned to John", you should count high priority tickets that are assigned to John
+- ALWAYS maintain the same filters/conditions from the previous query when processing follow-up questions
+- Pay special attention to names, categories, priorities, or any filters mentioned in previous conversations
+- If the current query seems like a follow-up, explicitly combine it with the context from the previous query
+"""
+    
     llm_prompt = f"""
 {instructions_common}
 
+{history_context}
+
 Dataset Context:
 {dataset_info}
+{conversation_context}
 
 User Question: {query}
 
 Mode: {mode}
 Specific Instructions: {mode_instructions}
 
-Explanation Style: Write the explanation as a concise, business-oriented summary focusing on trend, scale, change, and implications. Avoid technical implementation details.
+Explanation Style: 
+- For conversational responses: Be comprehensive, helpful, and engaging like ChatGPT
+- Use proper HTML formatting (h4, p tags, \n) for readability
+- For data analysis explanations: Write as a concise, business-oriented summary focusing on trend, scale, change, and implications
+- Avoid technical implementation details in explanations
 
-Return ONLY the JSON object as described above.
+IMPORTANT: Return ONLY the JSON object as described above. No markdown fences.
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": "You are an expert data analyst and Python/Plotly code generator."},
+            {"role": "system", "content": "You are an expert data analyst AI assistant, similar to ChatGPT. You provide helpful, conversational responses with proper HTML formatting. For text responses, always use <h4> tags for headings and <p> tags for paragraphs. You are also skilled at Python/Plotly code generation for data analysis."},
             {"role": "user", "content": llm_prompt}
         ],
-        temperature=0.1,
+        temperature=0.3,
     )
 
     all_text = ""
@@ -1358,13 +1598,15 @@ Return ONLY the JSON object as described above.
 
 def generate_rescue_chart(df: pd.DataFrame, query: str):
     """
-    Server-side robust fallback chart when LLM-generated code returns invalid chart data.
+    Enhanced server-side robust fallback chart when LLM-generated code returns invalid chart data.
     Strategy:
       1) Detect likely date column and a primary numeric metric column.
       2) Aggregate by day/month depending on granularity and build a clean line chart.
-      3) Produce a business-oriented explanation.
+      3) Try multiple chart types if the first approach fails.
+      4) Produce a business-oriented explanation.
     Returns: (plotly.graph_objects.Figure or None, explanation str)
     """
+    print(f"Rescue chart generation started for query: {query[:100]}...")
     try:
         ql = query.lower()
 
@@ -1523,8 +1765,10 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
         else:
             biz_exp = f"Time-series view of {metric_col} to support quick performance diagnostics."
 
+        print(f"Rescue chart successful: {title}")
         return fig, biz_exp
-    except Exception:
+    except Exception as e:
+        print(f"Rescue chart failed: {str(e)}")
         return None, None
 
 
@@ -1778,3 +2022,52 @@ def handle_graph_agent(query: str, df: pd.DataFrame) -> Optional[Dict[str, objec
         return formatted
     except Exception:
         return None
+
+
+# Debug and utility endpoints for session management
+@explore_router.get("/api/debug_session_memory/{session_id}")
+async def debug_session_memory_explore(session_id: str):
+    """
+    Debug endpoint to see what's stored in session memory for explore API
+    """
+    try:
+        with SESSION_MEMORY_LOCK:
+            memory = SESSION_MEMORY.get(session_id, [])
+            
+        return JSONResponse(content={
+            "session_id": session_id,
+            "memory_size": len(memory),
+            "messages": memory,
+            "total_sessions": len(SESSION_MEMORY),
+            "api": "explore"
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}")
+
+@explore_router.delete("/api/clear_session_memory/{session_id}")
+async def clear_session_memory_explore(session_id: str):
+    """
+    Clear session memory for testing purposes - explore API
+    """
+    try:
+        with SESSION_MEMORY_LOCK:
+            if session_id in SESSION_MEMORY:
+                message_count = len(SESSION_MEMORY[session_id])
+                del SESSION_MEMORY[session_id]
+                return JSONResponse(content={
+                    "session_id": session_id,
+                    "cleared_messages": message_count,
+                    "status": "cleared",
+                    "api": "explore"
+                })
+            else:
+                return JSONResponse(content={
+                    "session_id": session_id,
+                    "cleared_messages": 0,
+                    "status": "not_found",
+                    "api": "explore"
+                })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clear error: {str(e)}")
