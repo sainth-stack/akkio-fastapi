@@ -671,13 +671,13 @@ def calculate_consultant_statistics(df):
                 if total_tickets > 0:
                     result = {
                         'year': str(year),
-                        'month': month_name,
-                        'consultant': consultant,
-                        'p1_critical': p1_critical,
-                        'p2_high': p2_high,
-                        'p3_normal': p3_normal,
-                        'p4_low': p4_low,
-                        'total': total_tickets
+                        'month': str(month_name),
+                        'consultant': str(consultant),
+                        'p1_critical': int(p1_critical),
+                        'p2_high': int(p2_high),
+                        'p3_normal': int(p3_normal),
+                        'p4_low': int(p4_low),
+                        'total': int(total_tickets)
                     }
                     results.append(result)
                     
@@ -862,17 +862,17 @@ def calculate_tickets_statistics(df):
                 if tickets_created > 0 or total_tickets > 0 or tickets_completed > 0:
                     result = {
                         'year': str(year),
-                        'month': month_name,
-                        'ticketsCreated': tickets_created,
-                        'totalTicketsInclRollover': total_tickets,
-                        'ticketsCompleted': tickets_completed,
-                        'responseSLA': round(response_sla_percent, 2),
-                        'resolutionSLA': round(resolution_sla_percent, 2),
-                        'modSLAMet': round(mod_sla_met, 2),
-                        'bothSLAsMet': round(both_slas_met, 2),
-                        'resolutionSLATime': resolution_sla_met,
-                        'responseSLAMet': response_sla_met,
-                        'resolutionSLAMet': resolution_sla_met
+                        'month': str(month_name),
+                        'ticketsCreated': int(tickets_created),  # Convert to native Python int
+                        'totalTicketsInclRollover': int(total_tickets),  # Convert to native Python int
+                        'ticketsCompleted': int(tickets_completed),  # Convert to native Python int
+                        'responseSLA': float(round(response_sla_percent, 2)),  # Convert to native Python float
+                        'resolutionSLA': float(round(resolution_sla_percent, 2)),  # Convert to native Python float
+                        'modSLAMet': float(round(mod_sla_met, 2)),  # Convert to native Python float
+                        'bothSLAsMet': float(round(both_slas_met, 2)),  # Convert to native Python float
+                        'resolutionSLATime': int(resolution_sla_met),  # Convert to native Python int
+                        'responseSLAMet': int(response_sla_met),  # Convert to native Python int
+                        'resolutionSLAMet': int(resolution_sla_met)  # Convert to native Python int
                     }
                     
                     results.append(result)
@@ -917,14 +917,14 @@ async def get_tab_data(tab_name: str):
             if not statistics:
                 raise HTTPException(status_code=500, detail="No statistics could be calculated from the dataset. Please check data quality and column mappings.")
             
-            # Prepare chart data separately to ensure it's properly formatted
+            # Prepare chart data separately to ensure it's properly formatted and JSON serializable
             chart_data = {
                     "months": [f"{item['year']} {item['month']}" for item in statistics],
-                    "ticketsCreated": [item['ticketsCreated'] for item in statistics],
-                    "totalTicketsInclRollover": [item['totalTicketsInclRollover'] for item in statistics],
-                    "responseSLA": [item['responseSLA'] for item in statistics],
-                    "resolutionSLA": [item['resolutionSLA'] for item in statistics],
-                    "modSLAMet": [item['modSLAMet'] for item in statistics]
+                    "ticketsCreated": [int(item['ticketsCreated']) for item in statistics],
+                    "totalTicketsInclRollover": [int(item['totalTicketsInclRollover']) for item in statistics],
+                    "responseSLA": [float(item['responseSLA']) for item in statistics],
+                    "resolutionSLA": [float(item['resolutionSLA']) for item in statistics],
+                    "modSLAMet": [float(item['modSLAMet']) for item in statistics]
             }
             
             return JSONResponse(content={
@@ -940,11 +940,11 @@ async def get_tab_data(tab_name: str):
                     "y2_axis_title": "SLA Percentage"
                 },
                 "summary": {
-                    "total_months": len(statistics),
-                    "total_tickets_created": sum([item['ticketsCreated'] for item in statistics]),
-                    "total_tickets_completed": sum([item['ticketsCompleted'] for item in statistics]),
-                    "average_response_sla": round(sum([item['responseSLA'] for item in statistics]) / len(statistics), 2) if statistics else 0,
-                    "average_resolution_sla": round(sum([item['resolutionSLA'] for item in statistics]) / len(statistics), 2) if statistics else 0
+                    "total_months": int(len(statistics)),
+                    "total_tickets_created": int(sum([item['ticketsCreated'] for item in statistics])),
+                    "total_tickets_completed": int(sum([item['ticketsCompleted'] for item in statistics])),
+                    "average_response_sla": float(round(sum([item['responseSLA'] for item in statistics]) / len(statistics), 2)) if statistics else 0.0,
+                    "average_resolution_sla": float(round(sum([item['resolutionSLA'] for item in statistics]) / len(statistics), 2)) if statistics else 0.0
                 },
                 "message": f"Successfully calculated statistics for {len(statistics)} months"
             })
@@ -961,10 +961,10 @@ async def get_tab_data(tab_name: str):
                 "data_type": "chart_data",
                 "chart_data": {
                     "months": [f"{item['year']} {item['month']}" for item in statistics],
-                    "ticketsCreated": [item['ticketsCreated'] for item in statistics],
-                    "totalTicketsInclRollover": [item['totalTicketsInclRollover'] for item in statistics],
-                    "responseSLA": [item['responseSLA'] for item in statistics],
-                    "resolutionSLA": [item['resolutionSLA'] for item in statistics]
+                    "ticketsCreated": [int(item['ticketsCreated']) for item in statistics],
+                    "totalTicketsInclRollover": [int(item['totalTicketsInclRollover']) for item in statistics],
+                    "responseSLA": [float(item['responseSLA']) for item in statistics],
+                    "resolutionSLA": [float(item['resolutionSLA']) for item in statistics]
                 },
                 "message": f"Successfully calculated chart data for {len(statistics)} months"
             })
@@ -977,13 +977,13 @@ async def get_tab_data(tab_name: str):
                 raise HTTPException(status_code=500, detail="No consultant data could be calculated from the dataset.")
             
             # Calculate summary statistics
-            total_consultants = len(set(item['consultant'] for item in consultant_stats))
-            total_p1_tickets = sum(item['p1_critical'] for item in consultant_stats)
-            total_p2_tickets = sum(item['p2_high'] for item in consultant_stats)
-            total_p3_tickets = sum(item['p3_normal'] for item in consultant_stats)
-            total_p4_tickets = sum(item['p4_low'] for item in consultant_stats)
-            total_tickets = sum(item['total'] for item in consultant_stats)
-            avg_tickets_per_consultant = total_tickets / total_consultants if total_consultants > 0 else 0
+            total_consultants = int(len(set(item['consultant'] for item in consultant_stats)))
+            total_p1_tickets = int(sum(item['p1_critical'] for item in consultant_stats))
+            total_p2_tickets = int(sum(item['p2_high'] for item in consultant_stats))
+            total_p3_tickets = int(sum(item['p3_normal'] for item in consultant_stats))
+            total_p4_tickets = int(sum(item['p4_low'] for item in consultant_stats))
+            total_tickets = int(sum(item['total'] for item in consultant_stats))
+            avg_tickets_per_consultant = float(total_tickets / total_consultants) if total_consultants > 0 else 0.0
             
             return JSONResponse(content={
                 "tab_name": tab_name,
