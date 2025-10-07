@@ -344,7 +344,8 @@ def calculate_open_tickets(df):
             'consultant': 'Request - Resource Assigned To - Name',
             'macro_area': 'Macro Area - Name',
             'status': 'Req. Status - Description',
-            'historical_status_to': 'Historical Status - Status To'
+            'historical_status_to': 'Historical Status - Status To',
+            'request_id': 'Request - ID'
         }
         
         # Filter for open tickets
@@ -373,8 +374,10 @@ def calculate_open_tickets(df):
         for consultant, group_data in grouped:
             if consultant in ['Unassigned', 'Unknown', '', 'nan', 'NaN']:
                 continue
-                
-            priority_counts = group_data['priority_clean'].value_counts()
+            
+            # Get unique tickets by request ID to avoid duplicates    
+            unique_tickets = group_data.drop_duplicates(subset=[column_mappings['request_id']])
+            priority_counts = unique_tickets['priority_clean'].value_counts()
             
             p1_critical = 0
             p2_high = 0
@@ -646,8 +649,9 @@ def calculate_consultant_statistics(df):
                     year = month_key[:4] if len(month_key) >= 4 else "2024"
                     month_name = month_key
                 
-                # Count tickets by priority
-                priority_counts = group_data['priority_clean'].value_counts()
+                # Count unique tickets by priority (avoid duplicates from multiple status updates)
+                unique_tickets = group_data.drop_duplicates(subset=[column_mappings['request_id']])
+                priority_counts = unique_tickets['priority_clean'].value_counts()
                 
                 # Extract priority level counts
                 p1_critical = 0
@@ -671,13 +675,13 @@ def calculate_consultant_statistics(df):
                 if total_tickets > 0:
                     result = {
                         'year': str(year),
-                        'month': str(month_name),
-                        'consultant': str(consultant),
-                        'p1_critical': int(p1_critical),
-                        'p2_high': int(p2_high),
-                        'p3_normal': int(p3_normal),
-                        'p4_low': int(p4_low),
-                        'total': int(total_tickets)
+                        'month': month_name,
+                        'consultant': consultant,
+                        'p1_critical': p1_critical,
+                        'p2_high': p2_high,
+                        'p3_normal': p3_normal,
+                        'p4_low': p4_low,
+                        'total': total_tickets
                     }
                     results.append(result)
                     
@@ -717,8 +721,7 @@ def calculate_tickets_statistics(df):
             'rollover': 'Rollover',
             'req_cr_ym': 'ReqCrYM',
             'resp_remaining': 'RespRem',
-            'resol_remaining': 'ResolRem',
-            'req_comp': 'ReqComp'  # Added for DAX formula compatibility
+            'resol_remaining': 'ResolRem'
         }
         
         # Verify columns exist
@@ -743,9 +746,9 @@ def calculate_tickets_statistics(df):
         else:
             df['month_key'] = df['req_cr_ym_parsed']
         
-        # Handle rollover dates - this is key for resolution SLA calculations
-        if 'Rollover' in df.columns:
-            df['rollover_ym'] = df['Rollover'].astype(str).str.strip()
+        # Handle rollover dates
+        if column_mappings['rollover'] in df.columns:
+            df['rollover_ym'] = df[column_mappings['rollover']].astype(str).str.strip()
         else:
             df['rollover_ym'] = df['month_key']
         
@@ -804,53 +807,24 @@ def calculate_tickets_statistics(df):
                 # TicketsCompleted - tickets closed in selected month
                 tickets_completed = len(month_data[month_data['req_closed'] == True])
                 
-                # ResponseSLAMet - tickets created in month with response SLA met
-                response_sla_eligible = len(month_data[month_data['resp_sla_yes'] == True])
+                # ResponseSLAMet - tickets with response SLA met
                 response_sla_met = len(month_data[
                     (month_data['resp_sla_yes'] == True) & 
                     (month_data['resp_rem_positive'] == True)
                 ])
                 
-                # ResolutionSLAMet - Following DAX formula exactly:
-                # Filter by Rollover month, ReqComp = "End", and ResolRem >= 0
-                rollover_month_data = df[df['rollover_ym'] == selected_month]
+                # Get completed tickets for this month
+                completed_tickets_data = month_data[month_data['req_closed'] == True]
                 
-                # Filter for completed tickets (ReqComp = "End") in rollover month
-                completed_in_rollover = rollover_month_data[
-                    rollover_month_data['ReqComp'].astype(str).str.strip() == 'End'
-                ]
+                # Among completed tickets, count how many had resolution SLA met
+                resolution_sla_met = len(completed_tickets_data[
+                    (completed_tickets_data['resol_sla_yes'] == True) & 
+                    (completed_tickets_data['resol_rem_positive'] == True)
+                ])
                 
-                resolution_sla_eligible = len(completed_in_rollover)
-                
-                # Count those with ResolRem >= 0 (as per DAX formula)
-                if resolution_sla_eligible > 0:
-                    resol_rem_positive_rollover = pd.to_numeric(completed_in_rollover['ResolRem'], errors='coerce').fillna(0) >= 0
-                    resolution_sla_met = resol_rem_positive_rollover.sum()
-                else:
-                    resolution_sla_met = 0
-                
-                # Calculate percentages with proper denominators and validation
-                if response_sla_eligible > 0:
-                    response_sla_percent = (response_sla_met / response_sla_eligible * 100)
-                    # Ensure met count doesn't exceed eligible count
-                    if response_sla_met > response_sla_eligible:
-                        print(f"Warning: Response SLA met ({response_sla_met}) > eligible ({response_sla_eligible}) for {selected_month}")
-                        response_sla_met = response_sla_eligible
-                    response_sla_percent = min(response_sla_percent, 100.0)
-                else:
-                    response_sla_percent = 0
-                
-                if resolution_sla_eligible > 0:
-                    resolution_sla_percent = (resolution_sla_met / resolution_sla_eligible * 100)
-                    # Ensure met count doesn't exceed eligible count
-                    if resolution_sla_met > resolution_sla_eligible:
-                        print(f"Warning: Resolution SLA met ({resolution_sla_met}) > eligible ({resolution_sla_eligible}) for {selected_month}")
-                        resolution_sla_met = resolution_sla_eligible
-                    resolution_sla_percent = min(resolution_sla_percent, 100.0)
-                else:
-                    resolution_sla_percent = 0
-                
-                # Resolution SLA calculation now matches DAX formula exactly
+                # Calculate percentages
+                response_sla_percent = (response_sla_met / tickets_created * 100) if tickets_created > 0 else 0
+                resolution_sla_percent = (resolution_sla_met / tickets_completed * 100) if tickets_completed > 0 else 0
                 
                 # ModSLAMet % - Combined SLA performance
                 mod_sla_met = (response_sla_percent + resolution_sla_percent) / 2
@@ -862,17 +836,17 @@ def calculate_tickets_statistics(df):
                 if tickets_created > 0 or total_tickets > 0 or tickets_completed > 0:
                     result = {
                         'year': str(year),
-                        'month': str(month_name),
-                        'ticketsCreated': int(tickets_created),  # Convert to native Python int
-                        'totalTicketsInclRollover': int(total_tickets),  # Convert to native Python int
-                        'ticketsCompleted': int(tickets_completed),  # Convert to native Python int
-                        'responseSLA': float(round(response_sla_percent, 2)),  # Convert to native Python float
-                        'resolutionSLA': float(round(resolution_sla_percent, 2)),  # Convert to native Python float
-                        'modSLAMet': float(round(mod_sla_met, 2)),  # Convert to native Python float
-                        'bothSLAsMet': float(round(both_slas_met, 2)),  # Convert to native Python float
-                        'resolutionSLATime': int(resolution_sla_met),  # Convert to native Python int
-                        'responseSLAMet': int(response_sla_met),  # Convert to native Python int
-                        'resolutionSLAMet': int(resolution_sla_met)  # Convert to native Python int
+                        'month': month_name,
+                        'ticketsCreated': tickets_created,
+                        'totalTicketsInclRollover': total_tickets,
+                        'ticketsCompleted': tickets_completed,
+                        'responseSLA': round(response_sla_percent, 2),
+                        'resolutionSLA': round(resolution_sla_percent, 2),
+                        'modSLAMet': round(mod_sla_met, 2),
+                        'bothSLAsMet': round(both_slas_met, 2),
+                        'resolutionSLATime': resolution_sla_met,
+                        'responseSLAMet': response_sla_met,
+                        'resolutionSLAMet': resolution_sla_met
                     }
                     
                     results.append(result)
@@ -917,14 +891,14 @@ async def get_tab_data(tab_name: str):
             if not statistics:
                 raise HTTPException(status_code=500, detail="No statistics could be calculated from the dataset. Please check data quality and column mappings.")
             
-            # Prepare chart data separately to ensure it's properly formatted and JSON serializable
+            # Prepare chart data separately to ensure it's properly formatted
             chart_data = {
                     "months": [f"{item['year']} {item['month']}" for item in statistics],
-                    "ticketsCreated": [int(item['ticketsCreated']) for item in statistics],
-                    "totalTicketsInclRollover": [int(item['totalTicketsInclRollover']) for item in statistics],
-                    "responseSLA": [float(item['responseSLA']) for item in statistics],
-                    "resolutionSLA": [float(item['resolutionSLA']) for item in statistics],
-                    "modSLAMet": [float(item['modSLAMet']) for item in statistics]
+                    "ticketsCreated": [item['ticketsCreated'] for item in statistics],
+                    "totalTicketsInclRollover": [item['totalTicketsInclRollover'] for item in statistics],
+                    "responseSLA": [item['responseSLA'] for item in statistics],
+                    "resolutionSLA": [item['resolutionSLA'] for item in statistics],
+                    "modSLAMet": [item['modSLAMet'] for item in statistics]
             }
             
             return JSONResponse(content={
@@ -940,11 +914,11 @@ async def get_tab_data(tab_name: str):
                     "y2_axis_title": "SLA Percentage"
                 },
                 "summary": {
-                    "total_months": int(len(statistics)),
-                    "total_tickets_created": int(sum([item['ticketsCreated'] for item in statistics])),
-                    "total_tickets_completed": int(sum([item['ticketsCompleted'] for item in statistics])),
-                    "average_response_sla": float(round(sum([item['responseSLA'] for item in statistics]) / len(statistics), 2)) if statistics else 0.0,
-                    "average_resolution_sla": float(round(sum([item['resolutionSLA'] for item in statistics]) / len(statistics), 2)) if statistics else 0.0
+                    "total_months": len(statistics),
+                    "total_tickets_created": sum([item['ticketsCreated'] for item in statistics]),
+                    "total_tickets_completed": sum([item['ticketsCompleted'] for item in statistics]),
+                    "average_response_sla": round(sum([item['responseSLA'] for item in statistics]) / len(statistics), 2) if statistics else 0,
+                    "average_resolution_sla": round(sum([item['resolutionSLA'] for item in statistics]) / len(statistics), 2) if statistics else 0
                 },
                 "message": f"Successfully calculated statistics for {len(statistics)} months"
             })
@@ -961,10 +935,10 @@ async def get_tab_data(tab_name: str):
                 "data_type": "chart_data",
                 "chart_data": {
                     "months": [f"{item['year']} {item['month']}" for item in statistics],
-                    "ticketsCreated": [int(item['ticketsCreated']) for item in statistics],
-                    "totalTicketsInclRollover": [int(item['totalTicketsInclRollover']) for item in statistics],
-                    "responseSLA": [float(item['responseSLA']) for item in statistics],
-                    "resolutionSLA": [float(item['resolutionSLA']) for item in statistics]
+                    "ticketsCreated": [item['ticketsCreated'] for item in statistics],
+                    "totalTicketsInclRollover": [item['totalTicketsInclRollover'] for item in statistics],
+                    "responseSLA": [item['responseSLA'] for item in statistics],
+                    "resolutionSLA": [item['resolutionSLA'] for item in statistics]
                 },
                 "message": f"Successfully calculated chart data for {len(statistics)} months"
             })
@@ -977,13 +951,13 @@ async def get_tab_data(tab_name: str):
                 raise HTTPException(status_code=500, detail="No consultant data could be calculated from the dataset.")
             
             # Calculate summary statistics
-            total_consultants = int(len(set(item['consultant'] for item in consultant_stats)))
-            total_p1_tickets = int(sum(item['p1_critical'] for item in consultant_stats))
-            total_p2_tickets = int(sum(item['p2_high'] for item in consultant_stats))
-            total_p3_tickets = int(sum(item['p3_normal'] for item in consultant_stats))
-            total_p4_tickets = int(sum(item['p4_low'] for item in consultant_stats))
-            total_tickets = int(sum(item['total'] for item in consultant_stats))
-            avg_tickets_per_consultant = float(total_tickets / total_consultants) if total_consultants > 0 else 0.0
+            total_consultants = len(set(item['consultant'] for item in consultant_stats))
+            total_p1_tickets = sum(item['p1_critical'] for item in consultant_stats)
+            total_p2_tickets = sum(item['p2_high'] for item in consultant_stats)
+            total_p3_tickets = sum(item['p3_normal'] for item in consultant_stats)
+            total_p4_tickets = sum(item['p4_low'] for item in consultant_stats)
+            total_tickets = sum(item['total'] for item in consultant_stats)
+            avg_tickets_per_consultant = total_tickets / total_consultants if total_consultants > 0 else 0
             
             return JSONResponse(content={
                 "tab_name": tab_name,
