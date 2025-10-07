@@ -23,42 +23,39 @@ from universal_prompts import (
     Visualisation_intelligence_engine,
 )
 
-# Session memory management
-SESSION_MEMORY = defaultdict(list)
+# Session memory management - only keep last message for accuracy
+SESSION_MEMORY = defaultdict(dict)
 SESSION_MEMORY_LOCK = threading.Lock()
-MAX_MEMORY_SIZE = 50  # Maximum number of exchanges per session
 
 explore_router = APIRouter()
 
 def manage_session_memory(session_id: str, user_message: str = None, bot_message: str = None, get_history: bool = False):
     """
-    Centralized session memory management with proper logging and cleanup
+    Centralized session memory management - only keeps the last message for accuracy
     """
     with SESSION_MEMORY_LOCK:
         if get_history:
-            # Return a copy of the history
-            history = list(SESSION_MEMORY.get(session_id, []))
-            print(f"Retrieved session memory for {session_id}: {len(history)} messages")
-            return history
+            # Return only the last user message if it exists
+            session_data = SESSION_MEMORY.get(session_id, {})
+            last_user_msg = session_data.get("last_user_message")
+            if last_user_msg:
+                history = [{"role": "user", "content": last_user_msg}]
+                print(f"Retrieved last user message for session {session_id}: {last_user_msg[:100]}...")
+                return history
+            else:
+                print(f"No previous message found for session {session_id}")
+                return []
         
         if user_message is not None:
-            # Add user message
-            SESSION_MEMORY[session_id].append({"role": "user", "content": user_message})
-            print(f"Added user message to session {session_id}: {user_message[:100]}...")
+            # Store only the last user message
+            SESSION_MEMORY[session_id]["last_user_message"] = user_message
+            print(f"Stored last user message for session {session_id}: {user_message[:100]}...")
         
         if bot_message is not None:
-            # Add bot message
-            SESSION_MEMORY[session_id].append({"role": "bot", "content": bot_message})
-            print(f"Added bot message to session {session_id}: {bot_message[:100]}...")
+            # Store only the last bot message  
+            SESSION_MEMORY[session_id]["last_bot_message"] = bot_message
+            print(f"Stored last bot message for session {session_id}: {bot_message[:100]}...")
         
-        # Cleanup old messages if session gets too large
-        current_memory = SESSION_MEMORY[session_id]
-        if len(current_memory) > MAX_MEMORY_SIZE:
-            # Keep the last MAX_MEMORY_SIZE messages
-            SESSION_MEMORY[session_id] = current_memory[-MAX_MEMORY_SIZE:]
-            print(f"Cleaned up session {session_id}, kept last {MAX_MEMORY_SIZE} messages")
-        
-        print(f"Session {session_id} now has {len(SESSION_MEMORY[session_id])} total messages")
         return None
 
 def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, ...]) -> Optional[str]:
@@ -498,22 +495,18 @@ async def senior_data_analysis(
         # Get chat history for LLM context
         chat_history_for_llm = manage_session_memory(session_id, get_history=True)
         
-        # Enhanced logging for follow-up question debugging
+        # Enhanced logging for follow-up question debugging  
         if chat_history_for_llm:
-            print(f"Session {session_id} has {len(chat_history_for_llm)} messages in history")
+            print(f"Session {session_id} has previous message for context")
             # Look for potential follow-up indicators
             follow_up_indicators = ['them', 'those', 'these', 'it', 'they']
             if any(indicator in query.lower() for indicator in follow_up_indicators):
                 print(f"FOLLOW-UP QUERY DETECTED: '{query}'")
-                if len(chat_history_for_llm) >= 2:
-                    last_user_query = None
-                    for msg in reversed(chat_history_for_llm):
-                        if msg['role'] == 'user':
-                            last_user_query = msg['content']
-                            break
+                last_user_query = chat_history_for_llm[0]['content'] if chat_history_for_llm else None
+                if last_user_query:
                     print(f"Previous user query for context: '{last_user_query}'")
         else:
-            print(f"No chat history found for session {session_id}")
+            print(f"No previous message found for session {session_id}")
 
         # Load and validate data dynamically
         df = load_dataset(dataset_path)
@@ -1532,20 +1525,20 @@ KPI Context:
     # Add chat history context for follow-up questions
     history_context = ""
     if chat_history:
-        history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
+        last_query = chat_history[0]['content'] if chat_history else ""
         history_context = f"""
-**Chat History (for context):**
+**Previous Query (for context):**
 ---
-{history_str}
+{last_query}
 ---
 
 **CRITICAL CONTEXT ANALYSIS:**
-- If the user query contains ambiguous references like "how many are", "how many of them", "which ones", "those", etc., you MUST look at the chat history to understand what they're referring to
-- When the user says "them", "those", "these", they are referring to the subject/filter from the most recent data query
+- If the current user query contains ambiguous references like "how many are", "how many of them", "which ones", "those", etc., you MUST use the previous query context to understand what they're referring to
+- When the user says "them", "those", "these", they are referring to the subject/filter from the previous query shown above
 - Example: If previous query was "show me high priority tickets" and current query is "how many of them are assigned to John", you should count high priority tickets that are assigned to John
 - ALWAYS maintain the same filters/conditions from the previous query when processing follow-up questions
-- Pay special attention to names, categories, priorities, or any filters mentioned in previous conversations
-- If the current query seems like a follow-up, explicitly combine it with the context from the previous query
+- Pay special attention to names, categories, priorities, or any filters mentioned in the previous query
+- If the current query seems like a follow-up, explicitly combine it with the context from the previous query above
 """
     
     llm_prompt = f"""
@@ -2032,12 +2025,13 @@ async def debug_session_memory_explore(session_id: str):
     """
     try:
         with SESSION_MEMORY_LOCK:
-            memory = SESSION_MEMORY.get(session_id, [])
+            session_data = SESSION_MEMORY.get(session_id, {})
             
         return JSONResponse(content={
             "session_id": session_id,
-            "memory_size": len(memory),
-            "messages": memory,
+            "last_user_message": session_data.get("last_user_message"),
+            "last_bot_message": session_data.get("last_bot_message"),
+            "has_previous_context": bool(session_data.get("last_user_message")),
             "total_sessions": len(SESSION_MEMORY),
             "api": "explore"
         })
@@ -2053,18 +2047,22 @@ async def clear_session_memory_explore(session_id: str):
     try:
         with SESSION_MEMORY_LOCK:
             if session_id in SESSION_MEMORY:
-                message_count = len(SESSION_MEMORY[session_id])
+                session_data = SESSION_MEMORY[session_id]
+                had_user_msg = bool(session_data.get("last_user_message"))
+                had_bot_msg = bool(session_data.get("last_bot_message"))
                 del SESSION_MEMORY[session_id]
                 return JSONResponse(content={
                     "session_id": session_id,
-                    "cleared_messages": message_count,
+                    "had_user_message": had_user_msg,
+                    "had_bot_message": had_bot_msg,
                     "status": "cleared",
                     "api": "explore"
                 })
             else:
                 return JSONResponse(content={
                     "session_id": session_id,
-                    "cleared_messages": 0,
+                    "had_user_message": False,
+                    "had_bot_message": False,
                     "status": "not_found",
                     "api": "explore"
                 })
