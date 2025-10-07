@@ -717,7 +717,8 @@ def calculate_tickets_statistics(df):
             'rollover': 'Rollover',
             'req_cr_ym': 'ReqCrYM',
             'resp_remaining': 'RespRem',
-            'resol_remaining': 'ResolRem'
+            'resol_remaining': 'ResolRem',
+            'req_comp': 'ReqComp'  # Added for DAX formula compatibility
         }
         
         # Verify columns exist
@@ -742,9 +743,9 @@ def calculate_tickets_statistics(df):
         else:
             df['month_key'] = df['req_cr_ym_parsed']
         
-        # Handle rollover dates
-        if column_mappings['rollover'] in df.columns:
-            df['rollover_ym'] = df[column_mappings['rollover']].astype(str).str.strip()
+        # Handle rollover dates - this is key for resolution SLA calculations
+        if 'Rollover' in df.columns:
+            df['rollover_ym'] = df['Rollover'].astype(str).str.strip()
         else:
             df['rollover_ym'] = df['month_key']
         
@@ -803,21 +804,53 @@ def calculate_tickets_statistics(df):
                 # TicketsCompleted - tickets closed in selected month
                 tickets_completed = len(month_data[month_data['req_closed'] == True])
                 
-                # ResponseSLAMet - tickets with response SLA met
+                # ResponseSLAMet - tickets created in month with response SLA met
+                response_sla_eligible = len(month_data[month_data['resp_sla_yes'] == True])
                 response_sla_met = len(month_data[
                     (month_data['resp_sla_yes'] == True) & 
                     (month_data['resp_rem_positive'] == True)
                 ])
                 
-                # ResolutionSLAMet - tickets with resolution SLA met
-                resolution_sla_met = len(month_data[
-                    (month_data['resol_sla_yes'] == True) & 
-                    (month_data['resol_rem_positive'] == True)
-                ])
+                # ResolutionSLAMet - Following DAX formula exactly:
+                # Filter by Rollover month, ReqComp = "End", and ResolRem >= 0
+                rollover_month_data = df[df['rollover_ym'] == selected_month]
                 
-                # Calculate percentages
-                response_sla_percent = (response_sla_met / tickets_created * 100) if tickets_created > 0 else 0
-                resolution_sla_percent = (resolution_sla_met / tickets_completed * 100) if tickets_completed > 0 else 0
+                # Filter for completed tickets (ReqComp = "End") in rollover month
+                completed_in_rollover = rollover_month_data[
+                    rollover_month_data['ReqComp'].astype(str).str.strip() == 'End'
+                ]
+                
+                resolution_sla_eligible = len(completed_in_rollover)
+                
+                # Count those with ResolRem >= 0 (as per DAX formula)
+                if resolution_sla_eligible > 0:
+                    resol_rem_positive_rollover = pd.to_numeric(completed_in_rollover['ResolRem'], errors='coerce').fillna(0) >= 0
+                    resolution_sla_met = resol_rem_positive_rollover.sum()
+                else:
+                    resolution_sla_met = 0
+                
+                # Calculate percentages with proper denominators and validation
+                if response_sla_eligible > 0:
+                    response_sla_percent = (response_sla_met / response_sla_eligible * 100)
+                    # Ensure met count doesn't exceed eligible count
+                    if response_sla_met > response_sla_eligible:
+                        print(f"Warning: Response SLA met ({response_sla_met}) > eligible ({response_sla_eligible}) for {selected_month}")
+                        response_sla_met = response_sla_eligible
+                    response_sla_percent = min(response_sla_percent, 100.0)
+                else:
+                    response_sla_percent = 0
+                
+                if resolution_sla_eligible > 0:
+                    resolution_sla_percent = (resolution_sla_met / resolution_sla_eligible * 100)
+                    # Ensure met count doesn't exceed eligible count
+                    if resolution_sla_met > resolution_sla_eligible:
+                        print(f"Warning: Resolution SLA met ({resolution_sla_met}) > eligible ({resolution_sla_eligible}) for {selected_month}")
+                        resolution_sla_met = resolution_sla_eligible
+                    resolution_sla_percent = min(resolution_sla_percent, 100.0)
+                else:
+                    resolution_sla_percent = 0
+                
+                # Resolution SLA calculation now matches DAX formula exactly
                 
                 # ModSLAMet % - Combined SLA performance
                 mod_sla_met = (response_sla_percent + resolution_sla_percent) / 2
