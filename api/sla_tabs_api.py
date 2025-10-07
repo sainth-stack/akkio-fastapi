@@ -288,8 +288,8 @@ def calculate_ticket_details(df):
             print(f"Missing columns for ticket details: {missing_cols}")
             raise ValueError(f"Critical columns missing from dataset: {missing_cols}")
         
-        # Parse dates and create year-month columns
-        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (M/D/YYYY format)
+        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df['req_cr_ym_parsed'] = df['req_creation_parsed'].dt.strftime('%Y-%m')
         
         # Use existing ReqCrYM if available
@@ -600,15 +600,12 @@ def calculate_consultant_statistics(df):
             print(f"Missing columns for consultant stats: {missing_cols}")
             raise ValueError(f"Critical columns missing from dataset: {missing_cols}")
         
-        # Parse dates and create year-month columns
-        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (M/D/YYYY format)
+        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df['req_cr_ym_parsed'] = df['req_creation_parsed'].dt.strftime('%Y-%m')
         
-        # Use existing ReqCrYM if available, otherwise use parsed dates
-        if column_mappings['req_cr_ym'] in df.columns:
-            df['month_key'] = df[column_mappings['req_cr_ym']].astype(str).str.strip()
-        else:
-            df['month_key'] = df['req_cr_ym_parsed']
+        # Use only parsed dates since ReqCrYM column contains invalid Excel serial numbers
+        df['month_key'] = df['req_cr_ym_parsed']
         
         # Clean consultant names
         df['consultant_clean'] = df[column_mappings['consultant']].astype(str).fillna('Unknown').str.strip()
@@ -616,10 +613,13 @@ def calculate_consultant_statistics(df):
         # Clean priority descriptions
         df['priority_clean'] = df[column_mappings['priority']].astype(str).fillna('Unknown').str.strip()
         
-        # Get unique month-consultant combinations
+        # Get unique month-consultant combinations - now with clean month_key
         valid_months = df['month_key'].dropna()
         valid_months = valid_months[valid_months.str.match(r'^\d{4}.\d{2}$', na=False)]
         all_months = sorted(valid_months.unique())
+        
+        # Filter data to only include valid months to avoid duplication
+        df = df[df['month_key'].isin(all_months)]
         
         print(f"Processing consultant data for months: {all_months[:5]}...")
         
@@ -735,22 +735,16 @@ def calculate_tickets_statistics(df):
             # If critical columns are missing, raise an error instead of using fallback
             raise ValueError(f"Critical columns missing from dataset: {missing_cols}")
         
-        # Parse dates and create year-month columns
-        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (M/D/YYYY format)
+        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df['req_cr_ym_parsed'] = df['req_creation_parsed'].dt.strftime('%Y-%m')
         
-        # Use existing ReqCrYM if available, otherwise use parsed dates
-        if column_mappings['req_cr_ym'] in df.columns:
-            # Clean and use existing ReqCrYM column
-            df['month_key'] = df[column_mappings['req_cr_ym']].astype(str).str.strip()
-        else:
-            df['month_key'] = df['req_cr_ym_parsed']
+        # Use only parsed dates since ReqCrYM column contains invalid Excel serial numbers
+        df['month_key'] = df['req_cr_ym_parsed']
         
-        # Handle rollover dates
-        if column_mappings['rollover'] in df.columns:
-            df['rollover_ym'] = df[column_mappings['rollover']].astype(str).str.strip()
-        else:
-            df['rollover_ym'] = df['month_key']
+        # Handle rollover dates - ignore the corrupted Rollover column and calculate properly
+        # Rollover should be based on ticket status, not a separate column with Excel serial numbers
+        df['rollover_ym'] = df['month_key']  # We'll calculate rollover logic differently
         
         # Create boolean columns for SLA calculations
         df['resp_sla_yes'] = df[column_mappings['resp_sla']].astype(str).str.contains('Yes', case=False, na=False)
@@ -768,6 +762,9 @@ def calculate_tickets_statistics(df):
         valid_months = df['month_key'].dropna()
         valid_months = valid_months[valid_months.str.match(r'^\d{4}.\d{2}$', na=False)]
         all_months = sorted(valid_months.unique())
+        
+        # Filter data to only include valid months to avoid duplication
+        df = df[df['month_key'].isin(all_months)]
         
         print(f"Calculating for months: {all_months[:10]}...")  # Show first 10 months
         
@@ -797,12 +794,16 @@ def calculate_tickets_statistics(df):
                 # TicketsCreated - tickets created in selected month with RespSLA = Yes
                 tickets_created = len(month_data[month_data['resp_sla_yes'] == True])
                 
-                # TotalTicketsInclRollover - all tickets that were active during the month
-                # Using a simplified approach: tickets created in or before this month that are still active
-                total_tickets = len(df[
-                    (df['month_key'] <= selected_month) & 
-                    ((df['rollover_ym'] >= selected_month) | (df['rollover_ym'].isna()))
-                ])
+                # TotalTicketsInclRollover - calculate cumulative active tickets properly
+                # Get all tickets created in or before this month
+                created_before_or_in_month = df[df['month_key'] <= selected_month]
+                
+                # Get unique tickets and their latest status for this calculation
+                latest_status_by_ticket = created_before_or_in_month.groupby('Request - ID').last()
+                
+                # Count tickets that are still active (not closed) by this month
+                active_tickets = latest_status_by_ticket[~latest_status_by_ticket['req_closed']]
+                total_tickets = len(active_tickets)
                 
                 # TicketsCompleted - tickets closed in selected month
                 tickets_completed = len(month_data[month_data['req_closed'] == True])
@@ -950,14 +951,21 @@ async def get_tab_data(tab_name: str):
             if not consultant_stats:
                 raise HTTPException(status_code=500, detail="No consultant data could be calculated from the dataset.")
             
-            # Calculate summary statistics
+            # Calculate summary statistics (avoiding double-counting across months)
             total_consultants = len(set(item['consultant'] for item in consultant_stats))
-            total_p1_tickets = sum(item['p1_critical'] for item in consultant_stats)
-            total_p2_tickets = sum(item['p2_high'] for item in consultant_stats)
-            total_p3_tickets = sum(item['p3_normal'] for item in consultant_stats)
-            total_p4_tickets = sum(item['p4_low'] for item in consultant_stats)
-            total_tickets = sum(item['total'] for item in consultant_stats)
-            avg_tickets_per_consultant = total_tickets / total_consultants if total_consultants > 0 else 0
+            
+            # Count unique tickets across all consultant-month combinations
+            unique_tickets_count = len(df.drop_duplicates(subset=['Request - ID']))
+            
+            # Sum by priority across all months (this will double-count tickets across months)
+            # So we'll report monthly totals separately
+            monthly_p1_tickets = sum(item['p1_critical'] for item in consultant_stats)
+            monthly_p2_tickets = sum(item['p2_high'] for item in consultant_stats)
+            monthly_p3_tickets = sum(item['p3_normal'] for item in consultant_stats)
+            monthly_p4_tickets = sum(item['p4_low'] for item in consultant_stats)
+            monthly_total_tickets = sum(item['total'] for item in consultant_stats)
+            
+            avg_tickets_per_consultant = unique_tickets_count / total_consultants if total_consultants > 0 else 0
             
             return JSONResponse(content={
                 "tab_name": tab_name,
@@ -965,11 +973,13 @@ async def get_tab_data(tab_name: str):
                 "consultant_data": consultant_stats,
                 "summary": {
                     "total_consultants": total_consultants,
-                    "total_p1_tickets": total_p1_tickets,
-                    "total_p2_tickets": total_p2_tickets,
-                    "total_p3_tickets": total_p3_tickets,
-                    "total_p4_tickets": total_p4_tickets,
-                    "total_tickets": total_tickets,
+                    "unique_tickets": unique_tickets_count,
+                    "monthly_p1_tickets": monthly_p1_tickets,
+                    "monthly_p2_tickets": monthly_p2_tickets,
+                    "monthly_p3_tickets": monthly_p3_tickets,
+                    "monthly_p4_tickets": monthly_p4_tickets,
+                    "monthly_total_tickets": monthly_total_tickets,
+                    "total_tickets": unique_tickets_count,
                     "avg_tickets_per_consultant": avg_tickets_per_consultant
                 },
                 "message": f"Successfully calculated consultant data for {len(consultant_stats)} records across {total_consultants} consultants"
