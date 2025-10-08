@@ -574,7 +574,7 @@ def calculate_sla_monitor(df):
 
 def calculate_consultant_statistics(df):
     """
-    Calculate consultant-wise ticket statistics by priority level
+    Calculate consultant-wise summary statistics with assigned and resolved percentages
     """
     try:
         df = df.copy()
@@ -587,7 +587,8 @@ def calculate_consultant_statistics(df):
             'priority': 'Request - Priority Description',
             'consultant': 'Request - Resource Assigned To - Name',
             'req_cr_ym': 'ReqCrYM',
-            'request_id': 'Request - ID'
+            'request_id': 'Request - ID',
+            'status': 'Req. Status - Description'
         }
         
         # Verify columns exist
@@ -600,103 +601,156 @@ def calculate_consultant_statistics(df):
             print(f"Missing columns for consultant stats: {missing_cols}")
             raise ValueError(f"Critical columns missing from dataset: {missing_cols}")
         
-        # Parse dates and create year-month columns (M/D/YYYY format)
-        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
-        df['req_cr_ym_parsed'] = df['req_creation_parsed'].dt.strftime('%Y-%m')
-        
-        # Use only parsed dates since ReqCrYM column contains invalid Excel serial numbers
-        df['month_key'] = df['req_cr_ym_parsed']
-        
         # Clean consultant names
         df['consultant_clean'] = df[column_mappings['consultant']].astype(str).fillna('Unknown').str.strip()
         
-        # Clean priority descriptions
-        df['priority_clean'] = df[column_mappings['priority']].astype(str).fillna('Unknown').str.strip()
+        # Filter out invalid consultant names
+        df = df[~df['consultant_clean'].isin(['Unknown', 'Unassigned', '', 'nan', 'NaN'])]
         
-        # Get unique month-consultant combinations - now with clean month_key
-        valid_months = df['month_key'].dropna()
-        valid_months = valid_months[valid_months.str.match(r'^\d{4}.\d{2}$', na=False)]
-        all_months = sorted(valid_months.unique())
+        # Get total tickets in system (unique tickets)
+        total_system_tickets = len(df.drop_duplicates(subset=[column_mappings['request_id']]))
         
-        # Filter data to only include valid months to avoid duplication
-        df = df[df['month_key'].isin(all_months)]
-        
-        print(f"Processing consultant data for months: {all_months[:5]}...")
+        # Check for resolved tickets (closed status)
+        df['is_resolved'] = df[column_mappings['status']].astype(str).str.contains('Closed|Resolved', case=False, na=False)
         
         results = []
         
-        # Group by month and consultant
-        monthly_consultant_data = df.groupby(['month_key', 'consultant_clean'])
+        # Group by consultant
+        consultant_groups = df.groupby('consultant_clean')
         
-        for (month_key, consultant), group_data in monthly_consultant_data:
+        for consultant, group_data in consultant_groups:
             try:
-                # Skip if month_key is not valid
-                if not month_key or month_key not in all_months:
-                    continue
-                    
-                # Parse month for display
-                try:
-                    month_clean = month_key.replace(' ', '-').replace('/', '-')
-                    if len(month_clean.split('-')) == 2:
-                        year_str, month_str = month_clean.split('-')
-                        year = int(year_str)
-                        month_num = int(month_str)
-                        month_name = datetime(year, month_num, 1).strftime('%B')
-                    else:
-                        year = month_key[:4]
-                        month_name = month_key
-                except:
-                    year = month_key[:4] if len(month_key) >= 4 else "2024"
-                    month_name = month_key
-                
-                # Count unique tickets by priority (avoid duplicates from multiple status updates)
+                # Get unique tickets assigned to this consultant
                 unique_tickets = group_data.drop_duplicates(subset=[column_mappings['request_id']])
-                priority_counts = unique_tickets['priority_clean'].value_counts()
+                assigned_tickets = len(unique_tickets)
                 
-                # Extract priority level counts
-                p1_critical = 0
-                p2_high = 0
-                p3_normal = 0
-                p4_low = 0
+                # Get resolved tickets for this consultant
+                resolved_tickets = len(unique_tickets[unique_tickets['is_resolved'] == True])
                 
-                for priority, count in priority_counts.items():
-                    if 'P1' in priority or 'Critical' in priority:
-                        p1_critical += count
-                    elif 'P2' in priority or 'High' in priority:
-                        p2_high += count
-                    elif 'P3' in priority or 'Normal' in priority:
-                        p3_normal += count
-                    elif 'P4' in priority or 'Low' in priority:
-                        p4_low += count
+                # Calculate percentages
+                assigned_percentage = (assigned_tickets / total_system_tickets * 100) if total_system_tickets > 0 else 0
+                resolved_percentage = (resolved_tickets / assigned_tickets * 100) if assigned_tickets > 0 else 0
                 
-                total_tickets = p1_critical + p2_high + p3_normal + p4_low
-                
-                # Only include if there are tickets
-                if total_tickets > 0:
-                    result = {
-                        'year': str(year),
-                        'month': month_name,
-                        'consultant': consultant,
-                        'p1_critical': p1_critical,
-                        'p2_high': p2_high,
-                        'p3_normal': p3_normal,
-                        'p4_low': p4_low,
-                        'total': total_tickets
-                    }
-                    results.append(result)
+                result = {
+                    'consultant_name': consultant,
+                    'assigned_tickets': assigned_tickets,
+                    'resolved_tickets': resolved_tickets,
+                    'assigned_percentage': round(assigned_percentage, 2),
+                    'resolved_percentage': round(resolved_percentage, 2)
+                }
+                results.append(result)
                     
             except Exception as e:
-                print(f"Error processing consultant data for {month_key}, {consultant}: {e}")
+                print(f"Error processing consultant data for {consultant}: {e}")
                 continue
         
-        # Sort results by year, month, and total tickets (descending)
-        results.sort(key=lambda x: (x['year'], x['month'], -x['total']))
+        # Sort results by assigned percentage (descending)
+        results.sort(key=lambda x: x['assigned_percentage'], reverse=True)
         
-        print(f"Successfully calculated consultant statistics for {len(results)} records")
-        return results
+        print(f"Successfully calculated consultant statistics for {len(results)} consultants")
+        return results, total_system_tickets
         
     except Exception as e:
         print(f"Error in calculate_consultant_statistics: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+def calculate_consultant_monthly_data(df, consultant_name):
+    """
+    Calculate monthly created and resolved tickets data for a specific consultant
+    """
+    try:
+        df = df.copy()
+        
+        print(f"Calculating monthly data for consultant: {consultant_name}")
+        
+        # Map actual columns from the CSV
+        column_mappings = {
+            'req_creation_date': 'Req. Creation Date',
+            'consultant': 'Request - Resource Assigned To - Name',
+            'request_id': 'Request - ID',
+            'status': 'Req. Status - Description'
+        }
+        
+        # Verify columns exist
+        missing_cols = []
+        for key, col_name in column_mappings.items():
+            if col_name not in df.columns:
+                missing_cols.append(col_name)
+        
+        if missing_cols:
+            print(f"Missing columns for monthly data: {missing_cols}")
+            raise ValueError(f"Critical columns missing from dataset: {missing_cols}")
+        
+        # Clean consultant names and filter for specific consultant
+        df['consultant_clean'] = df[column_mappings['consultant']].astype(str).fillna('Unknown').str.strip()
+        consultant_data = df[df['consultant_clean'] == consultant_name]
+        
+        if consultant_data.empty:
+            return []
+        
+        # Parse dates and create year-month columns
+        consultant_data['req_creation_parsed'] = pd.to_datetime(
+            consultant_data[column_mappings['req_creation_date']], 
+            format='%m/%d/%Y', 
+            errors='coerce'
+        )
+        consultant_data['month_key'] = consultant_data['req_creation_parsed'].dt.strftime('%Y-%m')
+        
+        # Check for resolved tickets
+        consultant_data['is_resolved'] = consultant_data[column_mappings['status']].astype(str).str.contains('Closed|Resolved', case=False, na=False)
+        
+        # Filter out invalid months
+        valid_months = consultant_data['month_key'].dropna()
+        valid_months = valid_months[valid_months.str.match(r'^\d{4}-\d{2}$', na=False)]
+        all_months = sorted(valid_months.unique())
+        
+        consultant_data = consultant_data[consultant_data['month_key'].isin(all_months)]
+        
+        results = []
+        
+        # Group by month
+        monthly_groups = consultant_data.groupby('month_key')
+        
+        for month_key, group_data in monthly_groups:
+            try:
+                # Parse month for display
+                try:
+                    year_str, month_str = month_key.split('-')
+                    year = int(year_str)
+                    month_num = int(month_str)
+                    month_name = datetime(year, month_num, 1).strftime('%B %Y')
+                except:
+                    month_name = month_key
+                
+                # Get unique tickets created in this month
+                unique_tickets = group_data.drop_duplicates(subset=[column_mappings['request_id']])
+                tickets_created = len(unique_tickets)
+                
+                # Get resolved tickets in this month
+                tickets_resolved = len(unique_tickets[unique_tickets['is_resolved'] == True])
+                
+                result = {
+                    'month': month_name,
+                    'month_key': month_key,
+                    'tickets_created': tickets_created,
+                    'tickets_resolved': tickets_resolved
+                }
+                results.append(result)
+                
+            except Exception as e:
+                print(f"Error processing monthly data for {month_key}: {e}")
+                continue
+        
+        # Sort by month
+        results.sort(key=lambda x: x['month_key'])
+        
+        print(f"Successfully calculated monthly data for {len(results)} months")
+        return results
+        
+    except Exception as e:
+        print(f"Error in calculate_consultant_monthly_data: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -945,27 +999,18 @@ async def get_tab_data(tab_name: str):
             })
             
         elif tab_name == "Consultant_Wise":
-            # Return consultant-wise data for the third tab
-            consultant_stats = calculate_consultant_statistics(df)
+            # Return consultant-wise data with assigned and resolved percentages
+            consultant_stats, total_system_tickets = calculate_consultant_statistics(df)
             
             if not consultant_stats:
                 raise HTTPException(status_code=500, detail="No consultant data could be calculated from the dataset.")
             
-            # Calculate summary statistics (avoiding double-counting across months)
-            total_consultants = len(set(item['consultant'] for item in consultant_stats))
-            
-            # Count unique tickets across all consultant-month combinations
-            unique_tickets_count = len(df.drop_duplicates(subset=['Request - ID']))
-            
-            # Sum by priority across all months (this will double-count tickets across months)
-            # So we'll report monthly totals separately
-            monthly_p1_tickets = sum(item['p1_critical'] for item in consultant_stats)
-            monthly_p2_tickets = sum(item['p2_high'] for item in consultant_stats)
-            monthly_p3_tickets = sum(item['p3_normal'] for item in consultant_stats)
-            monthly_p4_tickets = sum(item['p4_low'] for item in consultant_stats)
-            monthly_total_tickets = sum(item['total'] for item in consultant_stats)
-            
-            avg_tickets_per_consultant = unique_tickets_count / total_consultants if total_consultants > 0 else 0
+            # Calculate summary statistics
+            total_consultants = len(consultant_stats)
+            total_assigned_tickets = sum(item['assigned_tickets'] for item in consultant_stats)
+            total_resolved_tickets = sum(item['resolved_tickets'] for item in consultant_stats)
+            avg_assigned_percentage = sum(item['assigned_percentage'] for item in consultant_stats) / total_consultants if total_consultants > 0 else 0
+            avg_resolved_percentage = sum(item['resolved_percentage'] for item in consultant_stats) / total_consultants if total_consultants > 0 else 0
             
             return JSONResponse(content={
                 "tab_name": tab_name,
@@ -973,16 +1018,13 @@ async def get_tab_data(tab_name: str):
                 "consultant_data": consultant_stats,
                 "summary": {
                     "total_consultants": total_consultants,
-                    "unique_tickets": unique_tickets_count,
-                    "monthly_p1_tickets": monthly_p1_tickets,
-                    "monthly_p2_tickets": monthly_p2_tickets,
-                    "monthly_p3_tickets": monthly_p3_tickets,
-                    "monthly_p4_tickets": monthly_p4_tickets,
-                    "monthly_total_tickets": monthly_total_tickets,
-                    "total_tickets": unique_tickets_count,
-                    "avg_tickets_per_consultant": avg_tickets_per_consultant
+                    "total_system_tickets": total_system_tickets,
+                    "total_assigned_tickets": total_assigned_tickets,
+                    "total_resolved_tickets": total_resolved_tickets,
+                    "avg_assigned_percentage": round(avg_assigned_percentage, 2),
+                    "avg_resolved_percentage": round(avg_resolved_percentage, 2)
                 },
-                "message": f"Successfully calculated consultant data for {len(consultant_stats)} records across {total_consultants} consultants"
+                "message": f"Successfully calculated consultant data for {len(consultant_stats)} consultants"
             })
             
         elif tab_name == "Suspended_Stats":
@@ -1274,3 +1316,58 @@ async def get_chart_data(tab_name: str):
     except Exception as e:
         print(f"Error getting chart data: {e}")
         raise HTTPException(status_code=500, detail=f"Chart data error: {str(e)}")
+
+@sla_tabs_router.get("/api/sla_tabs/consultant_monthly/{consultant_name}")
+async def get_consultant_monthly_data(consultant_name: str):
+    """
+    Get monthly created and resolved tickets data for a specific consultant
+    """
+    try:
+        # Load data from uploads_sla
+        csv_file_path = os.path.join('uploads_sla', 'data1.csv')
+        if not os.path.exists(csv_file_path):
+            raise HTTPException(status_code=404, detail="No data file found. Please upload a file first.")
+        
+        df = pd.read_csv(csv_file_path)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Dataset is empty.")
+        
+        print(f"Loading monthly data for consultant: {consultant_name}")
+        
+        # Calculate monthly data for the specific consultant
+        monthly_data = calculate_consultant_monthly_data(df, consultant_name)
+        
+        if not monthly_data:
+            raise HTTPException(status_code=404, detail=f"No data found for consultant: {consultant_name}")
+        
+        # Prepare chart data
+        chart_data = {
+            "months": [item['month'] for item in monthly_data],
+            "tickets_created": [item['tickets_created'] for item in monthly_data],
+            "tickets_resolved": [item['tickets_resolved'] for item in monthly_data]
+        }
+        
+        # Calculate summary
+        total_created = sum(item['tickets_created'] for item in monthly_data)
+        total_resolved = sum(item['tickets_resolved'] for item in monthly_data)
+        
+        return JSONResponse(content={
+            "consultant_name": consultant_name,
+            "monthly_data": monthly_data,
+            "chart_data": chart_data,
+            "summary": {
+                "total_months": len(monthly_data),
+                "total_created": total_created,
+                "total_resolved": total_resolved,
+                "resolution_rate": round((total_resolved / total_created * 100), 2) if total_created > 0 else 0
+            },
+            "message": f"Successfully calculated monthly data for {consultant_name} across {len(monthly_data)} months"
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_consultant_monthly_data: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
