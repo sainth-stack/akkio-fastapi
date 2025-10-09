@@ -20,6 +20,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import requests
 import csv
+import time
+import shutil
 
 
 SESSION_MEMORY = defaultdict(list)
@@ -91,6 +93,7 @@ async def upload_processed_data(data: dict):
         if not records:
             raise HTTPException(status_code=400, detail="No records provided")
         
+        t_start = time.monotonic()
         # Save to uploads_sla directory (streaming CSV write without pandas for speed)
         upload_dir = "uploads_sla"
         os.makedirs(upload_dir, exist_ok=True)
@@ -106,6 +109,7 @@ async def upload_processed_data(data: dict):
         
         # Save as data1.csv (standard filename for processing)
         file_path = os.path.join(upload_dir, "data1.csv")
+        t_write_start = time.monotonic()
         try:
             with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.writer(csvfile)
@@ -128,18 +132,23 @@ async def upload_processed_data(data: dict):
                     writer.writerow(safe_row)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to write CSV: {str(e)}")
+        t_write_end = time.monotonic()
         
         # Also save processed files list
         processed_files_path = os.path.join(upload_dir, "processed_files.txt")
         with open(processed_files_path, "w", encoding="utf-8") as f:
             f.write(f"{filename}\n")
+        t_end = time.monotonic()
+        total_ms = int((t_end - t_start) * 1000)
+        write_ms = int((t_write_end - t_write_start) * 1000)
+        server_timing = f"write;dur={write_ms}, total;dur={total_ms}"
         
         return JSONResponse({
             "message": "Processed data uploaded successfully",
             "filename": "data1.csv",
             "records": len(records),
             "columns": len(headers)
-        })
+        }, headers={"Server-Timing": server_timing})
         
     except Exception as e:
         print(f"Error uploading processed data: {str(e)}")
@@ -154,16 +163,20 @@ async def upload_data_only(file: UploadFile = File(...)):
     ext = os.path.splitext(filename)[1].lower()
     upload_dir = "uploads_sla"
     os.makedirs(upload_dir, exist_ok=True)
-    content = await file.read()
+    # For CSV we stream directly from the spooled temp file; for Excel we read into memory once
 
     # Fast path: if CSV, save directly without pandas
     if ext == ".csv":
-        if not content:
-            raise HTTPException(status_code=400, detail="Empty file or no data found.")
+        t_start = time.monotonic()
         static_file_path = os.path.join(upload_dir, "data1.csv")
         try:
-            with open(static_file_path, "wb") as f:
-                f.write(content)
+            # Reset pointer if needed and stream copy to reduce memory spike
+            try:
+                file.file.seek(0)
+            except Exception:
+                pass
+            with open(static_file_path, "wb") as out_f:
+                shutil.copyfileobj(file.file, out_f, length=1024 * 1024)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save CSV file: {e}")
 
@@ -175,14 +188,19 @@ async def upload_data_only(file: UploadFile = File(...)):
         except Exception:
             pass
 
+        t_end = time.monotonic()
+        total_ms = int((t_end - t_start) * 1000)
+        server_timing = f"save;dur={total_ms}"
         return JSONResponse(content={
             "message": "File uploaded successfully",
             "filename": "data1.csv"
-        })
+        }, headers={"Server-Timing": server_timing})
 
     # Excel path: convert to CSV once using pandas
     if ext in [".xls", ".xlsx"]:
+        t_start = time.monotonic()
         try:
+            content = await file.read()
             df = pd.read_excel(io.BytesIO(content))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {e}")
@@ -203,10 +221,13 @@ async def upload_data_only(file: UploadFile = File(...)):
         except Exception:
             pass
 
+        t_end = time.monotonic()
+        total_ms = int((t_end - t_start) * 1000)
+        server_timing = f"excel_read_convert;dur={total_ms}"
         return JSONResponse(content={
             "message": "Excel file uploaded and converted successfully",
             "filename": "data1.csv"
-        })
+        }, headers={"Server-Timing": server_timing})
 
     # Unsupported type
     raise HTTPException(status_code=400, detail="Unsupported file type")
