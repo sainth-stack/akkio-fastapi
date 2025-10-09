@@ -21,6 +21,7 @@ import numpy as np
 import requests
 import csv
 
+
 SESSION_MEMORY = defaultdict(list)
 SESSION_MEMORY_LOCK = threading.Lock()
 MAX_MEMORY_SIZE = 50  # Maximum number of exchanges per session
