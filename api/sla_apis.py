@@ -19,6 +19,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import requests
+import csv
 
 SESSION_MEMORY = defaultdict(list)
 SESSION_MEMORY_LOCK = threading.Lock()
@@ -89,20 +90,47 @@ async def upload_processed_data(data: dict):
         if not records:
             raise HTTPException(status_code=400, detail="No records provided")
         
-        # Convert records to DataFrame
-        df = pd.DataFrame(records)
-        
-        # Save to uploads_sla directory
+        # Save to uploads_sla directory (streaming CSV write without pandas for speed)
         upload_dir = "uploads_sla"
         os.makedirs(upload_dir, exist_ok=True)
         
+        # Determine headers if not provided
+        if not headers:
+            if isinstance(records, list) and len(records) > 0 and isinstance(records[0], dict):
+                headers = list(records[0].keys())
+            elif isinstance(records, list) and len(records) > 0 and isinstance(records[0], (list, tuple)):
+                headers = [f"col_{i+1}" for i in range(len(records[0]))]
+            else:
+                raise HTTPException(status_code=400, detail="No headers provided and unable to infer from records")
+        
         # Save as data1.csv (standard filename for processing)
         file_path = os.path.join(upload_dir, "data1.csv")
-        df.to_csv(file_path, index=False)
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+                # Write header
+                writer.writerow(headers)
+                # Write rows
+                for rec in records:
+                    if isinstance(rec, dict):
+                        row = [rec.get(h, "") if rec.get(h, "") is not None else "" for h in headers]
+                    elif isinstance(rec, (list, tuple)):
+                        values = list(rec)
+                        # Pad or trim to match header length
+                        if len(values) < len(headers):
+                            values = values + [""] * (len(headers) - len(values))
+                        row = values[:len(headers)]
+                    else:
+                        row = [str(rec)]
+                    # Ensure all values are CSV-safe strings or numbers
+                    safe_row = [v if isinstance(v, (int, float)) else ("" if v is None else str(v)) for v in row]
+                    writer.writerow(safe_row)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to write CSV: {str(e)}")
         
         # Also save processed files list
         processed_files_path = os.path.join(upload_dir, "processed_files.txt")
-        with open(processed_files_path, "w") as f:
+        with open(processed_files_path, "w", encoding="utf-8") as f:
             f.write(f"{filename}\n")
         
         return JSONResponse({
@@ -127,22 +155,60 @@ async def upload_data_only(file: UploadFile = File(...)):
     os.makedirs(upload_dir, exist_ok=True)
     content = await file.read()
 
-    try:
-        if ext == ".csv":
-            df = pd.read_csv(io.StringIO(content.decode("utf-8")))
-        elif ext in [".xls", ".xlsx"]:
+    # Fast path: if CSV, save directly without pandas
+    if ext == ".csv":
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty file or no data found.")
+        static_file_path = os.path.join(upload_dir, "data1.csv")
+        try:
+            with open(static_file_path, "wb") as f:
+                f.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save CSV file: {e}")
+
+        # Track latest processed filename
+        processed_files_path = os.path.join(upload_dir, "processed_files.txt")
+        try:
+            with open(processed_files_path, "w", encoding="utf-8") as f:
+                f.write(f"{filename}\n")
+        except Exception:
+            pass
+
+        return JSONResponse(content={
+            "message": "File uploaded successfully",
+            "filename": "data1.csv"
+        })
+
+    # Excel path: convert to CSV once using pandas
+    if ext in [".xls", ".xlsx"]:
+        try:
             df = pd.read_excel(io.BytesIO(content))
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse or save file: {e}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {e}")
 
-    if df.empty:
-        raise HTTPException(status_code=400, detail="Empty file or no data found.")
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Empty file or no data found.")
 
-    # Always save to data1.csv regardless of original file type
-    static_file_path = os.path.join(upload_dir, "data1.csv")
-    df.to_csv(static_file_path, index=False)
+        static_file_path = os.path.join(upload_dir, "data1.csv")
+        try:
+            df.to_csv(static_file_path, index=False)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save converted CSV: {e}")
+
+        processed_files_path = os.path.join(upload_dir, "processed_files.txt")
+        try:
+            with open(processed_files_path, "w", encoding="utf-8") as f:
+                f.write(f"{filename}\n")
+        except Exception:
+            pass
+
+        return JSONResponse(content={
+            "message": "Excel file uploaded and converted successfully",
+            "filename": "data1.csv"
+        })
+
+    # Unsupported type
+    raise HTTPException(status_code=400, detail="Unsupported file type")
 
 # Handle NaN values and make data JSON serializable - ULTRA ROBUST VERSION
 def convert_to_json_safe(df):
