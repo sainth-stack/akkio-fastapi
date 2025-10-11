@@ -1509,7 +1509,7 @@ Just ask me about any technical issues, errors, or incidents you need help with!
     }
 
 @sla_router.post("/api/vector_search/")
-async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)):
+async def vector_search_sla(query: str = Form(...), session_id: str = Form(None), kb_format: str = Form(None)):
     """
     Vector-based search API for SLA data - searches for similar tickets and solutions
     """
@@ -1521,8 +1521,8 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
         
         print(f"Processing vector search query for session {session_id}: {query}")
 
-        # Check if this is a general query that doesn't need dataset search
-        if is_general_query(query):
+        # Check if this is a general query that doesn't need dataset search (unless kb_format requested)
+        if is_general_query(query) and not (kb_format and kb_format.lower() in ["1", "true", "yes"]):
             print(f"General query detected: '{query}' - providing fast response")
             fast_response = get_fast_general_response(query)
             
@@ -1566,19 +1566,99 @@ async def vector_search_sla(query: str = Form(...), session_id: str = Form(None)
 
         # Perform vector search
         search_results = perform_vector_search(query, df)
-        
-        # Get AI response based on search results
+
+        # If kb_format requested, return SAP-style JSON: { request, response }
+        if kb_format and kb_format.lower() in ["1", "true", "yes"]:
+            # Build Problem Description
+            problem_description = query.strip()
+
+            # Determine area from keywords
+            keywords = extract_search_keywords(query)
+            keywords_set = set([kw.lower() for kw in keywords])
+            if any(k in keywords_set for k in ["sap", "scm", "ecc", "s/4hana", "hana"]):
+                sap_area = "SCM (Supply Chain Management) / SAP Retail"
+            else:
+                sap_area = "Knowledge Base"
+
+            # Extract suggestions and IDs from top results
+            referenced_ids = []
+            suggestion_text = None
+            for res in search_results[:3]:
+                # ID detection
+                for id_key in [
+                    'Request - ID', 'Ticket ID', 'ID', 'Request ID', 'ticketId', 'Ticket_ID'
+                ]:
+                    if id_key in res and str(res.get(id_key, '')).strip():
+                        referenced_ids.append(str(res.get(id_key)).strip())
+                        break
+                # Suggestion candidate
+                if suggestion_text is None:
+                    for ans_key in [
+                        'Request - Text Answer', 'Answer', 'Solution', 'Resolution'
+                    ]:
+                        val = res.get(ans_key)
+                        if val and str(val).strip():
+                            suggestion_text = str(val).strip()
+                            break
+                    if suggestion_text is None:
+                        for req_key in [
+                            'Request - Subject description', 'Subject', 'Summary',
+                            'Request - Text Request', 'Description', 'Issue Description', 'Problem Description'
+                        ]:
+                            val = res.get(req_key)
+                            if val and str(val).strip():
+                                suggestion_text = f"Review similar case: {str(val).strip()}"
+                                break
+
+            referenced_ids = [rid for rid in referenced_ids if rid]
+            referenced_ids = referenced_ids[:3]
+
+            # Compose response markdown
+            response_lines = []
+            response_lines.append("Problem Description:")
+            response_lines.append(problem_description if problem_description else "User reported an issue.")
+            response_lines.append("")
+            response_lines.append("SAP Area:")
+            response_lines.append(sap_area)
+            response_lines.append("")
+            response_lines.append("Suggested Solution (if applicable):")
+            if suggestion_text:
+                if referenced_ids:
+                    response_lines.append(
+                        f"Based on a similar past ticket (ID: {referenced_ids[0]}), {suggestion_text}"
+                    )
+                else:
+                    response_lines.append(suggestion_text)
+            else:
+                if search_results:
+                    response_lines.append("Based on similar past tickets, review the top matches and apply the corresponding resolution steps.")
+                else:
+                    response_lines.append("No similar tickets were found for this request. Please provide more details or try a different description.")
+            response_lines.append("")
+            response_lines.append("Referenced Ticket IDs:")
+            if referenced_ids:
+                response_lines.append(", ".join(referenced_ids))
+            else:
+                response_lines.append("None")
+
+            compiled_response = "\n".join(response_lines)
+
+            # Memory update
+            manage_session_memory(session_id, user_message=query, bot_message=compiled_response[:200])
+
+            return JSONResponse(content={
+                "request": f"Enter a description of your request : {problem_description}",
+                "response": compiled_response
+            }, status_code=200)
+
+        # Otherwise, fall back to original response types
         ai_response = get_vector_search_response(query, search_results, chat_history_for_llm)
-        
-        # Determine response type and payload
+
         response_type = ai_response.get("type", "text")
         payload = ai_response.get("payload", "No results found.")
         explanation = ai_response.get("explanation", "")
-        
-        # Determine bot response text for memory
+
         bot_response_text = explanation if explanation else str(payload)[:200] + "..." if len(str(payload)) > 200 else str(payload)
-        
-        # Store current exchange in memory using centralized function
         manage_session_memory(session_id, user_message=query, bot_message=bot_response_text)
 
         return JSONResponse(content={
