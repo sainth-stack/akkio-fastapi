@@ -102,8 +102,8 @@ def calculate_suspended_statistics(df):
         
         print(f"Filtered suspended data shape: {df_suspended.shape}")
         
-        # Parse dates and create year-month columns
-        df_suspended['req_creation_parsed'] = pd.to_datetime(df_suspended[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (using M/D/Y format)
+        df_suspended['req_creation_parsed'] = pd.to_datetime(df_suspended[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df_suspended['req_cr_ym_parsed'] = df_suspended['req_creation_parsed'].dt.strftime('%Y-%m')
         
         # Use existing ReqCrYM if available, otherwise use parsed dates
@@ -198,8 +198,8 @@ def calculate_suspended_l2_details(df):
         
         print(f"Filtered suspended L2 data shape: {df_suspended.shape}")
         
-        # Parse dates and create year-month columns
-        df_suspended['req_creation_parsed'] = pd.to_datetime(df_suspended[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (using M/D/Y format)
+        df_suspended['req_creation_parsed'] = pd.to_datetime(df_suspended[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df_suspended['req_cr_ym_parsed'] = df_suspended['req_creation_parsed'].dt.strftime('%Y-%m')
         
         # Use existing ReqCrYM if available, otherwise use parsed dates
@@ -441,8 +441,8 @@ def calculate_aging_data(df):
             (~df[column_mappings['status']].str.contains('Closed|Resolved', case=False, na=False))
         ].copy()
         
-        # Parse dates and create year-month columns
-        df_open['req_creation_parsed'] = pd.to_datetime(df_open[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates and create year-month columns (using M/D/Y format)
+        df_open['req_creation_parsed'] = pd.to_datetime(df_open[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df_open['req_cr_ym_parsed'] = df_open['req_creation_parsed'].dt.strftime('%Y-%m')
         
         # Use existing ReqCrYM if available
@@ -496,8 +496,8 @@ def calculate_aging_l2_details(df):
             'req_creation_date': 'Req. Creation Date'
         }
         
-        # Parse dates for year/month/day extraction
-        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%d/%m/%Y', errors='coerce')
+        # Parse dates for year/month/day extraction (using M/D/Y format)
+        df['req_creation_parsed'] = pd.to_datetime(df[column_mappings['req_creation_date']], format='%m/%d/%Y', errors='coerce')
         df['year'] = df['req_creation_parsed'].dt.year
         df['month'] = df['req_creation_parsed'].dt.strftime('%B')
         df['day'] = df['req_creation_parsed'].dt.day

@@ -22,6 +22,7 @@ import requests
 import csv
 import time
 import shutil
+import gzip
 
 
 SESSION_MEMORY = defaultdict(list)
@@ -164,6 +165,42 @@ async def upload_data_only(file: UploadFile = File(...)):
     upload_dir = "uploads_sla"
     os.makedirs(upload_dir, exist_ok=True)
     # For CSV we stream directly from the spooled temp file; for Excel we read into memory once
+
+    # Handle gzipped files
+    if ext == ".gz":
+        # Check if it's a .csv.gz file
+        base_name = os.path.splitext(filename[:-3])[0]  # Remove .gz and get base
+        inner_ext = os.path.splitext(filename[:-3])[1].lower()  # Get extension before .gz
+        
+        if inner_ext == ".csv":
+            t_start = time.monotonic()
+            static_file_path = os.path.join(upload_dir, "data1.csv")
+            try:
+                # Read gzipped content and decompress
+                content = await file.read()
+                with gzip.open(io.BytesIO(content), 'rb') as gz_file:
+                    with open(static_file_path, "wb") as out_f:
+                        shutil.copyfileobj(gz_file, out_f, length=1024 * 1024)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to decompress and save CSV.GZ file: {e}")
+
+            # Track latest processed filename
+            processed_files_path = os.path.join(upload_dir, "processed_files.txt")
+            try:
+                with open(processed_files_path, "w", encoding="utf-8") as f:
+                    f.write(f"{filename}\n")
+            except Exception:
+                pass
+
+            t_end = time.monotonic()
+            total_ms = int((t_end - t_start) * 1000)
+            server_timing = f"decompress_save;dur={total_ms}"
+            return JSONResponse(content={
+                "message": "Gzipped CSV file uploaded and decompressed successfully",
+                "filename": "data1.csv"
+            }, headers={"Server-Timing": server_timing})
+        else:
+            raise HTTPException(status_code=400, detail="Only .csv.gz files are supported for gzipped uploads")
 
     # Fast path: if CSV, save directly without pandas
     if ext == ".csv":
