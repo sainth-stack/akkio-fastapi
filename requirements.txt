@@ -55,6 +55,9 @@ chromadb
 # PDF processing
 pypdf
 
+# DOCX processing
+python-docx
+
 # Timezone handling
 tzdata
 

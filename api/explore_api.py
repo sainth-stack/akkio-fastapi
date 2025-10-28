@@ -17,6 +17,8 @@ from collections import defaultdict
 import threading
 
 from openai import OpenAI
+from langchain_community.document_loaders import PyPDFLoader
+from docx import Document
 from universal_prompts import (
     prompt_for_data_analyst,
     Prompt_for_code_execution,
@@ -74,12 +76,94 @@ def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, .
     except Exception:
         return None
 
+def _process_pdf_file(file_path: str) -> pd.DataFrame:
+    """Process PDF file and return DataFrame with extracted text and enhanced metadata"""
+    try:
+        loader = PyPDFLoader(file_path)
+        pages = loader.load()
+        
+        if not pages:
+            raise ValueError("PDF file appears to be empty or corrupted")
+        
+        # Combine all pages text with page information
+        full_text = "\n".join([page.page_content for page in pages])
+        
+        if not full_text.strip():
+            raise ValueError("PDF file contains no extractable text")
+        
+        # Create enhanced DataFrame with extracted text and metadata
+        lines = full_text.split('\n')
+        df = pd.DataFrame({
+            'line_number': range(1, len(lines) + 1),
+            'text_content': lines,
+            'document_type': 'PDF',
+            'total_pages': len(pages),
+            'total_lines': len(lines)
+        })
+        
+        # Remove empty lines but keep metadata
+        df = df[df['text_content'].str.strip() != '']
+        
+        # Add document analysis metadata
+        df['is_legal_document'] = any(keyword in full_text.lower() for keyword in 
+                                    ['article', 'section', 'law', 'regulation', 'act', 'decree', 'resolution', 'provision'])
+        df['is_contract'] = any(keyword in full_text.lower() for keyword in 
+                              ['agreement', 'contract', 'terms', 'conditions', 'party', 'signature'])
+        df['is_policy'] = any(keyword in full_text.lower() for keyword in 
+                            ['policy', 'procedure', 'guideline', 'standard', 'requirement'])
+        
+        return df
+        
+    except Exception as e:
+        raise ValueError(f"Error processing PDF file: {str(e)}")
+
+def _process_docx_file(file_path: str) -> pd.DataFrame:
+    """Process DOCX file and return DataFrame with extracted text and enhanced metadata"""
+    try:
+        doc = Document(file_path)
+        paragraphs = doc.paragraphs
+        
+        if not paragraphs:
+            raise ValueError("DOCX file appears to be empty or corrupted")
+        
+        # Combine all paragraphs text
+        full_text = "\n".join([p.text for p in paragraphs if p.text.strip()])
+        
+        if not full_text.strip():
+            raise ValueError("DOCX file contains no extractable text")
+        
+        # Create enhanced DataFrame with extracted text and metadata
+        lines = full_text.split('\n')
+        df = pd.DataFrame({
+            'line_number': range(1, len(lines) + 1),
+            'text_content': lines,
+            'document_type': 'DOCX',
+            'total_paragraphs': len(paragraphs),
+            'total_lines': len(lines)
+        })
+        
+        # Remove empty lines but keep metadata
+        df = df[df['text_content'].str.strip() != '']
+        
+        # Add document analysis metadata
+        df['is_legal_document'] = any(keyword in full_text.lower() for keyword in 
+                                    ['article', 'section', 'law', 'regulation', 'act', 'decree', 'resolution', 'provision'])
+        df['is_contract'] = any(keyword in full_text.lower() for keyword in 
+                              ['agreement', 'contract', 'terms', 'conditions', 'party', 'signature'])
+        df['is_policy'] = any(keyword in full_text.lower() for keyword in 
+                            ['policy', 'procedure', 'guideline', 'standard', 'requirement'])
+        
+        return df
+        
+    except Exception as e:
+        raise ValueError(f"Error processing DOCX file: {str(e)}")
+
 def load_dataset(preferred_path: Optional[str] = None) -> pd.DataFrame:
     """
     Dynamically load a dataset with the following priority:
     1) preferred_path (if provided and exists)
     2) ENV EXPLORE_DATASET_PATH (if set and exists)
-    3) Latest file in ./uploads (csv/xlsx/xls)
+    3) Latest file in ./uploads (csv/xlsx/xls/pdf/docx)
     4) Fallback: ./data.csv (if exists)
     Raises HTTPException(404) if no dataset found, or 400 if empty.
     """
@@ -95,7 +179,7 @@ def load_dataset(preferred_path: Optional[str] = None) -> pd.DataFrame:
 
     # 3) uploads directory latest
     uploads_dir = os.path.join(os.getcwd(), 'uploads')
-    latest = _find_latest_file_in_directory(uploads_dir, ('.csv', '.xlsx', '.xls'))
+    latest = _find_latest_file_in_directory(uploads_dir, ('.csv', '.xlsx', '.xls', '.pdf', '.docx'))
     if latest:
         search_order.append(latest)
 
@@ -126,11 +210,16 @@ def load_dataset(preferred_path: Optional[str] = None) -> pd.DataFrame:
                 df = pd.read_csv(path)
             elif lower.endswith('.xlsx') or lower.endswith('.xls'):
                 df = pd.read_excel(path)
+            elif lower.endswith('.pdf'):
+                df = _process_pdf_file(path)
+            elif lower.endswith('.docx'):
+                df = _process_docx_file(path)
             else:
                 continue
             if df is not None and not df.empty:
                 return df
-        except Exception:
+        except Exception as e:
+            print(f"Error loading file {path}: {str(e)}")
             continue
 
     raise HTTPException(status_code=404, detail="No valid dataset found to analyze")
@@ -466,8 +555,41 @@ def build_entity_metric_line_chart(df: pd.DataFrame, query: str):
 
 
 
-# Set up OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Set up OpenAI client - lazy initialization
+def get_openai_client():
+    """Get OpenAI client with lazy initialization"""
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def detect_arabic_language(text: str) -> bool:
+    """
+    Detect if the text contains Arabic characters
+    """
+    arabic_pattern = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
+    return bool(arabic_pattern.search(text))
+
+def get_language_context(query: str) -> tuple[str, str]:
+    """
+    Detect language and return appropriate context and instructions
+    Returns: (language, language_instructions)
+    """
+    is_arabic = detect_arabic_language(query)
+    
+    if is_arabic:
+        return "arabic", """
+        LANGUAGE REQUIREMENTS FOR ARABIC:
+        - Respond entirely in Arabic
+        - Use proper Arabic RTL (Right-to-Left) text direction
+        - Use Arabic HTML structure with dir="rtl" attribute
+        - Maintain professional Arabic terminology
+        - Use proper Arabic formatting and punctuation
+        """
+    else:
+        return "english", """
+        LANGUAGE REQUIREMENTS FOR ENGLISH:
+        - Respond in clear, professional English
+        - Use proper HTML formatting
+        - Maintain professional terminology
+        """
 
 # Optional Plotly availability flag for formatting results
 try:
@@ -510,6 +632,30 @@ async def senior_data_analysis(
 
         # Load and validate data dynamically
         df = load_dataset(dataset_path)
+
+        # Check if this is a legal analysis query
+        legal_keywords = ['document', 'pdf', 'legal', 'contract', 'agreement', 'policy', 'regulation', 'law', 'analysis', 'summary', 'extract', 'content']
+        is_legal_query = any(keyword in query.lower() for keyword in legal_keywords)
+        
+        # Check if the dataset contains legal document content
+        is_legal_data = 'text_content' in df.columns and 'document_type' in df.columns
+        
+        # If it's a legal query and we have legal document data, use specialized analysis
+        if is_legal_query and is_legal_data:
+            print(f"Processing legal analysis for session {session_id}")
+            professional_analysis = analyze_legal_content(df, query)
+            
+            # Store legal analysis in memory
+            manage_session_memory(session_id, user_message=query, bot_message="Generated comprehensive legal analysis.")
+            
+            return JSONResponse(
+                content=jsonable_encoder({
+                    "type": "text",
+                    "payload": professional_analysis,
+                    "session_id": session_id
+                }),
+                status_code=200
+            )
 
         # Preprocess dataframe for robust graphing and analysis
         df = preprocess_dataframe_for_graphing(df)
@@ -803,7 +949,7 @@ async def senior_data_analysis(
 
 
 def generate_data_code(prompt_eng: str) -> str:
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": prompt_for_data_analyst},
@@ -873,7 +1019,7 @@ def simulate_and_format_with_llm(
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
 
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
@@ -1170,6 +1316,153 @@ def _make_json_safe(obj):
     return str(obj)
 
 
+def analyze_legal_content(df: pd.DataFrame, query: str) -> str:
+    """
+    Analyze legal document content and provide professional structured response with reference links
+    """
+    try:
+        # Extract document content
+        document_text = " ".join(df['text_content'].astype(str).tolist())
+        
+        # Get document metadata
+        doc_type = df['document_type'].iloc[0] if 'document_type' in df.columns else 'Unknown'
+        is_legal = df['is_legal_document'].iloc[0] if 'is_legal_document' in df.columns else False
+        is_contract = df['is_contract'].iloc[0] if 'is_contract' in df.columns else False
+        is_policy = df['is_policy'].iloc[0] if 'is_policy' in df.columns else False
+        
+        # Detect language and get appropriate context
+        language, language_instructions = get_language_context(query)
+        
+        # Create language-specific HTML structure
+        if language == "arabic":
+            html_template = """
+            <div dir="rtl" lang="ar">
+            <h3>نظام التحليل القانوني</h3>
+            <h4>الإجابة المباشرة</h4>
+            <p>بناءً على الوثائق القانونية لدولة الإمارات العربية المتحدة، يقدم التحليل الشامل التالي معالجة للمسؤوليات والالتزامات القانونية للمحامين في دولة الإمارات العربية المتحدة، مع التركيز بشكل خاص على تمثيل العملاء، تضارب المصالح، والسلوك المهني.</p>
+            <p>[نظرة شاملة على محتوى الوثيقة القانونية والنتائج الرئيسية المتعلقة بسؤال المستخدم]</p>
+
+            <h4>المواضيع القانونية الرئيسية</h4>
+            <ul>
+            <li><strong>[الموضوع القانوني الأول]:</strong> [شرح مفصل مع مراجع محددة لمحتوى الوثيقة القانونية]</li>
+            <li><strong>[الموضوع القانوني الثاني]:</strong> [شرح مفصل مع مراجع محددة لمحتوى الوثيقة القانونية]</li>
+            <li><strong>[الموضوع القانوني الثالث]:</strong> [شرح مفصل مع مراجع محددة لمحتوى الوثيقة القانونية]</li>
+            </ul>
+
+            <h4>الأحكام القانونية/التنظيمية</h4>
+            <ul>
+            <li><strong>[اسم الحكم القانوني]:</strong> [تفاصيل محددة وآثار قانونية من الوثيقة]</li>
+            <li><strong>[حكم قانوني آخر]:</strong> [تفاصيل محددة وآثار قانونية من الوثيقة]</li>
+            </ul>
+
+            <h4>الإرشادات القانونية العملية</h4>
+            <ul>
+            <li><strong>[مجال الإرشاد القانوني الأول]:</strong> [توصيات قانونية قابلة للتنفيذ بناءً على محتوى الوثيقة]</li>
+            <li><strong>[مجال الإرشاد القانوني الثاني]:</strong> [توصيات قانونية قابلة للتنفيذ بناءً على محتوى الوثيقة]</li>
+            </ul>
+
+            <h4>الملخص القانوني</h4>
+            <p>[ملخص شامل مع النقاط القانونية الرئيسية والخطوات التالية بناءً على التحليل القانوني]</p>
+
+            <hr>
+            <p><em>✅ تم إكمال التحليل القانوني المهني</em></p>
+            <p><em>هذا التحليل مبني على محتوى الوثيقة القانونية المقدمة وهو للإرشاد فقط. للمسائل القانونية المحددة، يرجى استشارة المحامين المؤهلين.</em></p>
+            
+            <h4>المراجع القانونية</h4>
+            <p><strong>المصدر:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+            <p><strong>مرجع إضافي:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+            </div>
+            """
+        else:
+            html_template = """
+            <h3>LEGAL ANALYSIS SYSTEM</h3>
+            <h4>Direct Answer</h4>
+            <p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+            <p>[Comprehensive overview of the legal document content and key findings related to the user's query]</p>
+
+            <h4>Key Legal Topics Covered</h4>
+            <ul>
+            <li><strong>[Legal Topic 1]:</strong> [Detailed explanation with specific references to legal document content]</li>
+            <li><strong>[Legal Topic 2]:</strong> [Detailed explanation with specific references to legal document content]</li>
+            <li><strong>[Legal Topic 3]:</strong> [Detailed explanation with specific references to legal document content]</li>
+            </ul>
+
+            <h4>Legal/Regulatory Provisions</h4>
+            <ul>
+            <li><strong>[Legal Provision Name]:</strong> [Specific details and legal implications from the document]</li>
+            <li><strong>[Another Legal Provision]:</strong> [Specific details and legal implications from the document]</li>
+            </ul>
+
+            <h4>Practical Legal Guidance</h4>
+            <ul>
+            <li><strong>[Legal Guidance Area 1]:</strong> [Actionable legal recommendations based on document content]</li>
+            <li><strong>[Legal Guidance Area 2]:</strong> [Actionable legal recommendations based on document content]</li>
+            </ul>
+
+            <h4>Legal Summary</h4>
+            <p>[Comprehensive summary with key legal takeaways and next steps based on the legal analysis]</p>
+
+            <hr>
+            <p><em>✅ PROFESSIONAL LEGAL ANALYSIS COMPLETED</em></p>
+            <p><em>This legal analysis is based on the provided legal document content and is for guidance only. For specific legal matters, please consult with qualified legal professionals.</em></p>
+            
+            <h4>Legal References</h4>
+            <p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+            <p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+            """
+        
+        # Create professional legal analysis prompt
+        analysis_prompt = f"""
+        You are a senior legal analysis expert specializing in UAE legal documents and regulations. Analyze the following {doc_type} legal document content and provide a comprehensive, professional legal analysis.
+
+        {language_instructions}
+
+        LEGAL DOCUMENT METADATA:
+        - Document Type: {doc_type}
+        - Legal Document: {is_legal}
+        - Contract Document: {is_contract}
+        - Policy Document: {is_policy}
+        - Total Lines: {len(df)}
+        - Language: {language.upper()}
+
+        LEGAL DOCUMENT CONTENT:
+        {document_text[:8000]}  # Limit content to avoid token limits
+
+        USER QUERY: {query}
+
+        Provide your legal analysis in the EXACT HTML format below:
+
+        {html_template}
+
+        IMPORTANT: Return ONLY the HTML content above, no additional text or explanations.
+        """
+        
+        # Use OpenAI to generate professional legal analysis
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a senior legal analysis expert specializing in UAE legal documents and regulations. Provide comprehensive, professional legal analysis in the exact HTML format requested."},
+                {"role": "user", "content": analysis_prompt}
+            ],
+            max_tokens=2000,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        return f"""
+        <h3>LEGAL ANALYSIS SYSTEM</h3>
+        <h4>Legal Analysis Error</h4>
+        <p>There was an error analyzing the legal document: {str(e)}</p>
+        <p>Please ensure the legal document is properly formatted and try again.</p>
+        
+        <h4>Legal References</h4>
+        <p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+        <p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+        """
+
 def format_text_response(text: str) -> str:
     """
     Ensure text responses have proper HTML formatting without gaps.
@@ -1438,6 +1731,10 @@ def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str, chat_histo
     kpi_keywords = ['kpi', 'kpis', 'key performance indicator', 'key performance indicators', 'metrics', 'performance metrics', 'dashboard metrics']
     is_kpi_query = any(keyword in query.lower() for keyword in kpi_keywords)
     
+    # Detect if it's a legal analysis query (PDF/DOCX)
+    legal_keywords = ['document', 'pdf', 'legal', 'contract', 'agreement', 'policy', 'regulation', 'law', 'analysis', 'summary', 'extract', 'content']
+    is_legal_query = any(keyword in query.lower() for keyword in legal_keywords)
+    
     dataset_info = f"""
 Dataset Information:
 - Shape: {num_rows} rows, {num_cols} columns
@@ -1445,25 +1742,194 @@ Dataset Information:
 - Sample Data (first 3 rows): {sample_data}
 """
 
-    instructions_common = f"""
-You are a highly intelligent and conversational data analyst AI assistant, similar to ChatGPT. Your responses should be helpful, engaging, and human-like.
+    # Detect language and get appropriate context
+    language, language_instructions = get_language_context(query)
+    
+    # Create language-specific instructions
+    if language == "arabic":
+        instructions_common = f"""
+You are a highly intelligent and professional AI assistant specializing in comprehensive data analysis and document processing. Your responses should be structured, professional, and comprehensive like a senior analyst.
 
-IMPORTANT FORMATTING RULES:
-- For conversational text responses, ALWAYS use HTML formatting:
-  * Use <h4> tags for headings/titles
-  * Use <p> tags for paragraphs
-  * Use \n for line breaks between sections
-  * Make responses well-structured and easy to read
+{language_instructions}
+
+PROFESSIONAL RESPONSE FORMATTING REQUIREMENTS FOR ARABIC:
+- For ALL responses, use structured HTML formatting with RTL support:
+  * Use <div dir="rtl" lang="ar"> wrapper for Arabic content
+  * Use <h3> tags for main section headings in Arabic
+  * Use <h4> tags for subsection headings in Arabic
+  * Use <p> tags for paragraphs with proper spacing
+  * Use <ul> and <li> tags for bullet points
+  * Use <strong> tags for emphasis
+  * Use <em> tags for important notes
+  * Include proper line breaks (\n) between sections
+  * Structure responses with clear sections and subsections
+  * Ensure all text is in proper Arabic
+        """
+    else:
+        instructions_common = f"""
+You are a highly intelligent and professional AI assistant specializing in comprehensive data analysis and document processing. Your responses should be structured, professional, and comprehensive like a senior analyst.
+
+{language_instructions}
+
+PROFESSIONAL RESPONSE FORMATTING REQUIREMENTS:
+- For ALL responses, use structured HTML formatting with professional styling:
+  * Use <h3> tags for main section headings
+  * Use <h4> tags for subsection headings  
+  * Use <p> tags for paragraphs with proper spacing
+  * Use <ul> and <li> tags for bullet points
+  * Use <strong> tags for emphasis
+  * Use <em> tags for important notes
+  * Include proper line breaks (\n) between sections
+  * Structure responses with clear sections and subsections
+
+RESPONSE STRUCTURE FOR LEGAL ANALYSIS:
+When analyzing legal documents (PDFs, legal documents, contracts, etc.), provide responses in this EXACT format:
+
+For Arabic queries:
+```html
+<div dir="rtl" lang="ar">
+<h3>نظام التحليل القانوني</h3>
+<h4>الإجابة المباشرة</h4>
+<p>بناءً على الوثائق القانونية لدولة الإمارات العربية المتحدة، يقدم التحليل الشامل التالي معالجة للمسؤوليات والالتزامات القانونية للمحامين في دولة الإمارات العربية المتحدة، مع التركيز بشكل خاص على تمثيل العملاء، تضارب المصالح، والسلوك المهني.</p>
+<p>[نظرة شاملة على محتوى الوثيقة القانونية والنتائج الرئيسية]</p>
+
+<h4>المواضيع القانونية الرئيسية</h4>
+<ul>
+<li><strong>[الموضوع القانوني الأول]:</strong> [شرح مفصل مع مراجع محددة]</li>
+<li><strong>[الموضوع القانوني الثاني]:</strong> [شرح مفصل مع مراجع محددة]</li>
+<li><strong>[الموضوع القانوني الثالث]:</strong> [شرح مفصل مع مراجع محددة]</li>
+</ul>
+
+<h4>الأحكام القانونية/التنظيمية</h4>
+<ul>
+<li><strong>[اسم الحكم القانوني]:</strong> [تفاصيل محددة وآثار قانونية]</li>
+<li><strong>[حكم قانوني آخر]:</strong> [تفاصيل محددة وآثار قانونية]</li>
+</ul>
+
+<h4>الإرشادات القانونية العملية</h4>
+<ul>
+<li><strong>[مجال الإرشاد القانوني الأول]:</strong> [توصيات قانونية قابلة للتنفيذ]</li>
+<li><strong>[مجال الإرشاد القانوني الثاني]:</strong> [توصيات قانونية قابلة للتنفيذ]</li>
+</ul>
+
+<h4>الملخص القانوني</h4>
+<p>[ملخص شامل مع النقاط القانونية الرئيسية والخطوات التالية]</p>
+
+<hr>
+<p><em>✅ تم إكمال التحليل القانوني المهني</em></p>
+<p><em>هذا التحليل مبني على محتوى الوثيقة القانونية المقدمة وهو للإرشاد فقط. للمسائل القانونية المحددة، يرجى استشارة المحامين المؤهلين.</em></p>
+
+<h4>المراجع القانونية</h4>
+<p><strong>المصدر:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>مرجع إضافي:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+</div>
+```
+
+For English queries:
+```html
+<h3>LEGAL ANALYSIS SYSTEM</h3>
+<h4>Direct Answer</h4>
+<p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+<p>[Comprehensive overview of the legal document content and key findings]</p>
+
+<h4>Key Legal Topics Covered</h4>
+<ul>
+<li><strong>[Legal Topic 1]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 2]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 3]:</strong> [Detailed explanation with specific references]</li>
+</ul>
+
+<h4>Legal/Regulatory Provisions</h4>
+<ul>
+<li><strong>[Legal Provision Name]:</strong> [Specific details and legal implications]</li>
+<li><strong>[Another Legal Provision]:</strong> [Specific details and legal implications]</li>
+</ul>
+
+<h4>Practical Legal Guidance</h4>
+<ul>
+<li><strong>[Legal Guidance Area 1]:</strong> [Actionable legal recommendations]</li>
+<li><strong>[Legal Guidance Area 2]:</strong> [Actionable legal recommendations]</li>
+</ul>
+
+<h4>Legal Summary</h4>
+<p>[Comprehensive summary with key legal takeaways and next steps]</p>
+
+<hr>
+<p><em>✅ PROFESSIONAL LEGAL ANALYSIS COMPLETED</em></p>
+<p><em>This legal analysis is based on the provided legal document content and is for guidance only. For specific legal matters, please consult with qualified legal professionals.</em></p>
+
+<h4>Legal References</h4>
+<p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+```
+
+RESPONSE STRUCTURE FOR DATA ANALYSIS:
+For data analysis queries, provide responses in this format:
+
+For Arabic queries:
+```html
+<div dir="rtl" lang="ar">
+<h3>نظام تحليل البيانات</h3>
+<h4>نظرة عامة على التحليل</h4>
+<p>[نظرة شاملة على التحليل المنجز]</p>
+
+<h4>النتائج الرئيسية</h4>
+<ul>
+<li><strong>[النتيجة الأولى]:</strong> [شرح مفصل مع رؤى البيانات]</li>
+<li><strong>[النتيجة الثانية]:</strong> [شرح مفصل مع رؤى البيانات]</li>
+</ul>
+
+<h4>الملخص الإحصائي</h4>
+<ul>
+<li><strong>حجم مجموعة البيانات:</strong> [عدد السجلات والأبعاد]</li>
+<li><strong>المقاييس الرئيسية:</strong> [القياسات الإحصائية المهمة]</li>
+<li><strong>جودة البيانات:</strong> [تقييم اكتمال ودقة البيانات]</li>
+</ul>
+
+<h4>التوصيات</h4>
+<ul>
+<li><strong>[التوصية الأولى]:</strong> [رؤى قابلة للتنفيذ]</li>
+<li><strong>[التوصية الثانية]:</strong> [رؤى قابلة للتنفيذ]</li>
+</ul>
+</div>
+```
+
+For English queries:
+```html
+<h3>DATA ANALYSIS SYSTEM</h3>
+<h4>Analysis Overview</h4>
+<p>[Comprehensive overview of the analysis performed]</p>
+
+<h4>Key Findings</h4>
+<ul>
+<li><strong>[Finding 1]:</strong> [Detailed explanation with data insights]</li>
+<li><strong>[Finding 2]:</strong> [Detailed explanation with data insights]</li>
+</ul>
+
+<h4>Statistical Summary</h4>
+<ul>
+<li><strong>Dataset Size:</strong> [Number of records and dimensions]</li>
+<li><strong>Key Metrics:</strong> [Important statistical measures]</li>
+<li><strong>Data Quality:</strong> [Assessment of data completeness and accuracy]</li>
+</ul>
+
+<h4>Recommendations</h4>
+<ul>
+<li><strong>[Recommendation 1]:</strong> [Actionable insights]</li>
+<li><strong>[Recommendation 2]:</strong> [Actionable insights]</li>
+</ul>
+```
 
 Response Types:
-1. If the response is conversational only: use type="conversational_answer" and payload as an HTML-formatted string
+1. If the response is conversational only: use type="conversational_answer" and payload as a professionally formatted HTML string
 2. If the response requires data processing: use type="data_analysis_answer" and payload as an object with keys "explanation" and "code"
 
-For conversational responses about KPIs or general questions:
-- Be comprehensive and informative like ChatGPT
-- Provide context and insights
-- Use proper HTML formatting (h4, p tags, \n)
-- Be helpful and engaging
+For conversational responses:
+- Be comprehensive and professional like a senior analyst
+- Provide detailed context and insights
+- Use proper HTML formatting with structured sections
+- Include actionable recommendations
+- Be authoritative yet accessible
 
 For any code you generate:
 - Use pandas only for data ops; for charts, use Plotly (px/go/ff) and set the final object to a variable named result.
@@ -1496,25 +1962,71 @@ For any code you generate:
             "Do not generate charts. Include necessary groupby/sort/limit operations based on the question."
         )
     else:  # text
-        if is_kpi_query:
-            mode_instructions = (
-                "This is a KPI (Key Performance Indicator) related query. Provide a comprehensive, conversational response about KPIs like ChatGPT would. "
-                "Format your response with proper HTML tags: <h4> for headings, <p> for paragraphs, and \n for line breaks. "
-                "Be informative, helpful, and explain what KPIs are, their importance, and how they can be used with this dataset. "
-                "Include insights about the available data columns and what KPIs could be derived from them. "
-                "Return type='conversational_answer' with an HTML-formatted payload."
-            )
+        if is_legal_query:
+            if language == "arabic":
+                mode_instructions = (
+                    "This is a legal analysis query in Arabic. Analyze the legal document content comprehensively and provide a professional, structured response in Arabic. "
+                    "Use the Arabic LEGAL ANALYSIS SYSTEM format with proper RTL HTML structure: <div dir='rtl' lang='ar'><h3>نظام التحليل القانوني</h3>, <h4>الإجابة المباشرة</h4>, "
+                    "<h4>المواضيع القانونية الرئيسية</h4>, <h4>الأحكام القانونية/التنظيمية</h4>, <h4>الإرشادات القانونية العملية</h4>, and <h4>الملخص القانوني</h4>. "
+                    "Include specific references to legal document content, extract key legal provisions, and provide actionable legal guidance in Arabic. "
+                    "Be authoritative and professional like a senior legal analyst. Return type='conversational_answer' with structured Arabic HTML payload."
+                )
+            else:
+                mode_instructions = (
+                    "This is a legal analysis query. Analyze the legal document content comprehensively and provide a professional, structured response. "
+                    "Use the LEGAL ANALYSIS SYSTEM format with proper HTML structure: <h3>LEGAL ANALYSIS SYSTEM</h3>, <h4>Direct Answer</h4>, "
+                    "<h4>Key Legal Topics Covered</h4>, <h4>Legal/Regulatory Provisions</h4>, <h4>Practical Legal Guidance</h4>, and <h4>Legal Summary</h4>. "
+                    "Include specific references to legal document content, extract key legal provisions, and provide actionable legal guidance. "
+                    "Be authoritative and professional like a senior legal analyst. Return type='conversational_answer' with structured HTML payload."
+                )
+        elif is_kpi_query:
+            if language == "arabic":
+                mode_instructions = (
+                    "This is a KPI (Key Performance Indicator) related query in Arabic. Provide a comprehensive, conversational response about KPIs in Arabic like ChatGPT would. "
+                    "Format your response with proper RTL HTML tags: <div dir='rtl' lang='ar'><h4> for headings, <p> for paragraphs, and \n for line breaks. "
+                    "Be informative, helpful, and explain what KPIs are, their importance, and how they can be used with this dataset in Arabic. "
+                    "Include insights about the available data columns and what KPIs could be derived from them. "
+                    "Return type='conversational_answer' with an Arabic HTML-formatted payload."
+                )
+            else:
+                mode_instructions = (
+                    "This is a KPI (Key Performance Indicator) related query. Provide a comprehensive, conversational response about KPIs like ChatGPT would. "
+                    "Format your response with proper HTML tags: <h4> for headings, <p> for paragraphs, and \n for line breaks. "
+                    "Be informative, helpful, and explain what KPIs are, their importance, and how they can be used with this dataset. "
+                    "Include insights about the available data columns and what KPIs could be derived from them. "
+                    "Return type='conversational_answer' with an HTML-formatted payload."
+                )
         else:
-            mode_instructions = (
-                "If the question is conversational, generic, or asks for explanations, return a conversational_answer with HTML formatting (h4, p tags, \n). "
-                "Be comprehensive and helpful like ChatGPT. If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string. "
-                "For conversational responses, use proper HTML formatting and be engaging and informative."
-            )
+            if language == "arabic":
+                mode_instructions = (
+                    "If the question is conversational, generic, or asks for explanations in Arabic, return a conversational_answer with professional Arabic HTML formatting. "
+                    "Use structured sections with <div dir='rtl' lang='ar'><h3>نظام تحليل البيانات</h3>, <h4>نظرة عامة على التحليل</h4>, <h4>النتائج الرئيسية</h4>, "
+                    "<h4>الملخص الإحصائي</h4>, and <h4>التوصيات</h4>. Be comprehensive and professional like a senior analyst. "
+                    "If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string. "
+                    "For conversational responses, use proper Arabic HTML formatting and be engaging and informative."
+                )
+            else:
+                mode_instructions = (
+                    "If the question is conversational, generic, or asks for explanations, return a conversational_answer with professional HTML formatting. "
+                    "Use structured sections with <h3>DATA ANALYSIS SYSTEM</h3>, <h4>Analysis Overview</h4>, <h4>Key Findings</h4>, "
+                    "<h4>Statistical Summary</h4>, and <h4>Recommendations</h4>. Be comprehensive and professional like a senior analyst. "
+                    "If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string. "
+                    "For conversational responses, use proper HTML formatting and be engaging and informative."
+                )
 
     # Enhanced prompt for better conversational responses
     conversation_context = ""
     if is_kpi_query:
-        conversation_context = f"""
+        if language == "arabic":
+            conversation_context = f"""
+سياق مؤشرات الأداء الرئيسية:
+- لديك إمكانية الوصول إلى مجموعة بيانات تحتوي على {num_cols} أعمدة: {col_names}
+- يمكن استخدام هذه البيانات لحساب مؤشرات الأداء الرئيسية المختلفة
+- كن محدداً حول مؤشرات الأداء الرئيسية التي يمكن استخلاصها من الأعمدة المتاحة
+- اشرح القيمة التجارية وأهمية مؤشرات الأداء الرئيسية
+"""
+        else:
+            conversation_context = f"""
 KPI Context:
 - You have access to a dataset with {num_cols} columns: {col_names}
 - This data can be used to calculate various KPIs and performance metrics
@@ -1526,7 +2038,23 @@ KPI Context:
     history_context = ""
     if chat_history:
         last_query = chat_history[0]['content'] if chat_history else ""
-        history_context = f"""
+        if language == "arabic":
+            history_context = f"""
+**الاستعلام السابق (للسياق):**
+---
+{last_query}
+---
+
+**تحليل السياق الحرج:**
+- إذا كان استعلام المستخدم الحالي يحتوي على مراجع غامضة مثل "كم عدد"، "كم منهم"، "أي منها"، "هؤلاء"، إلخ، يجب عليك استخدام سياق الاستعلام السابق لفهم ما يشيرون إليه
+- عندما يقول المستخدم "هم"، "هؤلاء"، "هذه"، فهم يشيرون إلى الموضوع/المرشح من الاستعلام السابق الموضح أعلاه
+- مثال: إذا كان الاستعلام السابق "أظهر لي التذاكر عالية الأولوية" والاستعلام الحالي "كم منهم مخصص لجون"، يجب عليك عد التذاكر عالية الأولوية المخصصة لجون
+- دائماً حافظ على نفس المرشحات/الشروط من الاستعلام السابق عند معالجة أسئلة المتابعة
+- انتبه بشكل خاص للأسماء والفئات والأولويات أو أي مرشحات مذكورة في الاستعلام السابق
+- إذا بدا الاستعلام الحالي وكأنه متابعة، اجمع صراحة مع السياق من الاستعلام السابق أعلاه
+"""
+        else:
+            history_context = f"""
 **Previous Query (for context):**
 ---
 {last_query}
@@ -1564,10 +2092,16 @@ Explanation Style:
 IMPORTANT: Return ONLY the JSON object as described above. No markdown fences.
 """
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+    # Create language-specific system message
+    if language == "arabic":
+        system_message = "You are an expert data analyst AI assistant, similar to ChatGPT. You provide helpful, conversational responses in Arabic with proper RTL HTML formatting. For text responses, always use <div dir='rtl' lang='ar'> wrapper, <h4> tags for headings and <p> tags for paragraphs. You are also skilled at Python/Plotly code generation for data analysis."
+    else:
+        system_message = "You are an expert data analyst AI assistant, similar to ChatGPT. You provide helpful, conversational responses with proper HTML formatting. For text responses, always use <h4> tags for headings and <p> tags for paragraphs. You are also skilled at Python/Plotly code generation for data analysis."
+    
+    response = get_openai_client().chat.completions.create(
+        model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are an expert data analyst AI assistant, similar to ChatGPT. You provide helpful, conversational responses with proper HTML formatting. For text responses, always use <h4> tags for headings and <p> tags for paragraphs. You are also skilled at Python/Plotly code generation for data analysis."},
+            {"role": "system", "content": system_message},
             {"role": "user", "content": llm_prompt}
         ],
         temperature=0.3,
@@ -1785,7 +2319,7 @@ def _extract_code_from_llm_text(all_text: str) -> str:
 
 
 def _llm_generate_code(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": system_prompt},

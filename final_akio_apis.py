@@ -8,6 +8,7 @@ import smtplib
 import sys
 import tempfile
 import traceback
+import uuid
 from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -17,6 +18,7 @@ from pathlib import Path
 from dateutil.parser import parse
 import boto3
 from langchain_community.document_loaders import PyPDFLoader
+from docx import Document
 from PIL import Image
 from fastapi.responses import StreamingResponse, Response
 import dateutil.parser
@@ -260,7 +262,18 @@ async def upload_only(
             raise HTTPException(status_code=400, detail="No file uploaded")
 
         file_name = file.filename
+        if not file_name:
+            raise HTTPException(status_code=400, detail="No filename provided")
+            
         file_extension = os.path.splitext(file_name)[1].lower()
+        
+        print(f"[DEBUG] Upload request - File: {file_name}, Extension: '{file_extension}'")
+        print(f"[DEBUG] File content type: {file.content_type}")
+        print(f"[DEBUG] File size: {file.size if hasattr(file, 'size') else 'unknown'}")
+        
+        # Check if file has no extension
+        if not file_extension:
+            raise HTTPException(status_code=400, detail="File must have an extension (.csv, .xlsx, .xls, .pdf, or .docx)")
 
         # Read file content into a DataFrame
         content = await file.read()
@@ -273,8 +286,116 @@ async def upload_only(
                 temp_file.write(content)
             df = pd.read_excel(temp_path)
             os.remove(temp_path)
+        elif file_extension == ".pdf":
+            # Save PDF to temp file for PyPDFLoader
+            temp_path = f"temp_pdf_{uuid.uuid4().hex}{file_extension}"
+            try:
+                print(f"[DEBUG] Processing PDF file: {file_name}")
+                print(f"[DEBUG] File size: {len(content)} bytes")
+                
+                with open(temp_path, "wb") as temp_file:
+                    temp_file.write(content)
+                
+                print(f"[DEBUG] PDF saved to temp file: {temp_path}")
+                
+                # Extract text from PDF using PyPDFLoader
+                try:
+                    loader = PyPDFLoader(temp_path)
+                    pages = loader.load()
+                    print(f"[DEBUG] PDF loaded successfully, {len(pages)} pages found")
+                except Exception as pdf_error:
+                    print(f"[DEBUG] PDF loading error: {str(pdf_error)}")
+                    raise HTTPException(status_code=400, detail=f"Error reading PDF file: {str(pdf_error)}")
+                
+                if not pages:
+                    raise HTTPException(status_code=400, detail="PDF file appears to be empty or corrupted")
+                
+                # Combine all pages text
+                full_text = "\n".join([page.page_content for page in pages])
+                print(f"[DEBUG] Extracted text length: {len(full_text)} characters")
+                
+                if not full_text.strip():
+                    raise HTTPException(status_code=400, detail="PDF file contains no extractable text")
+                
+                # Create DataFrame with extracted text
+                # Split text into lines and create a DataFrame
+                lines = full_text.split('\n')
+                df = pd.DataFrame({
+                    'line_number': range(1, len(lines) + 1),
+                    'text_content': lines
+                })
+                
+                # Remove empty lines
+                df = df[df['text_content'].str.strip() != '']
+                print(f"[DEBUG] DataFrame created with {len(df)} non-empty lines")
+                
+            except HTTPException:
+                # Re-raise HTTP exceptions as-is
+                raise
+            except Exception as pdf_error:
+                print(f"[DEBUG] Unexpected PDF processing error: {str(pdf_error)}")
+                raise HTTPException(status_code=400, detail=f"Error processing PDF file: {str(pdf_error)}")
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    print(f"[DEBUG] Temp file cleaned up: {temp_path}")
+        elif file_extension == ".docx":
+            # Save DOCX to temp file for Document processing
+            temp_path = f"temp_docx_{uuid.uuid4().hex}{file_extension}"
+            try:
+                print(f"[DEBUG] Processing DOCX file: {file_name}")
+                print(f"[DEBUG] File size: {len(content)} bytes")
+                
+                with open(temp_path, "wb") as temp_file:
+                    temp_file.write(content)
+                
+                print(f"[DEBUG] DOCX saved to temp file: {temp_path}")
+                
+                # Extract text from DOCX using python-docx
+                try:
+                    doc = Document(temp_path)
+                    paragraphs = doc.paragraphs
+                    print(f"[DEBUG] DOCX loaded successfully, {len(paragraphs)} paragraphs found")
+                except Exception as docx_error:
+                    print(f"[DEBUG] DOCX loading error: {str(docx_error)}")
+                    raise HTTPException(status_code=400, detail=f"Error reading DOCX file: {str(docx_error)}")
+                
+                if not paragraphs:
+                    raise HTTPException(status_code=400, detail="DOCX file appears to be empty or corrupted")
+                
+                # Combine all paragraphs text
+                full_text = "\n".join([p.text for p in paragraphs if p.text.strip()])
+                print(f"[DEBUG] Extracted text length: {len(full_text)} characters")
+                
+                if not full_text.strip():
+                    raise HTTPException(status_code=400, detail="DOCX file contains no extractable text")
+                
+                # Create DataFrame with extracted text
+                # Split text into lines and create a DataFrame
+                lines = full_text.split('\n')
+                df = pd.DataFrame({
+                    'line_number': range(1, len(lines) + 1),
+                    'text_content': lines
+                })
+                
+                # Remove empty lines
+                df = df[df['text_content'].str.strip() != '']
+                print(f"[DEBUG] DataFrame created with {len(df)} non-empty lines")
+                
+            except HTTPException:
+                # Re-raise HTTP exceptions as-is
+                raise
+            except Exception as docx_error:
+                print(f"[DEBUG] Unexpected DOCX processing error: {str(docx_error)}")
+                raise HTTPException(status_code=400, detail=f"Error processing DOCX file: {str(docx_error)}")
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    print(f"[DEBUG] Temp file cleaned up: {temp_path}")
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Only CSV or Excel allowed")
+            raise HTTPException(status_code=400, detail="Unsupported file type. Only CSV, Excel, PDF, or DOCX allowed")
 
         if df.empty:
             raise HTTPException(status_code=400, detail="Uploaded file contains no data")
