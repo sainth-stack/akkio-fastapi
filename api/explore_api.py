@@ -31,32 +31,79 @@ explore_router = APIRouter()
 
 def manage_session_memory(session_id: str, user_message: str = None, bot_message: str = None, get_history: bool = False):
     """
-    Centralized session memory management - only keeps the last message for accuracy
+    Centralized session memory management - keeps conversation history for better context
     """
     with SESSION_MEMORY_LOCK:
         if get_history:
-            # Return only the last user message if it exists
+            # Return conversation history for better context
             session_data = SESSION_MEMORY.get(session_id, {})
-            last_user_msg = session_data.get("last_user_message")
-            if last_user_msg:
-                history = [{"role": "user", "content": last_user_msg}]
-                print(f"Retrieved last user message for session {session_id}: {last_user_msg[:100]}...")
-                return history
+            conversation_history = session_data.get("conversation_history", [])
+            if conversation_history:
+                print(f"Retrieved conversation history for session {session_id}: {len(conversation_history)} messages")
+                return conversation_history[-3:]  # Return last 3 messages for context
             else:
-                print(f"No previous message found for session {session_id}")
+                print(f"No conversation history found for session {session_id}")
                 return []
         
+        if user_message is not None or bot_message is not None:
+            # Initialize session if it doesn't exist
+            if session_id not in SESSION_MEMORY:
+                SESSION_MEMORY[session_id] = {"conversation_history": []}
+            
+            # Add messages to conversation history
         if user_message is not None:
-            # Store only the last user message
-            SESSION_MEMORY[session_id]["last_user_message"] = user_message
-            print(f"Stored last user message for session {session_id}: {user_message[:100]}...")
+            SESSION_MEMORY[session_id]["conversation_history"].append({"role": "user", "content": user_message})
+            print(f"Stored user message for session {session_id}: {user_message[:100]}...")
         
         if bot_message is not None:
-            # Store only the last bot message  
-            SESSION_MEMORY[session_id]["last_bot_message"] = bot_message
-            print(f"Stored last bot message for session {session_id}: {bot_message[:100]}...")
+            SESSION_MEMORY[session_id]["conversation_history"].append({"role": "assistant", "content": bot_message})
+            print(f"Stored bot message for session {session_id}: {bot_message[:100]}...")
+        
+        # Keep only last 10 messages to prevent memory overflow
+        if len(SESSION_MEMORY[session_id]["conversation_history"]) > 10:
+            SESSION_MEMORY[session_id]["conversation_history"] = SESSION_MEMORY[session_id]["conversation_history"][-10:]
         
         return None
+
+def detect_arabic_language(text: str) -> bool:
+    """
+    Detect if the text contains Arabic characters
+    """
+    if not text:
+        return False
+    # Check for Arabic Unicode range (U+0600 to U+06FF)
+    arabic_pattern = re.compile(r'[\u0600-\u06FF]')
+    return bool(arabic_pattern.search(text))
+
+def get_language_context(query: str) -> tuple:
+    """
+    Detect language and return appropriate language context and instructions
+    Returns: (language_code, language_instructions)
+    """
+    is_arabic = detect_arabic_language(query)
+    
+    if is_arabic:
+        language_code = "arabic"
+        language_instructions = """
+LANGUAGE CONTEXT: Arabic (العربية)
+- User query contains Arabic text
+- Provide responses in Arabic with RTL (right-to-left) formatting
+- Use Arabic terminology and culturally appropriate explanations
+- Format all HTML content with dir="rtl" lang="ar" attributes
+- Maintain professional tone suitable for Arabic-speaking audiences
+"""
+    else:
+        language_code = "english"
+        language_instructions = """
+LANGUAGE CONTEXT: English
+- User query is in English
+- Provide responses in clear, professional English
+- Use standard LTR (left-to-right) formatting
+- Maintain professional and accessible language
+- Use technical terminology appropriately with explanations when needed
+"""
+    
+    return language_code, language_instructions
 
 def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, ...]) -> Optional[str]:
     try:
@@ -690,6 +737,23 @@ async def senior_data_analysis(
         # Not a report query → route to one of the three agents (graph/table/text)
         agent = detect_agent(query)
 
+        # Handle general questions (greetings, casual conversation)
+        if agent == "general":
+            print(f"Processing general question for session {session_id}: {query}")
+            general_response = handle_general_question(query)
+            
+            # Store general response in memory
+            manage_session_memory(session_id, user_message=query, bot_message="Responded to general question.")
+            
+            return JSONResponse(
+                content=jsonable_encoder({
+                    "type": "conversational_answer",
+                    "payload": general_response,
+                    "session_id": session_id
+                }),
+                status_code=200
+            )
+
         # 2,3,4 Agents: Try simple direct handling first for table/text intents
         if agent in ["table", "text"]:
             can_handle_directly, structured = classify_query_complexity(query, list(df.columns))
@@ -925,7 +989,40 @@ def clean_json_response(response_text: str):
 # =========================
 
 def detect_agent(query: str) -> str:
-    q = query.lower()
+    q = query.lower().strip()
+    
+    # Legal keywords - highest priority
+    legal_keywords = [
+        'law', 'legal', 'penalty', 'fine', 'regulation', 'rule', 'court', 'judge', 'lawyer',
+        'contract', 'agreement', 'policy', 'compliance', 'violation', 'offense', 'crime',
+        'rights', 'obligation', 'liability', 'jurisdiction', 'legislation', 'statute',
+        'administrative', 'federal', 'cabinet', 'resolution', 'decree', 'ordinance',
+        'document', 'pdf', 'analysis', 'summary', 'extract', 'content',
+        'قانون', 'قانوني', 'غرامة', 'عقوبة', 'محكمة', 'قاضي', 'محامي', 'عقد', 'اتفاقية',
+        'سياسة', 'امتثال', 'انتهاك', 'جريمة', 'حقوق', 'التزام', 'مسؤولية', 'اختصاص',
+        'تشريع', 'إدارة', 'اتحادي', 'مجلس', 'قرار', 'مرسوم', 'أمر'
+    ]
+    
+    # Check for legal questions first
+    if any(keyword in q for keyword in legal_keywords):
+        return "text"  # Route legal questions to text agent for legal analysis
+    
+    # General greeting and casual questions
+    general_greetings = [
+        'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+        'how are you', 'how are you doing', 'what\'s up', 'whats up', 'sup',
+        'thanks', 'thank you', 'bye', 'goodbye', 'see you', 'nice to meet you',
+        'how can you help', 'what can you do', 'who are you', 'what are you'
+    ]
+    
+    # Check for general greetings
+    if any(greeting in q for greeting in general_greetings):
+        return "general"
+    
+    # Non-legal questions - redirect to general handler
+    if any(keyword in q for keyword in ['tell me about', 'what is', 'explain', 'describe', 'information about']):
+        return "general"
+    
     graph_keywords = [
         'chart', 'graph', 'plot', 'visualize', 'visualise', 'trend', 'histogram',
         'scatter', 'line chart', 'line', 'bar chart', 'bar', 'pie', 'box', 'violin', 'heatmap'
@@ -949,6 +1046,56 @@ def detect_agent(query: str) -> str:
     if any(k in q for k in table_keywords):
         return "table"
     return "text"
+
+
+def handle_general_question(query: str) -> str:
+    """
+    Handle general questions and redirect non-legal questions to legal topics
+    """
+    q = query.lower().strip()
+    
+    # Detect language
+    is_arabic = detect_arabic_language(query)
+    
+    # Check if it's a legal-related question
+    legal_keywords = [
+        'law', 'legal', 'penalty', 'fine', 'regulation', 'rule', 'court', 'judge', 'lawyer',
+        'contract', 'agreement', 'policy', 'compliance', 'violation', 'offense', 'crime',
+        'rights', 'obligation', 'liability', 'jurisdiction', 'legislation', 'statute',
+        'administrative', 'federal', 'cabinet', 'resolution', 'decree', 'ordinance',
+        'قانون', 'قانوني', 'غرامة', 'عقوبة', 'محكمة', 'قاضي', 'محامي', 'عقد', 'اتفاقية',
+        'سياسة', 'امتثال', 'انتهاك', 'جريمة', 'حقوق', 'التزام', 'مسؤولية', 'اختصاص',
+        'تشريع', 'إدارة', 'اتحادي', 'مجلس', 'قرار', 'مرسوم', 'أمر'
+    ]
+    
+    is_legal_question = any(keyword in q for keyword in legal_keywords)
+    
+    if is_arabic:
+        # Arabic responses
+        if any(greeting in q for greeting in ['hi', 'hello', 'hey', 'مرحبا', 'أهلا', 'السلام عليكم']):
+            return '<div dir="rtl" lang="ar"><h3>نظام التحليل القانوني</h3><h4>مرحبا بك!</h4><p>أهلا وسهلا بك في نظام التحليل القانوني المتقدم. أنا مساعدك الذكي المتخصص في تحليل الوثائق القانونية الإماراتية.</p><h4>كيف يمكنني مساعدتك في الشؤون القانونية؟</h4><ul><li><strong>التحليل القانوني:</strong> تحليل الوثائق القانونية والملفات PDF</li><li><strong>الاستفسارات القانونية:</strong> الإجابة على أسئلتك حول القوانين واللوائح الإماراتية</li><li><strong>الغرامات والعقوبات:</strong> توضيح الغرامات والعقوبات المطبقة</li><li><strong>اللوائح الإدارية:</strong> شرح القرارات والمراسيم الحكومية</li></ul><p>ما هو السؤال القانوني الذي تود الاستفسار عنه؟</p></div>'
+        elif any(greeting in q for greeting in ['thanks', 'thank you', 'شكرا', 'شكراً']):
+            return '<div dir="rtl" lang="ar"><h3>نظام التحليل القانوني</h3><h4>العفو!</h4><p>سعيد لكوني استطعت مساعدتك في الشؤون القانونية. إذا كان لديك أي أسئلة قانونية أخرى، فلا تتردد في السؤال.</p></div>'
+        elif any(greeting in q for greeting in ['bye', 'goodbye', 'مع السلامة', 'وداعاً']):
+            return '<div dir="rtl" lang="ar"><h3>نظام التحليل القانوني</h3><h4>مع السلامة!</h4><p>أتمنى لك يوماً سعيداً. أراكم قريباً!</p></div>'
+        elif not is_legal_question:
+            # Non-legal question - redirect to legal topics
+            return '<div dir="rtl" lang="ar"><h3>نظام التحليل القانوني</h3><h4>إجابة مباشرة</h4><p>السؤال "{query}" لا يتعلق بالوثائق القانونية الإماراتية المقدمة. تركز الوثائق على قوانين ولوائح دولة الإمارات العربية المتحدة المختلفة، بما في ذلك الغرامات الإدارية والدعم الاجتماعي ومكافآت موظفي المساجد ورسوم الخدمات التحتية.</p><h4>السياق القانوني الإماراتي</h4><ul><li><strong>الغرامات الإدارية لمخالفات الهجرة:</strong> هيئة الهوية والجنسية والجمارك وأمن المنافذ</li><li><strong>الدعم الاجتماعي للأفراد العاطلين:</strong> قرار مجلس الوزراء لعام 2025</li><li><strong>مكافآت موظفي المساجد:</strong> قرار مجلس الوزراء بشأن موظفي المساجد</li><li><strong>رسوم الخدمات التحتية:</strong> قرار مجلس الوزراء لعام 2021</li></ul><h4>الإرشادات العملية</h4><ul><li><strong>للمقيمين والزوار:</strong> تأكد من تجديد التأشيرات وبطاقات الهوية في الوقت المحدد لتجنب الغرامات</li><li><strong>لأصحاب العمل:</strong> كن على دراية بإرشادات المكافآت لموظفي المساجد للامتثال للوائح الوطنية</li><li><strong>لمشاريع البنية التحتية:</strong> احصل على التصاريح اللازمة والتزم بالمواعيد النهائية لتجنب الغرامات الباهظة</li></ul><hr><p><em>✅ تم إكمال التحليل القانوني المهني</em></p><p><em>هذه المعلومات مبنية على الوثائق القانونية الإماراتية وهي للإرشاد فقط. للمسائل القانونية المحددة، يرجى استشارة خبير قانوني مؤهل.</em></p><h4>المراجع القانونية</h4><p><strong>المصدر:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p><p><strong>مرجع إضافي:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p></div>'.format(query=query)
+        else:
+            return '<div dir="rtl" lang="ar"><h3>نظام التحليل القانوني</h3><h4>مرحبا بك!</h4><p>أهلا وسهلا بك في نظام التحليل القانوني المتقدم. أنا هنا لمساعدتك في الشؤون القانونية الإماراتية.</p><h4>كيف يمكنني مساعدتك؟</h4><ul><li><strong>التحليل القانوني:</strong> تحليل الوثائق القانونية والملفات PDF</li><li><strong>الاستفسارات القانونية:</strong> الإجابة على أسئلتك حول القوانين واللوائح</li><li><strong>الغرامات والعقوبات:</strong> توضيح الغرامات والعقوبات المطبقة</li></ul></div>'
+    else:
+        # English responses
+        if any(greeting in q for greeting in ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']):
+            return "<h3>LEGAL ANALYSIS SYSTEM</h3><h4>Hello there!</h4><p>Welcome to our advanced Legal Analysis System! I'm your intelligent assistant specialized in UAE legal document analysis and processing.</p><h4>How can I help you with legal matters today?</h4><ul><li><strong>Legal Analysis:</strong> I can analyze legal documents and PDF files</li><li><strong>Legal Queries:</strong> I can answer questions about UAE laws and regulations</li><li><strong>Penalties & Fines:</strong> I can explain applicable penalties and fines</li><li><strong>Administrative Regulations:</strong> I can explain government decisions and decrees</li></ul><p>What legal question would you like to ask?</p>"
+        elif any(greeting in q for greeting in ['thanks', 'thank you']):
+            return "<h3>LEGAL ANALYSIS SYSTEM</h3><h4>You're welcome!</h4><p>I'm glad I could help with your legal inquiry! If you have any other legal questions, feel free to ask.</p>"
+        elif any(greeting in q for greeting in ['bye', 'goodbye', 'see you']):
+            return "<h3>LEGAL ANALYSIS SYSTEM</h3><h4>Goodbye!</h4><p>Have a great day! See you soon!</p>"
+        elif not is_legal_question:
+            # Non-legal question - redirect to legal topics
+            return "<h3>LEGAL ANALYSIS SYSTEM</h3><h4>Direct Answer</h4><p>The question \"{query}\" does not pertain to the UAE legal documents provided. The documents focus on various UAE laws and regulations, including administrative fines, social support, mosque employee remunerations, and infrastructure service fees.</p><h4>UAE Legal Context Overview</h4><ul><li><strong>Administrative Fines for Immigration Violations:</strong> Federal Authority for Identity, Citizenship, Customs, and Port Security</li><li><strong>Social Support for Unemployed Individuals:</strong> Cabinet Resolution of 2025</li><li><strong>Mosque Employee Remunerations:</strong> Cabinet Resolution on Mosque Employees</li><li><strong>Infrastructure Service Fees:</strong> Cabinet Resolution of 2021</li></ul><h4>Practical Guidance</h4><ul><li><strong>For Residents and Visitors:</strong> Ensure timely renewal of visas and identity cards to avoid fines</li><li><strong>For Employers:</strong> Be aware of the remuneration guidelines for mosque employees to comply with national regulations</li><li><strong>For Infrastructure Projects:</strong> Obtain necessary permissions and adhere to timelines to avoid hefty fines</li></ul><hr><p><em>✅ PROFESSIONAL LEGAL ANALYSIS COMPLETED</em></p><p><em>This information is based on UAE legal documents and is for guidance only. For specific legal matters, please consult with a qualified UAE legal professional.</em></p><h4>Legal References</h4><p><strong>SOURCE:</strong> <a href=\"https://uaelegislation.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://uaelegislation.gov.ae</a></p><p><strong>Additional Reference:</strong> <a href=\"https://www.moj.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://www.moj.gov.ae</a></p>".format(query=query)
+        else:
+            return "<h3>LEGAL ANALYSIS SYSTEM</h3><h4>Hello!</h4><p>Welcome to our advanced Legal Analysis System! I'm here to help you with UAE legal matters.</p><h4>How can I assist you?</h4><ul><li><strong>Legal Analysis:</strong> Analyze legal documents and PDF files</li><li><strong>Legal Queries:</strong> Answer questions about laws and regulations</li><li><strong>Penalties & Fines:</strong> Explain applicable penalties and fines</li></ul>"
 
 
 def safe_execute_pandas_code(code: str, df: pd.DataFrame):
@@ -1445,15 +1592,289 @@ Dataset Information:
 - Sample Data (first 3 rows): {sample_data}
 """
 
-    instructions_common = f"""
-You are a highly intelligent and conversational data analyst AI assistant, similar to ChatGPT. Your responses should be helpful, engaging, and human-like.
+    # Detect language and get appropriate context
+    language, language_instructions = get_language_context(query)
+    
+    # Create language-specific instructions
+    if language == "arabic":
+        instructions_common = f"""
+You are a highly intelligent and professional AI assistant specializing in comprehensive data analysis and document processing. Your responses should be structured, professional, and comprehensive like a senior analyst.
 
-IMPORTANT FORMATTING RULES:
-- For conversational text responses, ALWAYS use HTML formatting:
-  * Use <h4> tags for headings/titles
-  * Use <p> tags for paragraphs
-  * Use \n for line breaks between sections
-  * Make responses well-structured and easy to read
+{language_instructions}
+
+PROFESSIONAL RESPONSE FORMATTING REQUIREMENTS FOR ARABIC:
+- Always use proper Arabic RTL HTML formatting with dir="rtl" lang="ar"
+- Use <div dir="rtl" lang="ar"> wrapper for all content
+- Use <h3> for main titles, <h4> for subtitles
+- Use <p> for paragraphs, <ul> and <li> for lists
+- Use <strong> for emphasis, <em> for italics
+- Use <hr> for section separators
+- Structure responses with clear sections and subsections
+
+RESPONSE STRUCTURE FOR LEGAL ANALYSIS:
+When analyzing legal documents (PDFs, legal documents, contracts, etc.), provide responses in this EXACT format:
+
+For Arabic queries:
+```html
+<div dir="rtl" lang="ar">
+<h3>نظام التحليل القانوني</h3>
+<h4>الإجابة المباشرة</h4>
+<p>بناءً على الوثائق القانونية لدولة الإمارات العربية المتحدة، يقدم التحليل الشامل التالي معالجة للمسؤوليات والالتزامات القانونية للمحامين في دولة الإمارات العربية المتحدة، مع التركيز بشكل خاص على تمثيل العملاء، تضارب المصالح، والسلوك المهني.</p>
+<p>[نظرة شاملة على محتوى الوثيقة القانونية والنتائج الرئيسية]</p>
+
+<h4>المواضيع القانونية الرئيسية</h4>
+<ul>
+<li><strong>[الموضوع القانوني الأول]:</strong> [شرح مفصل مع مراجع محددة]</li>
+<li><strong>[الموضوع القانوني الثاني]:</strong> [شرح مفصل مع مراجع محددة]</li>
+<li><strong>[الموضوع القانوني الثالث]:</strong> [شرح مفصل مع مراجع محددة]</li>
+</ul>
+
+<h4>الأحكام القانونية/التنظيمية</h4>
+<ul>
+<li><strong>[اسم الحكم القانوني]:</strong> [تفاصيل محددة وآثار قانونية]</li>
+<li><strong>[حكم قانوني آخر]:</strong> [تفاصيل محددة وآثار قانونية]</li>
+</ul>
+
+<h4>الإرشادات القانونية العملية</h4>
+<ul>
+<li><strong>[مجال الإرشاد القانوني الأول]:</strong> [توصيات قانونية قابلة للتنفيذ]</li>
+<li><strong>[مجال الإرشاد القانوني الثاني]:</strong> [توصيات قانونية قابلة للتنفيذ]</li>
+</ul>
+
+<h4>الملخص القانوني</h4>
+<p>[ملخص شامل مع النقاط القانونية الرئيسية والخطوات التالية]</p>
+
+<hr>
+<p><em>✅ تم إكمال التحليل القانوني المهني</em></p>
+<p><em>هذا التحليل مبني على محتوى الوثيقة القانونية المقدمة وهو للإرشاد فقط. للمسائل القانونية المحددة، يرجى استشارة المحامين المؤهلين.</em></p>
+
+<h4>المراجع القانونية</h4>
+<p><strong>المصدر:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>مرجع إضافي:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+</div>
+```
+
+For English queries:
+```html
+<h3>LEGAL ANALYSIS SYSTEM</h3>
+<h4>Direct Answer</h4>
+<p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+<p>[Comprehensive overview of the legal document content and key findings]</p>
+
+<h4>Key Legal Topics Covered</h4>
+<ul>
+<li><strong>[Legal Topic 1]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 2]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 3]:</strong> [Detailed explanation with specific references]</li>
+</ul>
+
+<h4>Legal/Regulatory Provisions</h4>
+<ul>
+<li><strong>[Legal Provision Name]:</strong> [Specific details and legal implications]</li>
+<li><strong>[Another Legal Provision]:</strong> [Specific details and legal implications]</li>
+</ul>
+
+<h4>Practical Legal Guidance</h4>
+<ul>
+<li><strong>[Legal Guidance Area 1]:</strong> [Actionable legal recommendations]</li>
+<li><strong>[Legal Guidance Area 2]:</strong> [Actionable legal recommendations]</li>
+</ul>
+
+<h4>Legal Summary</h4>
+<p>[Comprehensive summary with key legal takeaways and next steps]</p>
+
+<hr>
+<p><em>✅ PROFESSIONAL LEGAL ANALYSIS COMPLETED</em></p>
+<p><em>This legal analysis is based on the provided legal document content and is for guidance only. For specific legal matters, please consult with qualified legal professionals.</em></p>
+
+<h4>Legal References</h4>
+<p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+```
+
+RESPONSE STRUCTURE FOR DATA ANALYSIS:
+For data analysis queries, provide responses in this format:
+
+For Arabic queries:
+```html
+<div dir="rtl" lang="ar">
+<h3>نظام تحليل البيانات</h3>
+<h4>نظرة عامة على التحليل</h4>
+<p>بناءً على الوثائق القانونية لدولة الإمارات العربية المتحدة، يقدم التحليل الشامل التالي معالجة للمسؤوليات والالتزامات القانونية للمحامين في دولة الإمارات العربية المتحدة، مع التركيز بشكل خاص على تمثيل العملاء، تضارب المصالح، والسلوك المهني.</p>
+<p>[نظرة شاملة على التحليل المنجز]</p>
+
+<h4>النتائج الرئيسية</h4>
+<ul>
+<li><strong>[النتيجة الأولى]:</strong> [شرح مفصل مع رؤى البيانات]</li>
+<li><strong>[النتيجة الثانية]:</strong> [شرح مفصل مع رؤى البيانات]</li>
+</ul>
+
+<h4>الملخص الإحصائي</h4>
+<ul>
+<li><strong>حجم مجموعة البيانات:</strong> [عدد السجلات والأبعاد]</li>
+<li><strong>المقاييس الرئيسية:</strong> [القياسات الإحصائية المهمة]</li>
+<li><strong>جودة البيانات:</strong> [تقييم اكتمال ودقة البيانات]</li>
+</ul>
+
+<h4>التوصيات</h4>
+<ul>
+<li><strong>[التوصية الأولى]:</strong> [رؤى قابلة للتنفيذ]</li>
+<li><strong>[التوصية الثانية]:</strong> [رؤى قابلة للتنفيذ]</li>
+</ul>
+
+<hr>
+<p><em>✅ تم إكمال التحليل المهني</em></p>
+<p><em>هذا التحليل مبني على البيانات المقدمة وهو للإرشاد فقط. للمسائل المحددة، يرجى استشارة المهنيين المؤهلين.</em></p>
+
+<h4>المراجع القانونية</h4>
+<p><strong>المصدر:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>مرجع إضافي:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+</div>
+```
+
+For English queries:
+```html
+<h3>DATA ANALYSIS SYSTEM</h3>
+<h4>Analysis Overview</h4>
+<p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+<p>[Comprehensive overview of the analysis performed]</p>
+
+<h4>Key Findings</h4>
+<ul>
+<li><strong>[Finding 1]:</strong> [Detailed explanation with data insights]</li>
+<li><strong>[Finding 2]:</strong> [Detailed explanation with data insights]</li>
+</ul>
+
+<h4>Statistical Summary</h4>
+<ul>
+<li><strong>Dataset Size:</strong> [Number of records and dimensions]</li>
+<li><strong>Key Metrics:</strong> [Important statistical measures]</li>
+<li><strong>Data Quality:</strong> [Assessment of data completeness and accuracy]</li>
+</ul>
+
+<h4>Recommendations</h4>
+<ul>
+<li><strong>[Recommendation 1]:</strong> [Actionable insights]</li>
+<li><strong>[Recommendation 2]:</strong> [Actionable insights]</li>
+</ul>
+
+<hr>
+<p><em>✅ PROFESSIONAL ANALYSIS COMPLETED</em></p>
+<p><em>This analysis is based on the provided data and is for guidance only. For specific matters, please consult with qualified professionals.</em></p>
+
+<h4>Legal References</h4>
+<p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+```
+
+Response Types:
+1. If the response is conversational only: use type="conversational_answer" and payload as an HTML-formatted string
+2. If the response requires data processing: use type="data_analysis_answer" and payload as an object with keys "explanation" and "code"
+
+For conversational responses about KPIs or general questions:
+- Be comprehensive and informative like ChatGPT
+- Provide context and insights
+- Use proper HTML formatting (h4, p tags, \n)
+- Be helpful and engaging
+
+For any code you generate:
+- Use pandas only for data ops; for charts, use Plotly (px/go/ff) and set the final object to a variable named result.
+- Always compute/aggregate the data needed before plotting. Avoid empty arrays. Use .dropna()/.fillna(0) appropriately.
+- For filtering with boolean masks, ensure masks contain only True/False (never NaN).
+- Always set a meaningful chart title and axis labels when plotting.
+- Never read/write external files. Operate on the provided DataFrame df only.
+- The final line must produce a variable named result.
+"""
+    else:
+        instructions_common = f"""
+You are a highly intelligent and professional AI assistant specializing in comprehensive data analysis and document processing. Your responses should be structured, professional, and comprehensive like a senior analyst.
+
+{language_instructions}
+
+PROFESSIONAL RESPONSE FORMATTING REQUIREMENTS FOR ENGLISH:
+- Always use proper HTML formatting
+- Use <h3> for main titles, <h4> for subtitles
+- Use <p> for paragraphs, <ul> and <li> for lists
+- Use <strong> for emphasis, <em> for italics
+- Use <hr> for section separators
+- Structure responses with clear sections and subsections
+
+RESPONSE STRUCTURE FOR LEGAL ANALYSIS:
+When analyzing legal documents (PDFs, legal documents, contracts, etc.), provide responses in this EXACT format:
+
+```html
+<h3>LEGAL ANALYSIS SYSTEM</h3>
+<h4>Direct Answer</h4>
+<p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+<p>[Comprehensive overview of the legal document content and key findings]</p>
+
+<h4>Key Legal Topics Covered</h4>
+<ul>
+<li><strong>[Legal Topic 1]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 2]:</strong> [Detailed explanation with specific references]</li>
+<li><strong>[Legal Topic 3]:</strong> [Detailed explanation with specific references]</li>
+</ul>
+
+<h4>Legal/Regulatory Provisions</h4>
+<ul>
+<li><strong>[Legal Provision Name]:</strong> [Specific details and legal implications]</li>
+<li><strong>[Another Legal Provision]:</strong> [Specific details and legal implications]</li>
+</ul>
+
+<h4>Practical Legal Guidance</h4>
+<ul>
+<li><strong>[Legal Guidance Area 1]:</strong> [Actionable legal recommendations]</li>
+<li><strong>[Legal Guidance Area 2]:</strong> [Actionable legal recommendations]</li>
+</ul>
+
+<h4>Legal Summary</h4>
+<p>[Comprehensive summary with key legal takeaways and next steps]</p>
+
+<hr>
+<p><em>✅ PROFESSIONAL LEGAL ANALYSIS COMPLETED</em></p>
+<p><em>This legal analysis is based on the provided legal document content and is for guidance only. For specific legal matters, please consult with qualified legal professionals.</em></p>
+
+<h4>Legal References</h4>
+<p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+```
+
+RESPONSE STRUCTURE FOR DATA ANALYSIS:
+For data analysis queries, provide responses in this format:
+
+```html
+<h3>DATA ANALYSIS SYSTEM</h3>
+<h4>Analysis Overview</h4>
+<p>Based on the UAE legal documentation, the following comprehensive analysis addresses the legal responsibilities and obligations of lawyers in the UAE, particularly focusing on client representation, conflict of interest, and professional conduct.</p>
+<p>[Comprehensive overview of the analysis performed]</p>
+
+<h4>Key Findings</h4>
+<ul>
+<li><strong>[Finding 1]:</strong> [Detailed explanation with data insights]</li>
+<li><strong>[Finding 2]:</strong> [Detailed explanation with data insights]</li>
+</ul>
+
+<h4>Statistical Summary</h4>
+<ul>
+<li><strong>Dataset Size:</strong> [Number of records and dimensions]</li>
+<li><strong>Key Metrics:</strong> [Important statistical measures]</li>
+<li><strong>Data Quality:</strong> [Assessment of data completeness and accuracy]</li>
+</ul>
+
+<h4>Recommendations</h4>
+<ul>
+<li><strong>[Recommendation 1]:</strong> [Actionable insights]</li>
+<li><strong>[Recommendation 2]:</strong> [Actionable insights]</li>
+</ul>
+
+<hr>
+<p><em>✅ PROFESSIONAL ANALYSIS COMPLETED</em></p>
+<p><em>This analysis is based on the provided data and is for guidance only. For specific matters, please consult with qualified professionals.</em></p>
+
+<h4>Legal References</h4>
+<p><strong>SOURCE:</strong> <a href="https://uaelegislation.gov.ae" target="_blank" style="color: #3498db;">https://uaelegislation.gov.ae</a></p>
+<p><strong>Additional Reference:</strong> <a href="https://www.moj.gov.ae" target="_blank" style="color: #3498db;">https://www.moj.gov.ae</a></p>
+```
 
 Response Types:
 1. If the response is conversational only: use type="conversational_answer" and payload as an HTML-formatted string
@@ -1506,8 +1927,6 @@ For any code you generate:
             )
         else:
             mode_instructions = (
-                "If the question is conversational, generic, or asks for explanations, return a conversational_answer with HTML formatting (h4, p tags, \n). "
-                "Be comprehensive and helpful like ChatGPT. If it requires data-derived text, generate pandas code that computes the answer and sets result to a concise human-readable string. "
                 "For conversational responses, use proper HTML formatting and be engaging and informative."
             )
 
@@ -1555,9 +1974,7 @@ User Question: {query}
 Mode: {mode}
 Specific Instructions: {mode_instructions}
 
-Explanation Style: 
 - For conversational responses: Be comprehensive, helpful, and engaging like ChatGPT
-- Use proper HTML formatting (h4, p tags, \n) for readability
 - For data analysis explanations: Write as a concise, business-oriented summary focusing on trend, scale, change, and implications
 - Avoid technical implementation details in explanations
 
@@ -1593,10 +2010,10 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
     """
     Enhanced server-side robust fallback chart when LLM-generated code returns invalid chart data.
     Strategy:
-      1) Detect likely date column and a primary numeric metric column.
-      2) Aggregate by day/month depending on granularity and build a clean line chart.
-      3) Try multiple chart types if the first approach fails.
-      4) Produce a business-oriented explanation.
+      - Detect likely date column and a primary numeric metric column.
+      - Aggregate by day/month depending on granularity and build a clean line chart.
+      - Try multiple chart types if the first approach fails.
+      - Produce a business-oriented explanation.
     Returns: (plotly.graph_objects.Figure or None, explanation str)
     """
     print(f"Rescue chart generation started for query: {query[:100]}...")
