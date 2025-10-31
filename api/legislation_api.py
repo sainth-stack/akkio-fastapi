@@ -80,7 +80,10 @@ def _format_legal_response(user_query: str, answer_text: Optional[str], citation
     if is_html:
         parts: List[str] = []
     else:
-        parts: List[str] = ["<h3>LEGAL AI SYSTEM</h3>\n"]
+        if language == "ar":
+            parts: List[str] = ["<h3>نظام المساعدة القانونية</h3>\n"]
+        else:
+            parts: List[str] = ["<h3>LEGAL AI SYSTEM</h3>\n"]
 
     has_support = bool(citations) and len([c for c in (citations or []) if c.get("pdf_url")]) > 0
     
@@ -116,8 +119,12 @@ def _format_legal_response(user_query: str, answer_text: Optional[str], citation
     
     # Add footer section
     parts.append("<hr>\n")
-    parts.append("<p><em>This information is based on UAE legal documents and is for guidance only. For specific legal matters, please consult with a qualified UAE legal professional.</em></p>\n")
-    parts.append("<p><strong>SOURCE:</strong> <a href=\"https://uaelegislation.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://uaelegislation.gov.ae</a></p>\n")
+    if language == "ar":
+        parts.append("<p><em>تستند هذه المعلومات إلى الوثائق القانونية في دولة الإمارات وهي لأغراض إرشادية فقط. للحصول على نصيحة قانونية محددة، يرجى استشارة مختص قانوني مؤهل في دولة الإمارات.</em></p>\n")
+        parts.append("<p><strong>المصدر:</strong> <a href=\"https://uaelegislation.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://uaelegislation.gov.ae</a></p>\n")
+    else:
+        parts.append("<p><em>This information is based on UAE legal documents and is for guidance only. For specific legal matters, please consult with a qualified UAE legal professional.</em></p>\n")
+        parts.append("<p><strong>SOURCE:</strong> <a href=\"https://uaelegislation.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://uaelegislation.gov.ae</a></p>\n")
     
     # Always show references if we have them (formatted as HTML)
     if has_support:
@@ -156,9 +163,16 @@ def _format_legal_response(user_query: str, answer_text: Optional[str], citation
         parts.append("</ul>\n")
     
     # Security/branding lines removed per request
-    parts.append(f"<p><em>USER INPUT: {user_query}</em></p>\n")
-    
-    return "".join(parts)
+    if language == "ar":
+        parts.append(f"<p><em>مدخل المستخدم: {user_query}</em></p>\n")
+    else:
+        parts.append(f"<p><em>USER INPUT: {user_query}</em></p>\n")
+
+    output = "".join(parts)
+    # Wrap Arabic content with RTL container for proper directionality
+    if language == "ar":
+        output = f"<div dir=\"rtl\" style=\"text-align: right;\">{output}</div>"
+    return output
 
 
 @legislation_router.post("/api/legislation/ingest")
