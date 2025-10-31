@@ -62,3 +62,9 @@ reportlab
 python-multipart
 openpyxl
 
+# HTML parsing / scraping
+beautifulsoup4
+lxml
+playwright
+boto3
+

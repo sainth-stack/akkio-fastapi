@@ -67,6 +67,7 @@ import shutil
 from api.sla_apis import sla_router
 from api.sla_tabs_api import sla_tabs_router
 from api.explore_api import explore_router
+from api.legislation_api import legislation_router
 from api.sharepoint import (
     list_sharepoint_files as sp_list_sharepoint_files,
     get_app_token as sp_get_app_token,
@@ -247,6 +248,7 @@ app.include_router(sla_router)
 app.include_router(sla_tabs_router)
 app.include_router(explore_router)
 app.include_router(chat2doc)
+app.include_router(legislation_router)
 
 
 # 1.File upload only-------- It is  useful for uploading the file
