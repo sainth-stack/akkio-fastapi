@@ -2,6 +2,7 @@ import os
 import time
 import json
 from typing import Optional, Dict, Any, List
+import re
 
 from fastapi import APIRouter, Form, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -40,7 +41,38 @@ def _jsonable(obj: Any) -> Any:
         return obj
 
 
+def _sanitize_answer(text: Optional[str]) -> str:
+    """Remove branding, collapse whitespace, and strip excessive HTML breaks.
+
+    - Removes any occurrence of the company name (case-insensitive), including
+      variants like "CXINGULARITY ENHANCED".
+    - Replaces multiple <br> tags (any form) with a single space.
+    - Removes empty paragraph tags and collapses multiple blank lines.
+    """
+    if not text:
+        return ""
+
+    cleaned = text
+    # Remove company branding (case-insensitive)
+    cleaned = re.sub(r"(?i)\bCXINGULARITY\b(\s*ENHANCED)?", "", cleaned)
+
+    # Normalize different <br> variants to a single space (avoid large gaps)
+    cleaned = re.sub(r"(?i)(<br\s*/?>\s*)+", " ", cleaned)
+
+    # Remove completely empty paragraphs
+    cleaned = re.sub(r"(?i)(<p>\s*</p>\s*)+", "", cleaned)
+
+    # Collapse multiple whitespace/newlines
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+
+    return cleaned.strip()
+
+
 def _format_legal_response(user_query: str, answer_text: Optional[str], citations: Optional[List[Dict[str, Any]]], language: str = "en") -> str:
+    # Sanitize incoming answer first to remove branding and excessive spacing
+    answer_text = _sanitize_answer(answer_text)
     # Check if answer_text already contains HTML tags (from LLM response)
     is_html = answer_text and ("<h" in answer_text or "<p>" in answer_text or "<ul>" in answer_text or "<li>" in answer_text)
     
@@ -84,7 +116,6 @@ def _format_legal_response(user_query: str, answer_text: Optional[str], citation
     
     # Add footer section
     parts.append("<hr>\n")
-    parts.append("<p><em>✅ CXINGULARITY ENHANCED</em></p>\n")
     parts.append("<p><em>This information is based on UAE legal documents and is for guidance only. For specific legal matters, please consult with a qualified UAE legal professional.</em></p>\n")
     parts.append("<p><strong>SOURCE:</strong> <a href=\"https://uaelegislation.gov.ae\" target=\"_blank\" style=\"color: #3498db;\">https://uaelegislation.gov.ae</a></p>\n")
     
@@ -124,8 +155,7 @@ def _format_legal_response(user_query: str, answer_text: Optional[str], citation
             parts.append(f"<li><strong>{ref_text}</strong> — <a href=\"{url}\" target=\"_blank\" style=\"color: #3498db;\">{url}</a></li>\n")
         parts.append("</ul>\n")
     
-    parts.append("<p>🛡️ INPUT SECURITY SCAN COMPLETED</p>\n")
-    parts.append("<p><strong>CXINGULARITY ENHANCED</strong></p>\n")
+    # Security/branding lines removed per request
     parts.append(f"<p><em>USER INPUT: {user_query}</em></p>\n")
     
     return "".join(parts)
