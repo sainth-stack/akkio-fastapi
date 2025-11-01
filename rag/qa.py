@@ -73,6 +73,47 @@ SYSTEM_PROMPT_EN = (
 )
 
 
+ACTION_SYSTEM_PROMPT_AR = (
+    "أنت مساعد قانوني متخصص في استخراج الإجراءات العملية والعقوبات والمتطلبات الزمنية من النصوص القانونية الإماراتية. "
+    "استخدم المقاطع الموفّرة لإنتاج إجابة مركزة على (الإجراء/العقوبة/المدة) المطلوبة في السؤال. "
+    "إذا تضمنت النصوص مدد زمنية (سنوات/أشهر/أيام) أو غرامات أو خطوات إجرائية، فاذكرها بدقة مع رقم القانون والمادة إن أمكن. "
+    "\n\n⚠️ مهم: يجب أن تكون الإجابة بصيغة HTML فقط باستخدام العلامات التالية: "
+    "<h3> و <h4> و <p> و <ul> و <li> و <strong> و <em> و <hr>. "
+    "ابدأ بخلاصة مباشرة ومحددة (مثلاً: <h3>النتيجة: سنتان</h3>) ثم قدم التفاصيل في قائمة نقطية مرتبة. لا تستخدم Markdown."
+)
+
+ACTION_SYSTEM_PROMPT_EN = (
+    "You are a legal assistant focused on extracting concrete actions, penalties, and time limits from UAE legal texts. "
+    "Use the provided excerpts to produce a concise, action-oriented answer to the user's request. "
+    "If the law specifies durations (years/months/days), fines, or procedural steps, state them precisely and reference law/article numbers when available. "
+    "\n\n⚠️ IMPORTANT: Output must be HTML only using <h3>, <h4>, <p>, <ul>, <li>, <strong>, <em>, <hr>. "
+    "Start with a direct, short result (e.g., <h3>Result: Two years</h3>) followed by a bullet list of details. Do NOT use Markdown."
+)
+
+
+def is_action_query(query: str, lang: str) -> bool:
+    """Lightweight heuristic to detect action/penalty/duration oriented queries.
+
+    This avoids an extra model call by matching indicative keywords in EN/AR.
+    """
+    if not query:
+        return False
+    q = query.lower()
+    if lang == "ar":
+        patterns = [
+            "الإجراءات", "إجراء", "العقوبة", "غرامة", "مدة", "سنوات", "أشهر", "أيام",
+            "كم سنة", "كم شهر", "ما هي العقوبة", "ما العقوبة", "ما الغرامة", "ما الإجراء",
+            "عقوبة", "جزاء", "فترة", "مهلة", "الحد", "الجزاءات",
+        ]
+    else:
+        patterns = [
+            "action", "actions", "penalty", "penalties", "fine", "punishment", "sentence",
+            "how many years", "how many months", "time limit", "deadline", "period", "duration",
+            "what is the penalty", "what is the fine", "what is the sentence", "shall", "must",
+        ]
+    return any(p in q for p in patterns)
+
+
 def _extract_title_from_url(url: str) -> str:
     """Extract a meaningful title from URL if title is missing or just 'ع'."""
     try:
@@ -134,7 +175,7 @@ def build_prompt(chunks: List[Dict[str, Any]], user_query: str, lang: str = "en"
     return "\n".join(lines)
 
 
-def answer_with_rag(query: str, top_k: int = 8, where: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def answer_with_rag(query: str, top_k: int = 8, where: Optional[Dict[str, Any]] = None, mode: Optional[str] = None) -> Dict[str, Any]:
     lang = detect_language(query)
     # Normalize query based on language
     qn = normalize_ar(query) if lang == "ar" else query
@@ -151,8 +192,17 @@ def answer_with_rag(query: str, top_k: int = 8, where: Optional[Dict[str, Any]] 
     ]
     pairs.sort(key=lambda x: x.get("distance", 1.0))
 
+    # Determine intent: action vs answer
+    effective_mode = (mode or "auto").lower()
+    if effective_mode == "auto":
+        effective_mode = "action" if is_action_query(query, lang) else "answer"
+
+    # Build prompts
     prompt = build_prompt(pairs, query, lang=lang)
-    system_prompt = SYSTEM_PROMPT_AR if lang == "ar" else SYSTEM_PROMPT_EN
+    if effective_mode == "action":
+        system_prompt = ACTION_SYSTEM_PROMPT_AR if lang == "ar" else ACTION_SYSTEM_PROMPT_EN
+    else:
+        system_prompt = SYSTEM_PROMPT_AR if lang == "ar" else SYSTEM_PROMPT_EN
 
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     # Use slightly higher temperature for explanation queries to get more detailed responses
@@ -203,11 +253,12 @@ def answer_with_rag(query: str, top_k: int = 8, where: Optional[Dict[str, Any]] 
     return {
         "answer": answer,
         "language": lang,
+        "mode": effective_mode,
         "citations": citations,
         "chunks_preview": [{"text": p.get("document"), "metadata": p.get("metadata")} for p in pairs],
     }
 
 
-__all__ = ["normalize_ar", "answer_with_rag", "build_prompt", "detect_language"]
+__all__ = ["normalize_ar", "answer_with_rag", "build_prompt", "detect_language", "is_action_query"]
 
 
