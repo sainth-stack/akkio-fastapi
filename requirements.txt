@@ -46,6 +46,7 @@ langchain==0.0.331
 langchain-community
 langchain-openai
 langchain-core
+faiss-cpu
 
 # OpenAI
 openai
@@ -54,6 +55,7 @@ chromadb
 
 # PDF processing
 pypdf
+PyPDF2
 
 # Timezone handling
 tzdata
@@ -61,6 +63,9 @@ tzdata
 reportlab
 python-multipart
 openpyxl
+
+# Office documents
+python-docx
 
 # HTML parsing / scraping
 beautifulsoup4
