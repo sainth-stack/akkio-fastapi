@@ -42,7 +42,7 @@ python-dotenv
 psycopg2-binary
 
 # LangChain ecosystem
-langchain
+langchain==0.0.331
 langchain-community
 langchain-openai
 langchain-core
