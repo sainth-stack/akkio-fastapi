@@ -68,7 +68,7 @@ from langchain_community.embeddings import OpenAIEmbeddings
 import shutil
 from api.sla_apis import sla_router
 from api.sla_tabs_api import sla_tabs_router
-from api.explore_api import explore_router
+from api.akkio.main import akkio_router
 from api.sharepoint import (
     list_sharepoint_files as sp_list_sharepoint_files,
     get_app_token as sp_get_app_token,
@@ -247,168 +247,10 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
 app.include_router(sla_tabs_router)
-app.include_router(explore_router)
+app.include_router(akkio_router)
 app.include_router(chat2doc)
 
-
-# 1.File upload only-------- It is  useful for uploading the file
-@app.post("/api/upload_only")
-async def upload_only(
-        mail: str = Form(...),
-        file: UploadFile = File(...)
-):
-    try:
-        if not file:
-            raise HTTPException(status_code=400, detail="No file uploaded")
-
-        file_name = file.filename
-        if not file_name:
-            raise HTTPException(status_code=400, detail="No filename provided")
-            
-        file_extension = os.path.splitext(file_name)[1].lower()
-        
-        print(f"[DEBUG] Upload request - File: {file_name}, Extension: '{file_extension}'")
-        print(f"[DEBUG] File content type: {file.content_type}")
-        print(f"[DEBUG] File size: {file.size if hasattr(file, 'size') else 'unknown'}")
-        
-        # Check if file has no extension
-        if not file_extension:
-            raise HTTPException(status_code=400, detail="File must have an extension (.csv, .xlsx, .xls, .pdf, or .docx)")
-
-        # Read file content into a DataFrame
-        content = await file.read()
-        if file_extension == ".csv":
-            df = pd.read_csv(io.StringIO(content.decode("utf-8")))
-        elif file_extension in [".xls", ".xlsx"]:
-            # Save to temp file because read_excel reads from file path
-            temp_path = f"temp{file_extension}"
-            with open(temp_path, "wb") as temp_file:
-                temp_file.write(content)
-            df = pd.read_excel(temp_path)
-            os.remove(temp_path)
-        elif file_extension == ".pdf":
-            # Save PDF to temp file for PyPDFLoader
-            temp_path = f"temp_pdf_{uuid.uuid4().hex}{file_extension}"
-            try:
-                print(f"[DEBUG] Processing PDF file: {file_name}")
-                print(f"[DEBUG] File size: {len(content)} bytes")
-                
-                with open(temp_path, "wb") as temp_file:
-                    temp_file.write(content)
-                
-                print(f"[DEBUG] PDF saved to temp file: {temp_path}")
-                
-                # Extract text from PDF using PyPDFLoader
-                try:
-                    loader = PyPDFLoader(temp_path)
-                    pages = loader.load()
-                    print(f"[DEBUG] PDF loaded successfully, {len(pages)} pages found")
-                except Exception as pdf_error:
-                    print(f"[DEBUG] PDF loading error: {str(pdf_error)}")
-                    raise HTTPException(status_code=400, detail=f"Error reading PDF file: {str(pdf_error)}")
-                
-                if not pages:
-                    raise HTTPException(status_code=400, detail="PDF file appears to be empty or corrupted")
-                
-                # Combine all pages text
-                full_text = "\n".join([page.page_content for page in pages])
-                print(f"[DEBUG] Extracted text length: {len(full_text)} characters")
-                
-                if not full_text.strip():
-                    raise HTTPException(status_code=400, detail="PDF file contains no extractable text")
-                
-                # Create DataFrame with extracted text
-                # Split text into lines and create a DataFrame
-                lines = full_text.split('\n')
-                df = pd.DataFrame({
-                    'line_number': range(1, len(lines) + 1),
-                    'text_content': lines
-                })
-                
-                # Remove empty lines
-                df = df[df['text_content'].str.strip() != '']
-                print(f"[DEBUG] DataFrame created with {len(df)} non-empty lines")
-                
-            except HTTPException:
-                # Re-raise HTTP exceptions as-is
-                raise
-            except Exception as pdf_error:
-                print(f"[DEBUG] Unexpected PDF processing error: {str(pdf_error)}")
-                raise HTTPException(status_code=400, detail=f"Error processing PDF file: {str(pdf_error)}")
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    print(f"[DEBUG] Temp file cleaned up: {temp_path}")
-        elif file_extension == ".docx":
-            # Save DOCX to temp file for Document processing
-            temp_path = f"temp_docx_{uuid.uuid4().hex}{file_extension}"
-            try:
-                print(f"[DEBUG] Processing DOCX file: {file_name}")
-                print(f"[DEBUG] File size: {len(content)} bytes")
-                
-                with open(temp_path, "wb") as temp_file:
-                    temp_file.write(content)
-                
-                print(f"[DEBUG] DOCX saved to temp file: {temp_path}")
-                
-                # Extract text from DOCX using python-docx
-                try:
-                    doc = Document(temp_path)
-                    paragraphs = doc.paragraphs
-                    print(f"[DEBUG] DOCX loaded successfully, {len(paragraphs)} paragraphs found")
-                except Exception as docx_error:
-                    print(f"[DEBUG] DOCX loading error: {str(docx_error)}")
-                    raise HTTPException(status_code=400, detail=f"Error reading DOCX file: {str(docx_error)}")
-                
-                if not paragraphs:
-                    raise HTTPException(status_code=400, detail="DOCX file appears to be empty or corrupted")
-                
-                # Combine all paragraphs text
-                full_text = "\n".join([p.text for p in paragraphs if p.text.strip()])
-                print(f"[DEBUG] Extracted text length: {len(full_text)} characters")
-                
-                if not full_text.strip():
-                    raise HTTPException(status_code=400, detail="DOCX file contains no extractable text")
-                
-                # Create DataFrame with extracted text
-                # Split text into lines and create a DataFrame
-                lines = full_text.split('\n')
-                df = pd.DataFrame({
-                    'line_number': range(1, len(lines) + 1),
-                    'text_content': lines
-                })
-                
-                # Remove empty lines
-                df = df[df['text_content'].str.strip() != '']
-                print(f"[DEBUG] DataFrame created with {len(df)} non-empty lines")
-                
-            except HTTPException:
-                # Re-raise HTTP exceptions as-is
-                raise
-            except Exception as docx_error:
-                print(f"[DEBUG] Unexpected DOCX processing error: {str(docx_error)}")
-                raise HTTPException(status_code=400, detail=f"Error processing DOCX file: {str(docx_error)}")
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    print(f"[DEBUG] Temp file cleaned up: {temp_path}")
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Only CSV, Excel, PDF, or DOCX allowed")
-
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Uploaded file contains no data")
-
-        # Insert or update in database ONLY (no local save)
-        results = db.insert_or_update(mail, df, file_name)
-
-        return JSONResponse(content={
-            "message": "File uploaded and data saved to database successfully",
-            "db_insert_result": results
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+ 
 
 @app.get("/api/sharepoint/input_files")
 async def get_sharepoint_input_files():
@@ -699,20 +541,7 @@ async def upload_to_sharepoint_output(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-# 2.Get user data based on the mail----------get the table data of the user based on the email-------workspace
-@app.post("/api/get_user_data")
-async def get_user_data(email: str = Form(...)):
-    try:
-        # Get user tables from database
-        table_info = db.get_user_tables(email)
-        print(table_info)  # Debug print
-        # Return as JSON response
-        return {"result": table_info}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving user data: {str(e)}"
-        )
+ 
 
 
 @app.post("/api/tabledata")
@@ -2982,8 +2811,8 @@ def plot_graph(data, target_col):
             width=1000, height=600
         )
 
-        # Convert figure to Base64 Image
-        fig.show()
+        # Convert figure to JSON for frontend rendering
+        # Removed fig.show() to prevent opening new browser tab
         return make_serializable(fig.to_json())
 
     except Exception as e:
@@ -4886,98 +4715,7 @@ async def email_report(
         )
 
 
-# Database connection creation
-# Initialize the multi-database agent
-from database_agent import MultiDatabaseAgent, ChatRequest, ChatResponse, logger
-
-multi_db_agent = MultiDatabaseAgent()
-
-
-@app.post("/api/database_chat", response_model=ChatResponse)
-async def database_chat(request: ChatRequest):
-    # Generate session ID if not provided, otherwise use the provided one
-    session_id = request.session_id or str(uuid.uuid4())
-
-    try:
-        response = await multi_db_agent.process_message(session_id, request.message)
-        print(response.response)
-
-        #formatted_response=await llm_format_response(user_query=request.message, response=response.response)
-        # print(f"Formatted response: {formatted_response}")
-        return JSONResponse(
-            content={
-                "session_id": session_id,
-                "response":json.loads(response.response),
-            },
-            status_code=200
-        )
-
-    except Exception as e:
-        logger.error(f"Chat endpoint error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-
-#Database table getting and reading
-from sqlalchemy import create_engine
-def get_engine(db_type: str, host: str, database: str, username: str, password: str):
-    if db_type == "mysql":
-        return create_engine(
-            f"mysql+pymysql://{username}:{password}@{host}/{database}"
-        )
-    elif db_type == "postgresql":
-        return create_engine(
-            f"postgresql://{username}:{password}@{host}/{database}"
-        )
-    else:
-        raise ValueError("Unsupported db_type. Use 'mysql' or 'postgresql'.")
-
-
-def get_table_data(table_name: str, db_type: str,host: str,database:str, username:str, password:str) -> pd.DataFrame:
-    engine = get_engine(db_type,host, database, username, password)
-    df = pd.read_sql_table(table_name, engine)
-    return df
-
-# -------------------- API --------------------
-@app.post("/api/get_table_from_database")
-async def read_data_from_db(
-    tablename: str = Form(...),
-    db_type: str = Form(...),
-    host: str = Form(...),
-    database: str = Form(...),
-    username: str = Form(...),
-    password: str = Form(...)
-):
-    try:
-        df = get_table_data(tablename, db_type,host, database, username, password)
-        if df.empty:
-            return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
-
-        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
-        json.loads(json_str)
-
-        # Save shared CSV
-        df.to_csv('data.csv', index=False)
-        
-        print(df.head())
-
-        # Save table-specific CSV
-        os.makedirs("uploads", exist_ok=True)
-        csv_path = os.path.join("uploads", f"{tablename.lower()}.csv")
-        df.to_csv(csv_path, index=False)
-
-        return JSONResponse(
-        content={
-            "message": f"Data from '{tablename}' saved successfully.",
-        })
-
-    except Exception as e:
-        return JSONResponse(
-            content={"detail": f"Error processing table data: {str(e)}"},
-            status_code=500
-        )
+ 
 
 
 if __name__ == "__main__":
