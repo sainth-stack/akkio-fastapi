@@ -124,3 +124,4 @@ def analyze_legal_content(df: pd.DataFrame, query: str) -> str:
 
 
 
+

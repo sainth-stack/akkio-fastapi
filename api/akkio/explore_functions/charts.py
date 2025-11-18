@@ -274,3 +274,4 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
 
 
 
+
