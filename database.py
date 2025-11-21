@@ -96,9 +96,19 @@ class PostgresDatabase:
                     name VARCHAR(255),
                     lastupdate TIMESTAMP,
                     datecreated TIMESTAMP,
-                    fileobj BYTEA
+                    fileobj BYTEA,
+                    rawfile BYTEA,
+                    type VARCHAR(50),
+                    subtype VARCHAR(50)
                 )
             """)
+            # Backfill columns for older installs
+            try:
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS type VARCHAR(50)")
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS subtype VARCHAR(50)")
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS rawfile BYTEA")
+            except Exception:
+                pass
 
     def create_training_tables(self):
         """Create tables for training jobs and trained models."""
@@ -241,26 +251,54 @@ class PostgresDatabase:
                 )
             """)
 
-    def insert_or_update(self, email, data, tb_name):
+    def _ensure_type_columns(self):
+        """Ensure type/subtype/rawfile columns exist on akio_data_fastapi."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            try:
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS type VARCHAR(50)")
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS subtype VARCHAR(50)")
+                cursor.execute("ALTER TABLE akio_data_fastapi ADD COLUMN IF NOT EXISTS rawfile BYTEA")
+            except Exception:
+                pass
+
+    def insert_or_update(self, email, data, tb_name, data_type: str | None = None, data_subtype: str | None = None, raw_bytes: bytes | None = None):
         """Insert or update a row in akio_data_fastapi. Allows multiple rows per email."""
         self.ensure_connection()
+        # Make sure optional columns exist
+        self._ensure_type_columns()
         tb_name_clean = self._clean_name(tb_name)
         blob_data = pickle.dumps(data)
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT id FROM akio_data_fastapi WHERE email = %s AND name = %s", (email, tb_name_clean))
             existing = cursor.fetchone()
             if existing:
-                cursor.execute("""
-                    UPDATE akio_data_fastapi
-                    SET lastupdate = %s, fileobj = %s
-                    WHERE email = %s AND name = %s
-                """, (datetime.now(), psycopg2.Binary(blob_data), email, tb_name_clean))
+                try:
+                    cursor.execute("""
+                        UPDATE akio_data_fastapi
+                        SET lastupdate = %s, fileobj = %s, rawfile = COALESCE(%s, rawfile), type = COALESCE(%s, type), subtype = COALESCE(%s, subtype)
+                        WHERE email = %s AND name = %s
+                    """, (datetime.now(), psycopg2.Binary(blob_data), psycopg2.Binary(raw_bytes) if raw_bytes is not None else None, data_type, data_subtype, email, tb_name_clean))
+                except Exception:
+                    # Fallback for older schema
+                    cursor.execute("""
+                        UPDATE akio_data_fastapi
+                        SET lastupdate = %s, fileobj = %s
+                        WHERE email = %s AND name = %s
+                    """, (datetime.now(), psycopg2.Binary(blob_data), email, tb_name_clean))
                 return "updated"
             else:
-                cursor.execute("""
-                    INSERT INTO akio_data_fastapi (email, name, lastupdate, datecreated, fileobj)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (email, tb_name_clean, datetime.now(), datetime.now(), psycopg2.Binary(blob_data)))
+                try:
+                    cursor.execute("""
+                        INSERT INTO akio_data_fastapi (email, name, lastupdate, datecreated, fileobj, rawfile, type, subtype)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (email, tb_name_clean, datetime.now(), datetime.now(), psycopg2.Binary(blob_data), psycopg2.Binary(raw_bytes) if raw_bytes is not None else None, data_type, data_subtype))
+                except Exception:
+                    # Fallback for older schema
+                    cursor.execute("""
+                        INSERT INTO akio_data_fastapi (email, name, lastupdate, datecreated, fileobj)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (email, tb_name_clean, datetime.now(), datetime.now(), psycopg2.Binary(blob_data)))
                 return "inserted"
 
     # -------- Training jobs and models helpers --------
@@ -554,7 +592,7 @@ class PostgresDatabase:
         self.ensure_connection()
         with self.connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, email, name, lastupdate, datecreated, fileobj "
+                "SELECT id, email, name, lastupdate, datecreated, fileobj, rawfile "
                 "FROM akio_data_fastapi WHERE name = %s LIMIT 1",
                 (table_name,)
             )
@@ -563,7 +601,7 @@ class PostgresDatabase:
         if not row:
             return None
 
-        cols = ['id', 'email', 'name', 'lastupdate', 'datecreated', 'fileobj']
+        cols = ['id', 'email', 'name', 'lastupdate', 'datecreated', 'fileobj', 'rawfile']
         return pd.DataFrame([row], columns=cols)
 
     def get_tables_info(self,table_name):
@@ -584,6 +622,33 @@ class PostgresDatabase:
             rows = cursor.fetchall()
         return [row[0] for row in rows]
 
+    def get_user_items(self, email: str):
+        """
+        Return list of dicts with name, type, subtype for a given user.
+        Gracefully handles missing columns by returning None for missing fields.
+        """
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            try:
+                cursor.execute("SELECT name, type, subtype FROM akio_data_fastapi WHERE email = %s", (email,))
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    # row may contain only name if columns missing; handle lengths
+                    if len(row) == 3:
+                        results.append({"name": row[0], "type": row[1], "subtype": row[2]})
+                    elif len(row) == 1:
+                        results.append({"name": row[0], "type": None, "subtype": None})
+                    else:
+                        # unexpected shape
+                        results.append({"name": row[0] if row else None, "type": None, "subtype": None})
+                return results
+            except Exception:
+                # Fallback if columns missing
+                cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (email,))
+                rows = cursor.fetchall()
+                return [{"name": row[0], "type": None, "subtype": None} for row in rows]
+
     def get_table_data(self, table_name):
         self.ensure_connection()
         df = self.read(self._clean_name(table_name))
@@ -592,6 +657,16 @@ class PostgresDatabase:
         if isinstance(table_data, pd.DataFrame):
             return table_data
         return pd.DataFrame(table_data)
+
+    def get_raw_file(self, table_name) -> bytes | None:
+        """Return rawfile bytes for a given name if available."""
+        self.ensure_connection()
+        df = self.read(self._clean_name(table_name))
+        try:
+            rb = df['rawfile'].iloc[0]
+            return bytes(rb) if rb is not None else None
+        except Exception:
+            return None
 
     def delete_tables_data(self, email, table_names):
         if not table_names:

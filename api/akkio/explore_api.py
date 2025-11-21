@@ -7,7 +7,12 @@ import pandas as pd
 import os
 import glob
 from pathlib import Path
- 
+from langchain_community.vectorstores import Chroma
+try:
+    from langchain_openai import OpenAIEmbeddings  # preferred
+except Exception:
+    from langchain_community.embeddings import OpenAIEmbeddings  # fallback
+from database import PostgresDatabase
 
 from .explore_functions import (
     SESSION_MEMORY,
@@ -26,9 +31,94 @@ from .explore_functions import (
     handle_graph_agent,
     analyze_legal_content,
 )
+from .explore_functions.llm import get_openai_client
+import base64
 
 explore_router = APIRouter()
 
+def _safe(s: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in (s or ""))
+
+def _resolve_collection_name(persist_dir: Path, email: Optional[str], filename: str) -> Optional[str]:
+    """
+    Resolve a Chroma collection name for a given email+filename, allowing minor
+    mismatches like missing trailing tokens (e.g., '__2') in filename stem.
+    Preference order:
+    1) Exact '<safe_email>__<safe_name>'
+    2) Startswith '<safe_email>__<safe_name>'
+    3) Endswith '__<safe_name>'
+    4) Contains '__<safe_name>__'
+    Picks the longest match to be safe.
+    """
+    try:
+        import chromadb
+    except Exception:
+        return None
+    safe_name = _safe(Path(filename).stem or filename)
+    safe_email = _safe(email) if email else None
+    exact = f"{safe_email}__{safe_name}" if safe_email else None
+    try:
+        cclient = chromadb.PersistentClient(path=str(persist_dir))
+        collections = cclient.list_collections()
+    except Exception:
+        return None
+    try:
+        print(f"[VECTOR][RESOLVE] email='{email}', filename='{filename}', safe_email='{safe_email}', safe_name='{safe_name}', total_collections={len(collections)}")
+    except Exception:
+        pass
+    # Build candidates with scores
+    scored: list[tuple[int, str]] = []
+    for coll in collections:
+        name = coll.name
+        score = -1
+        if exact and name == exact:
+            score = 400  # best
+        elif safe_email and name.startswith(f"{safe_email}__{safe_name}"):
+            score = 300 + len(name)
+        elif name.endswith(f"__{safe_name}"):
+            score = 200 + len(name)
+        elif f"__{safe_name}__" in name:
+            score = 100 + len(name)
+        if score >= 0:
+            scored.append((score, name))
+    if not scored:
+        try:
+            print(f"[VECTOR][RESOLVE] No matching collection for safe_name='{safe_name}'")
+        except Exception:
+            pass
+        return None
+    scored.sort(reverse=True)
+    try:
+        print(f"[VECTOR][RESOLVE] candidates={scored[:5]}")
+    except Exception:
+        pass
+    return scored[0][1]
+
+def _is_generic_summary_query(q: str) -> bool:
+    ql = (q or "").strip().lower()
+    generic_markers = [
+        "explain", "summary", "summarize", "summarise", "about", "overview",
+        "describe", "details", "in detailed", "in detail",
+        "what is this doc", "what is this pdf", "what is this document",
+        "explain about the pdf", "explain about doc", "explain pdf", "explain document",
+        "what the uploaded document contains", "what the document contains",
+        "what does the document contain", "what does this document contain",
+        "what does the pdf contain", "content of the document", "document content",
+        "contents of the document", "contains", "content"
+    ]
+    return any(m in ql for m in generic_markers)
+
+def _retrieve_docs(vectordb: Chroma, query: str, k: int):
+    try:
+        # Prefer diverse retrieval if available
+        if hasattr(vectordb, "max_marginal_relevance_search"):
+            return vectordb.max_marginal_relevance_search(query, k=max(3, k), fetch_k=max(10, k*2))
+    except Exception:
+        pass
+    try:
+        return vectordb.similarity_search(query, k=max(3, k))
+    except Exception:
+        return []
 
 @explore_router.post("/api/Explore")
 async def senior_data_analysis(
@@ -36,6 +126,8 @@ async def senior_data_analysis(
     dataset_path: Optional[str] = Form(None),
     filename: Optional[str] = Form(None),
     session_id: str = Form(None),
+    email: Optional[str] = Form(None),
+    file_type: Optional[str] = Form(None),
 ):
     try:
         if not session_id:
@@ -66,12 +158,97 @@ async def senior_data_analysis(
                 candidates = []
                 for d in search_dirs:
                     if d.exists():
-                        pattern = str(d / f"{filename.strip().lower()}*.csv")
-                        candidates.extend(glob.glob(pattern))
+                        base = filename.strip().lower()
+                        for ext in ("csv", "xlsx", "xls", "pdf", "docx"):
+                            pattern = str(d / f"{base}*.{ext}")
+                            candidates.extend(glob.glob(pattern))
                 if candidates:
                     # Choose the most recent file
                     candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
                     dataset_path = candidates[0]
+            except Exception:
+                pass
+        # If still no dataset_path, but filename provided, try vector or raw-image fallback (pdf/word/images)
+        if not dataset_path and filename:
+            try:
+                project_root = Path(__file__).resolve().parents[2]
+                persist_dir = project_root / "chroma_store"
+                if persist_dir.exists():
+                    coll_name = _resolve_collection_name(persist_dir, email, filename)
+                    try:
+                        print(f"[VECTOR][EXPLORE] resolved collection='{coll_name}' for filename='{filename}', email='{email}'")
+                    except Exception:
+                        pass
+                    if coll_name:
+                        try:
+                            embeddings = OpenAIEmbeddings()
+                            vectordb = Chroma(collection_name=coll_name, persist_directory=str(persist_dir), embedding_function=embeddings)
+                            docs = _retrieve_docs(vectordb, query, k=7)
+                            try:
+                                print(f"[VECTOR][EXPLORE] retrieved_docs={len(docs)} for query='{query}'")
+                            except Exception:
+                                pass
+                            if docs:
+                                context = "\n\n---\n\n".join([d.page_content for d in docs if d and d.page_content])
+                                try:
+                                    print(f"[VECTOR][EXPLORE] context_chars={len(context)} sample='{context[:200].replace(chr(10),' ')}...'")
+                                    # Debug: Print all retrieved chunks to see what's being used
+                                    for i, d in enumerate(docs):
+                                        print(f"[VECTOR][DEBUG] Chunk {i}: {d.page_content[:100]}... (Source: {d.metadata})")
+                                except Exception:
+                                    pass
+                                client = get_openai_client()
+                                if _is_generic_summary_query(query):
+                                    system_prompt = (
+                                        "You are a helpful assistant. Create a clear, self-contained summary of the document "
+                                        "STRICTLY from the provided context. Include key sections, main points, and any important numbers/dates.\n"
+                                        "Format your response in clean HTML with proper structure:\n"
+                                        "- Use <h4> for main headings\n"
+                                        "- Use <p> for paragraphs\n"
+                                        "- Use <ul> and <li> for bullet lists\n"
+                                        "- Use <strong> for emphasis\n"
+                                        "Make it user-friendly and well-formatted."
+                                    )
+                                    user_payload = f"Context:\n{context}\n\nTask:\nProvide a concise, detailed, well-formatted HTML summary of this document."
+                                else:
+                                    system_prompt = (
+                                        "You are a helpful assistant answering questions strictly from the provided context.\n"
+                                        "Format your response in clean HTML with proper structure:\n"
+                                        "- Use <h4> for main headings\n"
+                                        "- Use <p> for paragraphs\n"
+                                        "- Use <ul> and <li> for lists\n"
+                                        "- Use <strong> for emphasis\n"
+                                        "If the answer is not present in the context, say you cannot find it in a friendly HTML format."
+                                    )
+                                    user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
+                                chat = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_payload},
+                                    ],
+                                    temperature=0.0
+                                )
+                                answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+                                # Clean up markdown code fences and escape sequences
+                                answer = answer.strip()
+                                if answer.startswith("```html"):
+                                    answer = answer[7:]
+                                if answer.startswith("```"):
+                                    answer = answer[3:]
+                                if answer.endswith("```"):
+                                    answer = answer[:-3]
+                                answer = answer.strip()
+                                # Remove all newlines (both escaped and literal)
+                                answer = answer.replace("\\n", "").replace("\n", "").replace("\r", "")
+                                manage_session_memory(session_id, user_message=query, bot_message=answer)
+                                return JSONResponse(content=jsonable_encoder({
+                                    "type": "text",
+                                    "payload": answer,
+                                    "session_id": session_id,
+                                }), status_code=200)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -275,4 +452,191 @@ async def clear_session_memory_explore(session_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clear error: {str(e)}")
 
+def _extract_texts_for_embedding_from_df(df: pd.DataFrame) -> list[str]:
+    texts: list[str] = []
+    try:
+        if 'text_content' in df.columns:
+            texts = [str(t).strip() for t in df['text_content'].dropna().astype(str).tolist() if str(t).strip()]
+        else:
+            # Fallback: serialize first N rows
+            records = df.fillna("").astype(str).to_dict(orient="records")
+            texts = [str(rec) for rec in records[:1000]]
+    except Exception:
+        texts = []
+    # Deduplicate
+    seen = set()
+    uniq = []
+    for t in texts:
+        if t and t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+
+# ============== Vector chat over uploaded docs (pdf/word/images) ==============
+@explore_router.post("/api/vector_chat")
+async def vector_chat(
+    query: str = Form(...),
+    filename: str = Form(...),
+    email: Optional[str] = Form(None),
+    file_type: Optional[str] = Form(None),
+    top_k: int = Form(5),
+    session_id: str = Form(None),
+):
+    """
+    Answer questions over previously uploaded non-tabular documents (pdf/word/images).
+    - Looks up ChromaDB collection by email+filename (or by filename suffix).
+    - Retrieves top_k similar chunks and asks LLM to answer using ONLY that context.
+    """
+    try:
+        # Resolve Chroma persistence dir (project root)
+        project_root = Path(__file__).resolve().parents[2]
+        persist_dir = project_root / "chroma_store"
+        if not persist_dir.exists():
+            return JSONResponse(content={"detail": "No vector store available yet. Upload a file first."}, status_code=404)
+
+        # Determine collection name robustly
+        coll_name = _resolve_collection_name(persist_dir, email, filename)
+
+        if not coll_name:
+            return JSONResponse(content={"detail": f"No vector collection found for '{filename}'. Try re-uploading."}, status_code=404)
+
+        # If explicit image type, try answering directly with raw image first
+        if (file_type or "").lower() == "image":
+            try:
+                db = PostgresDatabase()
+                raw = db.get_raw_file(Path(filename).stem)
+                if raw:
+                    client = get_openai_client()
+                    b64 = base64.b64encode(raw).decode("utf-8")
+                    system_prompt = "Answer the user's question about the provided image. Use visual reasoning."
+                    chat = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": query},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                            ]}
+                        ],
+                        temperature=0.0
+                    )
+                    answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+                    return JSONResponse(content=jsonable_encoder({
+                        "type": "text",
+                        "payload": answer,
+                        "session_id": session_id,
+                    }), status_code=200)
+            except Exception:
+                pass
+
+        # Query vector store
+        try:
+            embeddings = OpenAIEmbeddings()
+        except Exception as e:
+            return JSONResponse(content={"detail": f"Embeddings unavailable: {e}"}, status_code=500)
+
+        vectordb = Chroma(collection_name=coll_name, persist_directory=str(persist_dir), embedding_function=embeddings)
+        docs = _retrieve_docs(vectordb, query, k=max(3, min(15, top_k)))
+        try:
+            print(f"[VECTOR][CHAT] resolved collection='{coll_name}', retrieved_docs={len(docs)} for query='{query}'")
+        except Exception:
+            pass
+        # If nothing found, try to build vectors from DB-stored dataframe for this filename
+        if not docs:
+            try:
+                db = PostgresDatabase()
+                df = db.get_table_data(Path(filename).stem)
+                texts = _extract_texts_for_embedding_from_df(df)
+                try:
+                    print(f"[VECTOR][CHAT] docs empty; building from DB rows={len(df) if isinstance(df, pd.DataFrame) else 'NA'}, texts={len(texts)}")
+                except Exception:
+                    pass
+                if texts:
+                    ids = [f"{coll_name}_{i}" for i in range(len(texts))]
+                    vectordb.add_texts(texts=texts, metadatas=[{"email": email, "name": Path(filename).stem}] * len(texts), ids=ids)
+                    docs = _retrieve_docs(vectordb, query, k=max(3, min(15, top_k)))
+            except Exception:
+                pass
+        if not docs:
+            try:
+                print(f"[VECTOR][CHAT] No relevant context found after rebuild for collection='{coll_name}'")
+            except Exception:
+                pass
+            return JSONResponse(content={"detail": "No relevant context found in vector store"}, status_code=404)
+
+        # Build context for LLM
+        context = "\n\n---\n\n".join([d.page_content for d in docs if d and d.page_content])
+        try:
+            print(f"[VECTOR][CHAT] context_chars={len(context)} sample='{context[:200].replace(chr(10),' ')}...'")
+        except Exception:
+            pass
+
+        # Ask LLM, restricted to context
+        try:
+            client = get_openai_client()
+        except Exception as e:
+            return JSONResponse(content={"detail": f"LLM unavailable: {e}"}, status_code=500)
+
+        if _is_generic_summary_query(query):
+            system_prompt = (
+                "You are a helpful assistant. Create a clear, self-contained summary of the document "
+                "STRICTLY from the provided context. Include key sections, main points, and any important numbers/dates.\n"
+                "Format your response in clean HTML with proper structure:\n"
+                "- Use <h4> for main headings\n"
+                "- Use <p> for paragraphs\n"
+                "- Use <ul> and <li> for bullet lists\n"
+                "- Use <strong> for emphasis\n"
+                "Make it user-friendly and well-formatted."
+            )
+            user_payload = f"Context:\n{context}\n\nTask:\nProvide a concise, detailed, well-formatted HTML summary of this document."
+        else:
+            system_prompt = (
+                "You are a helpful assistant answering questions strictly from the provided context.\n"
+                "Format your response in clean HTML with proper structure:\n"
+                "- Use <h4> for main headings\n"
+                "- Use <p> for paragraphs\n"
+                "- Use <ul> and <li> for lists\n"
+                "- Use <strong> for emphasis\n"
+                "If the answer is not present in the context, say you cannot find it in a friendly HTML format."
+            )
+            user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            temperature=0.0
+        )
+        answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+        
+        # Clean up markdown code fences and escape sequences
+        answer = answer.strip()
+        if answer.startswith("```html"):
+            answer = answer[7:]
+        if answer.startswith("```"):
+            answer = answer[3:]
+        if answer.endswith("```"):
+            answer = answer[:-3]
+        answer = answer.strip()
+        # Remove all newlines (both escaped and literal)
+        answer = answer.replace("\\n", "").replace("\n", "").replace("\r", "")
+
+        # Track session memory lightly
+        try:
+            if not session_id:
+                session_id = str(uuid4())
+            manage_session_memory(session_id, user_message=query, bot_message=answer)
+        except Exception:
+            pass
+
+        return JSONResponse(content=jsonable_encoder({
+            "type": "text",
+            "payload": answer,
+            "session_id": session_id,
+            "source_docs": [getattr(d, 'metadata', {}) for d in docs]
+        }), status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vector chat failed: {str(e)}")
 

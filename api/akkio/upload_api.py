@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Request, Body
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Request, Body, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 import os
@@ -13,6 +13,13 @@ from api.akkio.explore_functions.llm import get_openai_client
 import json as _json
 import glob
 from pathlib import Path
+import base64
+from typing import List, Tuple, Optional
+from langchain_community.vectorstores import Chroma
+try:
+    from langchain_openai import OpenAIEmbeddings  # preferred
+except Exception:
+    from langchain_community.embeddings import OpenAIEmbeddings  # fallback
 
 upload_router = APIRouter()
 
@@ -195,8 +202,195 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
     }
 
 
+def _extract_texts_for_embedding(df: pd.DataFrame) -> List[str]:
+    """
+    Extract and chunk text from DataFrame for embedding.
+    For text-heavy documents (pdf/word), chunks text into ~500 char segments.
+    """
+    texts: List[str] = []
+    try:
+        # Priority for text columns
+        text_like_cols = [c for c in df.columns if str(c).lower() in {"text", "content", "text_content", "paragraph", "line", "line_text"}]
+        if text_like_cols:
+            for col in text_like_cols:
+                series = df[col].dropna().astype(str)
+                raw_texts = series.tolist()
+                # Combine into full text and chunk
+                full_text = "\n".join(raw_texts)
+                # Chunk into ~500 char segments with overlap
+                chunk_size = 500
+                overlap = 50
+                for i in range(0, len(full_text), chunk_size - overlap):
+                    chunk = full_text[i:i+chunk_size].strip()
+                    if chunk:
+                        texts.append(chunk)
+        else:
+            # Fallback: convert rows to compact JSON lines
+            records = df.fillna("").astype(str).to_dict(orient="records")
+            texts = [_json.dumps(rec, ensure_ascii=False) for rec in records]
+    except Exception:
+        try:
+            records = df.fillna("").astype(str).to_dict(orient="records")
+            texts = [_json.dumps(rec, ensure_ascii=False) for rec in records]
+        except Exception:
+            texts = []
+    # Deduplicate and trim empties
+    dedup = []
+    seen = set()
+    for t in texts:
+        ts = t.strip()
+        if ts and len(ts) > 20 and ts not in seen:  # min 20 chars
+            dedup.append(ts)
+            seen.add(ts)
+    print(f"[VECTOR][EXTRACT] extracted {len(dedup)} chunks from {len(df)} rows, total_chars={sum(len(t) for t in dedup)}")
+    return dedup[:5000]  # hard cap
+
+
+def _collection_name(email: str, name: str) -> str:
+    safe_email = "".join(ch if ch.isalnum() else "_" for ch in (email or "user"))
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in (name or "dataset"))
+    return f"{safe_email}__{safe_name}"
+
+
+def _upsert_to_chromadb(email: str, name: str, texts: List[str], metadata: dict):
+    coll_name = _collection_name(email, name)
+    try:
+        print(f"[VECTOR] Start upsert to Chroma: collection='{coll_name}', texts={len(texts)}")
+    except Exception:
+        pass
+    if not texts:
+        try:
+            print(f"[VECTOR] No texts to index for collection='{coll_name}'. Skipping.")
+        except Exception:
+            pass
+        return
+    try:
+        embeddings = OpenAIEmbeddings()
+    except Exception:
+        # No API key or embeddings unavailable
+        try:
+            print(f"[VECTOR] OpenAIEmbeddings unavailable; skipping upsert for '{coll_name}'")
+        except Exception:
+            pass
+        return
+    persist_dir = str(Path(__file__).resolve().parents[2] / "chroma_store")
+    Path(persist_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        vectordb = Chroma(collection_name=coll_name, persist_directory=persist_dir, embedding_function=embeddings)
+        
+        # FIX: Delete existing collection content to ensure clean state
+        try:
+            # Check if collection has any data
+            existing_count = vectordb._collection.count()
+            if existing_count > 0:
+                print(f"[VECTOR] Deleting {existing_count} existing items in collection='{coll_name}' to avoid duplicates/mixed data")
+                vectordb.delete_collection()
+                # Re-initialize after deletion
+                vectordb = Chroma(collection_name=coll_name, persist_directory=persist_dir, embedding_function=embeddings)
+        except Exception as e:
+            print(f"[VECTOR] Warning during collection cleanup: {e}")
+
+        ids = [f"{coll_name}_{i}" for i in range(len(texts))]
+        vectordb.add_texts(texts=texts, metadatas=[metadata] * len(texts), ids=ids)
+        try:
+            print(f"[VECTOR] Upserted {len(texts)} chunks into collection='{coll_name}' at '{persist_dir}'")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[VECTOR] Error during upsert: {e}")
+        # Ignore vector errors to not block upload
+        pass
+
+
+def _ocr_image_with_llm(image_bytes: bytes) -> Tuple[str, Optional[str]]:
+    """
+    Use OpenAI vision model to extract text and classify image subtype (table|chart|other).
+    Returns (text, subtype or None).
+    """
+    def _guess_image_subtype_from_text(text: str) -> Optional[str]:
+        try:
+            txt = (text or "").lower()
+            # Obvious chart keywords
+            chart_keywords = ["chart", "graph", "plot", "x-axis", "y-axis", "axis", "legend", "series", "bar ", " line ", " pie ", "scatter", "histogram"]
+            if any(k in txt for k in chart_keywords):
+                return "chart"
+            # Heuristic: many rows with multiple columns => table
+            lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+            sample = lines[:20]
+            multi_col_lines = 0
+            for ln in sample:
+                # Count tokens split by 2+ spaces or tabs or commas
+                tokens = [t for t in re.split(r"[,\t]| {2,}", ln) if t.strip()]
+                if len(tokens) >= 4:
+                    multi_col_lines += 1
+            if len(sample) >= 5 and multi_col_lines >= max(3, len(sample)//2):
+                return "table"
+            # Numeric density heuristic
+            digits = sum(ch.isdigit() for ch in txt)
+            if len(txt) > 0 and digits / max(1, len(txt)) > 0.25 and len(lines) >= 5:
+                return "table"
+        except Exception:
+            return None
+        return None
+    import re
+    try:
+        client = get_openai_client()
+    except Exception:
+        client = None
+    if client is None:
+        return "", None
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        system_prompt = (
+            "You will receive one business screenshot image. First, EXTRACT all visible text verbatim.\n"
+            "Second, STRICTLY CLASSIFY the image primary type as one of:\n"
+            "- table: grid-like rows/columns, tabular data, spreadsheets, HTML tables, CSV-like layout.\n"
+            "- chart: any graph/plot (bar/line/pie/scatter/histogram), with axes, bars, lines, legends, or slices.\n"
+            "- other: none of the above.\n"
+            "If both appear, choose the primary visual focus (prefer 'chart' over 'table' if a plot is present on the page).\n"
+            "Respond as STRICT JSON: {\"text\": \"...\", \"subtype\": \"table|chart|other\"}"
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract text and classify."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"}
+                        }
+                    ]
+                }
+            ],
+            temperature=0.0
+        )
+        content = resp.choices[0].message.content if resp and resp.choices else "{}"
+        parsed = _json.loads(content)
+        text = str(parsed.get("text", "") or "").strip()
+        subtype = parsed.get("subtype")
+        subtype = str(subtype).lower() if subtype else None
+        if subtype not in {"table", "chart", "other"}:
+            subtype = None
+        # Fallback heuristic if model is unsure or says 'other'
+        if subtype in (None, "", "other"):
+            guess = _guess_image_subtype_from_text(text)
+            if guess in {"table", "chart"}:
+                subtype = guess
+        return text, subtype
+    except Exception:
+        return "", None
+
+
 @upload_router.post("/api/upload_only")
 async def upload_only(
+    background_tasks: BackgroundTasks,
     mail: str = Form(...),
     file: UploadFile = File(...)
 ):
@@ -219,10 +413,15 @@ async def upload_only(
                 detail="File must have an extension (.csv, .xlsx, .xls, .pdf, or .docx)"
             )
 
+        # Read file content into a DataFrame and determine type/subtype
+        file_type: Optional[str] = None
+        file_subtype: Optional[str] = None
+
         # Read file content into a DataFrame
         content = await file.read()
         if file_extension == ".csv":
             df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+            file_type = "csv"
         elif file_extension in [".xls", ".xlsx"]:
             # Save to temp file because read_excel reads from file path
             temp_path = f"temp{file_extension}"
@@ -230,6 +429,7 @@ async def upload_only(
                 temp_file.write(content)
             df = pd.read_excel(temp_path)
             os.remove(temp_path)
+            file_type = "excel"
         elif file_extension == ".pdf":
             # Save PDF to temp file for PyPDFLoader
             temp_path = f"temp_pdf_{uuid.uuid4().hex}{file_extension}"
@@ -264,6 +464,8 @@ async def upload_only(
                 # Clean up temp file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
+            file_type = "pdf"
+            file_subtype = "report"  # treat PDFs as reports by default
         elif file_extension == ".docx":
             # Save DOCX to temp file for Document processing
             temp_path = f"temp_docx_{uuid.uuid4().hex}{file_extension}"
@@ -298,18 +500,97 @@ async def upload_only(
                 # Clean up temp file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
+            file_type = "word"
+        elif file_extension in [".png", ".jpg", ".jpeg", ".webp"]:
+            # Try OCR via OpenAI Vision
+            text, inferred = _ocr_image_with_llm(content)
+            file_type = "image"
+            # Map subtype
+            if inferred in {"table", "chart"}:
+                file_subtype = inferred
+            else:
+                file_subtype = None
+            # Build DataFrame
+            lines = [ln for ln in (text or "").split("\n")]
+            df = pd.DataFrame({
+                "line_number": range(1, len(lines) + 1) if lines else [],
+                "text_content": lines
+            })
+        elif file_extension == ".json":
+            try:
+                parsed = _json.loads(content.decode("utf-8"))
+            except Exception as je:
+                raise HTTPException(status_code=400, detail=f"Invalid JSON: {je}")
+            # Normalize into DataFrame
+            try:
+                if isinstance(parsed, list):
+                    df = pd.json_normalize(parsed)
+                else:
+                    df = pd.json_normalize(parsed)
+            except Exception:
+                # Fallback: single column text
+                df = pd.DataFrame({"text_content": [_json.dumps(parsed, ensure_ascii=False)]})
+            file_type = "json"
+        elif file_extension == ".xml":
+            try:
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(content.decode("utf-8"))
+            except Exception as xe:
+                raise HTTPException(status_code=400, detail=f"Invalid XML: {xe}")
+            # Flatten XML into path-text rows
+            rows = []
+            def walk(node, path):
+                current_path = f"{path}/{node.tag}" if path else node.tag
+                text_val = (node.text or "").strip()
+                if text_val:
+                    rows.append({"path": current_path, "text_content": text_val})
+                for child in list(node):
+                    walk(child, current_path)
+            walk(root, "")
+            df = pd.DataFrame(rows) if rows else pd.DataFrame({"text_content": []})
+            file_type = "xml"
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Only CSV, Excel, PDF, or DOCX allowed")
+            raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: CSV, Excel, PDF, DOCX, images (png/jpg/jpeg/webp), JSON, XML")
 
         if df.empty:
             raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
-        # Insert or update in database
-        results = db.insert_or_update(mail, df, file_name)
+        # Insert or update in database (store raw bytes for image/pdf/word)
+        raw_bytes = None
+        if file_type in {"image", "pdf", "word"}:
+            raw_bytes = content
+        results = db.insert_or_update(mail, df, file_name, file_type, file_subtype, raw_bytes)
+
+        # Schedule vector ingestion to ChromaDB in background for image/pdf/word
+        vector_ingest_scheduled = False
+        try:
+            if file_type in {"image", "pdf", "word"}:
+                texts = _extract_texts_for_embedding(df)
+                print(f"[VECTOR][UPLOAD] file='{file_name}', type={file_type}, subtype={file_subtype}, df_rows={len(df)}, extracted_chunks={len(texts)}")
+                background_tasks.add_task(
+                    _upsert_to_chromadb,
+                    email=mail,
+                    name=Path(file_name).stem,
+                    texts=texts,
+                    metadata={
+                        "email": mail,
+                        "name": Path(file_name).stem,
+                        "type": file_type,
+                        "subtype": file_subtype
+                    }
+                )
+                vector_ingest_scheduled = True
+                print(f"[VECTOR] Scheduled background ingestion for '{file_name}' (type={file_type}, subtype={file_subtype}), texts={len(texts)}")
+        except Exception as e:
+            print(f"[VECTOR][UPLOAD] Failed to schedule ingestion: {e}")
+            vector_ingest_scheduled = False
 
         return JSONResponse(content={
             "message": "File uploaded and data saved to database successfully",
-            "db_insert_result": results
+            "db_insert_result": results,
+            "type": file_type,
+            "subtype": file_subtype,
+            "vector_ingest_scheduled": vector_ingest_scheduled
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

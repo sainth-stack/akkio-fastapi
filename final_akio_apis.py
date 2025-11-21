@@ -555,6 +555,32 @@ async def read_data(tablename: str = Form(...)):
         json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
         result = json.loads(json_str)
         print(f"Data for table '{tablename}' processed successfully.")
+        # Prepare ChromaDB embeddings for text-style docs (pdf/word/images) normalized to 'text_content'
+        try:
+            if 'text_content' in df.columns:
+                texts = [str(t).strip() for t in df['text_content'].dropna().astype(str).tolist() if str(t).strip()]
+                if texts:
+                    try:
+                        embeddings = OpenAIEmbeddings()
+                        persist_dir = str(Path(__file__).resolve().parent / "chroma_store")
+                        os.makedirs(persist_dir, exist_ok=True)
+                        # Try to tag by email if available from table meta
+                        try:
+                            meta = db.get_tables_info(tablename)
+                            email = (meta[0].get("email") if isinstance(meta, list) and meta else None) or "unknown"
+                        except Exception:
+                            email = "unknown"
+                        safe_email = "".join(ch if ch.isalnum() else "_" for ch in email)
+                        safe_name = "".join(ch if ch.isalnum() else "_" for ch in tablename)
+                        collection_name = f"{safe_email}__{safe_name}"
+                        vectordb = Chroma(collection_name=collection_name, persist_directory=persist_dir, embedding_function=embeddings)
+                        ids = [f"{collection_name}_{i}" for i in range(len(texts))]
+                        metadatas = [{"email": email, "name": tablename}] * len(texts)
+                        vectordb.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+                    except Exception as ve:
+                        print(f"[WARNING] Chroma ingestion skipped: {ve}")
+        except Exception as ve_outer:
+            print(f"[WARNING] Vector prep failed for '{tablename}': {ve_outer}")
         # Save CSV files (in background)
         df.to_csv('data.csv', index=False)
         

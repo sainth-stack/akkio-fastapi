@@ -2,6 +2,10 @@ import os
 import re
 from typing import Tuple
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# Ensure .env variables (like OPENAI_API_KEY) are loaded in local/dev
+load_dotenv()
 
 
 def get_openai_client():
