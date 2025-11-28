@@ -14,12 +14,14 @@ import json as _json
 import glob
 from pathlib import Path
 import base64
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from langchain_community.vectorstores import Chroma
 try:
     from langchain_openai import OpenAIEmbeddings  # preferred
 except Exception:
     from langchain_community.embeddings import OpenAIEmbeddings  # fallback
+import wave
+import struct
 
 upload_router = APIRouter()
 
@@ -302,6 +304,224 @@ def _upsert_to_chromadb(email: str, name: str, texts: List[str], metadata: dict)
         pass
 
 
+def _extract_audio_metadata(audio_bytes: bytes, file_extension: str) -> Dict[str, Any]:
+    """
+    Extract metadata from audio file including duration, sample rate, channels, and waveform statistics.
+    Returns dict with audio properties.
+    """
+    print(f"[AUDIO][METADATA] Starting metadata extraction for {file_extension} file, size={len(audio_bytes)} bytes")
+    
+    metadata = {
+        "duration_seconds": None,
+        "sample_rate_hz": None,
+        "channels": None,
+        "channel_names": None,
+        "bit_depth": None,
+        "mean_amplitude": None,
+        "std_amplitude": None,
+        "audio_quality": None
+    }
+    
+    # Try to extract WAV metadata natively
+    if file_extension == ".wav":
+        print(f"[AUDIO][METADATA] WAV file detected, using native wave library")
+        temp_path = f"temp_audio_meta_{uuid.uuid4().hex}{file_extension}"
+        try:
+            with open(temp_path, "wb") as temp_file:
+                temp_file.write(audio_bytes)
+            
+            with wave.open(temp_path, 'rb') as wav_file:
+                # Basic properties
+                n_channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                frame_rate = wav_file.getframerate()
+                n_frames = wav_file.getnframes()
+                
+                print(f"[AUDIO][METADATA] WAV properties: channels={n_channels}, sample_width={sample_width}, frame_rate={frame_rate}, n_frames={n_frames}")
+                
+                # Calculate duration
+                duration = n_frames / float(frame_rate) if frame_rate > 0 else 0
+                print(f"[AUDIO][METADATA] Calculated duration: {duration:.2f} seconds")
+                
+                # Read audio data for waveform statistics
+                print(f"[AUDIO][METADATA] Reading waveform data for statistics...")
+                frames = wav_file.readframes(n_frames)
+                print(f"[AUDIO][METADATA] Read {len(frames)} bytes of audio data")
+                
+                # Convert bytes to integers based on sample width
+                if sample_width == 1:  # 8-bit
+                    print(f"[AUDIO][METADATA] Processing 8-bit audio")
+                    fmt = f"{n_frames * n_channels}B"
+                    samples = struct.unpack(fmt, frames)
+                    samples = [s - 128 for s in samples]  # Convert unsigned to signed
+                elif sample_width == 2:  # 16-bit
+                    print(f"[AUDIO][METADATA] Processing 16-bit audio")
+                    fmt = f"{n_frames * n_channels}h"
+                    samples = struct.unpack(fmt, frames)
+                else:  # 32-bit or other
+                    print(f"[AUDIO][METADATA] Unsupported sample width: {sample_width}, skipping waveform analysis")
+                    samples = []
+                
+                # Calculate statistics
+                if samples:
+                    print(f"[AUDIO][METADATA] Calculating waveform statistics for {len(samples)} samples...")
+                    samples_array = np.array(samples, dtype=float)
+                    max_val = 2 ** (8 * sample_width - 1)
+                    normalized = samples_array / max_val
+                    mean_amp = float(np.mean(normalized))
+                    std_amp = float(np.std(normalized))
+                    print(f"[AUDIO][METADATA] Waveform stats: mean_amplitude={mean_amp:.4f}, std_amplitude={std_amp:.4f}")
+                else:
+                    mean_amp = None
+                    std_amp = None
+                    print(f"[AUDIO][METADATA] No samples to analyze, skipping waveform statistics")
+                
+                # Determine audio quality
+                quality = "Unknown"
+                if frame_rate >= 44100:
+                    quality = "CD-quality audio"
+                elif frame_rate >= 22050:
+                    quality = "High-quality audio"
+                elif frame_rate >= 16000:
+                    quality = "Standard audio"
+                else:
+                    quality = "Low-quality audio"
+                print(f"[AUDIO][METADATA] Audio quality determined: {quality} (sample_rate={frame_rate}Hz)")
+                
+                # Channel names
+                channel_names = "Mono (1 channel)" if n_channels == 1 else f"Stereo ({n_channels} channels)"
+                
+                metadata.update({
+                    "duration_seconds": round(duration, 2),
+                    "sample_rate_hz": frame_rate,
+                    "channels": n_channels,
+                    "channel_names": channel_names,
+                    "bit_depth": sample_width * 8,
+                    "mean_amplitude": round(mean_amp, 2) if mean_amp is not None else None,
+                    "std_amplitude": round(std_amp, 4) if std_amp is not None else None,
+                    "audio_quality": quality
+                })
+                
+                print(f"[AUDIO][METADATA] ✓ WAV metadata extraction complete: {duration:.2f}s, {frame_rate}Hz, {n_channels}ch, {quality}")
+        except Exception as e:
+            print(f"[AUDIO][METADATA] ✗ WAV metadata extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                print(f"[AUDIO][METADATA] Cleaned up temp file: {temp_path}")
+    
+    # For non-WAV files, try using a library if available
+    else:
+        print(f"[AUDIO][METADATA] Non-WAV file, attempting mutagen library extraction...")
+        try:
+            # Try using mutagen for other formats (optional dependency)
+            from mutagen import File as MutagenFile
+            temp_path = f"temp_audio_meta_{uuid.uuid4().hex}{file_extension}"
+            try:
+                with open(temp_path, "wb") as temp_file:
+                    temp_file.write(audio_bytes)
+                
+                audio_file = MutagenFile(temp_path)
+                if audio_file and audio_file.info:
+                    info = audio_file.info
+                    duration = getattr(info, 'length', None)
+                    sample_rate = getattr(info, 'sample_rate', None)
+                    channels = getattr(info, 'channels', None)
+                    
+                    print(f"[AUDIO][METADATA] Mutagen extracted: duration={duration}, sample_rate={sample_rate}, channels={channels}")
+                    
+                    if duration:
+                        metadata["duration_seconds"] = round(duration, 2)
+                    if sample_rate:
+                        metadata["sample_rate_hz"] = sample_rate
+                        if sample_rate >= 44100:
+                            metadata["audio_quality"] = "CD-quality audio"
+                        elif sample_rate >= 22050:
+                            metadata["audio_quality"] = "High-quality audio"
+                        else:
+                            metadata["audio_quality"] = "Standard audio"
+                    if channels:
+                        metadata["channels"] = channels
+                        metadata["channel_names"] = "Mono (1 channel)" if channels == 1 else f"Stereo ({channels} channels)"
+                    print(f"[AUDIO][METADATA] ✓ Non-WAV metadata extraction complete")
+                else:
+                    print(f"[AUDIO][METADATA] Mutagen returned no info for file")
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    print(f"[AUDIO][METADATA] Cleaned up temp file: {temp_path}")
+        except ImportError:
+            print("[AUDIO][METADATA] ✗ Mutagen not available for non-WAV metadata extraction")
+        except Exception as e:
+            print(f"[AUDIO][METADATA] ✗ Non-WAV metadata extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f"[AUDIO][METADATA] Final metadata: {metadata}")
+    return metadata
+
+
+def _transcribe_audio_with_whisper(audio_bytes: bytes, file_extension: str) -> str:
+    """
+    Use OpenAI Whisper API to transcribe audio to text.
+    Returns transcribed text.
+    """
+    print(f"[AUDIO][WHISPER] Starting transcription for {file_extension} file, size={len(audio_bytes)} bytes")
+    
+    try:
+        client = get_openai_client()
+        print(f"[AUDIO][WHISPER] OpenAI client initialized successfully")
+    except Exception as e:
+        print(f"[AUDIO][WHISPER] ✗ Failed to get OpenAI client: {e}")
+        client = None
+    
+    if client is None:
+        print(f"[AUDIO][WHISPER] ✗ No OpenAI client available, returning empty transcription")
+        return ""
+    
+    try:
+        # Save audio to temp file as Whisper API requires file input
+        temp_path = f"temp_audio_{uuid.uuid4().hex}{file_extension}"
+        print(f"[AUDIO][WHISPER] Creating temp file: {temp_path}")
+        
+        try:
+            with open(temp_path, "wb") as temp_file:
+                temp_file.write(audio_bytes)
+            print(f"[AUDIO][WHISPER] Temp file written, size={os.path.getsize(temp_path)} bytes")
+            
+            # Transcribe using Whisper
+            print(f"[AUDIO][WHISPER] Calling Whisper API (model=whisper-1)...")
+            with open(temp_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="text"
+                )
+            print(f"[AUDIO][WHISPER] Whisper API call completed")
+            
+            # Extract text from response
+            if isinstance(transcript, str):
+                text = transcript
+            else:
+                text = getattr(transcript, 'text', str(transcript))
+            
+            print(f"[AUDIO][WHISPER] ✓ Transcribed {len(text)} characters from audio file")
+            print(f"[AUDIO][WHISPER] Transcription preview: {text[:200]}{'...' if len(text) > 200 else ''}")
+            return text.strip()
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                print(f"[AUDIO][WHISPER] Cleaned up temp file: {temp_path}")
+    except Exception as e:
+        print(f"[AUDIO][WHISPER] ✗ Transcription error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+
 def _ocr_image_with_llm(image_bytes: bytes) -> Tuple[str, Optional[str]]:
     """
     Use OpenAI vision model to extract text and classify image subtype (table|chart|other).
@@ -410,7 +630,7 @@ async def upload_only(
         if not file_extension:
             raise HTTPException(
                 status_code=400,
-                detail="File must have an extension (.csv, .xlsx, .xls, .pdf, or .docx)"
+                detail="File must have an extension (.csv, .xlsx, .xls, .pdf, .docx, images, audio, .json, .xml)"
             )
 
         # Read file content into a DataFrame and determine type/subtype
@@ -549,49 +769,182 @@ async def upload_only(
             walk(root, "")
             df = pd.DataFrame(rows) if rows else pd.DataFrame({"text_content": []})
             file_type = "xml"
+        elif file_extension in [".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".wma"]:
+            print(f"[AUDIO][UPLOAD] ═══════════════════════════════════════════════")
+            print(f"[AUDIO][UPLOAD] Audio file detected: {file_name}")
+            print(f"[AUDIO][UPLOAD] Extension: {file_extension}, Size: {len(content)} bytes")
+            print(f"[AUDIO][UPLOAD] ═══════════════════════════════════════════════")
+            
+            # Extract audio metadata first
+            print(f"[AUDIO][UPLOAD] Step 1/4: Extracting metadata...")
+            audio_metadata = _extract_audio_metadata(content, file_extension)
+            print(f"[AUDIO][UPLOAD] ✓ Metadata extracted: {audio_metadata}")
+            
+            # Transcribe audio using OpenAI Whisper
+            print(f"[AUDIO][UPLOAD] Step 2/4: Transcribing audio with Whisper...")
+            text = _transcribe_audio_with_whisper(content, file_extension)
+            file_type = "audio"
+            file_subtype = None
+            
+            if not text.strip():
+                print(f"[AUDIO][UPLOAD] ✗ Transcription failed or returned empty text")
+                raise HTTPException(status_code=400, detail="Audio file contains no transcribable content or transcription failed")
+            
+            print(f"[AUDIO][UPLOAD] ✓ Transcription successful: {len(text)} characters")
+            
+            # Create DataFrame with transcribed text and metadata
+            print(f"[AUDIO][UPLOAD] Step 3/4: Creating DataFrame...")
+            
+            # Split into sentences for better chunking
+            sentences = [s.strip() for s in text.replace('\n', ' ').split('.') if s.strip()]
+            if not sentences:
+                sentences = [text]
+            print(f"[AUDIO][UPLOAD] Split transcription into {len(sentences)} sentences/segments")
+            
+            # Build comprehensive DataFrame
+            df_data = {
+                'segment_number': range(1, len(sentences) + 1),
+                'text_content': sentences,
+                'duration_seconds': [audio_metadata.get('duration_seconds')] * len(sentences),
+                'sample_rate_hz': [audio_metadata.get('sample_rate_hz')] * len(sentences),
+                'channels': [audio_metadata.get('channels')] * len(sentences),
+                'channel_names': [audio_metadata.get('channel_names')] * len(sentences),
+                'audio_quality': [audio_metadata.get('audio_quality')] * len(sentences),
+                'bit_depth': [audio_metadata.get('bit_depth')] * len(sentences),
+                'mean_amplitude': [audio_metadata.get('mean_amplitude')] * len(sentences),
+                'std_amplitude': [audio_metadata.get('std_amplitude')] * len(sentences)
+            }
+            df = pd.DataFrame(df_data)
+            
+            print(f"[AUDIO][UPLOAD] ✓ DataFrame created: {len(df)} rows × {len(df.columns)} columns")
+            print(f"[AUDIO][UPLOAD] DataFrame columns: {list(df.columns)}")
+            print(f"[AUDIO][UPLOAD] DataFrame sample:\n{df.head(2)}")
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: CSV, Excel, PDF, DOCX, images (png/jpg/jpeg/webp), JSON, XML")
+            raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: CSV, Excel, PDF, DOCX, images (png/jpg/jpeg/webp), JSON, XML, audio (mp3/wav/m4a/ogg/flac/aac/wma)")
 
         if df.empty:
             raise HTTPException(status_code=400, detail="Uploaded file contains no data")
 
-        # Insert or update in database (store raw bytes for image/pdf/word)
-        raw_bytes = None
-        if file_type in {"image", "pdf", "word"}:
-            raw_bytes = content
-        results = db.insert_or_update(mail, df, file_name, file_type, file_subtype, raw_bytes)
+        # Capture metadata for audio files before database insert
+        audio_metadata_for_response = None
+        if file_type == "audio" and len(df) > 0:
+            print(f"[AUDIO][UPLOAD] Step 4/4: Preparing metadata for response...")
+            # Extract metadata from first row (all rows have same metadata)
+            # Convert numpy/pandas types to native Python types for JSON serialization
+            def _to_python_type(val):
+                """Convert numpy/pandas types to native Python types"""
+                if val is None or pd.isna(val):
+                    return None
+                if isinstance(val, (np.integer, np.int64, np.int32)):
+                    return int(val)
+                if isinstance(val, (np.floating, np.float64, np.float32)):
+                    return float(val)
+                if isinstance(val, (np.bool_, bool)):
+                    return bool(val)
+                return val
+            
+            audio_metadata_for_response = {
+                "duration_seconds": _to_python_type(df['duration_seconds'].iloc[0]) if 'duration_seconds' in df.columns else None,
+                "sample_rate_hz": _to_python_type(df['sample_rate_hz'].iloc[0]) if 'sample_rate_hz' in df.columns else None,
+                "channels": _to_python_type(df['channels'].iloc[0]) if 'channels' in df.columns else None,
+                "channel_names": str(df['channel_names'].iloc[0]) if 'channel_names' in df.columns and df['channel_names'].iloc[0] is not None else None,
+                "audio_quality": str(df['audio_quality'].iloc[0]) if 'audio_quality' in df.columns and df['audio_quality'].iloc[0] is not None else None,
+                "bit_depth": _to_python_type(df['bit_depth'].iloc[0]) if 'bit_depth' in df.columns else None,
+                "mean_amplitude": _to_python_type(df['mean_amplitude'].iloc[0]) if 'mean_amplitude' in df.columns else None,
+                "std_amplitude": _to_python_type(df['std_amplitude'].iloc[0]) if 'std_amplitude' in df.columns else None,
+                "transcription": "\n".join(df['text_content'].tolist()) if 'text_content' in df.columns else ""
+            }
+            print(f"[AUDIO][UPLOAD] ✓ Metadata prepared for response (types converted to JSON-serializable)")
+            print(f"[AUDIO][UPLOAD] Response metadata summary: duration={audio_metadata_for_response.get('duration_seconds')}s, "
+                  f"quality={audio_metadata_for_response.get('audio_quality')}, "
+                  f"transcription_length={len(audio_metadata_for_response.get('transcription', ''))}")
+            print(f"[AUDIO][UPLOAD] Metadata types: duration={type(audio_metadata_for_response.get('duration_seconds'))}, "
+                  f"sample_rate={type(audio_metadata_for_response.get('sample_rate_hz'))}, "
+                  f"channels={type(audio_metadata_for_response.get('channels'))}")
 
-        # Schedule vector ingestion to ChromaDB in background for image/pdf/word
+        # Insert or update in database (store raw bytes for image/pdf/word/audio)
+        raw_bytes = None
+        if file_type in {"image", "pdf", "word", "audio"}:
+            raw_bytes = content
+            if file_type == "audio":
+                print(f"[AUDIO][UPLOAD] Inserting into database with raw audio bytes...")
+        results = db.insert_or_update(mail, df, file_name, file_type, file_subtype, raw_bytes)
+        if file_type == "audio":
+            print(f"[AUDIO][UPLOAD] ✓ Database insert complete: {results}")
+
+        # Schedule vector ingestion to ChromaDB in background for image/pdf/word/audio
         vector_ingest_scheduled = False
         try:
-            if file_type in {"image", "pdf", "word"}:
+            if file_type in {"image", "pdf", "word", "audio"}:
+                if file_type == "audio":
+                    print(f"[AUDIO][UPLOAD] ───────────────────────────────────────────────")
+                    print(f"[AUDIO][UPLOAD] Starting vector store ingestion process...")
+                
                 texts = _extract_texts_for_embedding(df)
                 print(f"[VECTOR][UPLOAD] file='{file_name}', type={file_type}, subtype={file_subtype}, df_rows={len(df)}, extracted_chunks={len(texts)}")
+                
+                # Prepare metadata for vector store
+                vector_metadata = {
+                    "email": mail,
+                    "name": Path(file_name).stem,
+                    "type": file_type,
+                    "subtype": file_subtype
+                }
+                
+                # Add audio-specific metadata for better context
+                if file_type == "audio" and audio_metadata_for_response:
+                    print(f"[AUDIO][UPLOAD] Adding audio-specific metadata to vector store...")
+                    # Audio metadata already converted to Python types above
+                    vector_metadata.update({
+                        "duration_seconds": audio_metadata_for_response.get("duration_seconds"),
+                        "sample_rate_hz": audio_metadata_for_response.get("sample_rate_hz"),
+                        "channels": audio_metadata_for_response.get("channels"),
+                        "audio_quality": audio_metadata_for_response.get("audio_quality")
+                    })
+                    print(f"[AUDIO][UPLOAD] Vector metadata: {vector_metadata}")
+                
                 background_tasks.add_task(
                     _upsert_to_chromadb,
                     email=mail,
                     name=Path(file_name).stem,
                     texts=texts,
-                    metadata={
-                        "email": mail,
-                        "name": Path(file_name).stem,
-                        "type": file_type,
-                        "subtype": file_subtype
-                    }
+                    metadata=vector_metadata
                 )
                 vector_ingest_scheduled = True
-                print(f"[VECTOR] Scheduled background ingestion for '{file_name}' (type={file_type}, subtype={file_subtype}), texts={len(texts)}")
+                print(f"[VECTOR] ✓ Scheduled background ingestion for '{file_name}' (type={file_type}, subtype={file_subtype}), texts={len(texts)}")
+                
+                if file_type == "audio":
+                    print(f"[AUDIO][UPLOAD] ✓ Vector ingestion scheduled in background")
+                    print(f"[AUDIO][UPLOAD] ───────────────────────────────────────────────")
         except Exception as e:
-            print(f"[VECTOR][UPLOAD] Failed to schedule ingestion: {e}")
+            print(f"[VECTOR][UPLOAD] ✗ Failed to schedule ingestion: {e}")
+            import traceback
+            traceback.print_exc()
             vector_ingest_scheduled = False
+            if file_type == "audio":
+                print(f"[AUDIO][UPLOAD] ✗ Vector ingestion scheduling failed")
 
-        return JSONResponse(content={
+        response_data = {
             "message": "File uploaded and data saved to database successfully",
             "db_insert_result": results,
             "type": file_type,
             "subtype": file_subtype,
             "vector_ingest_scheduled": vector_ingest_scheduled
-        })
+        }
+        
+        # Add audio metadata to response if available
+        if audio_metadata_for_response:
+            response_data["audio_metadata"] = audio_metadata_for_response
+            print(f"[AUDIO][UPLOAD] ═══════════════════════════════════════════════")
+            print(f"[AUDIO][UPLOAD] ✓✓✓ UPLOAD COMPLETE ✓✓✓")
+            print(f"[AUDIO][UPLOAD] File: {file_name}")
+            print(f"[AUDIO][UPLOAD] Duration: {audio_metadata_for_response.get('duration_seconds')}s")
+            print(f"[AUDIO][UPLOAD] Quality: {audio_metadata_for_response.get('audio_quality')}")
+            print(f"[AUDIO][UPLOAD] Transcription: {len(audio_metadata_for_response.get('transcription', ''))} characters")
+            print(f"[AUDIO][UPLOAD] Vector Ingestion: {'Scheduled' if vector_ingest_scheduled else 'Not Scheduled'}")
+            print(f"[AUDIO][UPLOAD] ═══════════════════════════════════════════════")
+        
+        return JSONResponse(content=response_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

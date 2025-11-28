@@ -1371,3 +1371,7 @@ async def get_consultant_monthly_data(consultant_name: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+
+

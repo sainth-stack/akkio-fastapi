@@ -169,13 +169,21 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
                 date_candidates.append((col, score_column(col)+3))
             else:
                 try:
-                    pd.to_datetime(df[col], errors='raise')
-                    date_candidates.append((col, score_column(col)+1))
+                    coerced = pd.to_datetime(df[col], errors='coerce')
+                    if coerced.notna().sum() >= max(5, int(0.2 * len(df))):
+                        date_candidates.append((col, score_column(col)+1))
                 except Exception:
                     pass
         date_col = max(date_candidates, key=lambda x: x[1])[0] if date_candidates else None
         geospatial_aliases = {"latitude", "longitude", "lat", "lon", "lng"}
-        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c.lower() not in geospatial_aliases]
+        id_like_tokens = {"id", "device", "name", "uuid", "code"}
+        def is_id_like(col: str) -> bool:
+            lc = col.lower()
+            return any(tok in lc for tok in id_like_tokens)
+        numeric_cols = [
+            c for c in df.columns
+            if pd.api.types.is_numeric_dtype(df[c]) and c.lower() not in geospatial_aliases and not is_id_like(c)
+        ]
         synthetic_numeric_map = {}
         if not numeric_cols:
             for c in df.columns:
@@ -193,7 +201,15 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
                 except Exception:
                     continue
             if synthetic_numeric_map:
-                scored = sorted(synthetic_numeric_map.items(), key=lambda kv: (score_column(kv[0]), kv[1].notna().sum()), reverse=True)
+                # Prefer non ID-like synthetic numerics
+                scored = sorted(
+                    synthetic_numeric_map.items(),
+                    key=lambda kv: (
+                        score_column(kv[0]) + (0 if is_id_like(kv[0]) else 5),
+                        kv[1].notna().sum()
+                    ),
+                    reverse=True
+                )
                 best_name, best_series = scored[0]
                 numeric_cols = [best_name]
                 df = df.copy()
@@ -204,6 +220,7 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
         else:
             metric_col = None
         tokens = re.findall(r"[a-zA-Z0-9%]+", ql)
+        cat_hint = None
         for token in tokens:
             matches = get_close_matches(token, list(df.columns), n=1, cutoff=0.85)
             if matches:
@@ -211,11 +228,56 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
                 if m in numeric_cols:
                     metric_col = m
                 else:
-                    date_col = date_col or m
+                    # Only treat as date if it parses to datetime with a decent success rate
+                    try:
+                        coerced = pd.to_datetime(df[m], errors='coerce')
+                        if coerced.notna().sum() >= max(5, int(0.2 * len(df))):
+                            date_col = date_col or m
+                        else:
+                            cat_hint = cat_hint or m
+                    except Exception:
+                        cat_hint = cat_hint or m
+        # Case A: Categorical-only request (e.g., "bar chart based on status") -> counts by category
+        if metric_col is None and date_col is None:
+            try:
+                # Choose a categorical column with reasonable cardinality, biased by query match
+                cat_candidates = []
+                for c in df.columns:
+                    if pd.api.types.is_numeric_dtype(df[c]):
+                        continue
+                    try:
+                        nunq = df[c].nunique(dropna=True)
+                        if 1 < nunq <= max(50, int(0.5 * len(df))):
+                            bias = 5 if (cat_hint and c == cat_hint) else 0
+                            cat_candidates.append((c, score_column(c) + bias, nunq))
+                    except Exception:
+                        continue
+                if cat_candidates:
+                    cat_candidates.sort(key=lambda t: (t[1], -t[2]), reverse=True)
+                    cat_col = cat_candidates[0][0]
+                    ser = df[cat_col].astype(str).str.strip().replace({'': np.nan, 'nan': np.nan, 'null': np.nan, 'none': np.nan, 'undefined': np.nan})
+                    counts = (
+                        ser.dropna()
+                           .value_counts()
+                           .head(20)
+                           .rename_axis(cat_col)
+                           .reset_index(name='count')
+                    )
+                    import plotly.graph_objects as go
+                    fig = go.Figure(go.Bar(x=counts[cat_col].astype(str).tolist(), y=counts['count'].tolist(), name='count'))
+                    fig.update_layout(title=f"Count by {cat_col}", xaxis_title=cat_col, yaxis_title='Count')
+                    biz_exp = f"Bar chart showing distribution of records by {cat_col}."
+                    return fig, biz_exp
+            except Exception:
+                pass
+        # Case B: Have a numeric metric but no explicit date -> bar by category with mean
         if date_col is None and metric_col is not None:
             categorical_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
             if categorical_cols:
-                cat_scored = sorted(categorical_cols, key=lambda c: (score_column(c), -df[c].nunique()))
+                cat_scored = sorted(
+                    categorical_cols,
+                    key=lambda c: (score_column(c) + (5 if (cat_hint and c == cat_hint) else 0), -df[c].nunique())
+                )
                 x_col = cat_scored[0]
                 df_local = df[[x_col, metric_col]].dropna()
                 if df_local.empty:
@@ -229,26 +291,42 @@ def generate_rescue_chart(df: pd.DataFrame, query: str):
             return None, None
         if date_col is None or metric_col is None:
             return None, None
-        df_local = df[[date_col, metric_col]].dropna()
+        df_local = df[[date_col, metric_col]].copy()
         df_local[date_col] = pd.to_datetime(df_local[date_col], errors='coerce')
-        df_local = df_local.dropna(subset=[date_col])
+        df_local[metric_col] = pd.to_numeric(df_local[metric_col], errors='coerce')
+        df_local = df_local.dropna(subset=[date_col, metric_col]).sort_values(date_col)
         if df_local.empty:
             return None, None
-        daily = df_local.groupby(df_local[date_col].dt.date)[metric_col].mean().reset_index()
-        daily.columns = ['Date', metric_col]
-        if len(daily) > 200:
-            monthly = df_local.groupby([df_local[date_col].dt.to_period('M')])[metric_col].mean().reset_index()
-            monthly[date_col] = monthly[date_col].dt.to_timestamp()
-            monthly.columns = ['Period', metric_col]
-            x_vals = monthly['Period']
-            y_vals = monthly[metric_col]
-            x_title = 'Month'
-            title = f"{metric_col} Trend by Month"
+        # If manageable number of points, plot raw timestamps; otherwise resample to ~500 points
+        n = len(df_local)
+        if n <= 500:
+            x_vals = pd.to_datetime(df_local[date_col])
+            y_vals = df_local[metric_col]
+            x_title = 'Time'
+            title = f"{metric_col} over time"
         else:
-            x_vals = pd.to_datetime(daily['Date'])
-            y_vals = daily[metric_col]
-            x_title = 'Date'
-            title = f"{metric_col} Daily Trend"
+            try:
+                ts = df_local[date_col]
+                total_seconds = max(1.0, (ts.iloc[-1] - ts.iloc[0]).total_seconds())
+                step_seconds = max(1, int(total_seconds // 500))
+                resampled = (
+                    df_local.set_index(date_col)
+                            .resample(f'{step_seconds}S')
+                            .mean(numeric_only=True)
+                            .dropna(subset=[metric_col])
+                            .reset_index()
+                )
+                x_vals = resampled[date_col]
+                y_vals = resampled[metric_col]
+                x_title = 'Time'
+                title = f"{metric_col} over time"
+            except Exception:
+                # Fallback to daily average
+                daily = df_local.groupby(df_local[date_col].dt.date)[metric_col].mean().reset_index()
+                x_vals = pd.to_datetime(daily[date_col])
+                y_vals = daily[metric_col]
+                x_title = 'Date'
+                title = f"{metric_col} Daily Trend"
         import plotly.graph_objects as go  # safe here
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=list(x_vals), y=list(y_vals), mode='lines', name=metric_col))

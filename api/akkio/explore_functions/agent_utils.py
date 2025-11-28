@@ -21,12 +21,14 @@ def detect_agent(query: str) -> str:
         'kpi', 'kpis', 'key performance indicator', 'metrics', 'help', 'understand',
         'define', 'meaning', 'purpose', 'importance', 'benefits'
     ]
-    if any(k in q for k in conversational_keywords):
-        return "text"
+    # Prioritize explicit graph/table intents even if conversational words exist
     if any(k in q for k in graph_keywords):
         return "graph"
     if any(k in q for k in table_keywords):
         return "table"
+    # Fallback to conversational/text
+    if any(k in q for k in conversational_keywords):
+        return "text"
     return "text"
 
 

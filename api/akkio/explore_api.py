@@ -104,7 +104,9 @@ def _is_generic_summary_query(q: str) -> bool:
         "what the uploaded document contains", "what the document contains",
         "what does the document contain", "what does this document contain",
         "what does the pdf contain", "content of the document", "document content",
-        "contents of the document", "contains", "content"
+        "contents of the document", "contains", "content",
+        "what is this audio", "explain about audio", "explain audio", "audio content",
+        "what does the audio contain", "transcription", "what was said", "what is said"
     ]
     return any(m in ql for m in generic_markers)
 
@@ -170,6 +172,265 @@ async def senior_data_analysis(
                 pass
         # If still no dataset_path, but filename provided, try vector or raw-image fallback (pdf/word/images)
         if not dataset_path and filename:
+            # PRIORITY: If file_type is "image", try vision model first with raw image
+            if (file_type or "").lower() == "image":
+                try:
+                    print(f"[IMAGE][EXPLORE] Attempting vision model analysis for filename='{filename}'")
+                    db = PostgresDatabase()
+                    raw = db.get_raw_file(Path(filename).stem)
+                    if raw:
+                        client = get_openai_client()
+                        b64 = base64.b64encode(raw).decode("utf-8")
+                        
+                        # Determine if it's a generic summary query or specific question
+                        if _is_generic_summary_query(query):
+                            system_prompt = (
+                                "You are a helpful assistant analyzing images. Provide a detailed description of the image, "
+                                "including what objects, people, text, colors, and visual elements are present.\n"
+                                "Format your response in clean HTML with proper structure:\n"
+                                "- Use <h4> for main headings\n"
+                                "- Use <p> for paragraphs\n"
+                                "- Use <ul> and <li> for bullet lists\n"
+                                "- Use <strong> for emphasis\n"
+                                "Be specific and descriptive."
+                            )
+                            user_prompt = "Please provide a detailed description and analysis of this image."
+                        else:
+                            system_prompt = (
+                                "You are a helpful assistant answering questions about images using visual analysis.\n"
+                                "Format your response in clean HTML with proper structure:\n"
+                                "- Use <h4> for main headings\n"
+                                "- Use <p> for paragraphs\n"
+                                "- Use <ul> and <li> for lists\n"
+                                "- Use <strong> for emphasis\n"
+                                "Be specific and refer to what you actually see in the image."
+                            )
+                            user_prompt = query
+                        
+                        chat = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": [
+                                    {"type": "text", "text": user_prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                                ]}
+                            ],
+                            temperature=0.0
+                        )
+                        answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+                        
+                        # Clean up the answer
+                        answer = answer.strip()
+                        if answer.startswith("```html"):
+                            answer = answer[7:]
+                        if answer.startswith("```"):
+                            answer = answer[3:]
+                        if answer.endswith("```"):
+                            answer = answer[:-3]
+                        answer = answer.strip()
+                        answer = answer.replace("\\n", "").replace("\n", "").replace("\r", "")
+                        
+                        manage_session_memory(session_id, user_message=query, bot_message=answer)
+                        print(f"[IMAGE][EXPLORE] Successfully analyzed image with vision model")
+                        return JSONResponse(content=jsonable_encoder({
+                            "type": "text",
+                            "payload": answer,
+                            "session_id": session_id,
+                        }), status_code=200)
+                    else:
+                        print(f"[IMAGE][EXPLORE] No raw image data found in database for '{filename}'")
+                except Exception as e:
+                    print(f"[IMAGE][EXPLORE] Vision model failed: {str(e)}, falling back to vector store")
+                    pass
+            
+            # PRIORITY: If file_type is "audio", handle transcription queries
+            if (file_type or "").lower() == "audio":
+                try:
+                    print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                    print(f"[AUDIO][EXPLORE] Audio query detected")
+                    print(f"[AUDIO][EXPLORE] Filename: {filename}")
+                    print(f"[AUDIO][EXPLORE] Query: {query}")
+                    print(f"[AUDIO][EXPLORE] Email: {email}")
+                    print(f"[AUDIO][EXPLORE] Session ID: {session_id}")
+                    print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                    
+                    project_root = Path(__file__).resolve().parents[2]
+                    persist_dir = project_root / "chroma_store"
+                    print(f"[AUDIO][EXPLORE] Vector store directory: {persist_dir}")
+                    
+                    if persist_dir.exists():
+                        print(f"[AUDIO][EXPLORE] ✓ Vector store directory exists")
+                        print(f"[AUDIO][EXPLORE] Initializing OpenAI embeddings...")
+                        embeddings = OpenAIEmbeddings()
+                        print(f"[AUDIO][EXPLORE] ✓ Embeddings initialized")
+                        
+                        print(f"[AUDIO][EXPLORE] Resolving collection name...")
+                        coll_name = _resolve_collection_name(persist_dir, email, filename)
+                        print(f"[AUDIO][EXPLORE] Collection name resolved: {coll_name}")
+                        
+                        if coll_name:
+                            print(f"[AUDIO][EXPLORE] Loading Chroma vector database...")
+                            vectordb = Chroma(collection_name=coll_name, persist_directory=str(persist_dir), embedding_function=embeddings)
+                            print(f"[AUDIO][EXPLORE] ✓ Vector database loaded")
+                            
+                            # Get database for metadata
+                            print(f"[AUDIO][EXPLORE] Fetching audio metadata from database...")
+                            db = PostgresDatabase()
+                            metadata_info = ""
+                            try:
+                                # Try to get audio metadata from database
+                                df_meta = db.get_table_data(Path(filename).stem)
+                                if df_meta is not None and not df_meta.empty:
+                                    print(f"[AUDIO][EXPLORE] ✓ Found metadata in database: {len(df_meta)} rows")
+                                    # Extract metadata from first row
+                                    if 'duration_seconds' in df_meta.columns:
+                                        duration = df_meta['duration_seconds'].iloc[0]
+                                        sample_rate = df_meta.get('sample_rate_hz', pd.Series([None])).iloc[0]
+                                        channels = df_meta.get('channel_names', pd.Series([None])).iloc[0]
+                                        quality = df_meta.get('audio_quality', pd.Series([None])).iloc[0]
+                                        
+                                        print(f"[AUDIO][EXPLORE] Metadata: duration={duration}s, sample_rate={sample_rate}Hz, channels={channels}, quality={quality}")
+                                        
+                                        metadata_info = f"\n\n<strong>Audio File Properties:</strong><ul>"
+                                        if duration:
+                                            metadata_info += f"<li>Duration: {duration} seconds</li>"
+                                        if sample_rate:
+                                            metadata_info += f"<li>Sample Rate: {sample_rate} Hz</li>"
+                                        if channels:
+                                            metadata_info += f"<li>Channels: {channels}</li>"
+                                        if quality:
+                                            metadata_info += f"<li>Quality: {quality}</li>"
+                                        metadata_info += "</ul>"
+                                        print(f"[AUDIO][EXPLORE] ✓ Metadata info formatted for response")
+                                else:
+                                    print(f"[AUDIO][EXPLORE] No metadata found in database")
+                            except Exception as me:
+                                print(f"[AUDIO][EXPLORE] ✗ Could not extract metadata: {me}")
+                                import traceback
+                                traceback.print_exc()
+                            
+                            # Determine if it's a generic summary query
+                            is_summary = _is_generic_summary_query(query)
+                            print(f"[AUDIO][EXPLORE] Query type: {'SUMMARY' if is_summary else 'SPECIFIC'}")
+                            
+                            if is_summary:
+                                # Get all content for summary
+                                print(f"[AUDIO][EXPLORE] Retrieving documents for summary (k=30)...")
+                                docs = _retrieve_docs(vectordb, "audio transcription summary", k=30)
+                                print(f"[AUDIO][EXPLORE] ✓ Retrieved {len(docs)} documents")
+                                
+                                full_text = "\n".join([d.page_content for d in docs])
+                                print(f"[AUDIO][EXPLORE] Combined text length: {len(full_text)} characters")
+                                
+                                print(f"[AUDIO][EXPLORE] Calling OpenAI for summary generation...")
+                                client = get_openai_client()
+                                system_prompt = (
+                                    "You are analyzing an audio file transcription. Provide a comprehensive summary including:\n"
+                                    "1. Main topics discussed\n"
+                                    "2. Key points and insights\n"
+                                    "3. Any important information or conclusions\n"
+                                    "Format your response in clean HTML with:\n"
+                                    "- Use <h4> for section headings\n"
+                                    "- Use <p> for paragraphs\n"
+                                    "- Use <ul> and <li> for bullet points\n"
+                                    "- Use <strong> for emphasis"
+                                )
+                                user_prompt = f"Audio transcription:\n\n{full_text}\n\nProvide a detailed summary."
+                                
+                                chat = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_prompt}
+                                    ],
+                                    temperature=0.0
+                                )
+                                answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+                                print(f"[AUDIO][EXPLORE] ✓ Summary generated: {len(answer)} characters")
+                            else:
+                                # Specific query - use semantic search
+                                print(f"[AUDIO][EXPLORE] Performing semantic search for query (k=10)...")
+                                docs = _retrieve_docs(vectordb, query, k=10)
+                                print(f"[AUDIO][EXPLORE] ✓ Retrieved {len(docs)} relevant documents")
+                                
+                                context = "\n".join([d.page_content for d in docs])
+                                print(f"[AUDIO][EXPLORE] Context length: {len(context)} characters")
+                                
+                                print(f"[AUDIO][EXPLORE] Calling OpenAI for Q&A...")
+                                client = get_openai_client()
+                                system_prompt = (
+                                    "You are answering questions about an audio transcription. "
+                                    "Use the provided context to answer accurately.\n"
+                                    "Format your response in clean HTML with:\n"
+                                    "- Use <h4> for headings if needed\n"
+                                    "- Use <p> for paragraphs\n"
+                                    "- Use <ul> and <li> for lists\n"
+                                    "- Use <strong> for emphasis\n"
+                                    "If the context doesn't contain relevant information, say so politely."
+                                )
+                                user_prompt = f"Context from audio transcription:\n\n{context}\n\nQuestion: {query}"
+                                
+                                chat = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_prompt}
+                                    ],
+                                    temperature=0.0
+                                )
+                                answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
+                                print(f"[AUDIO][EXPLORE] ✓ Answer generated: {len(answer)} characters")
+                            
+                            # Add metadata to answer if available
+                            if metadata_info:
+                                print(f"[AUDIO][EXPLORE] Appending metadata to answer...")
+                                answer = answer + metadata_info
+                                print(f"[AUDIO][EXPLORE] ✓ Metadata appended")
+                            
+                            # Clean up the answer
+                            print(f"[AUDIO][EXPLORE] Cleaning up answer formatting...")
+                            answer = answer.strip()
+                            if answer.startswith("```html"):
+                                answer = answer[7:]
+                            if answer.startswith("```"):
+                                answer = answer[3:]
+                            if answer.endswith("```"):
+                                answer = answer[:-3]
+                            answer = answer.strip()
+                            answer = answer.replace("\\n", "").replace("\n", "").replace("\r", "")
+                            print(f"[AUDIO][EXPLORE] ✓ Answer cleaned, final length: {len(answer)} characters")
+                            
+                            print(f"[AUDIO][EXPLORE] Saving to session memory...")
+                            manage_session_memory(session_id, user_message=query, bot_message=answer)
+                            print(f"[AUDIO][EXPLORE] ✓ Session memory updated")
+                            
+                            print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                            print(f"[AUDIO][EXPLORE] ✓✓✓ QUERY PROCESSED SUCCESSFULLY ✓✓✓")
+                            print(f"[AUDIO][EXPLORE] Query: {query[:50]}{'...' if len(query) > 50 else ''}")
+                            print(f"[AUDIO][EXPLORE] Answer length: {len(answer)} characters")
+                            print(f"[AUDIO][EXPLORE] Metadata included: {'Yes' if metadata_info else 'No'}")
+                            print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                            
+                            return JSONResponse(content=jsonable_encoder({
+                                "type": "text",
+                                "payload": answer,
+                                "session_id": session_id,
+                            }), status_code=200)
+                        else:
+                            print(f"[AUDIO][EXPLORE] ✗ No vector collection found for '{filename}'")
+                    else:
+                        print(f"[AUDIO][EXPLORE] ✗ Vector store directory does not exist: {persist_dir}")
+                except Exception as e:
+                    print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                    print(f"[AUDIO][EXPLORE] ✗✗✗ AUDIO PROCESSING FAILED ✗✗✗")
+                    print(f"[AUDIO][EXPLORE] Error: {str(e)}")
+                    print(f"[AUDIO][EXPLORE] ═══════════════════════════════════════════════")
+                    import traceback
+                    traceback.print_exc()
+                    pass
+            
+            # Fallback: Try vector store for PDFs, Word docs, or if image vision fails
             try:
                 project_root = Path(__file__).resolve().parents[2]
                 persist_dir = project_root / "chroma_store"
