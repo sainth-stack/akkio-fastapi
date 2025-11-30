@@ -2763,13 +2763,26 @@ def arima_train_only(data, target_col):
                 train_models(data_actual, target_col)
                 print("Model training completed successfully")
 
-                # Save metadata with enhanced information
+                # Save metadata with enhanced information - ensure valid dates
+                start_idx = data_actual.index[0]
+                end_idx = data_actual.index[-1]
+                
+                # Validate and convert to string, fallback to min/max if needed
+                try:
+                    start_date_str = pd.Timestamp(start_idx).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(start_idx) else str(data_actual.index.min())
+                    end_date_str = pd.Timestamp(end_idx).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(end_idx) else str(data_actual.index.max())
+                except:
+                    start_date_str = str(data_actual.index.min())
+                    end_date_str = str(data_actual.index.max())
+                
+                print(f"Saving metadata: start={start_date_str}, end={end_date_str}")
+                
                 with open(os.path.join("models", 'Arima', target_col, target_col + '_results.json'), 'w') as fp:
                     json.dump({
                         'data_freq': train_frequency,
                         'date_column': date_column,
-                        'start_date': str(data_actual.index[0]),
-                        'end_date': str(data_actual.index[-1]),
+                        'start_date': start_date_str,
+                        'end_date': end_date_str,
                         'trained_at': str(datetime.now()),
                         'data_points': len(data_actual),
                         'date_range_days': (data_actual.index.max() - data_actual.index.min()).days
@@ -2868,11 +2881,28 @@ def arima_forecast(model, periods, freq,target_col):
         return None
 
     end_date = data.get('end_date')
+    
+    # Robust handling of end_date - handle NaT, None, or invalid dates
+    start_date = None
     try:
-        frequency = freq_map[data.get('data_freq').lower()]
-        start_date = pd.to_datetime(end_date) + pd.tseries.frequencies.to_offset(frequency)
+        if end_date and end_date != 'NaT' and end_date != 'None':
+            parsed_end = pd.to_datetime(end_date, errors='coerce')
+            if pd.notna(parsed_end):
+                try:
+                    frequency = freq_map.get(data.get('data_freq', '').lower())
+                    if frequency:
+                        start_date = parsed_end + pd.tseries.frequencies.to_offset(frequency)
+                    else:
+                        start_date = parsed_end + pd.tseries.frequencies.to_offset(freq)
+                except:
+                    start_date = parsed_end + pd.tseries.frequencies.to_offset(freq)
     except Exception as e:
-        start_date = pd.to_datetime(end_date) + pd.tseries.frequencies.to_offset(freq)
+        print(f"Error parsing end_date '{end_date}': {e}")
+    
+    # Fallback to current time if start_date couldn't be determined
+    if start_date is None or pd.isna(start_date):
+        print(f"WARNING: Could not parse end_date '{end_date}', using current time as forecast start")
+        start_date = pd.Timestamp.now().normalize()  # Start from today midnight
                  
     future = pd.date_range(start=start_date, periods=periods, freq=freq)
     if (freq=="H") and ((future.hour != 0).any() or (future.minute != 0).any() or (future.second != 0).any()):

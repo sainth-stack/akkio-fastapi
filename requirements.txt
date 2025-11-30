@@ -26,6 +26,8 @@ matplotlib
 
 # Image processing
 Pillow
+torch
+torchvision
 
 # HTTP requests
 requests
