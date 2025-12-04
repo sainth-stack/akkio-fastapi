@@ -2,11 +2,16 @@
 Production-ready Image Classification API
 Uses EfficientNet/MobileNet for fast, accurate image classification
 """
+# Fix for macOS OpenMP crash - MUST be before importing torch
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
 from typing import List, Optional, Dict
-import os
 import io
 import json
 import shutil
@@ -18,8 +23,20 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from torch.utils.data import Dataset, DataLoader
 from datetime import datetime
+from database import PostgresDatabase
+from openai import OpenAI
+import base64
+
+# Limit PyTorch threads to prevent crashes
+torch.set_num_threads(1)
 
 image_classification_router = APIRouter()
+
+# Database instance
+db = PostgresDatabase()
+
+# OpenAI client for LLM
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DIR = PROJECT_ROOT / "models" / "image_classification"
@@ -65,7 +82,9 @@ class ImageDataset(Dataset):
 
 def create_model(num_classes: int) -> nn.Module:
     """Create MobileNetV2 model for transfer learning"""
-    model = models.mobilenet_v2(pretrained=True)
+    # Use weights parameter instead of deprecated pretrained
+    from torchvision.models import MobileNet_V2_Weights
+    model = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
     
     # Freeze early layers
     for param in model.features[:-3].parameters():
@@ -512,4 +531,279 @@ async def delete_model(model_name: str, user_email: str = "admin@example.com"):
     except Exception as e:
         print(f"Delete error: {str(e)}")
         raise HTTPException(500, f"Failed to delete model: {str(e)}")
+
+
+@image_classification_router.post("/api/image/upload")
+async def upload_image_for_classification(
+    file: UploadFile = File(...),
+    model_name: str = Form(...),
+    user_email: str = Form("admin@gmail.com")
+):
+    """
+    Upload an image and store it in database for later classification
+    Returns stored image info
+    """
+    try:
+        # Validate image
+        if not file.content_type or not file.content_type.startswith('image/'):
+            raise HTTPException(400, "File must be an image")
+        
+        # Read image data
+        image_data = await file.read()
+        
+        # Validate it's a valid image
+        try:
+            img = Image.open(io.BytesIO(image_data)).convert('RGB')
+        except Exception as e:
+            raise HTTPException(400, f"Invalid image file: {str(e)}")
+        
+        # Create unique name
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = "".join(c if c.isalnum() or c in ('-', '_', '.') else '_' for c in file.filename)
+        unique_name = f"img_{timestamp}_{safe_filename}"
+        
+        # Store in database using insert_or_update
+        # data parameter is for pickled dataframes, we'll use empty dict for images
+        db.insert_or_update(
+            email=user_email,
+            data={},  # Empty dict as we store raw bytes in rawfile
+            tb_name=unique_name,
+            data_type='image',
+            data_subtype=model_name,  # Store model name in subtype field
+            raw_bytes=image_data  # Store actual image in rawfile column
+        )
+        
+        print(f"✅ Image '{unique_name}' uploaded and stored in database")
+        print(f"   User: {user_email}, Model: {model_name}")
+        
+        return JSONResponse(content={
+            "status": "success",
+            "message": "Image uploaded successfully",
+            "filename": unique_name,
+            "model_name": model_name,
+            "original_filename": file.filename,
+            "size_bytes": len(image_data),
+            "uploaded_at": datetime.now().isoformat()
+        })
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to upload image: {str(e)}")
+
+
+@image_classification_router.post("/api/image/chat")
+async def image_classification_chat(
+    query: str = Form(...),
+    filename: str = Form(...),
+    model_name: str = Form(...),
+    user_email: str = Form("admin@gmail.com"),
+    session_id: str = Form(None)
+):
+    """
+    Dedicated chat endpoint for image classification with LLM integration
+    
+    Flow:
+    1. Get prediction from model (if not cached)
+    2. Send prediction + query to LLM
+    3. Return natural language response
+    """
+    try:
+        print(f"\n{'='*70}")
+        print(f"💬 IMAGE CLASSIFICATION CHAT")
+        print(f"{'='*70}")
+        print(f"Query: {query}")
+        print(f"Image: {filename}")
+        print(f"Model: {model_name}")
+        print(f"User: {user_email}")
+        print(f"{'='*70}\n")
+        
+        # Step 1: Get image from database
+        raw_image_data = db.get_raw_file(filename)
+        if not raw_image_data:
+            raise HTTPException(404, f"Image '{filename}' not found in database")
+        
+        # Step 2: Get prediction
+        print("🔮 Getting prediction...")
+        try:
+            # Convert bytes to file-like object
+            image_file = io.BytesIO(raw_image_data)
+            image_file.name = filename
+            
+            # Prepare for prediction
+            img = Image.open(io.BytesIO(raw_image_data)).convert('RGB')
+            
+            # Find model
+            user_id = "".join(c if c.isalnum() else '_' for c in user_email)
+            model_dir = MODELS_DIR / user_id / model_name
+            
+            if not model_dir.exists():
+                raise HTTPException(404, f"Model '{model_name}' not found")
+            
+            # Load metadata
+            metadata_path = model_dir / "metadata.json"
+            if not metadata_path.exists():
+                raise HTTPException(404, f"Model metadata not found for '{model_name}'")
+            
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            num_classes = metadata['num_classes']
+            class_names = metadata['class_names']
+            
+            # Load model
+            model_path = model_dir / "model.pth"
+            if not model_path.exists():
+                raise HTTPException(404, f"Model weights not found for '{model_name}'")
+            
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            model = create_model(num_classes)
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model = model.to(device)
+            model.eval()
+            
+            # Preprocess image
+            img_tensor = transform(img).unsqueeze(0).to(device)
+            
+            # Predict
+            with torch.no_grad():
+                outputs = model(img_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)
+                confidence, predicted_idx = torch.max(probabilities, 1)
+            
+            predicted_class = class_names[predicted_idx.item()]
+            confidence_score = confidence.item()
+            
+            # Get all class probabilities
+            all_probs = {
+                class_names[i]: float(probabilities[0][i].item())
+                for i in range(num_classes)
+            }
+            
+            print(f"✅ Prediction: {predicted_class} ({confidence_score*100:.1f}%)")
+            
+        except Exception as pred_error:
+            print(f"⚠️ Prediction error: {pred_error}")
+            # If prediction fails, use LLM without prediction context
+            prediction_context = None
+            predicted_class = None
+            confidence_score = None
+            all_probs = None
+        else:
+            prediction_context = {
+                "predicted_class": predicted_class,
+                "confidence": confidence_score,
+                "all_probabilities": all_probs
+            }
+        
+        # Step 3: Generate LLM response
+        print("🤖 Generating LLM response...")
+        
+        if prediction_context:
+            # With prediction context
+            system_prompt = f"""You are an expert AI assistant helping users understand image classification results.
+
+Image Classification Results:
+- Predicted Class: {prediction_context['predicted_class']}
+- Confidence: {prediction_context['confidence']*100:.1f}%
+- All Class Probabilities: {json.dumps(prediction_context['all_probabilities'], indent=2)}
+- Model: {model_name}
+- Image: {filename}
+
+Your role:
+1. Answer the user's question based on the classification results
+2. Provide helpful, accurate, and conversational responses
+3. Explain what the classification means in practical terms
+4. If asked about treatment, prevention, or actions, provide helpful guidance
+5. Be confident but acknowledge uncertainty when confidence is low (<70%)
+
+Keep responses concise, helpful, and friendly."""
+
+            user_message = f"User question: {query}"
+            
+        else:
+            # Without prediction context (fallback)
+            system_prompt = f"""You are an expert AI assistant helping users with image analysis.
+
+Context:
+- Image: {filename}
+- Model: {model_name} (prediction unavailable)
+
+Note: The classification model could not analyze this image. Provide helpful general information based on the user's question."""
+
+            user_message = query
+        
+        # Call OpenAI
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            llm_response = response.choices[0].message.content
+            print(f"✅ LLM Response generated ({len(llm_response)} chars)")
+            
+        except Exception as llm_error:
+            print(f"❌ LLM Error: {llm_error}")
+            # Fallback response
+            if prediction_context:
+                llm_response = f"""Based on the image analysis:
+
+**Classification Result:** {prediction_context['predicted_class']}
+**Confidence:** {prediction_context['confidence']*100:.1f}%
+
+The model has classified this image as **{prediction_context['predicted_class']}** with {prediction_context['confidence']*100:.1f}% confidence.
+
+Top predictions:
+{chr(10).join([f"- {cls}: {prob*100:.1f}%" for cls, prob in sorted(prediction_context['all_probabilities'].items(), key=lambda x: x[1], reverse=True)[:3]])}"""
+            else:
+                llm_response = "I apologize, but I'm unable to analyze this image at the moment. Please try again or contact support."
+        
+        print(f"\n{'='*70}")
+        print(f"✨ CHAT RESPONSE COMPLETE")
+        print(f"{'='*70}\n")
+        
+        # Build response with prediction details for verification (not shown in UI)
+        response_data = {
+            "type": "text",
+            "payload": llm_response,
+            "session_id": session_id,
+            "status": "success"
+        }
+        
+        # Include prediction details for verification/debugging (backend use only)
+        if prediction_context:
+            response_data["prediction_result"] = {
+                "predicted_class": prediction_context["predicted_class"],
+                "confidence": round(prediction_context["confidence"] * 100, 2),
+                "confidence_raw": prediction_context["confidence"],
+                "all_probabilities": prediction_context["all_probabilities"],
+                "model_used": model_name,
+                "image_analyzed": filename,
+                "timestamp": datetime.now().isoformat()
+            }
+            print(f"📊 Prediction included in response for verification:")
+            print(f"   Class: {prediction_context['predicted_class']}")
+            print(f"   Confidence: {prediction_context['confidence']*100:.1f}%")
+        else:
+            response_data["prediction_result"] = None
+            response_data["prediction_error"] = "Prediction could not be generated"
+        
+        return JSONResponse(content=response_data)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Chat error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Chat failed: {str(e)}")
 

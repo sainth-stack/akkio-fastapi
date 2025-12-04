@@ -32,6 +32,10 @@ torchvision
 # HTTP requests
 requests
 
+# Web scraping
+beautifulsoup4
+lxml
+
 # Date/time parsing
 python-dateutil
 

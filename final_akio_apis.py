@@ -69,6 +69,7 @@ import shutil
 from api.sla_apis import sla_router
 from api.sla_tabs_api import sla_tabs_router
 from api.akkio.main import akkio_router
+from api.akkio.url_scraper import url_router
 from api.sharepoint import (
     list_sharepoint_files as sp_list_sharepoint_files,
     get_app_token as sp_get_app_token,
@@ -248,6 +249,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 app.include_router(sla_router)
 app.include_router(sla_tabs_router)
 app.include_router(akkio_router)
+app.include_router(url_router)
 app.include_router(chat2doc)
 
  
