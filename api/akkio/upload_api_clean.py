@@ -409,12 +409,23 @@ async def models(input: dict = Body(...)):
         from final_akio_apis import random_forest, arima_train_only
         
         if model_type == 'RandomForest':
-            stat, cols = random_forest(df, target_col)
+            result = random_forest(df, target_col)
+            # Handle both old and new return formats for backward compatibility
+            if len(result) == 3:
+                stat, cols, row_data = result
+            elif len(result) == 2:
+                stat, cols = result
+                row_data = {}
+            else:
+                stat, cols, row_data = False, [], {}
+            
             return JSONResponse(content={
                 'columns': list(df.columns),
                 'rf': True,
                 'status': stat,
-                'rf_cols': cols
+                'rf_cols': cols,
+                'feature_columns': cols,
+                'row_data': row_data if row_data else {}
             })
         elif model_type == 'Arima':
             stat = arima_train_only(df, target_col)

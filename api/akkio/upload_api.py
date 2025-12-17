@@ -868,6 +868,11 @@ async def upload_only(
             raw_bytes = content
             if file_type == "audio":
                 print(f"[AUDIO][UPLOAD] Inserting into database with raw audio bytes...")
+        
+        # Log what name will be stored in database
+        clean_stored_name = db._clean_name(file_name)
+        print(f"[UPLOAD] Storing in DB - email='{mail}', name='{clean_stored_name}', type='{file_type}'")
+        
         results = db.insert_or_update(mail, df, file_name, file_type, file_subtype, raw_bytes)
         if file_type == "audio":
             print(f"[AUDIO][UPLOAD] ✓ Database insert complete: {results}")
@@ -1092,7 +1097,16 @@ async def models(input: dict = Body(...)):
                 raise HTTPException(400, f"Insufficient data after removing missing values. Need at least 10 rows, got {len(df)}")
             
             print(f"[INFO] Training RandomForest on {len(df)} rows, target: {target_col}")
-            stat, cols = random_forest(df, target_col)
+            result = random_forest(df, target_col)
+            
+            # Handle both old and new return formats for backward compatibility
+            if len(result) == 3:
+                stat, cols, row_data = result
+            elif len(result) == 2:
+                stat, cols = result
+                row_data = {}
+            else:
+                stat, cols, row_data = False, [], {}
             
             # Get feature columns (all columns except target)
             feature_cols = [col for col in df.columns if col != target_col]
@@ -1111,7 +1125,8 @@ async def models(input: dict = Body(...)):
                 'rf_cols': feature_cols if training_success else [],
                 'target_column': target_col,
                 'feature_columns': feature_cols if training_success else [],
-                'model_stats': stat if isinstance(stat, dict) else None
+                'model_stats': stat if isinstance(stat, dict) else None,
+                'row_data': row_data if row_data else {}  # Sample row for form pre-filling
             })
         elif model_type == 'Arima':
             stat = arima_train_only(df, target_col)
@@ -1163,4 +1178,236 @@ async def model_predict(request: Request):
     except Exception as e:
         print(f"[ERROR] Prediction error: {e}")
         raise HTTPException(500, f"Prediction failed: {str(e)}")
+
+
+@upload_router.get("/api/get_file")
+async def get_file(
+    email: str = Query(..., alias="email"),
+    filename: str = Query(..., alias="filename")
+):
+    """
+    Fetch file data by email and filename.
+    Returns file metadata and preview data based on file type.
+    """
+    try:
+        if not email or not filename:
+            raise HTTPException(status_code=400, detail="Email and filename are required")
+        
+        print(f"[GET_FILE] Request - email='{email}', filename='{filename}'")
+        
+        # Clean filename (remove extension for database lookup) and strip whitespace
+        clean_name = db._clean_name(filename).strip()
+        print(f"[GET_FILE] Cleaned name: '{clean_name}'")
+        
+        # Get file metadata from database
+        db.ensure_connection()
+        with db.connection.cursor() as cursor:
+            # First, try exact match
+            cursor.execute("""
+                SELECT name, type, subtype, rawfile, fileobj
+                FROM akio_data_fastapi 
+                WHERE email = %s AND name = %s
+                LIMIT 1
+            """, (email, clean_name))
+            row = cursor.fetchone()
+            
+            # If not found, try case-insensitive match
+            if not row:
+                print(f"[GET_FILE] Exact match not found, trying case-insensitive search")
+                cursor.execute("""
+                    SELECT name, type, subtype, rawfile, fileobj
+                    FROM akio_data_fastapi 
+                    WHERE email = %s AND LOWER(name) = LOWER(%s)
+                    LIMIT 1
+                """, (email, clean_name))
+                row = cursor.fetchone()
+            
+            # If still not found, list all files for this user for debugging
+            if not row:
+                cursor.execute("""
+                    SELECT name, type
+                    FROM akio_data_fastapi 
+                    WHERE email = %s
+                """, (email,))
+                available_files = cursor.fetchall()
+                print(f"[GET_FILE] Available files for {email}: {available_files}")
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"File '{clean_name}' not found for user '{email}'. Please check the filename.")
+        
+        name, file_type, subtype, rawfile, fileobj = row
+        
+        response_data = {
+            "name": name,
+            "type": file_type,
+            "subtype": subtype,
+            "filename": filename
+        }
+        
+        # Handle different file types
+        if file_type == "csv" or file_type == "excel":
+            # Return DataFrame data as JSON
+            try:
+                df = db.get_table_data(clean_name)
+                if df is not None and not df.empty:
+                    # Limit rows for preview (first 100 rows)
+                    preview_df = df.head(100)
+                    
+                    # Replace NaN, inf, -inf with None for JSON compatibility
+                    preview_df = preview_df.replace([np.nan, np.inf, -np.inf], None)
+                    
+                    # Convert to records with proper JSON serialization
+                    response_data["preview_data"] = {
+                        "columns": list(df.columns),
+                        "rows": preview_df.to_dict(orient="records"),
+                        "total_rows": len(df),
+                        "preview_rows": len(preview_df)
+                    }
+            except Exception as e:
+                print(f"[ERROR] Failed to load CSV/Excel data: {e}")
+                import traceback
+                traceback.print_exc()
+                response_data["error"] = f"Failed to load data: {str(e)}"
+        
+        elif file_type == "pdf":
+            # Return PDF as base64 for viewing
+            if rawfile:
+                import base64
+                pdf_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
+                response_data["file_data"] = f"data:application/pdf;base64,{pdf_base64}"
+            
+            # Also try to get text content from DataFrame for text preview
+            try:
+                df = db.get_table_data(clean_name)
+                if df is not None and 'text_content' in df.columns:
+                    text_lines = df['text_content'].astype(str).tolist()
+                    # Remove empty lines and join
+                    text_lines = [line.strip() for line in text_lines if line.strip()]
+                    text_content = '\n\n'.join(text_lines)
+                    response_data["text_content"] = text_content[:10000]  # Limit to 10K chars
+            except Exception as e:
+                print(f"[ERROR] Failed to extract PDF text content: {e}")
+        
+        elif file_type == "word":
+            # Return DOCX as base64 for download
+            if rawfile:
+                import base64
+                docx_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
+                response_data["file_data"] = f"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{docx_base64}"
+            
+            # Always try to get text content from DataFrame for preview
+            try:
+                df = db.get_table_data(clean_name)
+                if df is not None and 'text_content' in df.columns:
+                    text_lines = df['text_content'].astype(str).tolist()
+                    # Remove empty lines and join
+                    text_lines = [line.strip() for line in text_lines if line.strip()]
+                    text_content = '\n\n'.join(text_lines)
+                    response_data["text_content"] = text_content[:10000]  # Limit to 10K chars for preview
+            except Exception as e:
+                print(f"[ERROR] Failed to extract Word text content: {e}")
+        
+        elif file_type == "xml":
+            # Return XML as text or base64
+            if rawfile:
+                try:
+                    xml_text = bytes(rawfile).decode('utf-8')
+                    response_data["text_content"] = xml_text[:10000]  # Limit to 10KB
+                except Exception:
+                    import base64
+                    xml_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
+                    response_data["file_data"] = f"data:application/xml;base64,{xml_base64}"
+            else:
+                # Fallback: try to get text content from DataFrame
+                try:
+                    df = db.get_table_data(clean_name)
+                    if df is not None and 'text_content' in df.columns:
+                        text_content = '\n'.join(df['text_content'].astype(str).tolist())
+                        response_data["text_content"] = text_content[:10000]
+                except Exception:
+                    pass
+        
+        elif file_type == "image":
+            # Return image as base64 data URL
+            if rawfile:
+                import base64
+                from mimetypes import guess_type
+                # Determine MIME type from filename
+                mime_type, _ = guess_type(filename)
+                if not mime_type:
+                    # Default based on common extensions
+                    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+                    mime_map = {
+                        'png': 'image/png',
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg',
+                        'webp': 'image/webp',
+                        'gif': 'image/gif'
+                    }
+                    mime_type = mime_map.get(ext, 'image/png')
+                
+                img_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
+                response_data["file_data"] = f"data:{mime_type};base64,{img_base64}"
+            else:
+                response_data["error"] = "Image data not available"
+        
+        elif file_type == "audio":
+            # Return audio as base64 data URL
+            if rawfile:
+                import base64
+                from mimetypes import guess_type
+                # Determine MIME type from filename
+                mime_type, _ = guess_type(filename)
+                if not mime_type:
+                    # Default based on common extensions
+                    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+                    mime_map = {
+                        'mp3': 'audio/mpeg',
+                        'wav': 'audio/wav',
+                        'm4a': 'audio/mp4',
+                        'ogg': 'audio/ogg',
+                        'flac': 'audio/flac',
+                        'aac': 'audio/aac',
+                        'wma': 'audio/x-ms-wma'
+                    }
+                    mime_type = mime_map.get(ext, 'audio/mpeg')
+                
+                audio_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
+                response_data["file_data"] = f"data:{mime_type};base64,{audio_base64}"
+                
+                # Also include transcription if available
+                try:
+                    df = db.get_table_data(clean_name)
+                    if df is not None and 'text_content' in df.columns:
+                        transcription = '\n'.join(df['text_content'].astype(str).tolist())
+                        response_data["transcription"] = transcription
+                except Exception:
+                    pass
+            else:
+                response_data["error"] = "Audio data not available"
+        
+        else:
+            # For other types, try to return DataFrame preview
+            try:
+                df = db.get_table_data(clean_name)
+                if df is not None and not df.empty:
+                    preview_df = df.head(50)
+                    response_data["preview_data"] = {
+                        "columns": list(df.columns),
+                        "rows": preview_df.to_dict(orient="records"),
+                        "total_rows": len(df),
+                        "preview_rows": len(preview_df)
+                    }
+            except Exception:
+                pass
+        
+        return JSONResponse(content=jsonable_encoder(response_data))
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Get file error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch file: {str(e)}")
 

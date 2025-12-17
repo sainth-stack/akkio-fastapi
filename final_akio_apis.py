@@ -16,6 +16,7 @@ from email.mime.text import MIMEText
 from enum import Enum
 from pathlib import Path
 from dateutil.parser import parse
+from datetime import datetime
 import boto3
 from langchain_community.document_loaders import PyPDFLoader
 from docx import Document
@@ -1453,12 +1454,23 @@ async def models(input: ModelRequest):
 
         # Handle RandomForest
         if input.model == 'RandomForest':
-            stat, cols = random_forest(df, input.col)
+            result = random_forest(df, input.col)
+            # Handle both old and new return formats for backward compatibility
+            if len(result) == 3:
+                stat, cols, row_data = result
+            elif len(result) == 2:
+                stat, cols = result
+                row_data = {}
+            else:
+                stat, cols, row_data = False, [], {}
+            
             return {
                 'columns': list(df.columns),
                 'rf': True,
                 'status': stat,
-                'rf_cols': cols
+                'rf_cols': cols,
+                'feature_columns': cols,
+                'row_data': row_data if row_data else {}
             }
 
         # Handle ARIMA
@@ -3414,6 +3426,23 @@ def random_forest(data, target_column):
             if label_encoder is not None:
                 joblib.dump(label_encoder, os.path.join(model_dir, "label_encoder.pkl"))
 
+            # Get sample row data for form pre-filling
+            # Convert the first row of X_train to a dictionary, handling different data types
+            row_data = {}
+            for col in X_train.columns:
+                val = X_train.iloc[0][col]
+                # Convert numpy types to Python native types for JSON serialization
+                if pd.isna(val):
+                    row_data[col] = None
+                elif isinstance(val, (np.integer, np.int64, np.int32)):
+                    row_data[col] = int(val)
+                elif isinstance(val, (np.floating, np.float64, np.float32)):
+                    row_data[col] = float(val)
+                elif isinstance(val, (pd.Timestamp, datetime)):
+                    row_data[col] = str(val)
+                else:
+                    row_data[col] = str(val)
+
             # Save enhanced deployment information with statistics
             # Convert all data to JSON-serializable formats
             deployment_data = {
@@ -3425,20 +3454,22 @@ def random_forest(data, target_column):
                 "categorical_features": [str(col) for col in categorical_cols],  # Ensure strings
                 "numerical_features": [str(col) for col in numerical_cols],     # Ensure strings
                 "label_mapping": label_mapping,
-                "is_classification": bool(is_classification)  # Ensure it's a regular bool
+                "is_classification": bool(is_classification),  # Ensure it's a regular bool
+                "row_data": row_data  # Sample row for form pre-filling
             }
 
             # Write JSON with proper encoding to handle special characters
             with open(deployment_path, "w", encoding='utf-8') as fp:
                 json.dump(deployment_data, fp, indent=4)
 
-            return model_stats, [str(col) for col in X_train.columns]
+            return model_stats, [str(col) for col in X_train.columns], row_data
         else:
             # Load existing model data and statistics with proper encoding
             try:
                 with open(deployment_path, "r", encoding='utf-8') as fp:
                     deployment_data = json.load(fp)
-                return deployment_data.get('stats', {}), deployment_data.get('columns', [])
+                row_data = deployment_data.get('row_data', {})
+                return deployment_data.get('stats', {}), deployment_data.get('columns', []), row_data
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 print(f"Error reading deployment file: {e}")
                 # If the file is corrupted, delete it and retrain
@@ -3449,7 +3480,7 @@ def random_forest(data, target_column):
 
     except Exception as e:
         print(f"Error in random_forest: {e}")
-        return False, []
+        return False, [], {}
 
 # 9.Data scout api----------------------Data scout api for generating the data------------- 9
 @app.post("/api/data_scout")
