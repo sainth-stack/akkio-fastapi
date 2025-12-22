@@ -9,7 +9,7 @@ import requests
 from PIL import Image
 from io import BytesIO
 import uuid
-import matplotlib.pyplot as plt
+
 from dotenv import load_dotenv
 import base64
 

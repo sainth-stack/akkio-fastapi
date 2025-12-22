@@ -1,4 +1,4 @@
-# Core Python libraries (built-in modules don't need to be listed)
+# Core Python libraries
 # ast, base64, io, os, re, smtplib, sys, tempfile, traceback, enum, pathlib
 # email.mime.image, email.mime.multipart, email.mime.text
 # datetime, collections, json, typing, uuid, pickle
@@ -13,16 +13,10 @@ pydantic
 numpy
 pandas
 scikit-learn
-xgboost
 joblib
-
-# Time series forecasting
-prophet
-statsmodels
 
 # Data visualization
 plotly
-matplotlib
 
 # Image processing
 Pillow
@@ -54,7 +48,7 @@ psycopg2-binary
 SQLAlchemy
 
 # LangChain ecosystem
-langchain==0.0.316
+langchain
 langchain-community
 langchain-openai
 langchain-core
@@ -62,12 +56,10 @@ langchain-core
 # OpenAI
 openai
 
-faiss-cpu
 chromadb
 
 # PDF processing
 pypdf
-PyPDF2
 
 # DOCX processing
 python-docx
@@ -79,3 +71,5 @@ reportlab
 python-multipart
 openpyxl
 
+# Removed: xgboost, prophet, statsmodels, faiss-cpu, matplotlib, PyPDF2
+# Updated: langchain (unpinned)
