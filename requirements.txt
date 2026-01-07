@@ -15,6 +15,10 @@ pandas
 scikit-learn
 joblib
 
+# Supervised AutoML extras
+xgboost
+lightgbm
+
 # Data visualization
 plotly
 
@@ -60,6 +64,7 @@ chromadb
 
 # PDF processing
 pypdf
+PyPDF2
 
 # DOCX processing
 python-docx
@@ -71,5 +76,8 @@ reportlab
 python-multipart
 openpyxl
 
-# Removed: xgboost, prophet, statsmodels, faiss-cpu, matplotlib, PyPDF2
+# Time series / forecasting (used in backend imports)
+prophet
+statsmodels
+
 # Updated: langchain (unpinned)

@@ -403,10 +403,11 @@ async def models(input: dict = Body(...)):
         # Save to data.csv for legacy code compatibility
         df.to_csv('data.csv', index=False)
         
-        # Import legacy functions from final_akio_apis
+        # Import legacy functions from final_akio_apis (and AutoML helper)
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         from final_akio_apis import random_forest, arima_train_only
+        from supervised_automl import train_supervised_automl
         
         if model_type == 'RandomForest':
             result = random_forest(df, target_col)
@@ -435,8 +436,27 @@ async def models(input: dict = Body(...)):
                 'arima': True,
                 'message': 'ARIMA model trained successfully.'
             })
+        elif model_type in ['AutoML', 'Supervised', 'automl', 'supervised']:
+            model_dir = os.path.join("models", "supervised", target_col)
+            res = train_supervised_automl(df=df, target_col=target_col, model_dir=model_dir)
+            if not res.get("status"):
+                raise HTTPException(400, res.get("message", "AutoML training failed"))
+            return JSONResponse(content={
+                'columns': list(df.columns),
+                'automl': True,
+                'status': True,
+                'target_column': target_col,
+                'task_type': res.get("task_type"),
+                'best_model': res.get("best_model"),
+                'metric_type': res.get("metric_type"),
+                'metric': res.get("metric"),
+                'feature_columns': res.get("feature_columns", []),
+                'row_data': res.get("row_data", {}) or {},
+                'skipped_models': res.get("skipped_models", []),
+                'reused': bool(res.get("reused", False)),
+            })
         else:
-            raise HTTPException(400, "Unsupported model type. Use 'RandomForest' or 'Arima'")
+            raise HTTPException(400, "Unsupported model type. Use 'RandomForest', 'Arima', or 'AutoML'")
     except HTTPException:
         raise
     except Exception as e:
@@ -461,14 +481,16 @@ async def model_predict(request: Request):
         # Import legacy functions
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from final_akio_apis import handle_rf_prediction, handle_arima_forecast
+        from final_akio_apis import handle_rf_prediction, handle_arima_forecast, handle_supervised_prediction
         
         if form_name == 'rf':
             return await handle_rf_prediction(form_data, targetcol)
         elif form_name == 'arima':
             return await handle_arima_forecast(form_data, targetcol)
+        elif form_name in ['supervised', 'automl']:
+            return await handle_supervised_prediction(form_data, targetcol)
         else:
-            raise HTTPException(400, "Invalid form_name. Use 'rf' or 'arima'")
+            raise HTTPException(400, "Invalid form_name. Use 'rf', 'arima', or 'supervised'")
     except HTTPException:
         raise
     except Exception as e:

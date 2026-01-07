@@ -122,7 +122,7 @@ def _retrieve_docs(vectordb: Chroma, query: str, k: int):
     except Exception:
         return []
 
-@explore_router.post("/api/Explore")
+@explore_router.post("/Explore")
 async def senior_data_analysis(
     query: str = Form(...),
     dataset_path: Optional[str] = Form(None),
@@ -669,7 +669,7 @@ async def senior_data_analysis(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
-@explore_router.get("/api/debug_session_memory/{session_id}")
+@explore_router.get("/debug_session_memory/{session_id}")
 async def debug_session_memory_explore(session_id: str):
     try:
         with SESSION_MEMORY_LOCK:
@@ -686,7 +686,7 @@ async def debug_session_memory_explore(session_id: str):
         raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}")
 
 
-@explore_router.delete("/api/clear_session_memory/{session_id}")
+@explore_router.delete("/clear_session_memory/{session_id}")
 async def clear_session_memory_explore(session_id: str):
     try:
         with SESSION_MEMORY_LOCK:
@@ -735,7 +735,7 @@ def _extract_texts_for_embedding_from_df(df: pd.DataFrame) -> list[str]:
 
 
 # ============== Vector chat over uploaded docs (pdf/word/images) ==============
-@explore_router.post("/api/vector_chat")
+@explore_router.post("/vector_chat")
 async def vector_chat(
     query: str = Form(...),
     filename: str = Form(...),

@@ -100,6 +100,9 @@ from PyPDF2 import PdfReader
 from datetime import datetime, date
 from decimal import Decimal
 
+# Supervised AutoML (multi-model training + best-model selection)
+from supervised_automl import train_supervised_automl, predict_supervised
+
 load_dotenv()
 
 app = FastAPI()
@@ -249,7 +252,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app.include_router(sla_router)
 app.include_router(sla_tabs_router)
-app.include_router(akkio_router)
+app.include_router(akkio_router, prefix="/api")
 app.include_router(url_router)
 app.include_router(chat2doc)
 
@@ -1036,6 +1039,9 @@ def make_serializable(obj):
 # In-memory cache for summaries
 SUMMARY_CACHE: Dict[str, str] = {}
 
+# In-memory cache for AutoML prediction insights (fast path)
+PREDICTION_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}
+
 
 @app.post("/api/analyze_chart")
 async def analyze_chart(
@@ -1162,6 +1168,59 @@ def generate_text(prompt: str) -> str:
         max_tokens=500
     )
     return response.choices[0].message.content.strip()
+
+
+def generate_prediction_insights_llm(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate UI-ready insights for prediction in a strict JSON format.
+    Uses a small/fast model and caches results by a stable key.
+    """
+    cache_key = payload.get("cache_key")
+    if cache_key and cache_key in PREDICTION_INSIGHTS_CACHE:
+        return PREDICTION_INSIGHTS_CACHE[cache_key]
+
+    # Keep prompt compact for speed.
+    prompt = (
+        "You are a reliability engineer. Using ONLY the provided dataset stats and inputs, "
+        "produce a JSON object for a prediction summary UI.\n\n"
+        "RULES:\n"
+        "1) Output MUST be valid JSON only (no markdown, no commentary).\n"
+        "2) Create EXACTLY 4 levels: Low, Medium, High, Critical.\n"
+        "3) Each level has numeric min/max. Ranges must be contiguous and cover dataset min..max.\n"
+        "4) Provide these arrays with EXACTLY 2 bullet strings each:\n"
+        "   - input_analysis\n"
+        "   - prediction_interpretation\n"
+        "   - business_insights\n"
+        "   - recommended_actions\n"
+        "5) Determine predicted_level based on predicted_value and the level ranges.\n"
+        "6) Do NOT invent sensors or facts; keep it generic if unsure.\n\n"
+        f"INPUT_JSON:\n{json.dumps(payload, ensure_ascii=False)}\n\n"
+        "OUTPUT_JSON_SCHEMA:\n"
+        "{\n"
+        '  "output_levels": {"Low":{"min":0,"max":0},"Medium":{"min":0,"max":0},"High":{"min":0,"max":0},"Critical":{"min":0,"max":0}},\n'
+        '  "predicted_level": "Low|Medium|High|Critical|null",\n'
+        '  "input_analysis": ["...","..."],\n'
+        '  "prediction_interpretation": ["...","..."],\n'
+        '  "business_insights": ["...","..."],\n'
+        '  "recommended_actions": ["...","..."]\n'
+        "}\n"
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": "Return JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=600,
+    )
+    text = (resp.choices[0].message.content or "").strip()
+    data = json.loads(text)
+
+    if cache_key:
+        PREDICTION_INSIGHTS_CACHE[cache_key] = data
+    return data
 
 
 # 7..Filling missing data------------------Evaluating the missed data in the dataframe----------- 7.
@@ -1483,6 +1542,27 @@ async def models(input: ModelRequest):
                 'message': 'ARIMA model trained successfully.'
             }
 
+        # Handle Supervised AutoML (best model selection across multiple estimators)
+        elif input.model in ['AutoML', 'Supervised', 'supervised', 'automl']:
+            model_dir = os.path.join("models", "supervised", input.col)
+            res = train_supervised_automl(df=df, target_col=input.col, model_dir=model_dir)
+            if not res.get("status"):
+                raise HTTPException(status_code=400, detail=res.get("message", "AutoML training failed"))
+
+            return {
+                'columns': list(df.columns),
+                'automl': True,
+                'status': True,
+                'task_type': res.get("task_type"),
+                'best_model': res.get("best_model"),
+                'metric_type': res.get("metric_type"),
+                'metric': res.get("metric"),
+                'feature_columns': res.get("feature_columns", []),
+                'row_data': res.get("row_data", {}) or {},
+                'skipped_models': res.get("skipped_models", []),
+                'reused': bool(res.get("reused", False)),
+            }
+
         # Handle unsupported models
         else:
             raise HTTPException(400, "Unsupported model type")
@@ -1501,10 +1581,10 @@ async def model_predict(request: Request):
 
         # Validate form_name for both RF and ARIMA
         form_name = form_data.get('form_name')
-        if form_name not in ['rf', 'arima']:
+        if form_name not in ['rf', 'arima', 'supervised', 'automl']:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid form type, expected 'rf' or 'arima'"
+                detail="Invalid form type, expected 'rf', 'arima', or 'supervised'"
             )
 
         # Validate targetColumn
@@ -1522,6 +1602,10 @@ async def model_predict(request: Request):
         # Handle ARIMA Forecasting
         elif form_name == 'arima':
             return await handle_arima_forecast(form_data, targetcol)
+
+        # Handle Supervised AutoML Prediction
+        elif form_name in ['supervised', 'automl']:
+            return await handle_supervised_prediction(form_data, targetcol)
 
     except HTTPException:
         raise
@@ -1708,6 +1792,133 @@ async def handle_rf_prediction(form_data, targetcol):
             }
         }
     }
+
+    return JSONResponse(content=response)
+
+
+async def handle_supervised_prediction(form_data, targetcol):
+    """Handle Supervised AutoML prediction logic (loads best model from metrics.json)"""
+    features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn']}
+
+    model_dir = os.path.join("models", "supervised", targetcol)
+    metrics_path = os.path.join(model_dir, "metrics.json")
+    deployment_path = os.path.join(model_dir, "deployment.json")
+
+    if not os.path.exists(metrics_path) or not os.path.exists(deployment_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"AutoML model not found for target column '{targetcol}'. Train first via /api/models with model='AutoML'."
+        )
+
+    with open(deployment_path, "r", encoding="utf-8") as f:
+        deployment = json.load(f)
+
+    feature_names = deployment.get("feature_names", [])
+    numerical_features = deployment.get("numerical_features", [])
+    datetime_features = deployment.get("datetime_features", [])
+
+    df_predict = pd.DataFrame([features])
+
+    missing_features = set(feature_names) - set(df_predict.columns)
+    if missing_features:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required features: {list(missing_features)}"
+        )
+
+    df_predict = df_predict[feature_names]
+
+    # Coerce datetime fields to numeric seconds since epoch if user passed strings
+    for col in datetime_features or []:
+        try:
+            parsed = pd.to_datetime(df_predict[col], errors="coerce")
+            ns = parsed.view("int64").astype("float64")
+            ns[pd.isna(parsed)] = np.nan
+            df_predict[col] = ns / 1e9
+        except Exception:
+            # Leave as-is; the pipeline may drop/handle
+            pass
+
+    # Convert numeric strings
+    for col in df_predict.columns:
+        if col in (numerical_features or []):
+            try:
+                df_predict[col] = pd.to_numeric(df_predict[col])
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
+                )
+
+    pred_res = predict_supervised(model_dir, df_predict)
+
+    # --- UI-focused response (levels + bullet insights) ---
+    best_model = (deployment.get("best_model") or "Unknown")
+    metric_type = deployment.get("metric_type")
+    metric_val = deployment.get("metric")
+    task_type = deployment.get("task_type")
+
+    predicted_value = (pred_res.get("predictions") or [None])[0]
+
+    # Build LLM payload grounded in dataset stats for speed + accuracy
+    dataset_stats: Dict[str, Any] = {}
+    try:
+        df_all = pd.read_csv('data.csv')
+        if targetcol in df_all.columns:
+            y = pd.to_numeric(df_all[targetcol], errors="coerce").dropna()
+            if not y.empty:
+                q = y.quantile([0.0, 0.25, 0.5, 0.75, 1.0]).to_dict()
+                dataset_stats = {
+                    "min": float(q.get(0.0)),
+                    "q25": float(q.get(0.25)),
+                    "median": float(q.get(0.5)),
+                    "q75": float(q.get(0.75)),
+                    "max": float(q.get(1.0)),
+                    "count": int(len(y)),
+                }
+    except Exception:
+        dataset_stats = {}
+
+    # Fast, stable cache key (avoid repeating calls for the same target+stats+rounded prediction)
+    cache_key = f"{targetcol}|{task_type}|{json.dumps(dataset_stats, sort_keys=True)}|{str(predicted_value)[:32]}"
+
+    # LLM-only: no hardcoded defaults or fallback.
+    # If the LLM fails / returns invalid JSON, we surface an error to the caller.
+    try:
+        insights = generate_prediction_insights_llm({
+            "cache_key": cache_key,
+            "target_column": targetcol,
+            "task_type": task_type,
+            "predicted_value": predicted_value,
+            "dataset_stats": dataset_stats,
+            "input_sample": {k: features.get(k) for k in list(features.keys())[:10]},
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM insights generation failed: {str(e)}")
+
+    prediction_result = {
+        "predicted_value": predicted_value,
+        "target_column": targetcol,
+        "model_type": f"AutoML({best_model})",
+        "task_type": task_type,
+        "predicted_level": insights.get("predicted_level"),
+    }
+
+    response = {
+        "prediction_result": prediction_result,
+        "best_model": best_model,
+        "metric_type": metric_type,
+        "metric": metric_val,
+        "output_levels": insights["output_levels"],
+        "predicted_level": insights["predicted_level"],
+        "input_analysis": insights["input_analysis"],
+        "prediction_interpretation": insights["prediction_interpretation"],
+        "business_insights": insights["business_insights"],
+        "recommended_actions": insights["recommended_actions"],
+    }
+
+    if "probabilities" in pred_res:
+        response["prediction_result"]["class_probabilities"] = pred_res.get("probabilities")
 
     return JSONResponse(content=response)
 

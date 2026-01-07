@@ -130,6 +130,41 @@ class PostgresDatabase:
                     UNIQUE(email, name, target, model_type)
                 )
             """)
+            
+            # Multi-model training sessions table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS multi_model_sessions (
+                    id SERIAL PRIMARY KEY,
+                    session_id VARCHAR(255) UNIQUE NOT NULL,
+                    model_name VARCHAR(255) NOT NULL,
+                    user_email VARCHAR(255) NOT NULL,
+                    system_prompt TEXT NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    stage TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    completed_at TIMESTAMP,
+                    UNIQUE(user_email, model_name)
+                )
+            """)
+            
+            # Multi-model files table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS multi_model_files (
+                    id SERIAL PRIMARY KEY,
+                    session_id VARCHAR(255) NOT NULL,
+                    file_name VARCHAR(500) NOT NULL,
+                    file_type VARCHAR(50) NOT NULL,
+                    storage_path TEXT,
+                    vector_collection_id VARCHAR(255),
+                    db_table_name VARCHAR(255),
+                    processed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    FOREIGN KEY (session_id) REFERENCES multi_model_sessions(session_id) ON DELETE CASCADE
+                )
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS trained_models (
                     id SERIAL PRIMARY KEY,
@@ -228,6 +263,7 @@ class PostgresDatabase:
         self._tables_initialized = True
 
     def ensure_training_tables(self):
+        self.ensure_connection()
         if not self._tables_initialized:
             try:
                 self.create_training_tables()
@@ -759,6 +795,163 @@ class PostgresDatabase:
             cursor.execute("DROP TABLE IF EXISTS akio_data_fastapi")
             print("All tables dropped successfully.")
             return "All tables dropped"
+
+    # -------- Multi-Model Training Methods --------
+    def create_multi_model_session(self, session_id: str, model_name: str, user_email: str, system_prompt: str):
+        """Create a new multi-model training session."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO multi_model_sessions (session_id, model_name, user_email, system_prompt, status, progress, stage, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, 'pending', 0, 'Initializing', NOW(), NOW())
+                ON CONFLICT (user_email, model_name) DO UPDATE SET
+                    session_id = EXCLUDED.session_id,
+                    system_prompt = EXCLUDED.system_prompt,
+                    status = 'pending',
+                    progress = 0,
+                    stage = 'Initializing',
+                    error_message = NULL,
+                    updated_at = NOW(),
+                    completed_at = NULL
+            """, (session_id, model_name, user_email, system_prompt))
+
+    def add_multi_model_file(self, session_id: str, file_name: str, file_type: str, storage_path: str = None, 
+                            vector_collection_id: str = None, db_table_name: str = None):
+        """Add a file to a multi-model training session."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO multi_model_files (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            """, (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name))
+
+    def update_multi_model_progress(self, session_id: str, progress: int, stage: str, status: str = None):
+        """Update progress for a multi-model training session."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            if status:
+                cursor.execute("""
+                    UPDATE multi_model_sessions
+                    SET progress = %s, stage = %s, status = %s, updated_at = NOW()
+                    WHERE session_id = %s
+                """, (progress, stage, status, session_id))
+            else:
+                cursor.execute("""
+                    UPDATE multi_model_sessions
+                    SET progress = %s, stage = %s, updated_at = NOW()
+                    WHERE session_id = %s
+                """, (progress, stage, session_id))
+
+    def complete_multi_model_training(self, session_id: str):
+        """Mark a multi-model training session as completed."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE multi_model_sessions
+                SET status = 'completed', progress = 100, stage = 'Training completed', updated_at = NOW(), completed_at = NOW()
+                WHERE session_id = %s
+            """, (session_id,))
+
+    def fail_multi_model_training(self, session_id: str, error_message: str):
+        """Mark a multi-model training session as failed."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE multi_model_sessions
+                SET status = 'failed', error_message = %s, updated_at = NOW()
+                WHERE session_id = %s
+            """, (error_message, session_id))
+
+    def get_multi_model_session(self, session_id: str = None, user_email: str = None, model_name: str = None):
+        """Get multi-model session details."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            if session_id:
+                cursor.execute("""
+                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, error_message, created_at, updated_at, completed_at
+                    FROM multi_model_sessions
+                    WHERE session_id = %s
+                """, (session_id,))
+            elif user_email and model_name:
+                cursor.execute("""
+                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, error_message, created_at, updated_at, completed_at
+                    FROM multi_model_sessions
+                    WHERE user_email = %s AND model_name = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                """, (user_email, model_name))
+            else:
+                return None
+                
+            row = cursor.fetchone()
+            if not row:
+                return None
+            keys = ["session_id", "model_name", "user_email", "system_prompt", "status", "progress", "stage", "error_message", "created_at", "updated_at", "completed_at"]
+            return dict(zip(keys, row))
+
+    def get_multi_model_files(self, session_id: str):
+        """Get all files for a multi-model session."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, processed, created_at
+                FROM multi_model_files
+                WHERE session_id = %s
+                ORDER BY created_at
+            """, (session_id,))
+            rows = cursor.fetchall()
+            keys = ["id", "session_id", "file_name", "file_type", "storage_path", "vector_collection_id", "db_table_name", "processed", "created_at"]
+            return [dict(zip(keys, row)) for row in rows]
+
+    def get_user_multi_models(self, user_email: str):
+        """Get all multi-models for a user."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT session_id, model_name, system_prompt, status, progress, stage, created_at, updated_at, completed_at
+                FROM multi_model_sessions
+                WHERE user_email = %s
+                ORDER BY updated_at DESC
+            """, (user_email,))
+            rows = cursor.fetchall()
+            keys = ["session_id", "model_name", "system_prompt", "status", "progress", "stage", "created_at", "updated_at", "completed_at"]
+            return [dict(zip(keys, row)) for row in rows]
+
+    def mark_file_processed(self, session_id: str, file_name: str):
+        """Mark a file as processed."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE multi_model_files
+                SET processed = TRUE
+                WHERE session_id = %s AND file_name = %s
+            """, (session_id, file_name))
+
+    def delete_multi_model_session(self, session_id: str):
+        """Delete a multi-model session and all associated files."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            # Delete files first (foreign key constraint)
+            cursor.execute("""
+                DELETE FROM multi_model_files
+                WHERE session_id = %s
+            """, (session_id,))
+            
+            # Delete session
+            cursor.execute("""
+                DELETE FROM multi_model_sessions
+                WHERE session_id = %s
+            """, (session_id,))
+            
+            self.connection.commit()
+
+    def delete_table(self, table_name: str):
+        """Delete a specific table from the database."""
+        with self.connection.cursor() as cursor:
+            cursor.execute(f"""
+                DROP TABLE IF EXISTS {table_name} CASCADE
+            """)
+            self.connection.commit()
 
 
 # Sample config - replace with your actual database credentials

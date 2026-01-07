@@ -13,7 +13,7 @@ user_router = APIRouter()
 db = PostgresDatabase()
 
 
-@user_router.post("/api/get_user_data")
+@user_router.post("/get_user_data")
 async def get_user_data(
     email: str = Form(...),
     pdfs: Optional[List[UploadFile]] = File(None, alias="pdfs"),

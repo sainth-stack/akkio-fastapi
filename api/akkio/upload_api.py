@@ -1077,10 +1077,11 @@ async def models(input: dict = Body(...)):
         # Save to data.csv for legacy code compatibility
         df.to_csv('data.csv', index=False)
         
-        # Import legacy functions from final_akio_apis
+        # Import legacy functions from final_akio_apis (and AutoML helper)
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         from final_akio_apis import random_forest, arima_train_only
+        from supervised_automl import train_supervised_automl
         
         if model_type == 'RandomForest':
             # Validate target column exists
@@ -1139,8 +1140,27 @@ async def models(input: dict = Body(...)):
                 'target_column': target_col,
                 'message': 'ARIMA model trained successfully.'
             })
+        elif model_type in ['AutoML', 'Supervised', 'automl', 'supervised']:
+            model_dir = os.path.join("models", "supervised", target_col)
+            res = train_supervised_automl(df=df, target_col=target_col, model_dir=model_dir)
+            if not res.get("status"):
+                raise HTTPException(400, res.get("message", "AutoML training failed"))
+            return JSONResponse(content={
+                'columns': list(df.columns),
+                'automl': True,
+                'status': True,
+                'target_column': target_col,
+                'task_type': res.get("task_type"),
+                'best_model': res.get("best_model"),
+                'metric_type': res.get("metric_type"),
+                'metric': res.get("metric"),
+                'feature_columns': res.get("feature_columns", []),
+                'row_data': res.get("row_data", {}) or {},
+                'skipped_models': res.get("skipped_models", []),
+                'reused': bool(res.get("reused", False)),
+            })
         else:
-            raise HTTPException(400, "Unsupported model type. Use 'RandomForest' or 'Arima'")
+            raise HTTPException(400, "Unsupported model type. Use 'RandomForest', 'Arima', or 'AutoML'")
     except HTTPException:
         raise
     except Exception as e:
@@ -1165,14 +1185,16 @@ async def model_predict(request: Request):
         # Import legacy functions
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from final_akio_apis import handle_rf_prediction, handle_arima_forecast
+        from final_akio_apis import handle_rf_prediction, handle_arima_forecast, handle_supervised_prediction
         
         if form_name == 'rf':
             return await handle_rf_prediction(form_data, targetcol)
         elif form_name == 'arima':
             return await handle_arima_forecast(form_data, targetcol)
+        elif form_name in ['supervised', 'automl']:
+            return await handle_supervised_prediction(form_data, targetcol)
         else:
-            raise HTTPException(400, "Invalid form_name. Use 'rf' or 'arima'")
+            raise HTTPException(400, "Invalid form_name. Use 'rf', 'arima', or 'supervised'")
     except HTTPException:
         raise
     except Exception as e:
@@ -1180,7 +1202,7 @@ async def model_predict(request: Request):
         raise HTTPException(500, f"Prediction failed: {str(e)}")
 
 
-@upload_router.get("/api/get_file")
+@upload_router.get("/get_file")
 async def get_file(
     email: str = Query(..., alias="email"),
     filename: str = Query(..., alias="filename")
@@ -1233,9 +1255,79 @@ async def get_file(
                 print(f"[GET_FILE] Available files for {email}: {available_files}")
         
         if not row:
-            raise HTTPException(status_code=404, detail=f"File '{clean_name}' not found for user '{email}'. Please check the filename.")
-        
-        name, file_type, subtype, rawfile, fileobj = row
+            # Fallback: check if file exists in uploads folder
+            print(f"[GET_FILE] Not found in DB. Checking uploads folder for '{clean_name}'")
+            try:
+                # Helper to find file on disk
+                project_root = Path(__file__).resolve().parents[2]
+                uploads_dirs = [
+                    project_root / "uploads",
+                    Path(os.getcwd()) / "uploads"
+                ]
+                
+                found_path = None
+                for d in uploads_dirs:
+                    if d.exists():
+                        # Try exact with extension if filename has one
+                        if '.' in filename and (d / filename).exists():
+                            found_path = d / filename
+                            break
+                        
+                        # Try finding by name (glob)
+                        pattern = str(d / f"{clean_name}*")
+                        matches = glob.glob(pattern)
+                        if matches:
+                            matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                            found_path = Path(matches[0])
+                            break
+                
+                if found_path and found_path.exists():
+                    print(f"[GET_FILE] Found in uploads: {found_path}")
+                    name = clean_name
+                    # Infer details from file on disk
+                    ext = found_path.suffix.lower()
+                    
+                    # Map extension to type
+                    if ext in ['.csv']:
+                        file_type = 'csv' 
+                        subtype = None
+                    elif ext in ['.xlsx', '.xls']:
+                        file_type = 'excel'
+                        subtype = None
+                    elif ext in ['.pdf']:
+                        file_type = 'pdf'
+                        subtype = 'report'
+                    elif ext in ['.docx']:
+                        file_type = 'word'
+                        subtype = None
+                    elif ext in ['.png', '.jpg', '.jpeg', '.webp']:
+                        file_type = 'image'
+                        subtype = None
+                    elif ext in ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.wma']:
+                        file_type = 'audio'
+                        subtype = None
+                    elif ext in ['.xml']:
+                        file_type = 'xml'
+                        subtype = None
+                    else:
+                        file_type = 'other'
+                        subtype = None
+                        
+                    # Read content
+                    with open(found_path, 'rb') as f:
+                        rawfile = f.read()
+                    fileobj = None # Cannot reconstruct pickle easily, nor needed for most types here
+                    
+                else:
+                    raise HTTPException(status_code=404, detail=f"File '{clean_name}' not found for user '{email}'. Please check the filename.")
+            
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"[GET_FILE] Fallback error: {e}")
+                raise HTTPException(status_code=404, detail=f"File '{clean_name}' not found for user '{email}'. Please check the filename.")
+        else:
+            name, file_type, subtype, rawfile, fileobj = row
         
         response_data = {
             "name": name,
@@ -1248,7 +1340,26 @@ async def get_file(
         if file_type == "csv" or file_type == "excel":
             # Return DataFrame data as JSON
             try:
-                df = db.get_table_data(clean_name)
+                # If we have fileobj (from DB), use it via get_table_data path
+                # But here we might have just rawfile or just db lookup
+                
+                df = None
+                # If coming from DB, try standard get_table_data
+                if row:
+                    df = db.get_table_data(clean_name)
+                
+                # If that failed or we came from disk
+                if df is None:
+                    if file_type == "csv":
+                        import io
+                        if rawfile:
+                            df = pd.read_csv(io.BytesIO(rawfile))
+                        # If rawfile missing but we are here, we might need to re-read from disk if we just found it? 
+                        # actually rawfile is populated in fallback.
+                    elif file_type == "excel":
+                        if rawfile:
+                            df = pd.read_excel(io.BytesIO(rawfile))
+                
                 if df is not None and not df.empty:
                     # Limit rows for preview (first 100 rows)
                     preview_df = df.head(100)
@@ -1276,15 +1387,16 @@ async def get_file(
                 pdf_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
                 response_data["file_data"] = f"data:application/pdf;base64,{pdf_base64}"
             
-            # Also try to get text content from DataFrame for text preview
+            # Also try to get text content
             try:
-                df = db.get_table_data(clean_name)
-                if df is not None and 'text_content' in df.columns:
-                    text_lines = df['text_content'].astype(str).tolist()
-                    # Remove empty lines and join
-                    text_lines = [line.strip() for line in text_lines if line.strip()]
-                    text_content = '\n\n'.join(text_lines)
-                    response_data["text_content"] = text_content[:10000]  # Limit to 10K chars
+                # Only if from DB and has text_content processed
+                if row:
+                    df = db.get_table_data(clean_name)
+                    if df is not None and 'text_content' in df.columns:
+                        text_lines = df['text_content'].astype(str).tolist()
+                        text_lines = [line.strip() for line in text_lines if line.strip()]
+                        text_content = '\n\n'.join(text_lines)
+                        response_data["text_content"] = text_content[:10000]
             except Exception as e:
                 print(f"[ERROR] Failed to extract PDF text content: {e}")
         
@@ -1295,15 +1407,14 @@ async def get_file(
                 docx_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
                 response_data["file_data"] = f"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{docx_base64}"
             
-            # Always try to get text content from DataFrame for preview
             try:
-                df = db.get_table_data(clean_name)
-                if df is not None and 'text_content' in df.columns:
-                    text_lines = df['text_content'].astype(str).tolist()
-                    # Remove empty lines and join
-                    text_lines = [line.strip() for line in text_lines if line.strip()]
-                    text_content = '\n\n'.join(text_lines)
-                    response_data["text_content"] = text_content[:10000]  # Limit to 10K chars for preview
+                if row:
+                    df = db.get_table_data(clean_name)
+                    if df is not None and 'text_content' in df.columns:
+                        text_lines = df['text_content'].astype(str).tolist()
+                        text_lines = [line.strip() for line in text_lines if line.strip()]
+                        text_content = '\n\n'.join(text_lines)
+                        response_data["text_content"] = text_content[:10000]
             except Exception as e:
                 print(f"[ERROR] Failed to extract Word text content: {e}")
         
@@ -1318,12 +1429,12 @@ async def get_file(
                     xml_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
                     response_data["file_data"] = f"data:application/xml;base64,{xml_base64}"
             else:
-                # Fallback: try to get text content from DataFrame
                 try:
-                    df = db.get_table_data(clean_name)
-                    if df is not None and 'text_content' in df.columns:
-                        text_content = '\n'.join(df['text_content'].astype(str).tolist())
-                        response_data["text_content"] = text_content[:10000]
+                    if row:
+                        df = db.get_table_data(clean_name)
+                        if df is not None and 'text_content' in df.columns:
+                            text_content = '\n'.join(df['text_content'].astype(str).tolist())
+                            response_data["text_content"] = text_content[:10000]
                 except Exception:
                     pass
         
@@ -1335,7 +1446,6 @@ async def get_file(
                 # Determine MIME type from filename
                 mime_type, _ = guess_type(filename)
                 if not mime_type:
-                    # Default based on common extensions
                     ext = filename.lower().split('.')[-1] if '.' in filename else ''
                     mime_map = {
                         'png': 'image/png',
@@ -1359,7 +1469,6 @@ async def get_file(
                 # Determine MIME type from filename
                 mime_type, _ = guess_type(filename)
                 if not mime_type:
-                    # Default based on common extensions
                     ext = filename.lower().split('.')[-1] if '.' in filename else ''
                     mime_map = {
                         'mp3': 'audio/mpeg',
@@ -1375,12 +1484,12 @@ async def get_file(
                 audio_base64 = base64.b64encode(bytes(rawfile)).decode('utf-8')
                 response_data["file_data"] = f"data:{mime_type};base64,{audio_base64}"
                 
-                # Also include transcription if available
                 try:
-                    df = db.get_table_data(clean_name)
-                    if df is not None and 'text_content' in df.columns:
-                        transcription = '\n'.join(df['text_content'].astype(str).tolist())
-                        response_data["transcription"] = transcription
+                    if row:
+                        df = db.get_table_data(clean_name)
+                        if df is not None and 'text_content' in df.columns:
+                            transcription = '\n'.join(df['text_content'].astype(str).tolist())
+                            response_data["transcription"] = transcription
                 except Exception:
                     pass
             else:
@@ -1389,7 +1498,13 @@ async def get_file(
         else:
             # For other types, try to return DataFrame preview
             try:
-                df = db.get_table_data(clean_name)
+                if row:
+                    df = db.get_table_data(clean_name)
+                else: 
+                    # Try to parse if we have rawfile and it might be loadable?
+                    # For now only DB
+                    df = None
+
                 if df is not None and not df.empty:
                     preview_df = df.head(50)
                     response_data["preview_data"] = {
@@ -1400,6 +1515,7 @@ async def get_file(
                     }
             except Exception:
                 pass
+        
         
         return JSONResponse(content=jsonable_encoder(response_data))
     
