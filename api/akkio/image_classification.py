@@ -26,6 +26,12 @@ from datetime import datetime
 from database import PostgresDatabase
 from openai import OpenAI
 import base64
+from api.akkio.explore_functions.llm import call_llm_with_usage
+import sys
+from pathlib import Path as PathLib
+sys.path.append(str(PathLib(__file__).resolve().parents[3]))
+from llm_config import get_api_key
+
 
 # Limit PyTorch threads to prevent crashes
 torch.set_num_threads(1)
@@ -36,7 +42,11 @@ image_classification_router = APIRouter()
 db = PostgresDatabase()
 
 # OpenAI client for LLM
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def get_openai_client(user_email: str = None):
+    """Get OpenAI client using llm_config"""
+    return OpenAI(api_key=get_api_key(user_email))
+
+client = get_openai_client()  # Default client
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DIR = PROJECT_ROOT / "models" / "image_classification"
@@ -738,15 +748,18 @@ Note: The classification model could not analyze this image. Provide helpful gen
         
         # Call OpenAI
         try:
-            response = client.chat.completions.create(
+            response = call_llm_with_usage(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
                 temperature=0.7,
-                max_tokens=500
+                max_tokens=500,
+                email=user_email
             )
+
+
             
             llm_response = response.choices[0].message.content
             print(f"✅ LLM Response generated ({len(llm_response)} chars)")

@@ -142,6 +142,12 @@ class PostgresDatabase:
                     status VARCHAR(32) NOT NULL DEFAULT 'pending',
                     progress INTEGER NOT NULL DEFAULT 0,
                     stage TEXT,
+                    temperature FLOAT DEFAULT 0.0,
+                    workflow TEXT,
+                    output_format TEXT,
+                    published BOOLEAN DEFAULT FALSE,
+                    public_id VARCHAR(255),
+                    published_at TIMESTAMP,
                     error_message TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW(),
@@ -161,10 +167,40 @@ class PostgresDatabase:
                     vector_collection_id VARCHAR(255),
                     db_table_name VARCHAR(255),
                     processed BOOLEAN DEFAULT FALSE,
+                    error_message TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
                     FOREIGN KEY (session_id) REFERENCES multi_model_sessions(session_id) ON DELETE CASCADE
                 )
             """)
+
+            # Migrations for multi-model tables
+            try:
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS temperature FLOAT DEFAULT 0.0")
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS workflow TEXT")
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS output_format TEXT")
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS published BOOLEAN DEFAULT FALSE")
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS public_id VARCHAR(255)")
+                cursor.execute("ALTER TABLE multi_model_sessions ADD COLUMN IF NOT EXISTS published_at TIMESTAMP")
+                cursor.execute("ALTER TABLE multi_model_files ADD COLUMN IF NOT EXISTS error_message TEXT")
+            except Exception:
+                pass
+
+            # Ensure uniqueness of public_id when present (nullable unique index)
+            try:
+                cursor.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_indexes WHERE indexname = 'uq_multi_model_sessions_public_id'
+                        ) THEN
+                            CREATE UNIQUE INDEX uq_multi_model_sessions_public_id
+                            ON multi_model_sessions(public_id)
+                            WHERE public_id IS NOT NULL;
+                        END IF;
+                    END$$;
+                """)
+            except Exception:
+                pass
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS trained_models (
                     id SERIAL PRIMARY KEY,
@@ -286,6 +322,30 @@ class PostgresDatabase:
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
             """)
+
+    def create_llm_settings_table(self):
+        """Creates llm_settings table for storing user-specific API keys and models."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS llm_settings (
+                    id SERIAL PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    provider VARCHAR(50) DEFAULT 'openai',
+                    api_key TEXT,
+                    model_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            # Add provider column if it doesn't exist (for existing tables)
+            try:
+                cursor.execute("""
+                    ALTER TABLE llm_settings 
+                    ADD COLUMN IF NOT EXISTS provider VARCHAR(50) DEFAULT 'openai'
+                """)
+            except Exception:
+                pass
 
     def _ensure_type_columns(self):
         """Ensure type/subtype/rawfile columns exist on akio_data_fastapi."""
@@ -797,33 +857,36 @@ class PostgresDatabase:
             return "All tables dropped"
 
     # -------- Multi-Model Training Methods --------
-    def create_multi_model_session(self, session_id: str, model_name: str, user_email: str, system_prompt: str):
+    def create_multi_model_session(self, session_id: str, model_name: str, user_email: str, system_prompt: str, temperature: float = 0.0, workflow: str = None, output_format: str = None):
         """Create a new multi-model training session."""
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO multi_model_sessions (session_id, model_name, user_email, system_prompt, status, progress, stage, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, 'pending', 0, 'Initializing', NOW(), NOW())
+                INSERT INTO multi_model_sessions (session_id, model_name, user_email, system_prompt, temperature, workflow, output_format, status, progress, stage, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', 0, 'Initializing', NOW(), NOW())
                 ON CONFLICT (user_email, model_name) DO UPDATE SET
                     session_id = EXCLUDED.session_id,
                     system_prompt = EXCLUDED.system_prompt,
+                    temperature = EXCLUDED.temperature,
+                    workflow = EXCLUDED.workflow,
+                    output_format = EXCLUDED.output_format,
                     status = 'pending',
                     progress = 0,
                     stage = 'Initializing',
                     error_message = NULL,
                     updated_at = NOW(),
                     completed_at = NULL
-            """, (session_id, model_name, user_email, system_prompt))
+            """, (session_id, model_name, user_email, system_prompt, temperature, workflow, output_format))
 
     def add_multi_model_file(self, session_id: str, file_name: str, file_type: str, storage_path: str = None, 
-                            vector_collection_id: str = None, db_table_name: str = None):
+                            vector_collection_id: str = None, db_table_name: str = None, error_message: str = None):
         """Add a file to a multi-model training session."""
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO multi_model_files (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
-            """, (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name))
+                INSERT INTO multi_model_files (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, error_message, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            """, (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, error_message))
 
     def update_multi_model_progress(self, session_id: str, progress: int, stage: str, status: str = None):
         """Update progress for a multi-model training session."""
@@ -868,13 +931,17 @@ class PostgresDatabase:
         with self.connection.cursor() as cursor:
             if session_id:
                 cursor.execute("""
-                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, error_message, created_at, updated_at, completed_at
+                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, temperature, workflow, output_format,
+                           published, public_id, published_at,
+                           error_message, created_at, updated_at, completed_at
                     FROM multi_model_sessions
                     WHERE session_id = %s
                 """, (session_id,))
             elif user_email and model_name:
                 cursor.execute("""
-                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, error_message, created_at, updated_at, completed_at
+                    SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, temperature, workflow, output_format,
+                           published, public_id, published_at,
+                           error_message, created_at, updated_at, completed_at
                     FROM multi_model_sessions
                     WHERE user_email = %s AND model_name = %s
                     ORDER BY updated_at DESC
@@ -886,7 +953,25 @@ class PostgresDatabase:
             row = cursor.fetchone()
             if not row:
                 return None
-            keys = ["session_id", "model_name", "user_email", "system_prompt", "status", "progress", "stage", "error_message", "created_at", "updated_at", "completed_at"]
+            keys = [
+                "session_id",
+                "model_name",
+                "user_email",
+                "system_prompt",
+                "status",
+                "progress",
+                "stage",
+                "temperature",
+                "workflow",
+                "output_format",
+                "published",
+                "public_id",
+                "published_at",
+                "error_message",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            ]
             return dict(zip(keys, row))
 
     def get_multi_model_files(self, session_id: str):
@@ -894,13 +979,13 @@ class PostgresDatabase:
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                SELECT id, session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, processed, created_at
+                SELECT id, session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, processed, error_message, created_at
                 FROM multi_model_files
                 WHERE session_id = %s
                 ORDER BY created_at
             """, (session_id,))
             rows = cursor.fetchall()
-            keys = ["id", "session_id", "file_name", "file_type", "storage_path", "vector_collection_id", "db_table_name", "processed", "created_at"]
+            keys = ["id", "session_id", "file_name", "file_type", "storage_path", "vector_collection_id", "db_table_name", "processed", "error_message", "created_at"]
             return [dict(zip(keys, row)) for row in rows]
 
     def get_user_multi_models(self, user_email: str):
@@ -908,14 +993,137 @@ class PostgresDatabase:
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
             cursor.execute("""
-                SELECT session_id, model_name, system_prompt, status, progress, stage, created_at, updated_at, completed_at
+                SELECT session_id, model_name, system_prompt, status, progress, stage, temperature,
+                       workflow, output_format,
+                       published, public_id, published_at,
+                       error_message,
+                       created_at, updated_at, completed_at
                 FROM multi_model_sessions
                 WHERE user_email = %s
                 ORDER BY updated_at DESC
             """, (user_email,))
             rows = cursor.fetchall()
-            keys = ["session_id", "model_name", "system_prompt", "status", "progress", "stage", "created_at", "updated_at", "completed_at"]
+            keys = [
+                "session_id",
+                "model_name",
+                "system_prompt",
+                "status",
+                "progress",
+                "stage",
+                "temperature",
+                "workflow",
+                "output_format",
+                "published",
+                "public_id",
+                "published_at",
+                "error_message",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            ]
             return [dict(zip(keys, row)) for row in rows]
+
+    def get_multi_model_session_by_public_id(self, public_id: str):
+        """Get a multi-model session by its public_id."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id, model_name, user_email, system_prompt, status, progress, stage, temperature, workflow, output_format,
+                       published, public_id, published_at,
+                       error_message, created_at, updated_at, completed_at
+                FROM multi_model_sessions
+                WHERE public_id = %s
+                """,
+                (public_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            keys = [
+                "session_id",
+                "model_name",
+                "user_email",
+                "system_prompt",
+                "status",
+                "progress",
+                "stage",
+                "temperature",
+                "workflow",
+                "output_format",
+                "published",
+                "public_id",
+                "published_at",
+                "error_message",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            ]
+            return dict(zip(keys, row))
+
+    def set_multi_model_published(self, session_id: str, user_email: str, published: bool, public_id: str = None):
+        """
+        Toggle publish state. If publishing and public_id is provided, store it.
+        If publishing and public_id is NULL, keep existing public_id (if any).
+        If unpublishing, keep public_id (so republish reuses same link) but clear published_at.
+        """
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            if published:
+                cursor.execute(
+                    """
+                    UPDATE multi_model_sessions
+                    SET
+                        published = TRUE,
+                        public_id = COALESCE(%s, public_id),
+                        published_at = COALESCE(published_at, NOW()),
+                        updated_at = NOW()
+                    WHERE session_id = %s AND user_email = %s
+                    """,
+                    (public_id, session_id, user_email),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE multi_model_sessions
+                    SET
+                        published = FALSE,
+                        published_at = NULL,
+                        updated_at = NOW()
+                    WHERE session_id = %s AND user_email = %s
+                    """,
+                    (session_id, user_email),
+                )
+            return cursor.rowcount
+
+    def update_multi_model_session_config(
+        self,
+        session_id: str,
+        user_email: str,
+        model_name: str = None,
+        system_prompt: str = None,
+        temperature: float = None,
+        workflow: str = None,
+        output_format: str = None,
+    ):
+        """Update a multi-model session's editable configuration fields."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE multi_model_sessions
+                SET
+                    model_name = COALESCE(%s, model_name),
+                    system_prompt = COALESCE(%s, system_prompt),
+                    temperature = COALESCE(%s, temperature),
+                    workflow = COALESCE(%s, workflow),
+                    output_format = COALESCE(%s, output_format),
+                    updated_at = NOW()
+                WHERE session_id = %s AND user_email = %s
+                """,
+                (model_name, system_prompt, temperature, workflow, output_format, session_id, user_email),
+            )
+            return cursor.rowcount
 
     def mark_file_processed(self, session_id: str, file_name: str):
         """Mark a file as processed."""
@@ -952,6 +1160,43 @@ class PostgresDatabase:
                 DROP TABLE IF EXISTS {table_name} CASCADE
             """)
             self.connection.commit()
+
+    # -------- LLM Settings Methods --------
+    def save_llm_settings(self, email: str, provider: str = None, api_key: str = None, model_name: str = None):
+        """Save or update LLM settings for a user."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO llm_settings (email, provider, api_key, model_name, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (email) DO UPDATE SET
+                    provider = COALESCE(EXCLUDED.provider, llm_settings.provider),
+                    api_key = COALESCE(EXCLUDED.api_key, llm_settings.api_key),
+                    model_name = COALESCE(EXCLUDED.model_name, llm_settings.model_name),
+                    updated_at = NOW()
+            """, (email, provider, api_key, model_name))
+
+    def get_llm_settings(self, email: str):
+        """Get LLM settings for a user."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT email, provider, api_key, model_name, created_at, updated_at
+                FROM llm_settings
+                WHERE email = %s
+            """, (email,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            keys = ["email", "provider", "api_key", "model_name", "created_at", "updated_at"]
+            return dict(zip(keys, row))
+
+    def delete_llm_settings(self, email: str):
+        """Delete LLM settings for a user."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("DELETE FROM llm_settings WHERE email = %s", (email,))
+            return f"{cursor.rowcount} LLM settings deleted"
 
 
 # Sample config - replace with your actual database credentials

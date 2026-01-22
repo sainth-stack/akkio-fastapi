@@ -81,3 +81,7 @@ prophet
 statsmodels
 
 # Updated: langchain (unpinned)
+faiss-cpu
+
+# Web search - Using Google for better accuracy
+googlesearch-python

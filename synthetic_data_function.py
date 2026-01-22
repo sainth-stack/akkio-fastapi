@@ -8,6 +8,8 @@ import re
 import dateutil.parser as dp
 from collections import Counter
 from openai import OpenAIError
+from llm_helper import get_llm_for_user
+from llm_config import get_api_key
 
 
 def extrapolate_from_seed(seed_df: pd.DataFrame, target_rows: int, datetime_col: str) -> pd.DataFrame:
@@ -52,9 +54,15 @@ def detect_date_format(series: pd.Series) -> Optional[str]:
     return '%d-%m-%Y %H:%M:%S'
 
 
-def generate_synthetic_data(api_key: str, file_path: str, total_rows: int = 1000, llm_seed_rows: int = 100,
-                            datetime_col: str = None) -> pd.DataFrame:
-    llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=api_key)
+def generate_synthetic_data(api_key: str = None, file_path: str = None, total_rows: int = 1000, llm_seed_rows: int = 100,
+                            datetime_col: str = None, user_email: str = None) -> pd.DataFrame:
+    """Generate synthetic data using user's preferred LLM configuration"""
+    # Use llm_helper to get LLM with user's config
+    llm = get_llm_for_user(user_email=user_email)
+    
+    # Get API key from config if not provided
+    if not api_key:
+        api_key = get_api_key(user_email)
 
     if file_path.endswith(".xlsx"):
         data = pd.read_excel(file_path)

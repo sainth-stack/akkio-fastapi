@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Form, HTTPException
+from fastapi import APIRouter, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from typing import Optional
@@ -6,6 +6,8 @@ from uuid import uuid4
 import pandas as pd
 import os
 import glob
+import json
+import asyncio
 from pathlib import Path
 from langchain_community.vectorstores import Chroma
 try:
@@ -31,7 +33,9 @@ from .explore_functions import (
     handle_graph_agent,
     analyze_legal_content,
 )
-from .explore_functions.llm import get_openai_client
+from .explore_functions.llm import get_openai_client, call_llm_with_usage, stream_llm_with_usage
+from .usage_tracking import set_current_email, reset_current_email
+
 import base64
 
 explore_router = APIRouter()
@@ -131,6 +135,7 @@ async def senior_data_analysis(
     email: Optional[str] = Form(None),
     file_type: Optional[str] = Form(None),
 ):
+    email_token = set_current_email(email)
     try:
         if not session_id:
             session_id = str(uuid4())
@@ -207,7 +212,7 @@ async def senior_data_analysis(
                             )
                             user_prompt = query
                         
-                        chat = client.chat.completions.create(
+                        chat = call_llm_with_usage(
                             model="gpt-4o-mini",
                             messages=[
                                 {"role": "system", "content": system_prompt},
@@ -216,8 +221,10 @@ async def senior_data_analysis(
                                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
                                 ]}
                             ],
-                            temperature=0.0
+                            temperature=0.0,
+                            email=email
                         )
+
                         answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
                         
                         # Clean up the answer
@@ -338,14 +345,16 @@ async def senior_data_analysis(
                                 )
                                 user_prompt = f"Audio transcription:\n\n{full_text}\n\nProvide a detailed summary."
                                 
-                                chat = client.chat.completions.create(
+                                chat = call_llm_with_usage(
                                     model="gpt-4o-mini",
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_prompt}
                                     ],
-                                    temperature=0.0
+                                    temperature=0.0,
+                                    email=email
                                 )
+
                                 answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
                                 print(f"[AUDIO][EXPLORE] ✓ Summary generated: {len(answer)} characters")
                             else:
@@ -371,14 +380,16 @@ async def senior_data_analysis(
                                 )
                                 user_prompt = f"Context from audio transcription:\n\n{context}\n\nQuestion: {query}"
                                 
-                                chat = client.chat.completions.create(
+                                chat = call_llm_with_usage(
                                     model="gpt-4o-mini",
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_prompt}
                                     ],
-                                    temperature=0.0
+                                    temperature=0.0,
+                                    email=email
                                 )
+
                                 answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
                                 print(f"[AUDIO][EXPLORE] ✓ Answer generated: {len(answer)} characters")
                             
@@ -482,14 +493,16 @@ async def senior_data_analysis(
                                         "If the answer is not present in the context, say you cannot find it in a friendly HTML format."
                                     )
                                     user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
-                                chat = client.chat.completions.create(
+                                chat = call_llm_with_usage(
                                     model="gpt-4o-mini",
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_payload},
                                     ],
-                                    temperature=0.0
+                                    temperature=0.0,
+                                    email=email
                                 )
+
                                 answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
                                 # Clean up markdown code fences and escape sequences
                                 answer = answer.strip()
@@ -549,8 +562,8 @@ async def senior_data_analysis(
                         - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
                 """
             )
-            code = generate_data_code(prompt_eng)
-            result = simulate_and_format_with_llm(code, df)
+            code = generate_data_code(prompt_eng, email=email)
+            result = simulate_and_format_with_llm(code, df, email=email)
             cleaned_result = None
             try:
                 import re, json
@@ -602,7 +615,7 @@ async def senior_data_analysis(
             except Exception as e:
                 print(f"Graph agent failed for session {session_id} with error: {str(e)}, falling back to generic LLM")
                 pass
-        analysis_result = get_llm_analysis_explore(query, df, mode=agent, chat_history=chat_history_for_llm)
+        analysis_result = get_llm_analysis_explore(query, df, mode=agent, chat_history=chat_history_for_llm, email=email)
         
         # Debug logging for LLM response
         print(f"[DEBUG] LLM analysis_result for session {session_id}: {analysis_result}")
@@ -667,6 +680,8 @@ async def senior_data_analysis(
         session_id_for_error = session_id if 'session_id' in locals() else None
         print(f"Explore API error for session {session_id_for_error}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    finally:
+        reset_current_email(email_token)
 
 
 @explore_router.get("/debug_session_memory/{session_id}")
@@ -771,7 +786,7 @@ async def vector_chat(
                     client = get_openai_client()
                     b64 = base64.b64encode(raw).decode("utf-8")
                     system_prompt = "Answer the user's question about the provided image. Use visual reasoning."
-                    chat = client.chat.completions.create(
+                    chat = call_llm_with_usage(
                         model="gpt-4o-mini",
                         messages=[
                             {"role": "system", "content": system_prompt},
@@ -780,8 +795,10 @@ async def vector_chat(
                                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
                             ]}
                         ],
-                        temperature=0.0
+                        temperature=0.0,
+                        email=email
                     )
+
                     answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
                     return JSONResponse(content=jsonable_encoder({
                         "type": "text",
@@ -862,14 +879,16 @@ async def vector_chat(
                 "If the answer is not present in the context, say you cannot find it in a friendly HTML format."
             )
             user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
-        chat = client.chat.completions.create(
+        chat = call_llm_with_usage(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_payload},
             ],
-            temperature=0.0
+            temperature=0.0,
+            email=email
         )
+
         answer = chat.choices[0].message.content if chat and chat.choices else "No answer generated."
         
         # Clean up markdown code fences and escape sequences
@@ -900,4 +919,529 @@ async def vector_chat(
         }), status_code=200)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vector chat failed: {str(e)}")
+
+
+async def _send_websocket_message(websocket: WebSocket, message_type: str, data: dict):
+    """Helper to send JSON messages through WebSocket with proper serialization"""
+    try:
+        # Ensure all data is JSON-serializable
+        serialized_data = jsonable_encoder(data)
+        # If data already has a "type" key, merge it properly
+        message = {"type": message_type}
+        message.update(serialized_data)
+        await websocket.send_json(message)
+    except Exception as e:
+        print(f"Error sending WebSocket message: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def _stream_text_response(websocket: WebSocket, text: str, message_type: str = "text_chunk"):
+    """Stream text character by character or in chunks"""
+    # Stream in chunks of reasonable size for better UX
+    chunk_size = 10
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i:i + chunk_size]
+        await _send_websocket_message(websocket, message_type, {"chunk": chunk})
+        await asyncio.sleep(0.01)  # Small delay to make streaming visible
+
+
+@explore_router.websocket("/Explore/ws")
+async def explore_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for streaming explore API responses.
+    Expected message format: {
+        "query": str,
+        "filename": Optional[str],
+        "session_id": Optional[str],
+        "email": Optional[str],
+        "file_type": Optional[str],
+        "dataset_path": Optional[str]
+    }
+    """
+    await websocket.accept()
+    email_token = None
+    
+    try:
+        # Receive initial message with query parameters
+        data = await websocket.receive_json()
+        query = data.get("query", "")
+        filename = data.get("filename")
+        session_id = data.get("session_id")
+        email = data.get("email")
+        file_type = data.get("file_type")
+        dataset_path = data.get("dataset_path")
+        
+        if not query:
+            await _send_websocket_message(websocket, "error", {"message": "Query is required"})
+            await websocket.close()
+            return
+        
+        email_token = set_current_email(email)
+        
+        if not session_id:
+            session_id = str(uuid4())
+            await _send_websocket_message(websocket, "session_id", {"session_id": session_id})
+        
+        # Get chat history
+        chat_history_for_llm = manage_session_memory(session_id, get_history=True)
+        
+        # Resolve dataset_path from filename if provided
+        if not dataset_path and filename:
+            try:
+                project_root = Path(__file__).resolve().parents[2]
+                uploads_dir_primary = project_root / "uploads"
+                uploads_dir_fallback = Path(os.getcwd()) / "uploads"
+                search_dirs = [uploads_dir_primary, uploads_dir_fallback] if uploads_dir_primary != uploads_dir_fallback else [uploads_dir_primary]
+                candidates = []
+                for d in search_dirs:
+                    if d.exists():
+                        base = filename.strip().lower()
+                        for ext in ("csv", "xlsx", "xls", "pdf", "docx"):
+                            pattern = str(d / f"{base}*.{ext}")
+                            candidates.extend(glob.glob(pattern))
+                if candidates:
+                    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                    dataset_path = candidates[0]
+            except Exception:
+                pass
+        
+        # Handle image type with vision model
+        if not dataset_path and filename and (file_type or "").lower() == "image":
+            try:
+                db = PostgresDatabase()
+                raw = db.get_raw_file(Path(filename).stem)
+                if raw:
+                    client = get_openai_client()
+                    b64 = base64.b64encode(raw).decode("utf-8")
+                    
+                    if _is_generic_summary_query(query):
+                        system_prompt = (
+                            "You are a helpful assistant analyzing images. Provide a detailed description of the image, "
+                            "including what objects, people, text, colors, and visual elements are present.\n"
+                            "Format your response in clean HTML with proper structure:\n"
+                            "- Use <h4> for main headings\n"
+                            "- Use <p> for paragraphs\n"
+                            "- Use <ul> and <li> for bullet lists\n"
+                            "- Use <strong> for emphasis\n"
+                            "Be specific and descriptive."
+                        )
+                        user_prompt = "Please provide a detailed description and analysis of this image."
+                    else:
+                        system_prompt = (
+                            "You are a helpful assistant answering questions about images using visual analysis.\n"
+                            "Format your response in clean HTML with proper structure:\n"
+                            "- Use <h4> for main headings\n"
+                            "- Use <p> for paragraphs\n"
+                            "- Use <ul> and <li> for lists\n"
+                            "- Use <strong> for emphasis\n"
+                            "Be specific and refer to what you actually see in the image."
+                        )
+                        user_prompt = query
+                    
+                    await _send_websocket_message(websocket, "response_type", {"type": "text"})
+                    
+                    full_answer = ""
+                    async for chunk in stream_llm_with_usage(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": user_prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                            ]}
+                        ],
+                        temperature=0.0,
+                        email=email
+                    ):
+                        full_answer += chunk
+                        await _send_websocket_message(websocket, "text_chunk", {"chunk": chunk})
+                    
+                    # Clean up answer
+                    answer = full_answer.strip()
+                    if answer.startswith("```html"):
+                        answer = answer[7:]
+                    if answer.startswith("```"):
+                        answer = answer[3:]
+                    if answer.endswith("```"):
+                        answer = answer[:-3]
+                    answer = answer.strip().replace("\\n", "").replace("\n", "").replace("\r", "")
+                    
+                    manage_session_memory(session_id, user_message=query, bot_message=answer)
+                    await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+                    await websocket.close()
+                    return
+            except Exception as e:
+                print(f"[IMAGE][EXPLORE] Vision model failed: {str(e)}")
+                pass
+        
+        # Handle audio type
+        if not dataset_path and filename and (file_type or "").lower() == "audio":
+            try:
+                project_root = Path(__file__).resolve().parents[2]
+                persist_dir = project_root / "chroma_store"
+                
+                if persist_dir.exists():
+                    embeddings = OpenAIEmbeddings()
+                    coll_name = _resolve_collection_name(persist_dir, email, filename)
+                    
+                    if coll_name:
+                        vectordb = Chroma(collection_name=coll_name, persist_directory=str(persist_dir), embedding_function=embeddings)
+                        
+                        # Get metadata
+                        db = PostgresDatabase()
+                        metadata_info = ""
+                        try:
+                            df_meta = db.get_table_data(Path(filename).stem)
+                            if df_meta is not None and not df_meta.empty:
+                                if 'duration_seconds' in df_meta.columns:
+                                    duration = df_meta['duration_seconds'].iloc[0]
+                                    sample_rate = df_meta.get('sample_rate_hz', pd.Series([None])).iloc[0]
+                                    channels = df_meta.get('channel_names', pd.Series([None])).iloc[0]
+                                    quality = df_meta.get('audio_quality', pd.Series([None])).iloc[0]
+                                    
+                                    metadata_info = f"\n\n<strong>Audio File Properties:</strong><ul>"
+                                    if duration:
+                                        metadata_info += f"<li>Duration: {duration} seconds</li>"
+                                    if sample_rate:
+                                        metadata_info += f"<li>Sample Rate: {sample_rate} Hz</li>"
+                                    if channels:
+                                        metadata_info += f"<li>Channels: {channels}</li>"
+                                    if quality:
+                                        metadata_info += f"<li>Quality: {quality}</li>"
+                                    metadata_info += "</ul>"
+                        except Exception:
+                            pass
+                        
+                        is_summary = _is_generic_summary_query(query)
+                        
+                        await _send_websocket_message(websocket, "response_type", {"type": "text"})
+                        
+                        if is_summary:
+                            docs = _retrieve_docs(vectordb, "audio transcription summary", k=30)
+                            full_text = "\n".join([d.page_content for d in docs])
+                            
+                            system_prompt = (
+                                "You are analyzing an audio file transcription. Provide a comprehensive summary including:\n"
+                                "1. Main topics discussed\n"
+                                "2. Key points and insights\n"
+                                "3. Any important information or conclusions\n"
+                                "Format your response in clean HTML with:\n"
+                                "- Use <h4> for section headings\n"
+                                "- Use <p> for paragraphs\n"
+                                "- Use <ul> and <li> for bullet points\n"
+                                "- Use <strong> for emphasis"
+                            )
+                            user_prompt = f"Audio transcription:\n\n{full_text}\n\nProvide a detailed summary."
+                        else:
+                            docs = _retrieve_docs(vectordb, query, k=10)
+                            context = "\n".join([d.page_content for d in docs])
+                            
+                            system_prompt = (
+                                "You are answering questions about an audio transcription. "
+                                "Use the provided context to answer accurately.\n"
+                                "Format your response in clean HTML with:\n"
+                                "- Use <h4> for headings if needed\n"
+                                "- Use <p> for paragraphs\n"
+                                "- Use <ul> and <li> for lists\n"
+                                "- Use <strong> for emphasis\n"
+                                "If the context doesn't contain relevant information, say so politely."
+                            )
+                            user_prompt = f"Context from audio transcription:\n\n{context}\n\nQuestion: {query}"
+                        
+                        full_answer = ""
+                        async for chunk in stream_llm_with_usage(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.0,
+                            email=email
+                        ):
+                            full_answer += chunk
+                            await _send_websocket_message(websocket, "text_chunk", {"chunk": chunk})
+                        
+                        if metadata_info:
+                            full_answer += metadata_info
+                            await _stream_text_response(websocket, metadata_info, "text_chunk")
+                        
+                        answer = full_answer.strip()
+                        if answer.startswith("```html"):
+                            answer = answer[7:]
+                        if answer.startswith("```"):
+                            answer = answer[3:]
+                        if answer.endswith("```"):
+                            answer = answer[:-3]
+                        answer = answer.strip().replace("\\n", "").replace("\n", "").replace("\r", "")
+                        
+                        manage_session_memory(session_id, user_message=query, bot_message=answer)
+                        await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+                        await websocket.close()
+                        return
+            except Exception as e:
+                print(f"[AUDIO][EXPLORE] Audio processing failed: {str(e)}")
+                pass
+        
+        # Handle vector store for PDFs/Word docs
+        if not dataset_path and filename:
+            try:
+                project_root = Path(__file__).resolve().parents[2]
+                persist_dir = project_root / "chroma_store"
+                if persist_dir.exists():
+                    coll_name = _resolve_collection_name(persist_dir, email, filename)
+                    if coll_name:
+                        embeddings = OpenAIEmbeddings()
+                        vectordb = Chroma(collection_name=coll_name, persist_directory=str(persist_dir), embedding_function=embeddings)
+                        docs = _retrieve_docs(vectordb, query, k=7)
+                        if docs:
+                            context = "\n\n---\n\n".join([d.page_content for d in docs if d and d.page_content])
+                            client = get_openai_client()
+                            
+                            await _send_websocket_message(websocket, "response_type", {"type": "text"})
+                            
+                            if _is_generic_summary_query(query):
+                                system_prompt = (
+                                    "You are a helpful assistant. Create a clear, self-contained summary of the document "
+                                    "STRICTLY from the provided context. Include key sections, main points, and any important numbers/dates.\n"
+                                    "Format your response in clean HTML with proper structure:\n"
+                                    "- Use <h4> for main headings\n"
+                                    "- Use <p> for paragraphs\n"
+                                    "- Use <ul> and <li> for bullet lists\n"
+                                    "- Use <strong> for emphasis\n"
+                                    "Make it user-friendly and well-formatted."
+                                )
+                                user_payload = f"Context:\n{context}\n\nTask:\nProvide a concise, detailed, well-formatted HTML summary of this document."
+                            else:
+                                system_prompt = (
+                                    "You are a helpful assistant answering questions strictly from the provided context.\n"
+                                    "Format your response in clean HTML with proper structure:\n"
+                                    "- Use <h4> for main headings\n"
+                                    "- Use <p> for paragraphs\n"
+                                    "- Use <ul> and <li> for lists\n"
+                                    "- Use <strong> for emphasis\n"
+                                    "If the answer is not present in the context, say you cannot find it in a friendly HTML format."
+                                )
+                                user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
+                            
+                            full_answer = ""
+                            async for chunk in stream_llm_with_usage(
+                                model="gpt-4o-mini",
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_payload},
+                                ],
+                                temperature=0.0,
+                                email=email
+                            ):
+                                full_answer += chunk
+                                await _send_websocket_message(websocket, "text_chunk", {"chunk": chunk})
+                            
+                            answer = full_answer.strip()
+                            if answer.startswith("```html"):
+                                answer = answer[7:]
+                            if answer.startswith("```"):
+                                answer = answer[3:]
+                            if answer.endswith("```"):
+                                answer = answer[:-3]
+                            answer = answer.strip().replace("\\n", "").replace("\n", "").replace("\r", "")
+                            
+                            manage_session_memory(session_id, user_message=query, bot_message=answer)
+                            await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+                            await websocket.close()
+                            return
+            except Exception:
+                pass
+        
+        # Handle tabular data analysis
+        df = load_dataset(dataset_path)
+        
+        # Check for legal analysis
+        legal_keywords = ['document', 'pdf', 'legal', 'contract', 'agreement', 'policy', 'regulation', 'law', 'analysis', 'summary', 'extract', 'content']
+        is_legal_query = any(keyword in query.lower() for keyword in legal_keywords)
+        is_legal_data = 'text_content' in df.columns and 'document_type' in df.columns
+        if is_legal_query and is_legal_data:
+            professional_analysis = analyze_legal_content(df, query)
+            manage_session_memory(session_id, user_message=query, bot_message="Generated comprehensive legal analysis.")
+            await _send_websocket_message(websocket, "response_type", {"type": "text"})
+            await _stream_text_response(websocket, professional_analysis, "text_chunk")
+            await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+            await websocket.close()
+            return
+        
+        df = preprocess_dataframe_for_graphing(df)
+        metadata_str = ", ".join(df.columns.tolist())
+        
+        # Check for report query
+        is_report_query = any(keyword in query.lower() for keyword in
+                              ['report', 'summary report', 'analysis report', 'detailed report',
+                               'comprehensive report', 'summary_report', 'analysis_report', 'detailed_report',
+                               'comprehensive_report'])
+        if is_report_query:
+            # For reports, we'll send the complete response (not ideal for streaming, but maintains compatibility)
+            prompt_eng = (
+                f"""
+                    You are a Senior data analyst generating a comprehensive report with advanced analytics capabilities. 
+                    Always strictly adhere to the following rules: 
+                    The metadata required for your analysis: {metadata_str}
+                    Consider ALL rows in the currently loaded dataset in memory. No data assumptions can be taken. Consider the entire range from first row to last row. Do not assume any data outside this range.
+                    Generate a comprehensive report with intelligent date handling and analysis for: {query}
+                    The report must include:
+                        - 4 Bullet points (2 lines each): current analysis of the data.
+                        - 1 summary table  and all other analysis metrics
+                        - 2 analysis charts showing current data patterns from the data with main Heading of Analysis.
+                """
+            )
+            code = generate_data_code(prompt_eng, email=email)
+            result = simulate_and_format_with_llm(code, df, email=email)
+            cleaned_result = None
+            try:
+                import re
+                match = re.search(r'```json\s*(\{.*?\})\s*```', result, re.DOTALL)
+                if match:
+                    cleaned_result = json.loads(match.group(1))
+                else:
+                    objs = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', result, re.DOTALL)
+                    for m in objs:
+                        try:
+                            cleaned_result = json.loads(m)
+                            break
+                        except Exception:
+                            continue
+            except Exception:
+                cleaned_result = None
+            if not cleaned_result:
+                cleaned_result = {"report": {}, "title": "", "description": ""}
+            manage_session_memory(session_id, user_message=query, bot_message="Generated a comprehensive report based on your request.")
+            await _send_websocket_message(websocket, "response_type", {"type": "report"})
+            await _send_websocket_message(websocket, "report_data", {
+                "report": cleaned_result.get("report"),
+                "title": cleaned_result.get("title"),
+                "description": cleaned_result.get("description")
+            })
+            await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+            await websocket.close()
+            return
+        
+        # Handle simple queries
+        agent = detect_agent(query)
+        if agent in ["table", "text"]:
+            can_handle_directly, structured = classify_query_complexity(query, list(df.columns))
+            if can_handle_directly and structured is not None:
+                intent, column = structured
+                simple_resp = handle_simple_query(df, intent, column)
+                manage_session_memory(session_id, user_message=query, bot_message=f"Processed simple query about {column}.")
+                await _send_websocket_message(websocket, "response_type", {"type": simple_resp.get("type", "text")})
+                if simple_resp.get("type") == "table":
+                    table_payload = simple_resp.get("payload", [])
+                    # Ensure table payload is a list of dicts
+                    if not isinstance(table_payload, list):
+                        table_payload = []
+                    # Ensure each row is a dict
+                    table_payload = [row if isinstance(row, dict) else {} for row in table_payload]
+                    await _send_websocket_message(websocket, "table_data", {"rows": table_payload})
+                elif simple_resp.get("type") == "text":
+                    await _stream_text_response(websocket, str(simple_resp.get("payload", "")), "text_chunk")
+                await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+                await websocket.close()
+                return
+        
+        # Handle graph agent
+        if agent == "graph":
+            try:
+                formatted_graph = handle_graph_agent(query, df)
+                if formatted_graph is not None:
+                    manage_session_memory(session_id, user_message=query, bot_message="Generated a graph visualization based on your request.")
+                    await _send_websocket_message(websocket, "response_type", {"type": formatted_graph.get("type", "plotly")})
+                    plotly_payload = formatted_graph.get("payload")
+                    # Ensure plotly figure has proper structure
+                    if isinstance(plotly_payload, dict):
+                        if "data" not in plotly_payload:
+                            plotly_payload["data"] = []
+                        if "layout" not in plotly_payload:
+                            plotly_payload["layout"] = {}
+                    await _send_websocket_message(websocket, "plotly_data", {"figure": plotly_payload})
+                    await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+                    await websocket.close()
+                    return
+            except Exception:
+                pass
+        
+        # Default LLM analysis with streaming
+        await _send_websocket_message(websocket, "response_type", {"type": "text"})
+        
+        # For streaming, we'll need to modify get_llm_analysis_explore to support streaming
+        # For now, let's use a simplified streaming approach
+        analysis_result = get_llm_analysis_explore(query, df, mode=agent, chat_history=chat_history_for_llm, email=email)
+        
+        response_type = analysis_result.get("type")
+        payload = analysis_result.get("payload")
+        
+        if response_type == "conversational_answer":
+            formatted_payload = format_text_response(str(payload)) if payload else payload
+            await _stream_text_response(websocket, formatted_payload, "text_chunk")
+            manage_session_memory(session_id, user_message=query, bot_message=str(payload) if payload else "I provided a conversational response.")
+        elif response_type == "data_analysis_answer":
+            explanation = payload.get("explanation") if isinstance(payload, dict) else ""
+            code = payload.get("code") if isinstance(payload, dict) else None
+            
+            if explanation:
+                await _stream_text_response(websocket, explanation, "explanation_chunk")
+            
+            if code:
+                try:
+                    from .explore_functions.agent_utils import safe_execute_pandas_code
+                    exec_result = safe_execute_pandas_code(code, df)
+                    formatted = format_result_for_response(exec_result)
+                    
+                    if formatted.get("type") == "plotly":
+                        plotly_payload = formatted.get("payload")
+                        # Ensure plotly figure has proper structure
+                        if isinstance(plotly_payload, dict):
+                            # Ensure data and layout exist
+                            if "data" not in plotly_payload:
+                                plotly_payload["data"] = []
+                            if "layout" not in plotly_payload:
+                                plotly_payload["layout"] = {}
+                        await _send_websocket_message(websocket, "plotly_data", {"figure": plotly_payload})
+                    elif formatted.get("type") == "table":
+                        table_payload = formatted.get("payload", [])
+                        # Ensure table payload is a list of dicts
+                        if not isinstance(table_payload, list):
+                            table_payload = []
+                        # Ensure each row is a dict
+                        table_payload = [row if isinstance(row, dict) else {} for row in table_payload]
+                        await _send_websocket_message(websocket, "table_data", {"rows": table_payload})
+                    else:
+                        await _stream_text_response(websocket, str(formatted.get("payload", "")), "text_chunk")
+                    
+                    manage_session_memory(session_id, user_message=query, bot_message=explanation or "I have generated the data analysis you requested.")
+                except Exception as e:
+                    error_msg = f"<h4>Analysis Error</h4><p>There was an error executing the analysis: {str(e)}</p>"
+                    await _stream_text_response(websocket, error_msg, "text_chunk")
+            else:
+                default_msg = explanation or "I understood your request but couldn't generate the right code."
+                await _stream_text_response(websocket, default_msg, "text_chunk")
+        else:
+            error_msg = format_text_response("<h4>I'm sorry, I couldn't process that request.</h4><p>Please try rephrasing your question.</p>")
+            await _stream_text_response(websocket, error_msg, "text_chunk")
+        
+        await _send_websocket_message(websocket, "complete", {"session_id": session_id})
+        await websocket.close()
+        
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+    except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+        try:
+            await _send_websocket_message(websocket, "error", {"message": str(e)})
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        if email_token:
+            reset_current_email(email_token)
 

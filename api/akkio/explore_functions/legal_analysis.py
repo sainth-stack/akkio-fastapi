@@ -1,10 +1,12 @@
 import json
 from typing import Optional
 import pandas as pd
-from .llm import get_openai_client, get_language_context
+from .llm import get_openai_client, get_language_context, call_llm_with_usage
 
 
-def analyze_legal_content(df: pd.DataFrame, query: str) -> str:
+
+def analyze_legal_content(df: pd.DataFrame, query: str, email: str = None) -> str:
+
     """
     Analyze legal document content and provide professional structured response with reference links
     """
@@ -96,17 +98,18 @@ def analyze_legal_content(df: pd.DataFrame, query: str) -> str:
         {html_template}
         IMPORTANT: Return ONLY the HTML content above, no additional text or explanations.
         """
-        client = get_openai_client()
-        response = client.chat.completions.create(
+        response = call_llm_with_usage(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a senior legal analysis expert specializing in UAE legal documents and regulations. Provide comprehensive, professional legal analysis in the exact HTML format requested."},
                 {"role": "user", "content": analysis_prompt}
             ],
             max_tokens=2000,
-            temperature=0.3
+            temperature=0.3,
+            email=email
         )
         return response.choices[0].message.content.strip()
+
     except Exception as e:
         return f"""
         <h3>LEGAL ANALYSIS SYSTEM</h3>

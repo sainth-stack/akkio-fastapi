@@ -1,14 +1,17 @@
 import os
 import pandas as pd
-from langchain.agents import initialize_agent, AgentType
-from langchain.tools import Tool
+from langchain_core.tools import Tool
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from typing import List, Dict, Any, Tuple
 import re
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 from typing import Dict
 
 from pandas import DataFrame
+from llm_helper import get_llm_for_user
 # For PDF Generation
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -27,11 +30,11 @@ from PIL import Image as PILImage
 from sklearn.utils import resample
 
 
-def initialize_llm():
-    print("[DEBUG] Initializing OpenAI LLM...")
-    return ChatOpenAI(
-        model="gpt-4.1-mini",
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
+def initialize_llm(user_email: str = None):
+    """Initialize LLM using user's preferred model from llm_config"""
+    print("[DEBUG] Initializing LLM from user config...")
+    return get_llm_for_user(
+        user_email=user_email,
         temperature=0.7,
         max_tokens=4096
     )
@@ -458,6 +461,28 @@ def excel_generator_tool(prompt: str) -> DataFrame:
 
 # -----------------------------------------------------------------------------------------------------------------
 # Agent Setup
+# -----------------------------------------------------------------------------------------------------------------
+# Agent Setup
+
+class GraphAgentWrapper:
+    def __init__(self, graph):
+        self.graph = graph
+    
+    def run(self, input_text: str) -> str:
+        try:
+            # LangGraph invoke
+            result = self.graph.invoke({"messages": [{"role": "user", "content": input_text}]})
+            # Extract last message content
+            if "messages" in result and result["messages"]:
+                return result["messages"][-1].content
+            return str(result)
+        except Exception as e:
+            print(f"Error running agent: {e}")
+            return "An error occurred while processing your request."
+            
+    def invoke(self, input_text: str) -> str:
+        return self.run(input_text)
+
 def DataScout_agent():
     llm = initialize_llm()
     tools = [
@@ -472,14 +497,13 @@ def DataScout_agent():
             ),
             return_direct=True
         )]
-    agent = initialize_agent(
+    
+    graph = create_agent(
+        model=llm,
         tools=tools,
-        llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-        handle_parsing_errors=True
+        system_prompt="You are a data scout agent. Your goal is to generate excel files based on user prompts.",
     )
-    return agent
+    return GraphAgentWrapper(graph)
 
 
 # -----------------------------------------------------------------------------------------------------------------
@@ -506,13 +530,12 @@ def DataScout_agent_with_pdf():
         )
     ]
 
-    return initialize_agent(
+    graph = create_agent(
+        model=llm,
         tools=tools,
-        llm=llm,
-        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-        handle_parsing_errors=True
+        system_prompt="You are a document generator agent. Your goal is to generate PDF documents based on user prompts.",
     )
+    return GraphAgentWrapper(graph)
 
 # pip install langchain-openai pandas openpyxl reportlab
 

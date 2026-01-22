@@ -2,9 +2,10 @@ import os
 import openai
 from typing import Dict, List, Tuple
 import re
-from langchain.tools import Tool, StructuredTool
-from langchain.agents import initialize_agent, AgentType
+from langchain_core.tools import Tool, StructuredTool
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage
 import requests
 from PIL import Image
 from io import BytesIO
@@ -12,14 +13,19 @@ import uuid
 
 from dotenv import load_dotenv
 import base64
+from llm_config import get_api_key, get_model_name
+from llm_helper import get_llm_for_user
 
 load_dotenv()
-# Set your OpenAI API key (replace with your actual key)
-api_key = os.getenv("OPENAI_API_KEY")
 
 from openai import OpenAI
 
-client = OpenAI(api_key=api_key)
+def get_client(user_email: str = None):
+    """Get OpenAI client using llm_config"""
+    api_key = get_api_key(user_email)
+    return OpenAI(api_key=api_key)
+
+client = get_client()  # Default client for backward compatibility
 
 
 # -----------------------------------------------------------------------------------------------------------------
@@ -57,10 +63,9 @@ def generate_images_from_prompt(prompt: str, style: str, num_images: int = 1) ->
     """Generates images using DALL·E and returns list of (image_path, base64_data) tuples."""
     try:
         # Enhance prompt with character limit
-        llm = ChatOpenAI(
-            model_name="gpt-4o-mini",
-            temperature=0.7,
-            openai_api_key=api_key
+        llm = get_llm_for_user(
+            user_email=None,  # Can be parameterized if needed
+            temperature=0.7
         )
 
         sysp = """You are a professional prompt engineer for image generation. Your task is to take ANY user‑supplied image prompt and transform it into a richer, clearer prompt while following every rule below, even in extreme edge cases.
@@ -176,12 +181,27 @@ def extract_image_count_tool(prompt: str) -> int:
 # -----------------------------------------------------------------------------------------------------------------
 # Agent Setup
 
+class GraphAgentWrapper:
+    def __init__(self, graph):
+        self.graph = graph
+    
+    def run(self, input_text: str) -> str:
+        try:
+            # LangGraph invoke
+            result = self.graph.invoke({"messages": [{"role": "user", "content": input_text}]})
+            # Extract last message content
+            if "messages" in result and result["messages"]:
+                return result["messages"][-1].content
+            return str(result)
+        except Exception as e:
+            print(f"Error running agent: {e}")
+            return "An error occurred while processing your request."
+
 def ImageGen_agent():
-    # Initialize ChatOpenAI
-    llm = ChatOpenAI(
-        model_name="gpt-4o-mini",
-        temperature=0.7,
-        openai_api_key=openai.api_key
+    # Initialize ChatOpenAI using llm_helper
+    llm = get_llm_for_user(
+        user_email=None,  # Can be parameterized if needed
+        temperature=0.7
     )
 
     tools = [
@@ -203,14 +223,14 @@ def ImageGen_agent():
         )
     ]
 
-    agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-        handle_parsing_errors=True
+    # Create agent using new create_agent API
+    graph = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt="You are a helpful AI assistant that generates images based on user prompts. Use the provided tools to extract parameters and generate images.",
     )
-    return agent
+    
+    return GraphAgentWrapper(graph)
 
 
 # Example usage

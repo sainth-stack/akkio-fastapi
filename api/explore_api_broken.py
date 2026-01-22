@@ -10,6 +10,10 @@ from difflib import get_close_matches
 import pandas as pd
 import numpy as np
 from typing import Optional, List, Dict, Tuple
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from llm_config import get_api_key, get_model_name
 
 from openai import OpenAI
 from universal_prompts import (
@@ -540,8 +544,12 @@ def create_chart_by_type(df: pd.DataFrame, chart_type: str, x_col: str, y_col: s
 
 
 
-# Set up OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Set up OpenAI client using llm_config
+def get_openai_client(user_email: str = None):
+    """Get OpenAI client using llm_config"""
+    return OpenAI(api_key=get_api_key(user_email))
+
+client = get_openai_client()  # Default client
 
 # Optional Plotly availability flag for formatting results
 try:
@@ -819,8 +827,9 @@ async def senior_data_analysis(
 
 
 def generate_data_code(prompt_eng: str) -> str:
+    model_name = get_model_name(user_email=None)  # Can be parameterized if needed
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model=model_name,
         messages=[
             {"role": "system", "content": prompt_for_data_analyst},
             {"role": "user", "content": prompt_eng}
@@ -889,8 +898,9 @@ def simulate_and_format_with_llm(
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
 
+    model_name = get_model_name(user_email=None)
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model=model_name,
         messages=[
             {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
             {"role": "user", "content": user_prompt}
@@ -1372,8 +1382,9 @@ Explanation Style: Write the explanation as a concise, business-oriented summary
 Return ONLY the JSON object as described above.
 """
 
+    model_name = get_model_name(user_email=None)
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model=model_name,
         messages=[
             {"role": "system", "content": "You are an expert data analyst and Python/Plotly code generator."},
             {"role": "user", "content": llm_prompt}

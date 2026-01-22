@@ -70,6 +70,7 @@ import shutil
 from api.sla_apis import sla_router
 from api.sla_tabs_api import sla_tabs_router
 from api.akkio.main import akkio_router
+from api.akkio.upload_api import upload_router
 from api.akkio.url_scraper import url_router
 from api.sharepoint import (
     list_sharepoint_files as sp_list_sharepoint_files,
@@ -89,6 +90,40 @@ from api.sharepoint import (
     process_latest_if_new,
 )
 from api.chat2doc_fastapi import chat2doc
+from api.akkio.usage_tracking import record_llm_usage
+from llm_config import get_llm_config, get_api_key, get_model_name
+
+"""
+=================================================================================
+HOW TO USE LLM CONFIGURATION (API Key and Model)
+=================================================================================
+
+The system now supports user-specific API keys and models. Use these functions:
+
+1. get_llm_config(user_email) - Returns dict with 'api_key' and 'model'
+2. get_api_key(user_email) - Returns just the API key
+3. get_model_name(user_email) - Returns just the model name
+
+Example usage:
+--------------
+# Get full config for a user
+config = get_llm_config(user_email)
+llm = ChatOpenAI(model=config["model"], openai_api_key=config["api_key"])
+
+# Or get them separately
+api_key = get_api_key(user_email)
+model = get_model_name(user_email)
+llm = ChatOpenAI(model=model, openai_api_key=api_key)
+
+# Without user email (uses defaults)
+config = get_llm_config()
+llm = ChatOpenAI(model=config["model"], openai_api_key=config["api_key"])
+
+If user has saved custom settings in database, those will be used.
+Otherwise, defaults from environment (OPENAI_API_KEY and gpt-4o-mini) are used.
+=================================================================================
+"""
+
 # Calculate comprehensive metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error, \
     mean_squared_error, r2_score
@@ -204,6 +239,15 @@ def _mark_file_as_processed(filename: str):
 
 @app.on_event("startup")
 async def _on_startup():
+    # Initialize LLM settings table
+    try:
+        db.ensure_connection()
+        db.create_llm_settings_table()
+        db.close()
+        print("✅ LLM settings table initialized")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize LLM settings table: {e}")
+    
     if ENABLE_SHAREPOINT_AUTOMATION:
         # Use backend's default automation interval (configurable in api/sharepoint.py)
         start_sharepoint_automation()
@@ -248,13 +292,20 @@ app.add_middleware(
 )
 db = PostgresDatabase()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Create client getter function using llm_config
+def get_openai_client(user_email: str = None):
+    """Get OpenAI client using llm_config"""
+    from llm_config import get_api_key
+    return OpenAI(api_key=get_api_key(user_email))
+
+client = get_openai_client()  # Default client
 
 app.include_router(sla_router)
 app.include_router(sla_tabs_router)
 app.include_router(akkio_router, prefix="/api")
 app.include_router(url_router)
 app.include_router(chat2doc)
+app.include_router(upload_router)
 
  
 
@@ -1046,29 +1097,111 @@ PREDICTION_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}
 @app.post("/api/analyze_chart")
 async def analyze_chart(
         chart_id: str = Form(...),
-        question: Optional[str] = Form(None)
+        question: Optional[str] = Form(None),
+        email: Optional[str] = Form(None)
 ) -> JSONResponse:
     try:
-        # 1. Validate Chart ID
+        # Check if this is a request to generate a new chart
+        is_generation_request = False
+        if question:
+            keywords = ["chart", "graph", "plot", "show me", "visualize"]
+            if any(k in question.lower() for k in keywords):
+                is_generation_request = True
+
+        # --- CASE 0: NEW CHART GENERATION REQUEST ---
+        if is_generation_request:
+            print(f"Generating new chart for query: {question}")
+            
+            # Load the dataset
+            csv_file_path = 'data.csv'
+            if not os.path.exists(csv_file_path):
+                 raise HTTPException(status_code=404, detail="Data file not found")
+            
+            df = pd.read_csv(csv_file_path)
+            
+            # Get sample data for prompt
+            sample_data = df.head(5).to_string()
+            data_types_info = df.dtypes.to_string()
+            
+            prompt_eng = f"""
+            You are a data visualization expert. Generate 1 new chart based on this user request: "{question}"
+            
+            Dataset Info:
+            - Shape: {df.shape}
+            - Columns: {list(df.columns)}
+            
+            Requirements:
+            1. Return ONLY valid Python code (no markdown)
+            2. Initialize: chart_dict = {{}}
+            3. Generate exactly 1 chart and store as:
+               chart_dict["Generated Chart"] = {{"plot_data": fig.to_json(), "description": "Analysis of request"}}
+            4. Use the FULL dataset (df)
+            5. Clean columns: df.columns = df.columns.str.strip()
+            6. STRICTLY follow the user's requested chart type (e.g., if "box plot" is requested, generate a box plot).
+            7. If no specific chart type is requested, choose the best visualization for the data.
+            
+            DATE FORMATTING:
+            - Convert dates: pd.to_datetime(df[col], errors='coerce')
+            - Format axes: fig.update_xaxes(tickformat='%Y-%m-%d', tickangle=45)
+            
+            Data preview:
+            {sample_data}
+            """
+            
+            try:
+                # Generate and execute code
+                generated_code = generate_code4(prompt_eng)
+                namespace = {'pd': pd, 'px': px, 'go': go, 'df': df}
+                exec(generated_code, namespace)
+                
+                chart_dict = namespace.get("chart_dict", {})
+                if not chart_dict:
+                    raise ValueError("No chart generated")
+                
+                chart_key = list(chart_dict.keys())[0]
+                chart_info = chart_dict[chart_key]
+                chart_data = chart_info.get("plot_data")
+                
+                if chart_data:
+                    # Make serializable
+                    chart_data_serializable = make_serializable(chart_data)
+                    
+                    # Return only the chart data without text explanation as requested
+                    return JSONResponse(
+                        content={
+                            "chart_id": "custom",
+                            "question": question,
+                            "response": "", # Empty response as user requested only graph
+                            "plot_data": chart_data_serializable, # Frontend will look for this
+                            "type": "answer"
+                        },
+                        status_code=200
+                    )
+            except Exception as e:
+                print(f"Chart generation failed: {e}")
+                # Fallback to normal text answer if chart generation fails
+                pass 
+
+        # 1. Validate Chart ID (only if not a custom generation request or if fell through)
+        chart_num = 0
         try:
             chart_num = int(chart_id)
-            if not 1 <= chart_num <= 6:
-                raise ValueError
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid chart ID. Must be an integer between 1-6."
-            )
+            pass # might be a string id or invalid, but we'll check validity below if needed
 
         # 2. Locate and load chart data from file
-        filename = f"chart_{chart_id}.json"
-        chart_path = os.path.join(CHARTS_DIR, filename)
+        chart_json = {}
+        # Only try to load if it looks like a valid existing chart ID (1-6)
+        if 1 <= chart_num <= 6:
+            filename = f"chart_{chart_id}.json"
+            chart_path = os.path.join(CHARTS_DIR, filename)
 
-        if not os.path.exists(chart_path):
-            raise HTTPException(status_code=404, detail=f"Chart file '{filename}' not found.")
-
-        with open(chart_path, "r", encoding="utf-8") as f:
-            chart_json = json.load(f)
+            if os.path.exists(chart_path):
+                with open(chart_path, "r", encoding="utf-8") as f:
+                    chart_json = json.load(f)
+            elif not is_generation_request:
+                 # If specifically asking about a chart that doesn't exist and not generating queries
+                 raise HTTPException(status_code=404, detail=f"Chart file '{filename}' not found.")
 
         # 3. Determine action: Summarize or Answer Question
         # --- CASE 1: No question provided -> Generate a detailed summary ---
@@ -1078,7 +1211,7 @@ async def analyze_chart(
                 return JSONResponse(
                     content={
                         "chart_id": chart_id,
-                        "response": markdown_to_html(SUMMARY_CACHE[chart_id]),
+                        "response": SUMMARY_CACHE[chart_id],
                         "type": "summary",
                         "cached": True,
                     },
@@ -1086,31 +1219,42 @@ async def analyze_chart(
                 )
 
             # Generate and cache a new summary
-        if question=="summary":
+        if question == "summary":
             prompt = (
                 f"You are a data analyst AI. A user selected a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
-
                 f"Analyze and summarize only the insights, patterns, and trends that are directly visible in the chart.\n\n"
-                f"Follow this output structure with exactly 5 key observations with 2 bullet points for each heading:\n\n"
+                f"Follow this EXACT output structure with exactly 2 bullet points for each heading:\n\n"
                 f"Core Insight\n"
-                f"• Start with the primary finding from the graph. Bold important terms.\n\n"
+                f"• [First key insight from the chart]\n"
+                f"• [Second key insight from the chart]\n\n"
                 f"Pattern Analysis\n"
-                f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
+                f"• [First pattern or trend observation]\n"
+                f"• [Second pattern or trend observation]\n\n"
                 f"Business Context\n"
-                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
+                f"• [First business implication]\n"
+                f"• [Second business implication]\n\n"
                 f"Recommendations\n"
-                f"• Only describe what you observe. Do not invent data. Use the exact format shown above.\n\n"
+                f"• [First recommendation based on the data]\n"
+                f"• [Second recommendation based on the data]\n\n"
                 f"Actions\n"
-                f"• Provide actions for acheiving the action recommendations based on the chart data.\n\n"
-                f"Give the response in markdown format with proper headings in 'h4' and  with *2* bullet points per topic."
+                f"• [First specific action to take]\n"
+                f"• [Second specific action to take]\n\n"
+                f"IMPORTANT RULES:\n"
+                f"- Use EXACTLY 2 bullet points per section, no more, no less\n"
+                f"- Only describe what you directly observe in the chart data\n"
+                f"- Do not invent data or make unsupported claims\n"
+                f"- Keep bullet points concise but informative\n"
+                f"- Format section headings as plain text (not markdown headings)\n"
             )
-            summary = generate_text(prompt)
-            SUMMARY_CACHE[chart_id] = summary
+            summary = generate_text(prompt, email)
+            # Convert summary to HTML format
+            summary_html = markdown_to_html(summary)
+            SUMMARY_CACHE[chart_id] = summary_html
 
             return JSONResponse(
                 content={
                     "chart_id": chart_id,
-                    "response": markdown_to_html(summary),
+                    "response": summary_html,
                     "type": "summary",
                     "cached": False,
                 },
@@ -1121,24 +1265,26 @@ async def analyze_chart(
         else:
             prompt = (
                 f"You are a data analyst AI. A user is asking a question about a chart represented by this Plotly JSON:\n{json.dumps(chart_json)}\n\n"
-                f"Follow this output structure with exactly 4 key observations:\n\n"
-                f"if the user asks about Core Insight\n"
-                f"• Start with the primary finding from the graph. Bold important terms.\n\n"
-                f" if the user asks Pattern Analysis\n"
-                f"• Describe distribution patterns, outliers, clusters, or trends.\n\n"
-                f" if the user asks about Business Context\n"
-                f"• Explain what real-world behavior the graph appears to reflect.\n\n"
-                f" if the user asks about Actions & Recommendations\n"
-                f"Only describe what you observe. Do not invent data. Use the exact format shown above."
-                f"Give the response in markdown format with proper headings in 'h4' format and  with *2* bullet points."
+                f"User's Question: {question}\n\n"
+                f"Analyze the chart and provide a clear, concise answer to the user's specific question. "
+                f"Base your answer only on what is visible in the chart data. Do not invent or assume data.\n\n"
+                f"RESPONSE FORMAT:\n"
+                f"- Provide a direct answer in 2-4 paragraphs\n"
+                f"- Use simple, clear language\n"
+                f"- Include specific data points or observations from the chart when relevant\n"
+                f"- If the question cannot be answered from the chart data, politely explain why\n"
+                f"- If the question is casual (like 'hi' or 'hello'), politely explain that you're here to help analyze the chart data\n\n"
+                f"Keep the response concise and focused on answering the specific question asked."
             )
-            answer = generate_text(prompt)
+            answer = generate_text(prompt, email)
+            # Convert answer to HTML format
+            answer_html = markdown_to_html(answer)
 
             return JSONResponse(
                 content={
                     "chart_id": chart_id,
                     "question": question,
-                    "response": markdown_to_html(answer),
+                    "response": answer_html,
                     "type": "answer"
                 },
                 status_code=200,
@@ -1148,25 +1294,75 @@ async def analyze_chart(
         raise  # Re-raise exceptions with specific HTTP status codes
     except Exception as e:
         # Catch-all for any other unexpected errors
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 def markdown_to_html(md_text):
-    html_text = markdown.markdown(md_text)
-    return html_text
+    """Convert markdown text to HTML with enhanced formatting for summaries"""
+    # Convert markdown to HTML
+    html_text = markdown.markdown(md_text, extensions=['nl2br'])
+    
+    # Enhance section headings with better styling
+    # Replace plain text headings with styled headings
+    lines = md_text.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        stripped = line.strip()
+        # Check if line is a section heading (has no bullets and is followed by bullets)
+        if stripped and not stripped.startswith('•') and not stripped.startswith('-'):
+            # Check if this looks like a section heading
+            if any(heading in stripped for heading in ['Core Insight', 'Pattern Analysis', 'Business Context', 'Recommendations', 'Actions', 'Key Points', 'Summary']):
+                formatted_lines.append(f'<h3 style="color: #2c3e50; font-weight: 600; margin-top: 16px; margin-bottom: 8px; font-size: 16px;">{stripped}</h3>')
+                continue
+        
+        # Convert bullet points
+        if stripped.startswith('•') or stripped.startswith('-'):
+            bullet_content = stripped[1:].strip()
+            formatted_lines.append(f'<li style="margin-bottom: 6px; line-height: 1.6;">{bullet_content}</li>')
+        elif stripped:
+            formatted_lines.append(f'<p style="margin-bottom: 8px;">{stripped}</p>')
+    
+    # Wrap list items in ul tags
+    html_result = []
+    in_list = False
+    
+    for line in formatted_lines:
+        if '<li' in line:
+            if not in_list:
+                html_result.append('<ul style="margin: 8px 0; padding-left: 24px;">')
+                in_list = True
+            html_result.append(line)
+        else:
+            if in_list:
+                html_result.append('</ul>')
+                in_list = False
+            html_result.append(line)
+    
+    if in_list:
+        html_result.append('</ul>')
+    
+    final_html = ''.join(html_result)
+    
+    # Wrap in a container div
+    return f'<div style="font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, sans-serif; color: #333; line-height: 1.6;">{final_html}</div>'
 
 
-def generate_text(prompt: str) -> str:
+def generate_text(prompt: str, email: Optional[str] = None) -> str:
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system",
-             "content": "You are a helpful data analyst that explains data visualizations and user queries and write insightful summary for the given data.Generate the answers in the plain format with the nice headings and all."},
+             "content": "You are a helpful data analyst that explains data visualizations and user queries. Provide clear, accurate analysis based on the data provided."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
-        max_tokens=500
+        max_tokens=800
     )
+    # Track AI credits usage
+    record_llm_usage(email, response)
     return response.choices[0].message.content.strip()
 
 
@@ -1726,71 +1922,409 @@ async def handle_rf_prediction(form_data, targetcol):
     # Calculate feature impact
     feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
 
-    # Prepare response based on model type
-    if is_classification:
-        prediction_result = {
-            "predicted_value": str(predicted_value),
-            "predicted_class": str(predicted_value),
-            "target_column": targetcol,
-            "model_type": model_type,
-            "confidence": confidence,
-            "class_probabilities": prediction_proba
-        }
-        
-        # Add top predicted classes
-        if prediction_proba:
-            sorted_proba = sorted(prediction_proba.items(), key=lambda x: x[1], reverse=True)
-            prediction_result["top_predictions"] = [
-                {"class": class_name, "probability": round(prob * 100, 2)} 
-                for class_name, prob in sorted_proba[:3]
-            ]
-    else:
-        prediction_result = {
-            "predicted_value": round(float(predicted_value), 4),
-            "target_column": targetcol,
-            "model_type": model_type,
-            "confidence": None  # Regression doesn't have confidence in the same way
-        }
+    # Build dataset stats for LLM insights (same as AutoML)
+    dataset_stats = {}
+    try:
+        df_all = pd.read_csv('data.csv')
+        if targetcol in df_all.columns:
+            y = pd.to_numeric(df_all[targetcol], errors="coerce").dropna()
+            if not y.empty:
+                q = y.quantile([0.0, 0.25, 0.5, 0.75, 1.0]).to_dict()
+                dataset_stats = {
+                    "min": float(q.get(0.0)),
+                    "q25": float(q.get(0.25)),
+                    "median": float(q.get(0.5)),
+                    "q75": float(q.get(0.75)),
+                    "max": float(q.get(1.0)),
+                    "count": int(len(y)),
+                }
+    except Exception:
+        dataset_stats = {}
 
-    # Prepare model performance metrics
-    model_performance = {
-        "model_type": model_type,
-        "total_samples": model_stats.get("total_samples", "N/A"),
-        "cross_validation": {
-            "mean_score": model_stats.get("cross_val_mean", "N/A"),
-            "std_score": model_stats.get("cross_val_std", "N/A")
-        },
-        "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+    # Determine task type
+    task_type = "classification" if is_classification else "regression"
+    
+    # Cache key for insights
+    cache_key = f"{targetcol}|{task_type}|{json.dumps(dataset_stats, sort_keys=True)}|{str(predicted_value)[:32]}"
+
+    # Generate LLM insights (same as AutoML)
+    try:
+        insights = generate_prediction_insights_llm({
+            "cache_key": cache_key,
+            "target_column": targetcol,
+            "task_type": task_type,
+            "predicted_value": predicted_value,
+            "dataset_stats": dataset_stats,
+            "input_sample": {k: features.get(k) for k in list(features.keys())[:10]},
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM insights generation failed: {str(e)}")
+
+    # Convert predicted_value to native Python type for JSON serialization
+    if isinstance(predicted_value, (np.integer, np.floating)):
+        predicted_value = predicted_value.item()
+    elif isinstance(predicted_value, np.ndarray):
+        predicted_value = predicted_value.tolist()
+    
+    # Prepare response in same format as AutoML
+    prediction_result = {
+        "predicted_value": float(predicted_value) if not is_classification else str(predicted_value),
+        "target_column": targetcol,
+        "model_type": "RandomForest",
+        "task_type": task_type,
+        "predicted_level": insights.get("predicted_level"),
     }
 
-    # Add specific metrics based on model type
+    # Get metrics from model stats
     metrics = model_stats.get("metrics", {})
-    if is_classification:
-        model_performance["classification_metrics"] = {
-            "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
-            "precision": f"{metrics.get('precision', 'N/A')}%",
-            "recall": f"{metrics.get('recall', 'N/A')}%",
-            "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
-        }
-    else:
-        model_performance["regression_metrics"] = {
-            "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
-            "mae": metrics.get('mae', 'N/A'),
-            "rmse": metrics.get('rmse', 'N/A')
-        }
+    metric_type = "RMSE" if not is_classification else "Accuracy"
+    metric_val = metrics.get('rmse') if not is_classification else metrics.get('accuracy')
+    
+    # Convert metric_val to native Python type
+    if metric_val is not None and isinstance(metric_val, (np.integer, np.floating)):
+        metric_val = float(metric_val)
 
     response = {
         "prediction_result": prediction_result,
-        "model_performance": model_performance,
-        "feature_analysis": {
-            "top_influencing_features": feature_importance,
-            "input_features": features,
-            "feature_impact": feature_impact,
-            "feature_types": {
-                "categorical": deployment_data.get('categorical_features', []),
-                "numerical": deployment_data.get('numerical_features', [])
+        "best_model": "RandomForest",
+        "metric_type": metric_type,
+        "metric": metric_val,
+        "output_levels": insights["output_levels"],
+        "predicted_level": insights["predicted_level"],
+        "input_analysis": insights["input_analysis"],
+        "prediction_interpretation": insights["prediction_interpretation"],
+        "business_insights": insights["business_insights"],
+        "recommended_actions": insights["recommended_actions"],
+    }
+
+    return JSONResponse(content=response)
+
+
+def train_single_model(df, target_col, model_type):
+    """Train a specific model (XGBoost, LightGBM, GradientBoosting) similar to RandomForest"""
+    from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+    try:
+        from lightgbm import LGBMClassifier, LGBMRegressor
+    except ImportError:
+        LGBMClassifier = LGBMRegressor = None
+    
+    try:
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+        
+        # Determine if classification or regression
+        is_classification = False
+        unique_values = y.nunique()
+        if y.dtype == 'object' or (y.dtype in ['int64', 'float64'] and unique_values <= 20):
+            is_classification = True
+            print(f"[INFO] Detected classification task ({unique_values} unique classes)")
+        else:
+            print(f"[INFO] Detected regression task")
+        
+        # Encode target if classification
+        label_encoder = None
+        if is_classification and y.dtype == 'object':
+            label_encoder = LabelEncoder()
+            y = label_encoder.fit_transform(y)
+        
+        # Identify categorical and numerical columns
+        categorical_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
+        numerical_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+        
+        # Create preprocessing pipeline
+        categorical_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        
+        numerical_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='mean')),
+            ('scaler', StandardScaler())
+        ])
+        
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', numerical_transformer, numerical_features),
+                ('cat', categorical_transformer, categorical_features)
+            ])
+        
+        # Select model based on type
+        if model_type == 'XGBoost':
+            if is_classification:
+                model = XGBRegressor(n_estimators=100, random_state=42, eval_metric='logloss')
+                # For classification, use XGBClassifier if available
+                try:
+                    from xgboost import XGBClassifier
+                    model = XGBClassifier(n_estimators=100, random_state=42, eval_metric='logloss')
+                except:
+                    pass
+            else:
+                model = XGBRegressor(n_estimators=100, random_state=42)
+        elif model_type == 'LightGBM':
+            if LGBMClassifier is None or LGBMRegressor is None:
+                raise HTTPException(400, "LightGBM not installed. Please install it with: pip install lightgbm")
+            if is_classification:
+                model = LGBMClassifier(n_estimators=100, random_state=42, verbose=-1)
+            else:
+                model = LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
+        elif model_type == 'GradientBoosting':
+            if is_classification:
+                model = GradientBoostingClassifier(n_estimators=100, random_state=42)
+            else:
+                model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+        else:
+            raise HTTPException(400, f"Unsupported model type: {model_type}")
+        
+        # Create full pipeline
+        pipeline = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('model', model)
+        ])
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Train model
+        print(f"[INFO] Training {model_type} model...")
+        pipeline.fit(X_train, y_train)
+        
+        # Evaluate
+        y_pred = pipeline.predict(X_test)
+        
+        # Calculate metrics
+        if is_classification:
+            accuracy = accuracy_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+            recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+            f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+            
+            metrics = {
+                'accuracy': round(accuracy * 100, 2),
+                'precision': round(precision * 100, 2),
+                'recall': round(recall * 100, 2),
+                'f1_score': round(f1 * 100, 2)
             }
+            model_type_str = "Classification"
+        else:
+            mae = mean_absolute_error(y_test, y_pred)
+            mse = mean_squared_error(y_test, y_pred)
+            rmse = np.sqrt(mse)
+            r2 = r2_score(y_test, y_pred)
+            
+            metrics = {
+                'r2_score': round(r2 * 100, 2),
+                'mae': round(mae, 2),
+                'rmse': round(rmse, 2)
+            }
+            model_type_str = "Regression"
+        
+        # Cross-validation
+        cv_scores = cross_val_score(pipeline, X, y, cv=5)
+        
+        # Calculate baseline
+        if is_classification:
+            baseline_accuracy = max(y_train.value_counts()) / len(y_train)
+            baseline_comparison = f"{round((accuracy / baseline_accuracy - 1) * 100, 1)}% better than baseline"
+        else:
+            baseline_mae = np.mean(np.abs(y_train - np.mean(y_train)))
+            baseline_comparison = f"{round((1 - mae / baseline_mae) * 100, 1)}% better than mean baseline"
+        
+        # Save model
+        model_dir = os.path.join("models", model_type.lower(), target_col)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        pipeline_path = os.path.join(model_dir, "pipeline.pkl")
+        joblib.dump(pipeline, pipeline_path)
+        
+        # Save label encoder if used
+        if label_encoder:
+            label_encoder_path = os.path.join(model_dir, "label_encoder.pkl")
+            joblib.dump(label_encoder, label_encoder_path)
+        
+        # Get feature names after preprocessing
+        feature_names = numerical_features + categorical_features
+        
+        # Save deployment metadata
+        deployment_data = {
+            'model_type': model_type_str,
+            'is_classification': is_classification,
+            'feature_names': feature_names,
+            'categorical_features': categorical_features,
+            'numerical_features': numerical_features,
+            'target_column': target_col
         }
+        
+        deployment_path = os.path.join(model_dir, "deployment.json")
+        with open(deployment_path, "w") as f:
+            json.dump(deployment_data, f, indent=4)
+        
+        # Prepare stats
+        stats = {
+            'model_type': model_type_str,
+            'total_samples': len(df),
+            'cross_val_mean': round(cv_scores.mean(), 4),
+            'cross_val_std': round(cv_scores.std(), 4),
+            'baseline_comparison': baseline_comparison,
+            'metrics': metrics
+        }
+        
+        # Get sample row data for form pre-filling
+        row_data = {}
+        if len(X) > 0:
+            sample_row = X.iloc[0].to_dict()
+            row_data = {k: str(v) for k, v in sample_row.items()}
+        
+        print(f"[INFO] {model_type} model trained successfully")
+        return stats, feature_names, row_data
+        
+    except Exception as e:
+        print(f"[ERROR] Training failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, [], {}
+
+
+async def handle_single_model_prediction(form_data, targetcol, model_type):
+    """Handle prediction for XGBoost, LightGBM, GradientBoosting"""
+    # Extract features
+    features = {k: v for k, v in form_data.items() if k not in ['form_name', 'targetColumn', 'col', 'model']}
+    
+    # Load model paths
+    model_dir = os.path.join("models", model_type.lower(), targetcol)
+    pipeline_path = os.path.join(model_dir, "pipeline.pkl")
+    deployment_path = os.path.join(model_dir, "deployment.json")
+    label_encoder_path = os.path.join(model_dir, "label_encoder.pkl")
+
+    # Check if model files exist
+    if not os.path.exists(pipeline_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model pipeline not found for target column '{targetcol}'. Train the model first."
+        )
+
+    if not os.path.exists(deployment_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model deployment metadata not found for target column '{targetcol}'"
+        )
+
+    # Load deployment metadata
+    with open(deployment_path, "r") as f:
+        deployment_data = json.load(f)
+    
+    feature_names = deployment_data.get('feature_names', [])
+    is_classification = deployment_data.get('is_classification', False)
+    model_type_str = deployment_data.get('model_type', 'Unknown')
+
+    # Load model pipeline
+    loaded_pipeline = joblib.load(pipeline_path)
+
+    # Load label encoder if exists
+    label_encoder = None
+    if os.path.exists(label_encoder_path):
+        label_encoder = joblib.load(label_encoder_path)
+
+    # Prepare input data
+    df_predict = pd.DataFrame([features])
+    
+    # Ensure all required features are present
+    missing_features = set(feature_names) - set(df_predict.columns)
+    if missing_features:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required features: {list(missing_features)}"
+        )
+    
+    # Reorder columns
+    df_predict = df_predict[feature_names]
+
+    # Convert numeric strings
+    for col in df_predict.columns:
+        if col in deployment_data.get('numerical_features', []):
+            try:
+                df_predict[col] = pd.to_numeric(df_predict[col])
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid numeric value for feature '{col}': {df_predict[col].iloc[0]}"
+                )
+
+    # Make prediction
+    predictions = loaded_pipeline.predict(df_predict)
+    predicted_value = predictions[0]
+
+    # Decode prediction if label encoder was used
+    if is_classification and label_encoder is not None:
+        predicted_value = label_encoder.inverse_transform([predicted_value])[0]
+
+    # Convert predicted_value to native Python type for JSON serialization
+    if isinstance(predicted_value, (np.integer, np.floating)):
+        predicted_value = predicted_value.item()
+    elif isinstance(predicted_value, np.ndarray):
+        predicted_value = predicted_value.tolist()
+
+    # Build dataset stats for LLM insights
+    dataset_stats = {}
+    try:
+        df_all = pd.read_csv('data.csv')
+        if targetcol in df_all.columns:
+            y = pd.to_numeric(df_all[targetcol], errors="coerce").dropna()
+            if not y.empty:
+                q = y.quantile([0.0, 0.25, 0.5, 0.75, 1.0]).to_dict()
+                dataset_stats = {
+                    "min": float(q.get(0.0)),
+                    "q25": float(q.get(0.25)),
+                    "median": float(q.get(0.5)),
+                    "q75": float(q.get(0.75)),
+                    "max": float(q.get(1.0)),
+                    "count": int(len(y)),
+                }
+    except Exception:
+        dataset_stats = {}
+
+    # Determine task type
+    task_type = "classification" if is_classification else "regression"
+    
+    # Cache key for insights
+    cache_key = f"{targetcol}|{task_type}|{json.dumps(dataset_stats, sort_keys=True)}|{str(predicted_value)[:32]}"
+
+    # Generate LLM insights (same as AutoML and RandomForest)
+    try:
+        insights = generate_prediction_insights_llm({
+            "cache_key": cache_key,
+            "target_column": targetcol,
+            "task_type": task_type,
+            "predicted_value": predicted_value,
+            "dataset_stats": dataset_stats,
+            "input_sample": {k: features.get(k) for k in list(features.keys())[:10]},
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM insights generation failed: {str(e)}")
+
+    # Prepare response in same format as AutoML and RandomForest
+    prediction_result = {
+        "predicted_value": float(predicted_value) if not is_classification else str(predicted_value),
+        "target_column": targetcol,
+        "model_type": model_type,
+        "task_type": task_type,
+        "predicted_level": insights.get("predicted_level"),
+    }
+
+    # Default metrics - try to load from saved model stats
+    metric_type = "RMSE" if not is_classification else "Accuracy"
+    metric_val = None
+
+    response = {
+        "prediction_result": prediction_result,
+        "best_model": model_type,
+        "metric_type": metric_type,
+        "metric": metric_val,
+        "output_levels": insights["output_levels"],
+        "predicted_level": insights["predicted_level"],
+        "input_analysis": insights["input_analysis"],
+        "prediction_interpretation": insights["prediction_interpretation"],
+        "business_insights": insights["business_insights"],
+        "recommended_actions": insights["recommended_actions"],
     }
 
     return JSONResponse(content=response)
@@ -1859,6 +2393,12 @@ async def handle_supervised_prediction(form_data, targetcol):
     task_type = deployment.get("task_type")
 
     predicted_value = (pred_res.get("predictions") or [None])[0]
+    
+    # Convert predicted_value to native Python type for JSON serialization
+    if isinstance(predicted_value, (np.integer, np.floating)):
+        predicted_value = predicted_value.item()
+    elif isinstance(predicted_value, np.ndarray):
+        predicted_value = predicted_value.tolist()
 
     # Build LLM payload grounded in dataset stats for speed + accuracy
     dataset_stats: Dict[str, Any] = {}
@@ -1896,13 +2436,20 @@ async def handle_supervised_prediction(form_data, targetcol):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM insights generation failed: {str(e)}")
 
+    # Ensure predicted_value is the right type for response
+    is_classification = task_type == "classification"
+    
     prediction_result = {
-        "predicted_value": predicted_value,
+        "predicted_value": float(predicted_value) if not is_classification else str(predicted_value),
         "target_column": targetcol,
         "model_type": f"AutoML({best_model})",
         "task_type": task_type,
         "predicted_level": insights.get("predicted_level"),
     }
+    
+    # Convert metric_val to native Python type
+    if metric_val is not None and isinstance(metric_val, (np.integer, np.floating)):
+        metric_val = float(metric_val)
 
     response = {
         "prediction_result": prediction_result,
@@ -2084,11 +2631,85 @@ def arima_forecast_only(target_col, bot_query):
 
 
 # 8.Genai bot plotly visualisation.-----------------Prediction and forecasting related api-------8
+def extract_model_from_prompt(prompt: str) -> tuple[str, bool]:
+    """
+    Extract model name from user prompt. 
+    Returns (model_name, is_supported) tuple.
+    """
+    prompt_lower = prompt.lower()
+    
+    # Supported models
+    supported_models = {
+        'automl': 'AutoML',
+        'auto ml': 'AutoML',
+        'random forest': 'RandomForest',
+        'randomforest': 'RandomForest',
+        'xgboost': 'XGBoost',
+        'xgb': 'XGBoost',
+        'lightgbm': 'LightGBM',
+        'lgbm': 'LightGBM',
+        'gradient boost': 'GradientBoosting',
+        'gradientboost': 'GradientBoosting',
+        'gradientboosting': 'GradientBoosting'
+    }
+    
+    # Check for unsupported models
+    unsupported_keywords = [
+        'decision tree', 'decisiontree',
+        'logistic regression', 'logisticregression',
+        'svm', 'support vector',
+        'naive bayes', 'naivebayes',
+        'knn', 'k-nearest',
+        'adaboost', 'ada boost',
+        'catboost', 'cat boost',
+        'neural network', 'neural net', 'deep learning'
+    ]
+    
+    # Check for unsupported models first
+    for keyword in unsupported_keywords:
+        if keyword in prompt_lower:
+            # Extract the model name mentioned
+            for unsup in unsupported_keywords:
+                if unsup in prompt_lower:
+                    return (unsup.title().replace(' ', ''), False)
+    
+    # Check for specific model mentions
+    for keyword, model_name in supported_models.items():
+        if keyword in prompt_lower:
+            return (model_name, True)
+    
+    # Default to AutoML if no specific model mentioned
+    return ('AutoML', True)
+
+
 @app.post("/api/ai_bot")
 async def gen_ai_bot(request_body: GenAIBotRequest):
     try:
-        # Load and prepare data
-        df = pd.read_csv('data.csv')
+        # Load and prepare data - try multiple possible locations
+        data_file = None
+        possible_paths = [
+            'data.csv',
+            os.path.join(os.getcwd(), 'data.csv'),
+            os.path.join(os.path.dirname(__file__), 'data.csv'),
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                data_file = path
+                break
+        
+        if not data_file:
+            error_msg = (
+                "No data file found. Please upload your dataset first using the file upload feature. "
+                "Once your data is uploaded, I'll be able to make predictions."
+            )
+            return JSONResponse({
+                'text_pre_code_response': error_msg,
+                'error': 'no_data',
+                'message': 'Please upload data before making predictions'
+            }, status_code=404)
+        
+        df = pd.read_csv(data_file)
         metadata_str = ", ".join(df.columns.tolist())
         sample_data = df.head(2).to_dict(orient='records')
 
@@ -2112,7 +2733,7 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
         # Use messages as context for the LLM
         # Handle forecasting requests
         if 'forecast' in prompt.lower():
-            data = extract_forecast_details_llm(prompt, df.columns, df)
+            data = extract_forecast_details_llm(prompt, df.columns, df, request_body.email)
             print("data printed")
             
             # Check if ARIMA model already exists for this target variable
@@ -2121,7 +2742,7 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             
             # Step 1: Train model if it doesn't exist
             if not os.path.exists(model_base_path) or not os.path.exists(os.path.join(model_base_path, f"{target_col}_results.json")):
-                print(f"Training ARIMA model for {target_col}...")
+                print(f"[AI_BOT] Training ARIMA model for {target_col}...")
                 train_stat = arima_train_only(df, target_col)
                 
                 if not train_stat:
@@ -2170,7 +2791,36 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
 
         # Handle prediction requests
         elif 'predict' in prompt.lower():
-            data = extract_forecast_details_rf(prompt, df.columns)
+            # Extract model from prompt and check if supported
+            model_name, is_supported = extract_model_from_prompt(prompt)
+            print(f"[AI_BOT] Detected model: {model_name}, Supported: {is_supported}")
+            
+            # If model is not supported, return error with supported models list
+            if not is_supported:
+                supported_models_list = [
+                    "AutoML (Best Model)",
+                    "Random Forest",
+                    "XGBoost",
+                    "LightGBM",
+                    "Gradient Boosting"
+                ]
+                error_msg = (
+                    f"'{model_name}' model is not currently supported. "
+                    f"Please use one of the following supported models:\n"
+                    f"• " + "\n• ".join(supported_models_list)
+                )
+                bot_content = json.dumps({'text_pre_code_response': error_msg})
+                async with CHAT_MEMORY_LOCK:
+                    CHAT_MEMORY[session_id].append(
+                        {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                return JSONResponse({
+                    'text_pre_code_response': error_msg,
+                    'session_id': session_id,
+                    'error': 'unsupported_model',
+                    'supported_models': supported_models_list
+                })
+            
+            data = extract_forecast_details_rf(prompt, df.columns, request_body.email)
 
             if len(data.get('missing_columns', [])) > 0:
                 bot_content = json.dumps({'text_pre_code_response': (
@@ -2186,20 +2836,93 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                     'session_id': session_id
                 })
 
-            model_path = os.path.join("models", "rf", data['target_column'])
+            # Determine model directory based on model type
+            if model_name == 'AutoML':
+                model_folder = 'supervised'
+            elif model_name == 'RandomForest':
+                model_folder = 'rf'
+            elif model_name == 'XGBoost':
+                model_folder = 'xgboost'
+            elif model_name == 'LightGBM':
+                model_folder = 'lightgbm'
+            elif model_name == 'GradientBoosting':
+                model_folder = 'gradientboosting'
+            else:
+                model_folder = 'supervised'  # Default to AutoML
+                model_name = 'AutoML'
+            
+            model_path = os.path.join("models", model_folder, data['target_column'])
             pipeline_path = os.path.join(model_path, "pipeline.pkl")
             deployment_path = os.path.join(model_path, "deployment.json")
             label_encoder_path = os.path.join(model_path, "label_encoder.pkl")
 
-            # Check and retrain model if needed
-            if not os.path.exists(deployment_path) or not os.path.exists(pipeline_path):
-                df = pd.read_csv('data.csv')
-                model_stats, _ = random_forest(df, data.get('target_column'))
+            # Check and train model if needed
+            model_needs_training = not os.path.exists(deployment_path) or not os.path.exists(pipeline_path)
+            
+            if model_needs_training:
+                df_train = pd.read_csv(data_file)
+                print(f"[AI_BOT] Model not found. Training {model_name} model for {data.get('target_column')}...")
+                
+                # Notify user that training is starting
+                training_msg = f"Training {model_name} model for '{data.get('target_column')}' prediction. This may take a moment..."
+                
+                try:
+                    # Train based on model type
+                    if model_name == 'AutoML':
+                        from supervised_automl import train_supervised_automl
+                        res = train_supervised_automl(df=df_train, target_col=data.get('target_column'), model_dir=model_path)
+                        if not res.get("status"):
+                            error_msg = (
+                                f"Failed to train {model_name} model: {res.get('message', 'Unknown error')}. "
+                                f"Please check your data and try again."
+                            )
+                            bot_content = json.dumps({'text_pre_code_response': error_msg})
+                            async with CHAT_MEMORY_LOCK:
+                                CHAT_MEMORY[session_id].append(
+                                    {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                            return JSONResponse({
+                                'text_pre_code_response': error_msg, 
+                                'session_id': session_id,
+                                'error': 'training_failed'
+                            }, status_code=500)
+                        model_stats = {}
+                    elif model_name == 'RandomForest':
+                        model_stats, _ = random_forest(df_train, data.get('target_column'))
+                    else:
+                        # XGBoost, LightGBM, GradientBoosting
+                        model_stats, _, _ = train_single_model(df_train, data.get('target_column'), model_name)
+                    
+                    print(f"[AI_BOT] {model_name} model trained successfully!")
+                    
+                except Exception as e:
+                    error_msg = (
+                        f"An error occurred while training the {model_name} model: {str(e)}. "
+                        f"Please check your data format and try again."
+                    )
+                    bot_content = json.dumps({'text_pre_code_response': error_msg})
+                    async with CHAT_MEMORY_LOCK:
+                        CHAT_MEMORY[session_id].append(
+                            {"role": "bot", "content": bot_content, "timestamp": datetime.now().isoformat()})
+                    return JSONResponse({
+                        'text_pre_code_response': error_msg, 
+                        'session_id': session_id,
+                        'error': 'training_error'
+                    }, status_code=500)
+                
                 # Reload deployment data after training
+                if not os.path.exists(deployment_path):
+                    error_msg = f"Model training completed but deployment data is missing. Please try again."
+                    return JSONResponse({
+                        'text_pre_code_response': error_msg, 
+                        'session_id': session_id,
+                        'error': 'deployment_missing'
+                    }, status_code=500)
+                    
                 with open(deployment_path, 'r', encoding='utf-8') as f:
                     deployment_data = json.load(f)
             else:
                 # Load existing model statistics and deployment data
+                print(f"[AI_BOT] Using existing {model_name} model for {data.get('target_column')}")
                 with open(deployment_path, 'r', encoding='utf-8') as f:
                     deployment_data = json.load(f)
                 model_stats = deployment_data.get('stats', {})
@@ -2294,84 +3017,104 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
             feature_importance = get_feature_importance(loaded_pipeline, feature_names or features.keys())
             feature_impact = calculate_feature_impact(loaded_pipeline, df_predict, features, is_classification, label_encoder)
 
-            # Prepare response based on model type
-            if is_classification:
-                prediction_result = {
-                    "predicted_value": str(predicted_value),
-                    "predicted_class": str(predicted_value),
-                    "target_column": data.get('target_column'),
-                    "model_type": model_type,
-                    "confidence": confidence,
-                    "class_probabilities": class_probabilities
-                }
-                
-                # Add top predicted classes
-                if class_probabilities:
-                    sorted_proba = sorted(class_probabilities.items(), key=lambda x: x[1], reverse=True)
-                    prediction_result["top_predictions"] = [
-                        {"class": class_name, "probability": round(prob * 100, 2)} 
-                        for class_name, prob in sorted_proba[:3]
-                    ]
-                
-                # Text response for classification
-                text_response = f"Predicted {data.get('target_column')} class is '{predicted_value}'"
-                if confidence:
-                    text_response += f" with {round(confidence * 100, 1)}% confidence"
-            else:
-                prediction_result = {
-                    "predicted_value": round(float(predicted_value), 4),
-                    "target_column": data.get('target_column'),
-                    "model_type": model_type,
-                    "confidence": None
-                }
-                
-                # Text response for regression
-                text_response = f"Predicted {data.get('target_column')} value is {round(float(predicted_value), 2)}"
+            # Build dataset stats for LLM insights (same as model_predict)
+            dataset_stats = {}
+            try:
+                if os.path.exists(data_file):
+                    df_all = pd.read_csv(data_file)
+                    target_col = data.get('target_column')
+                    if target_col in df_all.columns:
+                        y = pd.to_numeric(df_all[target_col], errors="coerce").dropna()
+                        if not y.empty:
+                            q = y.quantile([0.0, 0.25, 0.5, 0.75, 1.0]).to_dict()
+                            dataset_stats = {
+                                "min": float(q.get(0.0)),
+                                "q25": float(q.get(0.25)),
+                                "median": float(q.get(0.5)),
+                                "q75": float(q.get(0.75)),
+                                "max": float(q.get(1.0)),
+                                "count": int(len(y)),
+                            }
+            except Exception as e:
+                print(f"[AI_BOT] Warning: Could not load dataset stats: {e}")
+                dataset_stats = {}
 
-            # Prepare model performance metrics
-            model_performance = {
-                "model_type": model_type,
-                "total_samples": model_stats.get("total_samples", "N/A"),
-                "cross_validation": {
-                    "mean_score": model_stats.get("cross_val_mean", "N/A"),
-                    "std_score": model_stats.get("cross_val_std", "N/A")
-                },
-                "baseline_comparison": model_stats.get("baseline_comparison", "N/A")
+            # Determine task type
+            task_type = "classification" if is_classification else "regression"
+            
+            # Cache key for insights
+            cache_key = f"{data.get('target_column')}|{task_type}|{json.dumps(dataset_stats, sort_keys=True)}|{str(predicted_value)[:32]}"
+
+            # Generate LLM insights (same as model_predict endpoints)
+            try:
+                insights = generate_prediction_insights_llm({
+                    "cache_key": cache_key,
+                    "target_column": data.get('target_column'),
+                    "task_type": task_type,
+                    "predicted_value": predicted_value,
+                    "dataset_stats": dataset_stats,
+                    "input_sample": {k: features.get(k) for k in list(features.keys())[:10]},
+                })
+            except Exception as e:
+                print(f"[AI_BOT] Warning: LLM insights generation failed: {e}")
+                # Fallback insights if LLM fails
+                insights = {
+                    "output_levels": {},
+                    "predicted_level": None,
+                    "input_analysis": [],
+                    "prediction_interpretation": [],
+                    "business_insights": [],
+                    "recommended_actions": []
+                }
+
+            # Convert predicted_value to native Python type for JSON serialization
+            if isinstance(predicted_value, (np.integer, np.floating)):
+                predicted_value = predicted_value.item()
+            elif isinstance(predicted_value, np.ndarray):
+                predicted_value = predicted_value.tolist()
+            
+            # Prepare response in same format as model_predict
+            prediction_result = {
+                "predicted_value": float(predicted_value) if not is_classification else str(predicted_value),
+                "target_column": data.get('target_column'),
+                "model_type": model_name,
+                "task_type": task_type,
+                "predicted_level": insights.get("predicted_level"),
             }
-
-            # Add specific metrics based on model type
+            
+            # Get metrics from model stats
             metrics = model_stats.get("metrics", {})
-            if is_classification:
-                model_performance["classification_metrics"] = {
-                    "accuracy": f"{metrics.get('accuracy', 'N/A')}%",
-                    "precision": f"{metrics.get('precision', 'N/A')}%",
-                    "recall": f"{metrics.get('recall', 'N/A')}%",
-                    "f1_score": f"{metrics.get('f1_score', 'N/A')}%"
-                }
+            metric_type = "RMSE" if not is_classification else "Accuracy"
+            metric_val = metrics.get('rmse') if not is_classification else metrics.get('accuracy')
+            
+            # Convert metric_val to native Python type
+            if metric_val is not None and isinstance(metric_val, (np.integer, np.floating)):
+                metric_val = float(metric_val)
+            
+            # Text response
+            if model_needs_training:
+                text_response = f"✓ Trained {model_name} model successfully!\n\nPrediction: {data.get('target_column')} = {predicted_value}"
             else:
-                model_performance["regression_metrics"] = {
-                    "r2_score": f"{metrics.get('r2_score', 'N/A')}%",
-                    "mae": metrics.get('mae', 'N/A'),
-                    "rmse": metrics.get('rmse', 'N/A')
-                }
+                text_response = f"Using {model_name} model: Predicted {data.get('target_column')} value is {predicted_value}"
+            
+            if insights.get("predicted_level"):
+                text_response += f" (Level: {insights.get('predicted_level')})"
 
-            # Prepare feature analysis
-            feature_analysis = {
-                "top_influencing_features": feature_importance,
-                "input_features": features,
-                "feature_impact": feature_impact,
-                "feature_types": {
-                    "categorical": deployment_data.get('categorical_features', []),
-                    "numerical": deployment_data.get('numerical_features', [])
-                }
-            }
-
-            # Create response
+            # Create response matching model_predict format
             response_data = {
                 "prediction_result": prediction_result,
-                "model_performance": model_performance,
-                "feature_analysis": feature_analysis,
+                "best_model": model_name,
+                "metric_type": metric_type,
+                "metric": metric_val,
+                "output_levels": insights.get("output_levels", {}),
+                "predicted_level": insights.get("predicted_level"),
+                "input_analysis": insights.get("input_analysis", []),
+                "prediction_interpretation": insights.get("prediction_interpretation", []),
+                "business_insights": insights.get("business_insights", []),
+                "recommended_actions": insights.get("recommended_actions", []),
                 "text_pre_code_response": text_response,
+                "model_used": model_name,
+                "model_trained_this_session": model_needs_training,  # Indicate if model was just trained
                 'session_id': session_id
             }
 
@@ -2390,6 +3133,9 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
                 model="gpt-4.1-mini",
                 messages=messages
             )
+            
+            # Track AI credits usage
+            record_llm_usage(request_body.email, response)
 
             pre_code_text, post_code_text, code = process_genai_response(response)
             result: Dict[str, Any] = {}
@@ -2471,7 +3217,7 @@ def load_pipeline(save_path="model_pipeline.pkl"):
     return pipeline
 
 
-def extract_forecast_details_llm(prompt, column_names, df):
+def extract_forecast_details_llm(prompt, column_names, df, email: Optional[str] = None):
     try:
         system_prompt = f""" You are an AI assistant that extracts forecast details from a user's prompt. Given a 
         natural language input and the following column names from the input data, return the following in JSON format:
@@ -2504,6 +3250,10 @@ def extract_forecast_details_llm(prompt, column_names, df):
             ],
             temperature=0  # Make it deterministic
         )
+        
+        # Track AI credits usage
+        record_llm_usage(email, response)
+        
         for choice in response.choices:
             message = choice.message
             chunk_message = message.content if message else ''
@@ -2516,7 +3266,7 @@ def extract_forecast_details_llm(prompt, column_names, df):
         print(e)
 
 
-def extract_forecast_details_rf(prompt, column_names):
+def extract_forecast_details_rf(prompt, column_names, email: Optional[str] = None):
     try:
         system_prompt = f"""
             You are an AI assistant that extracts machine learning input features and the target variable from a user's natural language prompt.
@@ -2583,6 +3333,10 @@ def extract_forecast_details_rf(prompt, column_names):
             ],
             temperature=0  # Make it deterministic
         )
+        
+        # Track AI credits usage
+        record_llm_usage(email, response)
+        
         for choice in response.choices:
             message = choice.message
             chunk_message = message.content if message else ''
@@ -2931,7 +3685,9 @@ def arima_train_only(data, target_col):
         # Identify date column
         date_column = None
 
-        if not os.path.exists(os.path.join("models", 'Arima', target_col)):
+        # Check if metadata file exists, not just the directory
+        metadata_path = os.path.join("models", 'Arima', target_col, target_col + '_results.json')
+        if not os.path.exists(metadata_path):
             for col in data.columns:
                 print(f"Checking column '{col}' for dates")
                 if data.dtypes[col] == 'object':
@@ -3020,7 +3776,7 @@ def arima_train_only(data, target_col):
                 raise
 
         else:
-            print(f"Model for {target_col} already exists")
+            print(f"Model and metadata for {target_col} already exists")
             return True
 
     except Exception as e:
@@ -4015,8 +4771,9 @@ async def generate_synthetic_content(
     """
     print("[DEBUG] Entered generate_synthetic_content")
 
-    # Validate API key
-    openai_api_key = os.getenv("OPENAI_API_KEY")
+    # Validate API key using llm_config
+    from llm_config import get_api_key
+    openai_api_key = get_api_key(user_email=None)  # Can be parameterized if user email is available
     if not openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -4441,11 +5198,22 @@ def infer_datetime_column(df: pd.DataFrame) -> Optional[str]:
 
 
 # Semantic ai related number of rows detection
-def extract_num_rows_from_prompt1(prompt: str, api_key: str) -> Optional[int]:
+def extract_num_rows_from_prompt1(prompt: str, api_key: str, user_email: str = None) -> Optional[int]:
     """
     Extracts number of rows to generate using LLM-based semantic parsing only.
+    
+    NOTE: If user_email is provided, use get_llm_config(user_email) to get user-specific
+    API key and model. Otherwise, use the provided api_key parameter for backward compatibility.
     """
-    llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
+    # Use user-specific config if email provided, otherwise use provided api_key
+    if user_email:
+        config = get_llm_config(user_email)
+        api_key = config["api_key"]
+        model = config["model"]
+    else:
+        model = "gpt-4o-mini"  # fallback model
+    
+    llm = ChatOpenAI(model=model, openai_api_key=api_key)
     messages = [
         SystemMessage(content="You extract the number of rows to generate from user input. Return only the integer."),
         HumanMessage(content=prompt)
@@ -4556,7 +5324,8 @@ def analyze_all_images_for_style(uploaded_images, openai_api_key):
 
     # Use ChatOpenAI to analyze the combined descriptions
     try:
-        analysis_llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=openai_api_key)
+        from llm_helper import get_llm_for_user
+        analysis_llm = get_llm_for_user(user_email=None)  # Can be parameterized if needed
         analysis_messages = [
             SystemMessage(
                 content="You are an expert visual style analyst. Analyze multiple image descriptions to extract a comprehensive, unified style guide."),
@@ -4642,7 +5411,8 @@ Your goal is to create a verbal representation so detailed that someone could un
 
 # Usage example with your function:
 def describe_image(image: Image.Image, api_key: str) -> str:
-    vision_llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
+    from llm_helper import get_llm_for_user
+    vision_llm = get_llm_for_user(user_email=None)  # Can be parameterized if needed
     image_bytes = io.BytesIO()
     image.save(image_bytes, format='PNG')
     image_bytes.seek(0)
@@ -4674,7 +5444,8 @@ def generate_images(client: OpenAI, prompt: str, count: int) -> list:
 
 def extract_num_images_from_prompt(prompt: str, api_key: str) -> Optional[int]:
     try:
-        llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key)
+        from llm_helper import get_llm_for_user
+        llm = get_llm_for_user(user_email=None)  # Can be parameterized if needed
         messages = [
             SystemMessage(
                 content="You extract the number of images to generate from user input. Return only the integer."),
@@ -5016,6 +5787,126 @@ async def email_report(
 
 
  
+
+
+# ============================================================================
+# LLM Settings API Endpoints
+# ============================================================================
+
+@app.post("/api/settings/llm")
+async def save_llm_settings(request: Request):
+    """Save LLM settings (provider, API key and model) for a user."""
+    try:
+        data = await request.json()
+        email = data.get("email")
+        provider = data.get("provider")
+        api_key = data.get("api_key")
+        model_name = data.get("model_name")
+        
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        db.ensure_connection()
+        # Create table if it doesn't exist
+        try:
+            db.create_llm_settings_table()
+        except Exception:
+            pass
+        
+        db.save_llm_settings(email, provider, api_key, model_name)
+        db.close()
+        
+        return JSONResponse(content={
+            "status": "success",
+            "message": "LLM settings saved successfully"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/settings/llm")
+async def get_llm_settings(email: str = Query(...)):
+    """Get LLM settings for a user."""
+    try:
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        db.ensure_connection()
+        # Create table if it doesn't exist
+        try:
+            db.create_llm_settings_table()
+        except Exception:
+            pass
+        
+        settings = db.get_llm_settings(email)
+        db.close()
+        
+        # Return defaults if no settings found
+        if not settings:
+            return JSONResponse(content={
+                "provider": "openai",
+                "api_key": "",
+                "model_name": "gpt-4o-mini"
+            })
+        
+        return JSONResponse(content={
+            "provider": settings.get("provider", "openai"),
+            "api_key": settings.get("api_key", ""),
+            "model_name": settings.get("model_name", "gpt-4o-mini")
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/settings/llm")
+async def delete_llm_settings(email: str = Query(...)):
+    """Delete LLM settings for a user."""
+    try:
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        db.ensure_connection()
+        db.delete_llm_settings(email)
+        db.close()
+        
+        return JSONResponse(content={
+            "status": "success",
+            "message": "LLM settings deleted successfully"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/settings/llm/providers")
+async def get_llm_providers():
+    """Get available LLM providers and their models."""
+    try:
+        from llm_config import get_provider_models
+        
+        providers_info = {
+            "openai": {
+                "name": "OpenAI",
+                "description": "To power RAG and/or AI queries",
+                "models": get_provider_models("openai"),
+                "default_model": "gpt-4o-mini"
+            },
+            "anthropic": {
+                "name": "Anthropic",
+                "description": "To unlock Generative AI models from Anthropic",
+                "models": get_provider_models("anthropic"),
+                "default_model": "claude-3-5-sonnet-20241022"
+            },
+            "google": {
+                "name": "Google",
+                "description": "To unlock Generative AI models from Google",
+                "models": get_provider_models("google"),
+                "default_model": "gemini-1.5-flash"
+            }
+        }
+        
+        return JSONResponse(content=providers_info)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

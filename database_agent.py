@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 import requests
 import pandas as pd 
 import ast
+from llm_helper import get_llm_for_user
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,12 +43,14 @@ class ChatResponse(BaseModel):
 
 
 class MultiDatabaseAgent:
-    def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4.1-mini",
+    def __init__(self, user_email: str = None):
+        """Initialize with user-specific LLM configuration"""
+        self.llm = get_llm_for_user(
+            user_email=user_email,
             temperature=0,
             max_tokens=2000
         )
+        self.user_email = user_email
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         # Supported connection patterns

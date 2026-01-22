@@ -12,6 +12,10 @@ from openai import OpenAI
 from PyPDF2 import PdfReader
 from docx import Document
 import markdown
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from llm_config import get_api_key, get_model_name
 
 load_dotenv()
 
@@ -22,7 +26,11 @@ VECTOR_STORE_DIR = "./vector_store"
 os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
 
 # OpenAI API
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def get_openai_client(user_email: str = None):
+    """Get OpenAI client using llm_config"""
+    return OpenAI(api_key=get_api_key(user_email))
+
+client = get_openai_client()  # Default client
 
 # FAISS index setup
 embedding_dim = 1536
@@ -183,9 +191,10 @@ async def chat_with_documents(
             Answer:
 """
 
-        # Get LLM response
+        # Get LLM response using model from llm_config
+        model_name = get_model_name(user_email=None)  # Can be parameterized if needed
         chat_response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model_name,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that answers based on document content."},
                 {"role": "user", "content": prompt}

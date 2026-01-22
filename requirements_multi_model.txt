@@ -1,0 +1,25 @@
+# Additional requirements for Multi-Model Training System
+
+# Core dependencies (if not already installed)
+langchain>=0.1.0
+langchain-openai>=0.0.5
+chromadb>=0.4.22
+pypdf2>=3.0.0
+python-docx>=1.1.0
+pandas>=2.0.0
+psycopg2-binary>=2.9.9
+
+# Optional but recommended
+sentence-transformers>=2.2.2  # For better embeddings
+tiktoken>=0.5.2  # For token counting
+
+
+
+
+
+
+
+
+
+
+

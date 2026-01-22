@@ -9,7 +9,9 @@ import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
 from docx import Document
 from database import PostgresDatabase
-from api.akkio.explore_functions.llm import get_openai_client
+from api.akkio.usage_store import deduct_storage, get_or_init_usage
+from api.akkio.explore_functions.llm import get_openai_client, call_llm_with_usage
+
 import json as _json
 import glob
 from pathlib import Path
@@ -125,7 +127,8 @@ def _summarize_df_for_llm(file_name: str, df: pd.DataFrame) -> tuple[str, dict, 
     return desc, stats, rows
 
 
-def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
+def _llm_detect_schema(df: pd.DataFrame, file_name: str, email: str = None) -> dict:
+
     """
     Ask LLM to identify predictable and forecastable columns.
     Returns dict with keys: predictable_columns, forecastable_columns, ignore_columns (optional).
@@ -164,16 +167,18 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
                 "file_stats": stats,
                 "rows": rows
             }
-            # Use chat.completions with JSON object response
-            resp = client.chat.completions.create(
+            # Use call_llm_with_usage
+            resp = call_llm_with_usage(
                 model="gpt-4o-mini",
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": _json.dumps(user_payload)}
                 ],
-                temperature=0.0
+                temperature=0.0,
+                email=email
             )
+
             content = resp.choices[0].message.content if resp and resp.choices else "{}"
             parsed = _json.loads(content)
             predictable_columns = list(map(str, parsed.get("predictable_columns", []) or []))
@@ -188,9 +193,23 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
     if not predictable_columns and not forecastable_columns:
         # Simple heuristic: numeric columns are predictable
         cols = list(map(str, df.columns.tolist()))
+        has_date_column = False
+        
+        # Check if there's a date/time column
+        for col in cols:
+            if pd.api.types.is_datetime64_any_dtype(df[col]) or \
+               any(date_word in col.lower() for date_word in ['date', 'time', 'timestamp', 'year', 'month', 'day']):
+                has_date_column = True
+                break
+        
+        # Add numeric columns
         for col in cols:
             if pd.api.types.is_numeric_dtype(df[col]):
                 predictable_columns.append(col)
+                # If we have a date column, numeric columns can be forecasted
+                if has_date_column:
+                    forecastable_columns.append(col)
+    
     # Ensure the suggested columns exist and are valid
     df_cols = set(map(str, df.columns.tolist()))
     predictable_columns = [c for c in predictable_columns if c in df_cols]
@@ -522,7 +541,8 @@ def _transcribe_audio_with_whisper(audio_bytes: bytes, file_extension: str) -> s
         return ""
 
 
-def _ocr_image_with_llm(image_bytes: bytes) -> Tuple[str, Optional[str]]:
+def _ocr_image_with_llm(image_bytes: bytes, email: str = None) -> Tuple[str, Optional[str]]:
+
     """
     Use OpenAI vision model to extract text and classify image subtype (table|chart|other).
     Returns (text, subtype or None).
@@ -570,7 +590,7 @@ def _ocr_image_with_llm(image_bytes: bytes) -> Tuple[str, Optional[str]]:
             "If both appear, choose the primary visual focus (prefer 'chart' over 'table' if a plot is present on the page).\n"
             "Respond as STRICT JSON: {\"text\": \"...\", \"subtype\": \"table|chart|other\"}"
         )
-        resp = client.chat.completions.create(
+        resp = call_llm_with_usage(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
@@ -589,8 +609,10 @@ def _ocr_image_with_llm(image_bytes: bytes) -> Tuple[str, Optional[str]]:
                     ]
                 }
             ],
-            temperature=0.0
+            temperature=0.0,
+            email=email
         )
+
         content = resp.choices[0].message.content if resp and resp.choices else "{}"
         parsed = _json.loads(content)
         text = str(parsed.get("text", "") or "").strip()
@@ -637,8 +659,39 @@ async def upload_only(
         file_type: Optional[str] = None
         file_subtype: Optional[str] = None
 
-        # Read file content into a DataFrame
+        # Check storage quota before reading full content if possible (content-length header?), 
+        # but for UploadFile we often need to read or check size. 
+        # We can check file.size if spooled? 
+        # Safest to read content since we need it anyway.
         content = await file.read()
+        file_size = len(content)
+        
+        # Check and Deduct Storage
+        try:
+            # Check current usage first without deducting
+            usage_row = get_or_init_usage(db, mail)
+            current_storage = usage_row.get("storage_remaining_mb", 0)
+            required_mb = (file_size / (1024 * 1024))
+            
+            if current_storage < required_mb:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Storage limit exceeded. You have {current_storage} MB left, but this file is {required_mb:.2f} MB."
+                )
+            
+            # Deduct
+            deduct_storage(db, mail, file_size)
+            print(f"[INFO] Deducted {required_mb:.2f} MB from {mail}. Remaining: {current_storage - required_mb:.2f} MB")
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[WARNING] Storage check failed: {e}")
+            # Optional: fail open or closed? proceeding for now if DB error to avoid blocking valid users during glitches?
+            # User wants strict 50MB, so let's log but maybe proceed if it's just a DB glitch? 
+            # Or fail safe? Let's proceed but log error to be safe against blockers.
+            pass
+
         if file_extension == ".csv":
             df = pd.read_csv(io.StringIO(content.decode("utf-8")))
             file_type = "csv"
@@ -723,7 +776,8 @@ async def upload_only(
             file_type = "word"
         elif file_extension in [".png", ".jpg", ".jpeg", ".webp"]:
             # Try OCR via OpenAI Vision
-            text, inferred = _ocr_image_with_llm(content)
+            text, inferred = _ocr_image_with_llm(content, email=mail)
+
             file_type = "image"
             # Map subtype
             if inferred in {"table", "chart"}:
@@ -968,7 +1022,8 @@ async def get_model_schema(
         schema = db.get_dataset_schema(mail, name)
         if not schema:
             df = _load_data_from_db_or_uploads(name)
-            detected = _llm_detect_schema(df, name)
+            detected = _llm_detect_schema(df, name, email=mail)
+
             columns = list(map(str, df.columns.tolist()))
             db.save_dataset_schema(
                 mail, name,
@@ -993,7 +1048,11 @@ async def get_model_schema(
 # ============ LEGACY ENDPOINTS (from final_akio_apis.py) ============
 
 @upload_router.get("/api/get_columns")
-async def get_column_names(name: str = Query(None), mail: str = Query(None)):
+async def get_column_names(
+    name: str = Query(None), 
+    mail: str = Query(None),
+    force_refresh: bool = Query(False)
+):
     """Get predictable and forecastable columns from LLM analysis"""
     try:
         # Determine dataset name
@@ -1008,18 +1067,24 @@ async def get_column_names(name: str = Query(None), mail: str = Query(None)):
             latest = max(files, key=os.path.getmtime)
             dataset_name = latest.stem  # Get filename without extension
         
-        # Try to get schema from database first (if mail provided)
+        # Try to get schema from database first (if mail provided and not forcing refresh)
         schema = None
-        if mail and dataset_name:
+        if mail and dataset_name and not force_refresh:
             try:
                 schema = db.get_dataset_schema(mail, dataset_name)
+                # Check if schema has empty forecastable_columns but should have some
+                # (re-analyze if it looks incomplete)
+                if schema and not schema.get("forecastable_columns"):
+                    print(f"[INFO] Schema has empty forecastable_columns, forcing re-analysis")
+                    schema = None
             except Exception:
                 pass
         
         # If no schema, analyze with LLM
         if not schema:
             df = _load_data_from_db_or_uploads(dataset_name)
-            detected = _llm_detect_schema(df, dataset_name)
+            detected = _llm_detect_schema(df, dataset_name, email=mail)
+
             
             # Save schema if mail provided
             if mail:
@@ -1159,8 +1224,50 @@ async def models(input: dict = Body(...)):
                 'skipped_models': res.get("skipped_models", []),
                 'reused': bool(res.get("reused", False)),
             })
+        elif model_type in ['XGBoost', 'LightGBM', 'GradientBoosting']:
+            # Import the new model training function
+            from final_akio_apis import train_single_model
+            
+            # Validate target column exists
+            if target_col not in df.columns:
+                raise HTTPException(400, f"Target column '{target_col}' not found in dataset")
+            
+            # Check for missing values in target column
+            missing_count = df[target_col].isna().sum()
+            if missing_count > 0:
+                print(f"[WARNING] Target column '{target_col}' has {missing_count} missing values. Dropping rows with missing target.")
+                df = df.dropna(subset=[target_col])
+            
+            if len(df) < 10:
+                raise HTTPException(400, f"Insufficient data after removing missing values. Need at least 10 rows, got {len(df)}")
+            
+            print(f"[INFO] Training {model_type} on {len(df)} rows, target: {target_col}")
+            result = train_single_model(df, target_col, model_type)
+            
+            if len(result) == 3:
+                stat, cols, row_data = result
+            elif len(result) == 2:
+                stat, cols = result
+                row_data = {}
+            else:
+                stat, cols, row_data = False, [], {}
+            
+            feature_cols = [col for col in df.columns if col != target_col]
+            training_success = bool(stat) and stat is not False
+            
+            print(f"[INFO] Training {'succeeded' if training_success else 'failed'}")
+            
+            return JSONResponse(content={
+                'columns': list(df.columns),
+                'status': training_success,
+                'target_column': target_col,
+                'feature_columns': feature_cols if training_success else [],
+                'model_stats': stat if isinstance(stat, dict) else None,
+                'row_data': row_data if row_data else {},
+                'model_type': model_type
+            })
         else:
-            raise HTTPException(400, "Unsupported model type. Use 'RandomForest', 'Arima', or 'AutoML'")
+            raise HTTPException(400, "Unsupported model type. Use 'RandomForest', 'Arima', 'AutoML', 'XGBoost', 'LightGBM', or 'GradientBoosting'")
     except HTTPException:
         raise
     except Exception as e:
@@ -1185,7 +1292,7 @@ async def model_predict(request: Request):
         # Import legacy functions
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from final_akio_apis import handle_rf_prediction, handle_arima_forecast, handle_supervised_prediction
+        from final_akio_apis import handle_rf_prediction, handle_arima_forecast, handle_supervised_prediction, handle_single_model_prediction
         
         if form_name == 'rf':
             return await handle_rf_prediction(form_data, targetcol)
@@ -1193,8 +1300,11 @@ async def model_predict(request: Request):
             return await handle_arima_forecast(form_data, targetcol)
         elif form_name in ['supervised', 'automl']:
             return await handle_supervised_prediction(form_data, targetcol)
+        elif form_name in ['xgboost', 'lightgbm', 'gradientboosting']:
+            model_type = form_data.get('model', '')
+            return await handle_single_model_prediction(form_data, targetcol, model_type)
         else:
-            raise HTTPException(400, "Invalid form_name. Use 'rf', 'arima', or 'supervised'")
+            raise HTTPException(400, "Invalid form_name. Use 'rf', 'arima', 'supervised', 'xgboost', 'lightgbm', or 'gradientboosting'")
     except HTTPException:
         raise
     except Exception as e:

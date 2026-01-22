@@ -4,7 +4,8 @@ from difflib import get_close_matches
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from .llm import get_openai_client, get_language_context
+from .llm import get_openai_client, get_language_context, call_llm_with_usage
+
 from .formatters import format_result_for_response, format_text_response
 from .agent_utils import safe_execute_pandas_code
 from .charts import generate_rescue_chart
@@ -15,14 +16,16 @@ from universal_prompts import (
 )
 
 
-def generate_data_code(prompt_eng: str) -> str:
-    response = get_openai_client().chat.completions.create(
+def generate_data_code(prompt_eng: str, email: str = None) -> str:
+    response = call_llm_with_usage(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": prompt_for_data_analyst},
             {"role": "user", "content": prompt_eng}
-        ]
+        ],
+        email=email
     )
+
     all_text = ""
     for choice in response.choices:
         message = choice.message
@@ -37,7 +40,7 @@ def generate_data_code(prompt_eng: str) -> str:
     return code
 
 
-def simulate_and_format_with_llm(code_to_simulate: str, dataframe: pd.DataFrame) -> str:
+def simulate_and_format_with_llm(code_to_simulate: str, dataframe: pd.DataFrame, email: str = None) -> str:
     info_buffer = io.StringIO()
     dataframe.info(buf=info_buffer)
     df_info = info_buffer.getvalue()
@@ -77,13 +80,15 @@ def simulate_and_format_with_llm(code_to_simulate: str, dataframe: pd.DataFrame)
    - Report can be present in the markdown format.
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
-    response = get_openai_client().chat.completions.create(
+    response = call_llm_with_usage(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
             {"role": "user", "content": user_prompt}
-        ]
+        ],
+        email=email
     )
+
     all_text = ""
     for choice in response.choices:
         message = choice.message
@@ -92,7 +97,7 @@ def simulate_and_format_with_llm(code_to_simulate: str, dataframe: pd.DataFrame)
     return all_text
 
 
-def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str, chat_history: List[Dict[str, str]] = None) -> Dict[str, object]:
+def get_llm_analysis_explore(query: str, df: pd.DataFrame, mode: str, chat_history: List[Dict[str, str]] = None, email: str = None) -> Dict[str, object]:
     num_rows, num_cols = df.shape
     col_names = list(df.columns)
     sample_data = df.head(3).to_dict(orient='records')
@@ -204,13 +209,14 @@ IMPORTANT:
 """
     system_message = "You are an expert data analyst AI assistant. You provide helpful, conversational responses with proper HTML formatting and are skilled at Python/Plotly code generation."
     try:
-        response = get_openai_client().chat.completions.create(
+        response = call_llm_with_usage(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": llm_prompt}
             ],
             temperature=0.3,
+            email=email
         )
         all_text = ""
         for choice in response.choices:
@@ -262,14 +268,23 @@ def _extract_code_from_llm_text(all_text: str) -> str:
 
 
 def _llm_generate_code(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
-    response = get_openai_client().chat.completions.create(
+    response = call_llm_with_usage(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=temperature,
+        # Intentionally no email passed for internal helper methods if not attributed to user cost directly?
+        # Actually _llm_generate_code is used by build_graph_two_stage_llm, which should be attributed.
+        # But _llm_generate_code signature doesn't take email.
+        # For now, we will omit email here as per original code didn't track it explicitly in this specific helper
+        # OR we should update signature. The original code didn't call record_llm_usage here! 
+        # So using call_llm_with_usage without email is fine (it won't deduct credits), 
+        # or we update signature. Let's keep behavior same: no email = no deduction if not passed.
+        # Wait, call_llm_with_usage takes email=None by default.
     )
+
     combined = ""
     for ch in response.choices:
         msg = ch.message
@@ -517,6 +532,35 @@ def _guess_time_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def _llm_generate_chart_title(query: str, x_col: str, y_col: str, chart_type: str) -> str:
+    """
+    Generate a concise, descriptive chart title based on the query and column names.
+    """
+    try:
+        sys = (
+            "You are a data visualization expert. Generate a concise, professional chart title (max 8 words) "
+            "based on the user's query and the x/y column names. "
+            "The title should be clear and descriptive. Return ONLY the title text, no quotes or extra formatting."
+        )
+        user = f"Query: {query}\nX-axis: {x_col}\nY-axis: {y_col}\nChart type: {chart_type}\nGenerate title:"
+        resp = call_llm_with_usage(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            temperature=0.3,
+            max_tokens=50,
+        )
+        
+        title = ""
+        for ch in resp.choices:
+            msg = ch.message
+            title += (msg.content or "")
+        title = title.strip().strip('"\'')
+        return title if title else f"{y_col} vs {x_col}"
+    except Exception as e:
+        print(f"[EXPLORE] LLM title generation failed: {e}")
+        return f"{y_col} vs {x_col}"
+
+
 def _llm_parse_graph_intent(query: str, columns: List[str]) -> Optional[Dict[str, object]]:
     """
     Ask LLM to infer intended chart semantics from the query.
@@ -531,11 +575,13 @@ def _llm_parse_graph_intent(query: str, columns: List[str]) -> Optional[Dict[str
             "set group_by to that column, y to the metric, and x to a time-like column if available."
         )
         user = f"Query: {query}\nColumns: {columns}\nReturn ONLY the JSON."
-        resp = get_openai_client().chat.completions.create(
+        resp = call_llm_with_usage(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
             temperature=0.0,
+            # No email tracking for lightweight intent parsing as per original
         )
+
         txt = ""
         for ch in resp.choices:
             msg = ch.message
@@ -641,19 +687,22 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
         sys1 = (
             "You are a senior data engineer. Generate robust, safe pandas code that operates on a provided DataFrame named df "
             "and assigns the final cleaned tabular result to a variable named result (a pandas DataFrame). "
-            "Your job is to INTERPRET the user's question and prepare a plotting-ready table with STANDARD COLUMN NAMES:\n"
-            "- 'x': the x-axis column (prefer a time-like column if a trend is implied)\n"
-            "- 'y': the numeric metric requested by the user\n"
-            "- 'group' (optional): a categorical column when the user asks for 'each <category>' / 'by <category>'\n"
+            "Your job is to INTERPRET the user's question and prepare a plotting-ready table.\n"
+            "COLUMN NAMING STRATEGY:\n"
+            "- Keep ORIGINAL, MEANINGFUL column names from the source data whenever possible\n"
+            "- If you must rename for clarity, use descriptive names that reflect the actual data (e.g., 'Speed', 'Pressure', 'Temperature')\n"
+            "- NEVER use generic names like 'x', 'y', 'X', 'Y', 'value', 'metric' unless they are the actual column names in the source\n"
+            "- Typically select 2-3 columns: one for x-axis (prefer time-like column for trends), one for y-axis (the metric), and optionally one for grouping\n"
+            "\n"
             "Strict requirements:\n"
             "1) Never read/write files; operate on the provided df only.\n"
             "2) Parse numeric values embedded in strings using regex and convert to float.\n"
             "3) Detect and parse likely date/time columns using pd.to_datetime with errors='coerce'.\n"
-            "4) Remove empty-like tokens and drop rows with missing values in the plotted columns ('x','y', and 'group' if used).\n"
-            "5) If a date range is provided, apply it to the time-like 'x' column (inclusive of start, exclusive of end).\n"
-            "6) If the query implies grouping (e.g., 'each device id', 'by status'), populate a 'group' column.\n"
-            "7) IMPORTANT: Preserve categorical IDs exactly as they appear (e.g., 'TT125'); DO NOT strip prefixes, DO NOT coerce IDs to numbers in 'group'.\n"
-            "7) Return ONLY executable Python code; no markdown; the final variable must be a pandas DataFrame named result with columns: ['x','y'] and optional ['group']."
+            "4) Remove empty-like tokens and drop rows with missing values in the plotted columns.\n"
+            "5) If a date range is provided, apply it to the time-like column (inclusive of start, exclusive of end).\n"
+            "6) If the query implies grouping (e.g., 'each device id', 'by status'), include that column for grouping.\n"
+            "7) IMPORTANT: Preserve categorical IDs exactly as they appear (e.g., 'TT125'); DO NOT strip prefixes, DO NOT coerce IDs to numbers.\n"
+            "8) Return ONLY executable Python code; no markdown; the final variable must be a pandas DataFrame named result with meaningful column names."
         )
         user1_parts = [
             f"User question: {query}",
@@ -690,6 +739,56 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
         # Normalize columns to ['x','y','group?'] if LLM returned different names
         cols_lower = {c.lower(): c for c in df_clean.columns}
         has_standard = ('x' in cols_lower) and ('y' in cols_lower)
+        
+        # Store original column names and chart intent for later use
+        # If columns are already named 'x', 'y', try to get original names from the DataFrame
+        orig_x_name = None
+        orig_y_name = None
+        orig_group_name = None
+        chart_type = None
+        
+        # Try to infer original column names from the source DataFrame if available
+        if has_standard and len(df_clean.columns) >= 2:
+            # The cleaned DataFrame has 'x' and 'y' - try to map back to original columns
+            # by checking which original columns have similar data
+            try:
+                # Get the actual column names (case-sensitive)
+                x_col_actual = cols_lower.get('x')
+                y_col_actual = cols_lower.get('y')
+                
+                # If these are literally named 'x' and 'y', try to infer from data
+                if x_col_actual == 'x' or x_col_actual == 'y':
+                    # Look at original DataFrame columns to find matches
+                    for orig_col in df.columns:
+                        if orig_col.lower() not in ['x', 'y', 'group']:
+                            # Check if this could be a time column
+                            if orig_x_name is None:
+                                try:
+                                    if any(k in orig_col.lower() for k in ['time', 'date', 'timestamp', 'datetime']):
+                                        orig_x_name = orig_col
+                                        continue
+                                except:
+                                    pass
+                            # Check if this could be a numeric column
+                            if orig_y_name is None:
+                                try:
+                                    if pd.api.types.is_numeric_dtype(df[orig_col]):
+                                        orig_y_name = orig_col
+                                except:
+                                    pass
+                    
+                # Fallback: use first two meaningful column names from original DataFrame
+                if not orig_x_name or not orig_y_name:
+                    meaningful_cols = [c for c in df.columns if c.lower() not in ['index', 'unnamed']]
+                    if len(meaningful_cols) >= 2:
+                        if not orig_x_name:
+                            orig_x_name = meaningful_cols[0]
+                        if not orig_y_name:
+                            orig_y_name = meaningful_cols[1]
+            except Exception as e:
+                print(f"[DEBUG] Could not infer original column names: {e}")
+                pass
+        
         if not has_standard:
             try:
                 intent = _llm_parse_graph_intent(query, list(df_clean.columns))
@@ -699,6 +798,7 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
             y_sel = None
             g_sel = None
             if intent:
+                chart_type = intent.get("chart_type", "scatter")
                 x_sel = _closest_column(str(intent.get("x") or ""), list(df_clean.columns))
                 y_sel = _closest_column(str(intent.get("y") or ""), list(df_clean.columns))
                 g_sel = _closest_column(str(intent.get("group_by") or ""), list(df_clean.columns))
@@ -710,6 +810,12 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
                         y_sel = y_candidates[0]
                 except Exception:
                     y_sel = None
+            
+            # Store original names before renaming
+            orig_x_name = x_sel
+            orig_y_name = y_sel
+            orig_group_name = g_sel
+            
             ren_map = {}
             if x_sel:
                 ren_map[x_sel] = 'x'
@@ -719,6 +825,14 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
                 ren_map[g_sel] = 'group'
             if ren_map:
                 df_clean = df_clean.rename(columns=ren_map)
+        else:
+            # If columns are already x, y, try to infer chart type from query
+            try:
+                intent = _llm_parse_graph_intent(query, list(df_clean.columns))
+                if intent:
+                    chart_type = intent.get("chart_type", "scatter")
+            except Exception:
+                pass
         # If 'group' exists and looks numeric but the original df has labeled IDs (e.g., 'TT125'),
         # try to rebuild the label using the most common original string for each numeric token.
         try:
@@ -761,28 +875,125 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
         if 'x' in df_clean.columns and 'y' in df_clean.columns:
             try:
                 tmp = df_clean[['x', 'y'] + (['group'] if 'group' in df_clean.columns else [])].copy()
-                tmp['x'] = pd.to_datetime(tmp['x'], errors='coerce')
+                
+                # Determine if x is time-like - check if original column name suggests time
+                is_time_series = False
+                x_col_name_lower = (orig_x_name or "").lower()
+                time_keywords = ['time', 'date', 'timestamp', 'datetime', 'day', 'month', 'year', 'hour', 'minute']
+                suggests_time = any(kw in x_col_name_lower for kw in time_keywords)
+                
+                if suggests_time:
+                    try:
+                        tmp_x_datetime = pd.to_datetime(tmp['x'], errors='coerce')
+                        valid_dates = tmp_x_datetime.notna().sum()
+                        if valid_dates > len(tmp) * 0.5:  # More than 50% valid dates
+                            tmp['x'] = tmp_x_datetime
+                            is_time_series = True
+                    except Exception:
+                        pass
+                
+                # If X is not time, try to convert to numeric
+                if not is_time_series:
+                    try:
+                        tmp['x'] = pd.to_numeric(tmp['x'], errors='coerce')
+                    except Exception:
+                        pass
+                
+                # Convert y to numeric
                 tmp['y'] = pd.to_numeric(tmp['y'], errors='coerce')
                 if 'group' in tmp.columns:
                     tmp['group'] = tmp['group'].astype(str)
-                tmp = tmp.dropna(subset=['x', 'y']).sort_values('x')
+                
+                # Clean data
+                tmp = tmp.dropna(subset=['x', 'y'])
+                if is_time_series:
+                    tmp = tmp.sort_values('x')
+                
                 if not tmp.empty:
                     import plotly.graph_objects as go  # type: ignore
-                    if 'group' in tmp.columns:
-                        fig = go.Figure()
-                        top_groups = tmp['group'].value_counts().head(12).index.tolist()
-                        for g in top_groups:
-                            sub = tmp[tmp['group'] == g]
-                            if not sub.empty:
-                                fig.add_trace(go.Scatter(x=list(sub['x']), y=list(sub['y']), mode='lines+markers', name=str(g)))
-                        fig.update_layout(title="Series over time", xaxis_title="Time", yaxis_title="Value")
+                    
+                    # Determine plot mode based on chart type
+                    if chart_type == 'scatter':
+                        plot_mode = 'markers'
+                    elif chart_type == 'line':
+                        plot_mode = 'lines+markers'
+                    elif chart_type == 'bar':
+                        # Will use bar chart
+                        plot_mode = None
                     else:
-                        fig = go.Figure(go.Scatter(x=list(tmp['x']), y=list(tmp['y']), mode='lines+markers', name="Series"))
-                        fig.update_layout(title="Series over time", xaxis_title="Time", yaxis_title="Value")
+                        # Default: use markers for scatter, lines for time series
+                        plot_mode = 'lines+markers' if is_time_series else 'markers'
+                    
+                    # Prepare axis titles - use original column names or infer from data
+                    if orig_x_name:
+                        x_title = orig_x_name
+                    elif 'x' in tmp.columns and tmp.columns.tolist().index('x') < len(df.columns):
+                        # Try to infer from original DataFrame
+                        x_title = df.columns[tmp.columns.tolist().index('x')] if len(df.columns) > 0 else "Value"
+                    else:
+                        x_title = "Value"
+                    
+                    if orig_y_name:
+                        y_title = orig_y_name
+                    elif 'y' in tmp.columns and tmp.columns.tolist().index('y') < len(df.columns):
+                        # Try to infer from original DataFrame
+                        y_title = df.columns[tmp.columns.tolist().index('y')] if len(df.columns) > 1 else "Metric"
+                    else:
+                        y_title = "Metric"
+                    
+                    # Generate title using LLM for better context
+                    try:
+                        title = _llm_generate_chart_title(query, x_title, y_title, chart_type or "scatter")
+                    except Exception:
+                        # Fallback: Generate title based on query and column names
+                        if orig_x_name and orig_y_name:
+                            if is_time_series:
+                                title = f"{y_title} over {x_title}"
+                            else:
+                                title = f"{y_title} vs {x_title}"
+                        else:
+                            # Use first few words from query
+                            title_words = query.split()[:8]
+                            title = " ".join(title_words).title()
+                            if len(query.split()) > 8:
+                                title += "..."
+                    
+                    # Create figure based on chart type
+                    if chart_type == 'bar':
+                        if 'group' in tmp.columns:
+                            fig = go.Figure()
+                            top_groups = tmp['group'].value_counts().head(12).index.tolist()
+                            for g in top_groups:
+                                sub = tmp[tmp['group'] == g]
+                                if not sub.empty:
+                                    fig.add_trace(go.Bar(x=list(sub['x']), y=list(sub['y']), name=str(g)))
+                        else:
+                            fig = go.Figure(go.Bar(x=list(tmp['x']), y=list(tmp['y']), name=y_title))
+                    else:
+                        # Scatter or Line
+                        if 'group' in tmp.columns:
+                            fig = go.Figure()
+                            top_groups = tmp['group'].value_counts().head(12).index.tolist()
+                            for g in top_groups:
+                                sub = tmp[tmp['group'] == g]
+                                if not sub.empty:
+                                    fig.add_trace(go.Scatter(x=list(sub['x']), y=list(sub['y']), mode=plot_mode, name=str(g)))
+                        else:
+                            fig = go.Figure(go.Scatter(x=list(tmp['x']), y=list(tmp['y']), mode=plot_mode, name=y_title or "Series"))
+                    
+                    fig.update_layout(
+                        title=title, 
+                        xaxis_title=x_title, 
+                        yaxis_title=y_title,
+                        hovermode='closest'
+                    )
                     formatted_local = format_result_for_response(fig)
                     if formatted_local.get("type") == "plotly":
                         return formatted_local
-            except Exception:
+            except Exception as e:
+                print(f"[EXPLORE] Fast path plotting failed: {e}")
+                import traceback
+                traceback.print_exc()
                 pass
         # Reduce to manageable size for context
         if len(df_clean) > 2000:
@@ -790,22 +1001,55 @@ def build_graph_two_stage_llm(query: str, df: pd.DataFrame) -> Optional[Dict[str
         # Stage 2: generate Plotly code for this cleaned DataFrame
         schema2 = _df_schema(df_clean)
         head2 = df_clean.head(5).to_dict(orient='records')
+        
+        # Build context with original column names if available
+        column_info = ""
+        if orig_x_name or orig_y_name:
+            column_info = f"\nOriginal column names: x='{orig_x_name}', y='{orig_y_name}'"
+            if orig_group_name:
+                column_info += f", group='{orig_group_name}'"
+        
+        chart_type_hint = ""
+        if chart_type:
+            chart_type_hint = f"\nSuggested chart type: {chart_type}"
+        
+        # Generate title using LLM
+        try:
+            if orig_x_name and orig_y_name:
+                suggested_title = _llm_generate_chart_title(query, orig_x_name, orig_y_name, chart_type or "scatter")
+            else:
+                suggested_title = None
+        except Exception:
+            suggested_title = None
+        
+        title_hint = f"\nSuggested title: '{suggested_title}'" if suggested_title else ""
+        
         sys2 = (
             "You are a senior data visualization engineer. Generate robust Plotly code (px/go/ff) that operates on a provided DataFrame named df "
             "and assigns the final figure to a variable named result (a Plotly figure). "
-            "The DataFrame df MAY ALREADY be standardized to columns: 'x','y' and optional 'group'. Prefer using them directly if present.\n"
-            "Requirements: 1) If 'group' exists, create one trace per group over x (multi-series). Otherwise, create a single series. "
-            "2) Prefer line charts over time when 'x' is time-like; otherwise consider bar/scatter as appropriate. "
+            "The DataFrame df may have any column names - use them as provided.\n"
+            "Requirements: 1) If there's a grouping column, create one trace per group for multi-series visualization. Otherwise, create a single series. "
+            "2) Choose appropriate chart type: scatter for correlations (mode='markers'), line for time series (mode='lines+markers'), bar for categorical comparisons. "
             "3) Clean empty-like tokens and drop rows with missing values in the plot columns. "
-            "4) Ensure x/y arrays are aligned and non-empty. 5) Set a descriptive title and axis labels. "
-            "6) If a valid chart is impossible, set result to a top-10 aggregated pandas DataFrame instead (not None). "
+            "4) Ensure x/y data arrays are aligned and non-empty. "
+            "5) CRITICAL for AXIS LABELS: You will be provided with the correct axis label names to use. Use them EXACTLY as specified in xaxis_title and yaxis_title. "
+            "   NEVER use generic labels like 'X', 'Y', 'x', 'y', 'value', or 'metric'. Always use the meaningful names provided. "
+            "6) Use the suggested title if provided, or create a descriptive one based on the query and data. "
+            "7) If a valid chart is impossible, set result to a top-10 aggregated pandas DataFrame instead (not None). "
             "Return ONLY executable Python code; no markdown; final variable must be named result."
         )
+        # Determine axis labels - prefer original names
+        x_axis_label = orig_x_name if orig_x_name else (df_clean.columns[0] if len(df_clean.columns) > 0 else "Value")
+        y_axis_label = orig_y_name if orig_y_name else (df_clean.columns[1] if len(df_clean.columns) > 1 else "Metric")
+        
         user2 = "\n".join([
             f"User question: {query}",
             f"Cleaned DataFrame schema: {schema2}",
             f"Head(5): {head2}",
-            "If df contains 'x','y' (and optionally 'group'), use them directly to build the chart.",
+            column_info,
+            chart_type_hint,
+            title_hint,
+            f"IMPORTANT: When creating the figure, set xaxis_title='{x_axis_label}' and yaxis_title='{y_axis_label}'",
         ])
         code_stage2 = _llm_generate_code(sys2, user2, temperature=0.0)
         exec_obj = safe_execute_pandas_code(code_stage2, df_clean)

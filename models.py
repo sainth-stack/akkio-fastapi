@@ -14,6 +14,7 @@ class DBConnectionRequest(BaseModel):
 # Pydantic model for request
 class GenAIBotRequest(BaseModel):
     prompt: str
+    email: Optional[str] = None
 
 class ModelRequest(BaseModel):
     model: str

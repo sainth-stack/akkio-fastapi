@@ -1,783 +1,758 @@
 """
-Multi-Model Agentic System
-Implements: Intent Interpreter → Planner → Dynamic Agent Generator → Specialist Agents → Validator
+Multi-Model Agent System (Refactored)
+Pipeline: Context/Memory -> Plan -> Answer -> Web Search (if needed)
 """
 
 import json
-from typing import List, Dict, Any, Optional
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage
-import chromadb
-from chromadb.config import Settings
-import pandas as pd
+import asyncio
+import base64
 import os
+import io
+import sys
+from typing import List, Dict, Any, Optional, Callable
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+import pandas as pd
+from .usage_tracking import record_llm_usage, start_token_aggregation, end_token_aggregation
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[3]))
+from llm_helper import get_llm_for_user
+
+# Web search imports - Using Google for better results
+try:
+    from googlesearch import search as google_search
+    import requests
+    from bs4 import BeautifulSoup
+    WEB_SEARCH_AVAILABLE = True
+except ImportError:
+    WEB_SEARCH_AVAILABLE = False
+    print("Warning: googlesearch-python not installed. Web search will be disabled.")
+    print("Install with: pip install googlesearch-python beautifulsoup4 requests")
 
 
-class IntentInterpreterAgent:
-    """Analyzes user query to understand intent and required capabilities"""
-    
-    def __init__(self, system_prompt: str):
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
-        self.system_prompt = system_prompt
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
-    
-    def interpret(self, query: str, available_sources: List[Dict[str, Any]], messages: List[Dict] = None) -> Dict[str, Any]:
+class ContextBuilder:
+    """
+    Stage 1: Context & Memory Builder
+    Collects relevant context from files and conversation history.
+    """
+    def __init__(self, db_connection, chroma_client):
+        self.db = db_connection
+        self.chroma_client = chroma_client
+
+    async def build_context(self, query: str, files: List[Dict], messages: List[Dict]) -> Dict[str, Any]:
         """
-        Interpret user query and determine what kind of analysis is needed
-        Returns: {
-            'intent': str,  # 'data_analysis', 'document_search', 'image_analysis', 'multi_domain'
-            'required_sources': List[str],  # Which files/sources are needed
-            'analysis_type': str,  # 'statistical', 'semantic', 'visual', 'hybrid'
-            'complexity': str  # 'simple', 'moderate', 'complex'
+        Aggregates context from:
+        1. Conversation History (Memory)
+        2. Tabular Files (Schema + Sample)
+        3. Document Files (Vector Search Excerpts)
+        4. Image/Audio Files (Pass paths/content for multimodal LLM)
+        """
+        context = {
+            'text_context': [],
+            'tabular_context': [],
+            'image_context': [],
+            'sources': [],
+            'memory_summary': []
         }
-        """
-        # Fast path for greetings/chat
-        import re
-        simple_chat_patterns = [
-            r'^(hi|hello|hey|greetings)(?:\s+(?:there|all|everyone))?[\.!]*$', 
-            r'^how are you\??$',
-            r'^thanks(?:\s+you)?[\.!]*$',
-            r'^good\s+(?:morning|afternoon|evening)[\.!]*$'
-        ]
-        
-        normalized_query = query.lower().strip()
-        for pattern in simple_chat_patterns:
-            if re.match(pattern, normalized_query):
-                return {
-                    'intent': 'chat',
-                    'required_sources': [],
-                    'analysis_type': 'none',
-                    'complexity': 'simple',
-                    'key_entities': [],
-                    'expected_output': 'text',
-                    'generation_format': None
-                }
-                
-        sources_info = "\n".join([
-            f"- {s['file_name']} ({s['file_type']}): {s.get('description', 'No description')}"
-            for s in available_sources
-        ])
-        
-        prompt = f"""
-{self.system_prompt}
 
-Available Data Sources:
-{sources_info}
-
-Conversation History:
-{json.dumps(messages, indent=2) if messages else "No history"}
-
-User Query: {query}
-
-Analyze this query and provide a JSON response with:
-1. intent: What is the user trying to do? (chat/data_analysis/document_search/image_analysis/multi_domain). Use "chat" for greetings, general questions, or small talk not requiring specific files.
-2. required_sources: Which files are needed? (list of file names, empty if "chat")
-3. analysis_type: What kind of analysis? (statistical/semantic/visual/hybrid/none)
-4. complexity: How complex is this query? (simple/moderate/complex)
-5. key_entities: Important entities or concepts mentioned
-6. expected_output: What format should the answer be in?
-7. generation_format: If user asks to "generate", "create", "download", "build", "develop", "implement", or "give" a file/report/pdf/code, specify "pdf", "csv", or "excel". Default to "pdf" for "report" or code generation requests. Otherwise null.
-
-Respond ONLY with valid JSON.
-"""
-        
-        response = self.llm.invoke(prompt)
-        try:
-            return json.loads(response.content)
-        except:
-            # Fallback if JSON parsing fails
-            return {
-                'intent': 'multi_domain',
-                'required_sources': [s['file_name'] for s in available_sources],
-                'analysis_type': 'hybrid',
-                'complexity': 'moderate',
-                'key_entities': [],
-                'expected_output': 'text'
-            }
-
-
-class PlannerAgent:
-    """Creates execution plan based on intent"""
-    
-    def __init__(self, system_prompt: str):
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
-        self.system_prompt = system_prompt
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
-    
-    def create_plan(self, intent_analysis: Dict[str, Any], query: str) -> Dict[str, Any]:
-        """
-        Create step-by-step execution plan
-        Returns: {
-            'steps': List[Dict],  # Each step with action, agent_type, inputs
-            'dependencies': Dict,  # Step dependencies
-            'estimated_time': str
-        }
-        """
-        prompt = f"""
-{self.system_prompt}
-
-Intent Analysis:
-{json.dumps(intent_analysis, indent=2)}
-
-User Query: {query}
-
-Create a detailed execution plan as JSON with:
-1. steps: List of steps, each with:
-   - step_id: unique identifier
-   - action: what to do
-   - agent_type: which specialist agent (data_analyst/document_expert/image_analyzer/synthesizer)
-   - inputs: what data/sources needed
-   - output: what this step produces
-2. dependencies: which steps depend on others (dict of step_id: [prerequisite_step_ids])
-3. estimated_time: rough estimate
-
-Respond ONLY with valid JSON.
-"""
-        
-        response = self.llm.invoke(prompt)
-        try:
-            return json.loads(response.content)
-        except:
-            # Fallback plan
-            return {
-                'steps': [
-                    {
-                        'step_id': '1',
-                        'action': 'analyze_query',
-                        'agent_type': 'synthesizer',
-                        'inputs': intent_analysis['required_sources'],
-                        'output': 'comprehensive_answer'
-                    }
-                ],
-                'dependencies': {},
-                'estimated_time': '10-30 seconds'
-            }
-
-
-class DynamicAgentGenerator:
-    """Generates specialist agents on-demand based on plan"""
-    
-    def __init__(self, system_prompt: str):
-        self.system_prompt = system_prompt
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
-    
-    def generate_agent(self, agent_type: str, task_description: str) -> 'SpecialistAgent':
-        """Generate a specialist agent for a specific task"""
-        agent_prompts = {
-            'data_analyst': f"""
-{self.system_prompt}
-
-You are a DATA ANALYST specialist. Your role:
-- Analyze tabular data (CSV, Excel)
-- Perform statistical analysis
-- Identify patterns and trends
-- Provide data-driven insights
-- Always cite specific data points
-
-Task: {task_description}
-""",
-            'document_expert': f"""
-{self.system_prompt}
-
-You are a DOCUMENT ANALYSIS specialist. Your role:
-- Extract information from documents (PDF, Word, Text)
-- Understand context and semantics
-- Find relevant passages
-- Summarize complex information
-- Always cite source documents and page numbers
-
-Task: {task_description}
-""",
-            'image_analyzer': f"""
-{self.system_prompt}
-
-You are an IMAGE ANALYSIS specialist. Your role:
-- Analyze images and visual data
-- Identify patterns in images
-- Extract visual information
-- Describe image content
-- Always reference specific images
-
-Task: {task_description}
-""",
-            'synthesizer': f"""
-{self.system_prompt}
-
-You are a SYNTHESIS specialist. Your role:
-- Combine insights from multiple sources
-- Provide comprehensive answers and elaborate as much as you can for production more like chatgpt and if user asks to create code then you must shoudl provide proper code based on previous history and based on his requirements step by step.
-- Ensure consistency across sources
-- Highlight agreements and conflicts
-- Provide confidence scores
-
-Task: {task_description}
-"""
-        }
-        
-        prompt = agent_prompts.get(agent_type, agent_prompts['synthesizer'])
-        return SpecialistAgent(prompt, agent_type, self.llm)
-
-
-class SpecialistAgent:
-    """Individual specialist agent for specific tasks"""
-    
-    def __init__(self, prompt: str, agent_type: str, llm):
-        self.prompt = prompt
-        self.agent_type = agent_type
-        self.llm = llm
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
-    
-    def execute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute the specialist task
-        Returns: {
-            'result': Any,
-            'confidence': float,
-            'sources_used': List[str],
-            'reasoning': str
-        }
-        """
-        # Build context from inputs
-        context = self._build_context(inputs)
-        
-        query = inputs.get('query', '')
-        full_prompt = f"""
-{self.prompt}
-
-Context/Data:
-{context}
-
-Query: {query}
-
-Provide your analysis as JSON with:
-1. result: Your answer/analysis
-2. confidence: Your confidence level (0-1)
-3. sources_used: Which sources you used
-4. reasoning: Your reasoning process
-
-Respond ONLY with valid JSON.
-"""
-        
-        response = self.llm.invoke(full_prompt)
-        try:
-            return json.loads(response.content)
-        except:
-            return {
-                'result': response.content,
-                'confidence': 0.7,
-                'sources_used': list(inputs.get('sources', {}).keys()),
-                'reasoning': 'Analysis completed'
-            }
-    
-    def _build_context(self, inputs: Dict[str, Any]) -> str:
-        """Build context string from various input types"""
-        context_parts = []
-        
-        # Add data sources
-        if 'sources' in inputs:
-            for source_name, source_data in inputs['sources'].items():
-                if isinstance(source_data, pd.DataFrame):
-                    context_parts.append(f"\n=== Data from {source_name} ===")
-                    context_parts.append(f"Shape: {source_data.shape}")
-                    context_parts.append(f"Columns: {', '.join(source_data.columns.tolist())}")
-                    context_parts.append(f"Sample data:\n{source_data.head(10).to_string()}")
-                elif isinstance(source_data, str):
-                    context_parts.append(f"\n=== Content from {source_name} ===")
-                    context_parts.append(source_data[:2000])  # Limit to 2000 chars
-                elif isinstance(source_data, list):
-                    context_parts.append(f"\n=== Items from {source_name} ===")
-                    context_parts.append("\n".join(str(item)[:500] for item in source_data[:5]))
-        
-        # Add vector search results
-        if 'vector_results' in inputs:
-            context_parts.append(f"\n=== Relevant Document Excerpts ===")
-            for i, result in enumerate(inputs['vector_results'][:5], 1):
-                context_parts.append(f"\n{i}. From {result.get('source', 'Unknown')}:")
-                context_parts.append(f"   {result.get('content', '')[:500]}")
-        
-        return "\n".join(context_parts)
-
-
-class ValidatorAgent:
-    """Validates and refines outputs from specialist agents"""
-    
-    def __init__(self, system_prompt: str):
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
-        self.system_prompt = system_prompt
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
-    
-    def validate_and_refine(self, specialist_outputs: List[Dict[str, Any]], original_query: str, intent_analysis: Optional[Dict[str, Any]] = None, messages: List[Dict] = None) -> Dict[str, Any]:
-        """
-        Validate outputs and create final refined answer
-        Returns: {
-            'answer': str,
-            'confidence': float,
-            'sources': List[Dict],
-            'reasoning': str,
-            'agents_used': List[str]
-        }
-        """
-        outputs_summary = json.dumps(specialist_outputs, indent=2, default=str)
-        intent_info = json.dumps(intent_analysis, indent=2) if intent_analysis else "Not available"
-        
-        # Check if generation_format indicates document creation
-        generation_format = intent_analysis.get('generation_format') if intent_analysis else None
-        
-        # Detect code generation requests
-        code_generation_keywords = ['build', 'create', 'generate code', 'develop', 'implement', 'write code', 'code for', 'build website', 'build application', 'create website', 'create application']
-        is_code_generation = any(keyword in original_query.lower() for keyword in code_generation_keywords)
-        
-        should_create_report = (
-            generation_format and generation_format != 'null' and 
-            generation_format.lower() in ['pdf', 'doc', 'document']
-        ) or any(keyword in original_query.lower() for keyword in ['create pdf', 'create doc', 'create document', 'generate pdf', 'generate doc', 'generate document', 'download pdf', 'download doc']) or is_code_generation
-        
-        # Extract previous documents and context from conversation history
-        previous_docs_context = ""
-        previous_queries = []
+        # 1. Memory (Last N messages)
+        # We assume messages are passed in a standard list of dicts format
+        # Filter strictly for user/bot conversation to avoid blowing up context with metadata
         if messages:
-            # Extract last 20 messages for better context
-            recent_messages = messages[-20:] if len(messages) > 20 else messages
-            for msg in recent_messages:
-                if isinstance(msg, dict):
-                    # Extract user queries
-                    if msg.get('type') == 'user' or 'user' in str(msg.get('role', '')).lower():
-                        query_text = msg.get('content', '') or msg.get('message', '') or str(msg)
-                        if query_text and len(query_text) > 10:
-                            previous_queries.append(query_text[:200])
-                    
-                    # Extract document content from bot responses
-                    content = msg.get('content', '')
-                    if isinstance(content, str):
-                        try:
-                            parsed = json.loads(content)
-                            if isinstance(parsed, dict):
-                                # Extract from answer field
-                                if parsed.get('answer'):
-                                    prev_answer = parsed.get('answer', '')
-                                    # Check for document-related content
-                                    doc_keywords = ['document', 'BRD', 'wireframe', 'architecture', 'requirement', 'specification', 'design']
-                                    if any(keyword.lower() in prev_answer.lower() for keyword in doc_keywords):
-                                        previous_docs_context += f"\n--- Previous Document Context ---\n{prev_answer[:1000]}\n"
-                                
-                                # Extract from multi_model_metadata
-                                if parsed.get('multi_model_metadata', {}).get('answer'):
-                                    prev_answer = parsed.get('multi_model_metadata', {}).get('answer', '')
-                                    doc_keywords = ['document', 'BRD', 'wireframe', 'architecture', 'requirement', 'specification', 'design']
-                                    if any(keyword.lower() in prev_answer.lower() for keyword in doc_keywords):
-                                        previous_docs_context += f"\n--- Previous Document Context (Metadata) ---\n{prev_answer[:1000]}\n"
-                        except:
-                            # If not JSON, check if it contains document keywords
-                            doc_keywords = ['document', 'BRD', 'wireframe', 'architecture', 'requirement', 'specification', 'design']
-                            if any(keyword.lower() in content.lower() for keyword in doc_keywords):
-                                previous_docs_context += f"\n--- Previous Context ---\n{content[:1000]}\n"
+             # Take last 6 messages for immediate context
+            recent_msgs = messages[-6:]
+            for msg in recent_msgs:
+                role = msg.get('type', 'user')
+                content = msg.get('content', '')
+                # Attempt to parse if content is JSON string (common in this app)
+                try: 
+                    if isinstance(content, str) and (content.startswith('{') or content.startswith('[')):
+                        parsed = json.loads(content)
+                        if isinstance(parsed, dict) and 'answer' in parsed:
+                            content = parsed['answer']
+                except: pass
+                
+                # Truncate very long messages
+                if len(str(content)) > 500:
+                    content = str(content)[:500] + "...(truncated)"
+                context['memory_summary'].append(f"{role.upper()}: {content}")
+
+        # 2. File Processing
+        tabular_files = [f for f in files if f.get('file_type') == 'tabular']
+        doc_files = [f for f in files if f.get('file_type') == 'document']
+        image_files = [f for f in files if f.get('file_type') == 'image']
+
+        # Process Tabular
+        for f in tabular_files:
+            tbl_context = self._get_tabular_context(f)
+            if tbl_context:
+                context['tabular_context'].append(tbl_context)
+                context['sources'].append(f['file_name'])
+
+        # Process Documents (Vector Search)
+        # Only search if query implies looking for info, or always?
+        # "Always" is safer for "Context Builder" pattern, but we can limit results.
+        if doc_files:
+            doc_context = await self._get_document_context(query, doc_files)
+            if doc_context:
+                context['text_context'].extend(doc_context)
+                context['sources'].extend([f['file_name'] for f in doc_files]) # Rough attribution
+
+        # Process Images
+        # We just pass the base64 data to the final context for the VLM
+        for f in image_files:
+            img_data = self._get_image_data(f)
+            if img_data:
+                context['image_context'].append(img_data)
+                context['sources'].append(f['file_name'])
+
+        return context
+
+    def _get_tabular_context(self, file_info: Dict) -> Optional[str]:
+        try:
+            if file_info.get('db_table_name'):
+                # Get schema and head
+                # Note: db.get_table_schema is hypothetical, using get_table_data for now but limiting
+                # In prod, you'd want a lightweight schema query.
+                df = self.db.get_table_data(file_info['db_table_name'], limit=3)
+                if df is not None:
+                    columns = list(df.columns)
+                    sample = df.to_string(index=False)
+                    return f"Table '{file_info['file_name']}':\nColumns: {columns}\nSample Data:\n{sample}"
+        except Exception:
+            pass
+        return None
+
+    async def _get_document_context(self, query: str, files: List[Dict]) -> List[str]:
+        results_list = []
+        for f in files:
+            if not f.get('vector_collection_id'): continue
+            try:
+                collection = self.chroma_client.get_collection(f['vector_collection_id'])
+                # Semantic search
+                results = collection.query(query_texts=[query], n_results=3)
+                if results and results['documents']:
+                    for doc in results['documents'][0]:
+                        results_list.append(f"Excerpt from {f['file_name']}:\n{doc}")
+            except Exception:
+                pass
+        return results_list
+
+    def _get_image_data(self, file_info: Dict) -> Optional[str]:
+        # Return base64 string
+        path = file_info.get('storage_path')
+        if path and os.path.exists(path):
+            try:
+                with open(path, "rb") as img_file:
+                    return base64.b64encode(img_file.read()).decode('utf-8')
+            except: pass
+        return None
+
+
+class SimplePlanner:
+    """
+    Stage 2: Planner
+    Generates a fast, short bulleted plan.
+    """
+    def __init__(self, system_prompt: str, user_email: str = None):
+        # Use llm_helper to get user's configured LLM
+        self.llm = get_llm_for_user(user_email=user_email, temperature=0.1)
+        self.system_prompt = system_prompt
+        self.user_email = user_email
+
+    async def stream_plan(self, query: str, context: Dict, callback: Callable):
+        """
+        Generates and streams the plan.
+        """
+        sources_list = ", ".join(context['sources']) if context['sources'] else "Memory only"
         
-        # Format previous queries for context
-        queries_context = "\n".join([f"- {q}" for q in previous_queries[-5:]]) if previous_queries else "No previous queries"
+        # simplified context summary for planning
+        context_summary = f"Available Sources: {sources_list}\n"
+        if context['tabular_context']:
+            context_summary += f"Tabular Data Available: {len(context['tabular_context'])} tables\n"
+        if context['text_context']:
+             context_summary += f"Document Excerpts: {len(context['text_context'])} found\n"
         
+        prompt = f"""
+Input:
+User Query: {query}
+Context Summary:
+{context_summary}
+
+Task:
+Create a concise, 3-6 bullet point plan to answer the user query based on the available context.
+Format: Plain text bullets, each starting with "- ".
+No intro, no outro, no markup. Just the bullets.
+"""
+        messages = [
+            SystemMessage(content="You are a precise planning assistant. Output strictly bullets."),
+            HumanMessage(content=prompt)
+        ]
+
+        await callback("plan_start", {})
+        
+        collected_plan = ""
+        async for chunk in self.llm.astream(messages):
+            content = chunk.content
+            if content:
+                collected_plan += content
+                await callback("plan_chunk", {"chunk": content})
+
+        await callback("plan_complete", {"full_plan": collected_plan})
+        return collected_plan
+    
+    async def stream_plan_with_sources(self, query: str, context: Dict, web_results: List[Dict], callback: Callable):
+        """
+        Generates plan and appends web sources if available.
+        """
+        # First generate the plan
+        plan = await self.stream_plan(query, context, callback)
+        
+        # If we have web results, append them to the plan
+        if web_results:
+            sources_section = "\n\n📚 Web Sources Found:\n"
+            for idx, result in enumerate(web_results, 1):
+                sources_section += f"{idx}. {result['title']} - {result['link']}\n"
+            
+            # Send the sources as additional plan chunks
+            await callback("plan_chunk", {"chunk": sources_section})
+            plan += sources_section
+            await callback("plan_complete", {"full_plan": plan})
+        
+        return plan
+
+
+class WebSearchAgent:
+    """
+    Web Search Agent
+    Performs web search when local context is insufficient.
+    """
+    def __init__(self):
+        self.enabled = WEB_SEARCH_AVAILABLE
+        print(f"[WebSearchAgent] Initialized. Enabled: {self.enabled}")
+        if self.enabled:
+            print("[WebSearchAgent] Using Google Search for better accuracy")
+        else:
+            print("[WebSearchAgent] WARNING: Google search libraries not available!")
+            print("[WebSearchAgent] Install with: pip install googlesearch-python beautifulsoup4 requests")
+    
+    def _optimize_search_query(self, query: str) -> str:
+        """
+        Optimizes search query for better relevance.
+        Uses quotes for exact matching of full names to avoid partial matches.
+        """
+        # Clean basic whitespace issues
+        cleaned = query.strip().replace('\n', ' ').replace('\r', '')
+        cleaned = ' '.join(cleaned.split())
+        
+        # Detect "Name, Company" or "Person, Organization" patterns
+        if ',' in cleaned:
+            parts = [part.strip() for part in cleaned.split(',')]
+            if len(parts) == 2:
+                name_part = parts[0]
+                company_part = parts[1]
+                
+                # Check if this is a person name (has at least 2 words - first and last name)
+                name_words = name_part.split()
+                if len(name_words) >= 2 and name_part and company_part:
+                    # Use quotes around FULL NAME to force exact match
+                    # This prevents matching partial names like "Sainath" -> "Palagummi Sainath"
+                    optimized = f'"{name_part}" {company_part} LinkedIn'
+                    print(f"[WebSearchAgent] Person/Company lookup - using exact name match")
+                    print(f"[WebSearchAgent] Query: '{optimized}'")
+                    return optimized
+        
+        # Check if query is a person's full name (2-4 words, capitalized)
+        words = cleaned.split()
+        if 2 <= len(words) <= 4 and all(w[0].isupper() for w in words if w and len(w) > 1):
+            # Use quotes for exact full name match + LinkedIn for professional results
+            optimized = f'"{cleaned}" LinkedIn'
+            print(f"[WebSearchAgent] Full name detected - using exact match + LinkedIn")
+            print(f"[WebSearchAgent] Query: '{optimized}'")
+            return optimized
+        
+        # For other queries, just clean them
+        return cleaned
+    
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
+        """
+        Performs web search and returns results with title, link, and snippet.
+        """
+        if not self.enabled:
+            print("[WebSearchAgent] Search called but agent is disabled")
+            return []
+        
+        print(f"[WebSearchAgent] Searching for: '{query}' (max {max_results} results)")
+        
+        try:
+            # Optimize query before searching
+            optimized_query = self._optimize_search_query(query)
+            
+            # Run synchronous search in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(None, self._sync_search, optimized_query, max_results)
+            print(f"[WebSearchAgent] Search completed. Found {len(results)} results")
+            return results
+        except Exception as e:
+            print(f"[WebSearchAgent] ERROR in async search: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _sync_search(self, query: str, max_results: int) -> List[Dict[str, str]]:
+        """Synchronous Google search implementation - query should already be optimized"""
+        print(f"[WebSearchAgent] Starting Google search with query: '{query}'")
+        
+        try:
+            results = []
+            # Use Google search - more accurate than Bing/DuckDuckGo
+            search_results = google_search(query, num_results=max_results, sleep_interval=1, advanced=True)
+            
+            for r in search_results:
+                # Extract snippet from the page if possible
+                snippet = r.description if hasattr(r, 'description') and r.description else ""
+                
+                # If no description, try to fetch from the page
+                if not snippet:
+                    try:
+                        response = requests.get(r.url, timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+                        if response.status_code == 200:
+                            soup = BeautifulSoup(response.text, 'html.parser')
+                            # Get meta description
+                            meta_desc = soup.find('meta', attrs={'name': 'description'})
+                            if meta_desc and meta_desc.get('content'):
+                                snippet = meta_desc.get('content')
+                            else:
+                                # Get first paragraph as fallback
+                                p = soup.find('p')
+                                if p:
+                                    snippet = p.get_text()[:200]
+                    except:
+                        snippet = "No description available"
+                
+                result = {
+                    'title': r.title if hasattr(r, 'title') else 'No title',
+                    'link': r.url if hasattr(r, 'url') else '',
+                    'snippet': snippet[:300] if snippet else 'No description'
+                }
+                results.append(result)
+                print(f"[WebSearchAgent] Found: {result['title']}")
+                
+                if len(results) >= max_results:
+                    break
+            
+            print(f"[WebSearchAgent] Google search complete: {len(results)} results")
+            return results
+        except Exception as e:
+            print(f"[WebSearchAgent] ERROR in Google search: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+
+class AnswerAgent:
+    """
+    Stage 3: Final Answer Agent
+    Generates the grounded answer using all context.
+    """
+    def __init__(self, system_prompt: str, temperature: float = 0.0, output_format: str = None, user_email: str = None):
+        # Use llm_helper to get user's configured LLM
+        self.llm = get_llm_for_user(user_email=user_email, temperature=temperature)
+        self.system_prompt = system_prompt
+        self.output_format = output_format
+        self.user_email = user_email
+        self.web_search = WebSearchAgent()
+
+    async def stream_answer(self, query: str, context: Dict, plan: str, callback: Callable):
+        """
+        Generates and streams the final answer.
+        If context is insufficient, performs web search and includes results.
+        """
+        # Construct full context string
+        full_context_str = ""
+        
+        if context['tabular_context']:
+            full_context_str += "## Tabular Data\n" + "\n\n".join(context['tabular_context']) + "\n\n"
+        
+        if context['text_context']:
+            full_context_str += "## Document Excerpts\n" + "\n\n".join(context['text_context']) + "\n\n"
+            
+        if context['memory_summary']:
+             full_context_str += "## Conversation History\n" + "\n".join(context['memory_summary']) + "\n\n"
+
+        # Build data-only context (excluding conversation history) for web search decision
+        data_context_str = ""
+        if context['tabular_context']:
+            data_context_str += "\n\n".join(context['tabular_context']) + "\n\n"
+        if context['text_context']:
+            data_context_str += "\n\n".join(context['text_context']) + "\n\n"
+
+        # Check if we need web search (based on data context, not conversation)
+        web_search_results = []
+        needs_web_search = self._needs_web_search(data_context_str, query)
+        
+        print(f"[WEB SEARCH] Decision: needs_web_search={needs_web_search}, enabled={self.web_search.enabled}")
+        print(f"[WEB SEARCH] Data context length: {len(data_context_str)} chars")
+        print(f"[WEB SEARCH] Query: {query}")
+        
+        if needs_web_search and not self.web_search.enabled:
+            warning_msg = "⚠️ Web search is needed but DISABLED. Please install: pip install duckduckgo-search"
+            print(f"[WEB SEARCH] {warning_msg}")
+            await callback("web_search_unavailable", {
+                "message": warning_msg,
+                "install_command": "pip install duckduckgo-search"
+            })
+        elif needs_web_search and self.web_search.enabled:
+            try:
+                # Notify that web search is starting
+                print(f"[WEB SEARCH] Starting web search for query: {query}")
+                await callback("web_search_start", {"message": "Searching the web for information..."})
+                
+                web_search_results = await self.web_search.search(query, max_results=5)
+                print(f"[WEB SEARCH] Got {len(web_search_results)} results")
+                
+                if web_search_results:
+                    await callback("web_search_complete", {"results_count": len(web_search_results)})
+                    # Add web results to context
+                    web_context = "## Web Search Results\n"
+                    for idx, result in enumerate(web_search_results, 1):
+                        web_context += f"{idx}. {result['title']}\n   {result['snippet']}\n   URL: {result['link']}\n\n"
+                    full_context_str += web_context
+                    print(f"[WEB SEARCH] Added web context: {len(web_context)} chars")
+                else:
+                    await callback("web_search_complete", {"results_count": 0, "message": "No web results found"})
+                    print("[WEB SEARCH] No results found")
+            except Exception as e:
+                print(f"[WEB SEARCH] ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail the whole request if web search fails
+                await callback("web_search_error", {"message": f"Web search failed: {str(e)}"})
+        else:
+            print("[WEB SEARCH] Skipping web search - sufficient context")
+
         prompt = f"""
 {self.system_prompt}
 
-Original Query: {original_query}
+OUTPUT FORMAT GUIDELINES:
+{self.output_format or "STRICTLY use valid HTML formatting (<h3>, <p>, <ul>, <li>, <strong>, <code>, <a> for links)."}
+DO NOT use Markdown syntax (no `**bold**`, no `* list`, no `# header`).
+Everything must be proper HTML tags.
+For links, use: <a href="URL" target="_blank">Link Text</a>
+For code blocks, use: <pre><code class="language-python">...</code></pre>
+If the user asks for a specific format, prioritize that but keep it as HTML.
+DO NOT echo the context items back to the user unless explicitly asked.
+DO NOT start your response with blockquotes (>) or excessive headers.
+Start the answer directly.
 
-Conversation History (Last 20 messages for full context):
-{json.dumps(messages[-20:] if messages else [], indent=2) if messages else "No history"}
+CONTEXT:
+{full_context_str}
 
-Previous User Queries (Last 5):
-{queries_context}
+PLAN FOLLOWED:
+{plan}
 
-Previous Documents/Context Referenced:
-{previous_docs_context if previous_docs_context else "No previous documents referenced - User may be starting a new task"}
+USER QUERY:
+{query}
 
-Intent Analysis:
-{intent_info}
-
-Generation Format: {generation_format or 'null'}
-Should Create Report: {should_create_report}
-Is Code Generation Request: {is_code_generation}
-
-{"⚠️ CODE GENERATION MODE ⚠️" if is_code_generation else ""}
-If this is a CODE GENERATION request, you MUST generate ACTUAL, COMPLETE CODE FILES, not descriptions or explanations!
-
-Specialist Agent Outputs:
-{outputs_summary}
-
-Your task:
-1. **CRITICAL: Analyze the conversation history carefully**. If the user is asking you to build, create, or generate something based on previous documents (like BRD, wireframes, architecture docs), you MUST reference those documents from the conversation history.
-
-2. **CODE GENERATION DETECTION**: If the user asks to "build", "create", "generate code", "develop", or "implement" a website/application/system, you MUST:
-   - Generate ACTUAL, COMPLETE CODE FILES with FULL IMPLEMENTATIONS (not descriptions, not folder structures, not pseudo-code)
-   - For EACH file, provide the COMPLETE code with:
-     * All imports and dependencies
-     * All classes, functions, and methods fully implemented
-     * All business logic, error handling, and validation
-     * No placeholders, no "TODO" comments, no incomplete code
-   - Create file-by-file code structure with proper file paths as headers
-   - Include ALL necessary files: backend, frontend, database schemas, config files, README, etc.
-   - Format code in proper code blocks with file paths as <h3> headers followed by <pre><code> blocks
-   - Ensure code is production-ready, error-free, and runnable
-   - Include database migrations, seed files, environment templates
-   - Add comprehensive README with setup instructions
-   - Follow the technology stack from previous documents
-   - **CRITICAL**: Show actual code for each file, not just file names or descriptions
-
-3. For complex multi-step tasks (like "build an e-commerce website based on these documents"):
-   - Review ALL previous messages in the conversation history
-   - Extract relevant information from previous documents mentioned (BRD, wireframes, architecture)
-   - Generate COMPLETE CODE FILES for each component:
-     * Backend API files (routes, controllers, models, middleware)
-     * Frontend components (React components, pages, utilities)
-     * Database schema and migration files
-     * Configuration files (.env templates, package.json, etc.)
-     * Test files (unit tests, integration tests)
-     * Documentation (README with complete setup instructions)
-   - Each code file should be clearly marked with its file path
-   - Code should be complete, runnable, and follow best practices
-   - Reference specific requirements, technologies, and specifications from previous documents
-
-4. Validate the outputs for consistency and accuracy
-5. Identify any conflicts or inconsistencies
-6. Synthesize a comprehensive final answer in HTML format with CODE BLOCKS
-7. ALWAYS construct a "report" object IF:
-   - The user EXPLICITLY asks for a "report", "pdf", "file", "document", "doc", or "download", OR
-   - The generation_format is "pdf", "doc", or "document", OR
-   - The user asks to "build", "create", or "generate" code/website/application
-   Otherwise, set "report" to null.
-8. List all sources with relevance scores (if any used)
-9. Provide a detailed, reasoning-based answer similar to ChatGPT (structure, depth, clarity).
-
-CRITICAL FOR CODE GENERATION:
-- **YOU MUST GENERATE ACTUAL CODE FOR EACH FILE, NOT JUST FOLDER STRUCTURES OR DESCRIPTIONS**
-- When generating code, use this EXACT format in your answer:
-  <h3>File: backend/app/models/user.py</h3>
-  <pre><code class="language-python">
-  from sqlalchemy import Column, Integer, String, DateTime
-  from sqlalchemy.ext.declarative import declarative_base
-  from datetime import datetime
-  
-  Base = declarative_base()
-  
-  class User(Base):
-      __tablename__ = 'users'
-      
-      id = Column(Integer, primary_key=True, index=True)
-      email = Column(String, unique=True, index=True, nullable=False)
-      password_hash = Column(String, nullable=False)
-      full_name = Column(String)
-      created_at = Column(DateTime, default=datetime.utcnow)
-      
-      def __repr__(self):
-          return f"<User(id={self.id}, email={self.email})>"
-  </code></pre>
-  
-  <h3>File: backend/app/routes/user_routes.py</h3>
-  <pre><code class="language-python">
-  from fastapi import APIRouter, Depends, HTTPException
-  from sqlalchemy.orm import Session
-  from app.models.user import User
-  from app.database import get_db
-  
-  router = APIRouter()
-  
-  @router.post("/users/register")
-  async def register_user(email: str, password: str, db: Session = Depends(get_db)):
-      # Complete implementation here
-      pass
-  </code></pre>
-  
-- **DO NOT** just list folder structures like:
-  ❌ WRONG: "backend/models/user.py - Contains user model"
-  ❌ WRONG: "Create a file at backend/models/user.py with user class"
-  
-- **DO** provide complete, actual code:
-  ✅ CORRECT: Show the full file path as <h3> header, then complete code in <pre><code> block
-  
-- Generate ALL files needed for a complete, working application with ACTUAL CODE:
-  * backend/app/models/user.py - COMPLETE CODE with imports, class definition, all methods
-  * backend/app/routes/user_routes.py - COMPLETE CODE with all route handlers
-  * backend/app/controllers/user_controller.py - COMPLETE CODE with business logic
-  * frontend/src/components/ProductList.jsx - COMPLETE CODE with React component
-  * database/schema.sql - COMPLETE SQL with all CREATE TABLE statements
-  * database/seed.py - COMPLETE Python code with all seed data
-  * README.md - COMPLETE markdown with setup instructions
-  * .env.example - COMPLETE environment variables template
-  * requirements.txt - COMPLETE list of dependencies (without versions)
-  * package.json - COMPLETE JSON with all dependencies and scripts
-
-- Code must be COMPLETE, RUNNABLE, and PRODUCTION-READY
-- Each file must have ALL necessary imports, classes, functions, and logic
-- Include proper error handling, validation, and security measures
-- Follow the exact technology stack mentioned in previous documents
-- Ensure database setup instructions are clear and error-free
-- NO placeholders, NO "TODO" comments, NO incomplete implementations
-
-IMPORTANT FOR MULTI-STEP TASKS:
-- When the user asks to "build", "create", or "generate" something based on previous documents, you MUST:
-  * Reference the specific documents from conversation history
-  * Extract key requirements, technologies, and specifications
-  * Generate ACTUAL CODE FILES (not just descriptions)
-  * Provide complete file structure with all necessary files
-  * Ensure code is production-ready and follows all requirements
-  * Break down complex tasks into clear, implementable code files
-  * Address ALL requirements mentioned in the query with actual code
-
-CRITICAL INSTRUCTIONS:
-1. DO NOT wrap your answer in markdown code blocks (no ```json or ```).
-2. Return ONLY raw JSON, nothing else.
-3. Your 'answer' MUST be detailed and explain the "Why" and "How", not just the result. mimic a thoughtful AI assistant.
-4. Format the answer field as clean, well-structured HTML with:
-   - Use <h3>, <h4> for headings
-   - Use <p> tags for paragraphs
-   - Use <ul>, <li> for lists
-   - Use <strong> for emphasis
-   - Use <table border='1'> for tabular data if needed
-   - Use <br> for line breaks where needed
-   - Make it visually appealing and easy to read
-
-Provide response as RAW JSON (no markdown, no code blocks) with these exact fields:
-{{
-  "answer": "Your HTML formatted answer here",
-  "sources": [{{"file_name": "...", "file_type": "...", "relevance": 0.0-1.0, "excerpt": "..."}}],
-  "reasoning": "Your reasoning in plain text",
-  "agents_used": ["agent1", "agent2"],
-  "validation_notes": "Any notes in plain text",
-  "generation_format": "pdf/csv/excel/null",
-  "report": {{ 
-      "heading": "Report Title",
-      "paragraphs": ["<p>...</p>"], 
-      "table": {{...}}, 
-      "charts": [] 
-  }}
-}}
-
-CRITICAL FOR REPORT OBJECT:
-- If "Should Create Report" is True, you MUST create a report object from your answer.
-- The 'report.paragraphs' MUST contain the FULL, DETAILED content of your answer, split into logical blocks. Do not just summarize. 
-- **FOR CODE GENERATION**: If the user asked to build/create/generate code, the report MUST include ALL code files with proper formatting:
-  * Each file should be in a separate paragraph with <h4>File: path/to/file</h4> header
-  * Code should be wrapped in <pre><code> blocks for proper formatting
-  * Include complete file structure and all necessary files
-  * Preserve code formatting, indentation, and syntax
-- The 'report.paragraphs' must contain ALL that content so the generated PDF is complete. You can use HTML tags inside the paragraphs strings.
-- Extract the heading from the first <h3> tag in your answer, or use a meaningful title based on the query.
-- Split your answer into paragraphs preserving the HTML structure (p, h4, ul, ol, pre, code tags).
-- For code generation tasks, ensure each code file is clearly separated and properly formatted for PDF export.
-
-Example answer field:
-"answer": "<h3>Image Analysis Overview</h3><p>The image file <strong>'23-1.png'</strong> is referenced, but without access to its actual content, a specific explanation cannot be provided.</p><ul><li><strong>Data Visualizations:</strong> Graphs or charts that present data in a visual format.</li><li><strong>Illustrations:</strong> Artistic representations that convey information.</li></ul>"
-
-REMEMBER: Return ONLY the JSON object, no markdown formatting around it.
+INSTRUCTIONS:
+Answer the user query comprehensively using the provided context and history.
+If web search results are provided, incorporate them naturally into your answer and include the source links.
+When referencing web sources, format them as clickable links using HTML <a> tags.
+If the context is still insufficient, state clearly what is missing.
+Do not mention "In the provided context" or "Based on the files" repeatedly; just answer naturally.
 """
+        messages = [HumanMessage(content=prompt)]
         
-        response = self.llm.invoke(prompt)
+        # Inject images if present
+        if context['image_context']:
+            content_blocks = [{"type": "text", "text": prompt}]
+            for img_b64 in context['image_context']:
+                content_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                })
+            messages = [HumanMessage(content=content_blocks)]
+
+        await callback("answer_start", {})
         
-        # Try to parse JSON from response
-        try:
-            # First try direct JSON parsing
-            result = json.loads(response.content)
-            return result
-        except:
-            # Try to extract JSON from markdown code blocks
-            import re
-            content = response.content
+        collected_answer = ""
+        async for chunk in self.llm.astream(messages):
+             content = chunk.content
+             if content:
+                 collected_answer += content
+                 await callback("answer_chunk", {"chunk": content})
+        
+        # If we used web search, append the sources in an accordion format
+        if web_search_results:
+            sources_html = self._format_web_sources_accordion(web_search_results)
+            collected_answer += sources_html
+            await callback("answer_chunk", {"chunk": sources_html})
+                 
+        await callback("answer_complete", {"full_answer": collected_answer})
+        return collected_answer
+    
+    async def stream_answer_with_web_results(self, query: str, context: Dict, plan: str, web_results: List[Dict], callback: Callable):
+        """
+        Generates answer using pre-fetched web search results.
+        """
+        # Construct full context string
+        full_context_str = ""
+        
+        if context['tabular_context']:
+            full_context_str += "## Tabular Data\n" + "\n\n".join(context['tabular_context']) + "\n\n"
+        
+        if context['text_context']:
+            full_context_str += "## Document Excerpts\n" + "\n\n".join(context['text_context']) + "\n\n"
             
-            # Remove markdown code blocks (```json ... ``` or ``` ... ```)
-            json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-            if json_match:
-                try:
-                    result = json.loads(json_match.group(1))
-                    return result
-                except:
-                    pass
-            
-            # If still can't parse, return a simple HTML answer
-            return {
-                'answer': f'<p>{content}</p>',
-                'sources': [],
-                'reasoning': 'Synthesized from specialist agents',
-                'agents_used': [output.get('agent_type', 'unknown') for output in specialist_outputs],
-                'validation_notes': 'Response generated successfully',
-                'report': None,
-                'generation_format': None
-            }
+        if context['memory_summary']:
+             full_context_str += "## Conversation History\n" + "\n".join(context['memory_summary']) + "\n\n"
+
+        # Add web results to context if provided
+        if web_results:
+            print(f"[ANSWER] Using {len(web_results)} pre-fetched web results")
+            web_context = "## Web Search Results\n"
+            for idx, result in enumerate(web_results, 1):
+                web_context += f"{idx}. {result['title']}\n   {result['snippet']}\n   URL: {result['link']}\n\n"
+            full_context_str += web_context
+
+        prompt = f"""
+{self.system_prompt}
+
+OUTPUT FORMAT GUIDELINES:
+{self.output_format or "STRICTLY use valid HTML formatting (<h3>, <p>, <ul>, <li>, <strong>, <code>, <a> for links)."}
+DO NOT use Markdown syntax (no `**bold**`, no `* list`, no `# header`).
+Everything must be proper HTML tags.
+For links, use: <a href="URL" target="_blank" rel="noopener noreferrer">Link Text</a>
+For code blocks, use: <pre><code class="language-python">...</code></pre>
+If the user asks for a specific format, prioritize that but keep it as HTML.
+DO NOT echo the context items back to the user unless explicitly asked.
+DO NOT start your response with blockquotes (>) or excessive headers.
+Start the answer directly.
+When referencing web sources, use the source numbers (1, 2, 3, etc.) from the Web Search Results section.
+
+CONTEXT:
+{full_context_str}
+
+PLAN FOLLOWED:
+{plan}
+
+USER QUERY:
+{query}
+
+INSTRUCTIONS:
+Answer the user query comprehensively using the provided context and history.
+The web search results are already provided in the context above.
+When referencing information from web sources, mention the source number.
+Provide a comprehensive answer based on all available information.
+"""
+        messages = [HumanMessage(content=prompt)]
+        
+        # Inject images if present
+        if context['image_context']:
+            content_blocks = [{"type": "text", "text": prompt}]
+            for img_b64 in context['image_context']:
+                content_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                })
+            messages = [HumanMessage(content=content_blocks)]
+
+        await callback("answer_start", {})
+        
+        collected_answer = ""
+        async for chunk in self.llm.astream(messages):
+             content = chunk.content
+             if content:
+                 collected_answer += content
+                 await callback("answer_chunk", {"chunk": content})
+        
+        # NOTE: We don't append accordion here since links are in planning
+        await callback("answer_complete", {"full_answer": collected_answer})
+        return collected_answer
+    
+    def _needs_web_search(self, context_str: str, query: str) -> bool:
+        """
+        Determines if web search is needed based on available context.
+        VERY AGGRESSIVE: Always search when no meaningful data context exists.
+        """
+        # If we have NO or very little actual data context, ALWAYS search
+        # This is the most important check
+        if len(context_str.strip()) < 500:  # Increased threshold for better coverage
+            print(f"[WEB SEARCH] Triggering due to low context: {len(context_str.strip())} chars")
+            return True
+        
+        # Check if query is about real-world entities, people, companies, current events
+        web_indicators = [
+            'who is', 'what is', 'tell me about', 'information about',
+            'latest', 'current', 'recent', 'news', 'today',
+            'company', 'person', 'celebrity', 'organization',
+            'about', 'details', 'background', 'profile',
+            'find', 'search', 'look up'
+        ]
+        query_lower = query.lower()
+        for indicator in web_indicators:
+            if indicator in query_lower:
+                print(f"[WEB SEARCH] Triggering due to keyword: '{indicator}'")
+                return True
+        
+        # Check if query looks like a person's name (2-3 capitalized words)
+        words = query.strip().split()
+        if len(words) in [2, 3]:
+            if all(word[0].isupper() for word in words if word and len(word) > 1):
+                # Likely a person or company name
+                print(f"[WEB SEARCH] Triggering due to name detection: {query}")
+                return True
+        
+        # Check if query is a single entity (company, product, etc.)
+        if len(words) <= 3 and any(word[0].isupper() for word in words if word and len(word) > 1):
+            print(f"[WEB SEARCH] Triggering due to entity detection: {query}")
+            return True
+        
+        # If query is short (< 10 words) and has no context, probably needs web search
+        if len(words) < 10:
+            print(f"[WEB SEARCH] Triggering due to short query with low context")
+            return True
+        
+        return False
+    
+    def _format_web_sources_accordion(self, results: List[Dict[str, str]]) -> str:
+        """
+        Formats web search results as an HTML accordion/details element.
+        """
+        if not results:
+            return ""
+        
+        html = '<details style="margin-top: 1.5rem; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; background-color: #f9fafb;">'
+        html += '<summary style="font-weight: 600; cursor: pointer; color: #374151; font-size: 0.95rem;">🔗 Web Sources ({} links found)</summary>'.format(len(results))
+        html += '<div style="margin-top: 1rem;">'
+        html += '<ul style="list-style: none; padding: 0; margin: 0;">'
+        
+        for idx, result in enumerate(results, 1):
+            html += '<li style="margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb;">'
+            html += f'<div style="font-weight: 600; margin-bottom: 0.25rem;"><a href="{result["link"]}" target="_blank" style="color: #2563eb; text-decoration: none;">{idx}. {result["title"]}</a></div>'
+            html += f'<div style="font-size: 0.875rem; color: #6b7280; margin-bottom: 0.25rem;">{result["snippet"]}</div>'
+            html += f'<div style="font-size: 0.75rem; color: #9ca3af; word-break: break-all;">{result["link"]}</div>'
+            html += '</li>'
+        
+        html += '</ul>'
+        html += '</div>'
+        html += '</details>'
+        
+        return html
 
 
 class MultiModelAgentSystem:
-    """Main orchestrator for the multi-model agentic system"""
-    
-    def __init__(self, session_id: str, system_prompt: str, db_connection, chroma_client):
+    """
+    Main Orchestrator
+    Orchestrates: Context Building -> Planning -> Answer Generation -> Web Search (if needed)
+    """
+    def __init__(self, session_id: str, system_prompt: str, db_connection, chroma_client, temperature: float = 0.0, workflow: str = None, output_format: str = None):
         self.session_id = session_id
-        self.system_prompt = system_prompt
         self.db = db_connection
-        self.chroma_client = chroma_client
-        self.id = None  # Add id attribute to prevent serialization errors
-        self.email = None  # Add email attribute to prevent serialization errors
         
-        # Initialize agents
-        self.intent_interpreter = IntentInterpreterAgent(system_prompt)
-        self.planner = PlannerAgent(system_prompt)
-        self.agent_generator = DynamicAgentGenerator(system_prompt)
-        self.validator = ValidatorAgent(system_prompt)
-    
-    def query(self, user_query: str, messages: List[Dict] = None) -> Dict[str, Any]:
-        """
-        Process a user query through the full agentic pipeline
-        """
-        # Get available sources
-        available_sources = self._get_available_sources()
+        self.context_builder = ContextBuilder(db_connection, chroma_client)
+        self.planner = SimplePlanner(system_prompt)
+        self.answer_agent = AnswerAgent(system_prompt, temperature, output_format)
         
-        # Step 1: Intent Interpretation
-        intent_analysis = self.intent_interpreter.interpret(user_query, available_sources, messages)
-        
-        # Step 2: Optimization for Chat/Simple queries
-        # If intent is 'chat' or no specific sources required and intent is simple, skip planning/agents
-        if intent_analysis.get('intent') == 'chat' or (not intent_analysis.get('required_sources') and intent_analysis.get('complexity') == 'simple'):
-             specialist_outputs = [{
-                 'agent_type': 'chat_response',
-                 'result': 'Direct chat response',
-                 'confidence': 1.0,
-                 'sources_used': [],
-                 'reasoning': 'Direct chat interaction'
-             }]
-        else:
-            # Step 2: Planning (Standard Path)
-            execution_plan = self.planner.create_plan(intent_analysis, user_query)
-            
-            # Step 3: Execute plan with specialist agents
-            specialist_outputs = []
-            for step in execution_plan['steps']:
-                agent = self.agent_generator.generate_agent(
-                    step['agent_type'],
-                    step['action']
-                )
-                
-                # Prepare inputs for this agent
-                inputs = self._prepare_agent_inputs(step, user_query)
-                
-                # Execute
-                output = agent.execute(inputs)
-                output['agent_type'] = step['agent_type']
-                output['step_id'] = step['step_id']
-                specialist_outputs.append(output)
-        
-        # Step 4: Validation and Refinement
-        final_result = self.validator.validate_and_refine(specialist_outputs, user_query, intent_analysis, messages)
-        
-        # If generation_format indicates document creation but report is null, create report from answer
-        generation_format = final_result.get('generation_format')
-        if generation_format and generation_format != 'null' and generation_format.lower() in ['pdf', 'doc', 'document']:
-            if not final_result.get('report') and final_result.get('answer'):
-                # Convert answer to report format
-                answer_html = final_result['answer']
-                
-                # Extract heading from first h3 tag or use default
-                import re
-                heading_match = re.search(r'<h3[^>]*>(.*?)</h3>', answer_html, re.IGNORECASE)
-                heading = heading_match.group(1).strip() if heading_match else 'Generated Document'
-                # Clean HTML tags from heading
-                heading = re.sub(r'<[^>]+>', '', heading)
-                
-                # Split answer into paragraphs
-                # Replace h3 with h4 for better formatting
-                processed_html = re.sub(r'<h3([^>]*)>', r'<h4\1>', answer_html, flags=re.IGNORECASE)
-                processed_html = re.sub(r'</h3>', r'</h4>', processed_html, flags=re.IGNORECASE)
-                
-                paragraphs = []
-                # Extract all block-level elements (p, h4, ul, ol, div)
-                # Use a pattern that captures the full element
-                block_pattern = r'<(p|h4|ul|ol|div)[^>]*>.*?</\1>'
-                full_blocks = re.finditer(block_pattern, processed_html, re.DOTALL | re.IGNORECASE)
-                
-                blocks_found = False
-                for match in full_blocks:
-                    block = match.group(0)
-                    if block.strip():
-                        paragraphs.append(block.strip())
-                        blocks_found = True
-                
-                if not blocks_found:
-                    # Fallback: split by line breaks or use whole content
-                    lines = processed_html.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if line:
-                            if not line.startswith('<'):
-                                paragraphs.append(f'<p>{line}</p>')
-                            else:
-                                paragraphs.append(line)
-                
-                # If still no paragraphs, use the whole HTML
-                if not paragraphs:
-                    paragraphs = [processed_html]
-                
-                # Create report object
-                final_result['report'] = {
-                    'heading': heading or 'Generated Document',
-                    'paragraphs': paragraphs,
-                    'table': None,
-                    'charts': []
-                }
-        
-        return final_result
-    
-    def _get_available_sources(self) -> List[Dict[str, Any]]:
-        """Get all available data sources for this session"""
-        files = self.db.get_multi_model_files(self.session_id)
-        return [
-            {
-                'file_name': f['file_name'],
-                'file_type': f['file_type'],
-                'storage_path': f['storage_path'],
-                'vector_collection_id': f['vector_collection_id'],
-                'db_table_name': f['db_table_name']
-            }
-            for f in files
-        ]
-    
-    def _prepare_agent_inputs(self, step: Dict[str, Any], query: str) -> Dict[str, Any]:
-        """Prepare inputs for a specialist agent"""
-        inputs = {'query': query, 'sources': {}}
-        
-        # Get required sources
-        required_files = step.get('inputs', [])
-        files = self.db.get_multi_model_files(self.session_id)
-        
-        for file_info in files:
-            if file_info['file_name'] in required_files or not required_files:
-                # Load data based on type
-                if file_info['file_type'] == 'tabular' and file_info['db_table_name']:
-                    try:
-                        data = self.db.get_table_data(file_info['db_table_name'])
-                        inputs['sources'][file_info['file_name']] = data
-                    except:
-                        pass
-                
-                elif file_info['file_type'] in ['document', 'image'] and file_info['vector_collection_id']:
-                    try:
-                        # Query vector database
-                        collection = self.chroma_client.get_collection(file_info['vector_collection_id'])
-                        results = collection.query(
-                            query_texts=[query],
-                            n_results=5
-                        )
-                        if 'vector_results' not in inputs:
-                            inputs['vector_results'] = []
-                        
-                        for i, doc in enumerate(results['documents'][0]):
-                            inputs['vector_results'].append({
-                                'source': file_info['file_name'],
-                                'content': doc,
-                                'distance': results['distances'][0][i] if 'distances' in results else 0
-                            })
-                    except:
-                        pass
-        
-        return inputs
+        self.email = None # For usage tracking
 
+    async def query_async(self, user_query: str, messages: List[Dict] = None, stream_callback: Optional[Callable] = None) -> Dict[str, Any]:
+        """
+        Executes the pipeline with web search BEFORE planning for better context.
+        """
+        token_ctx = start_token_aggregation()
+        
+        try:
+            # 0. Setup
+            if not stream_callback:
+                # Dummy callback if none provided (for non-streaming compat)
+                async def noop(ev, dt): pass
+                stream_callback = noop
+
+            # 1. Get Files
+            files = self._get_files()
+
+            # 2. Build Context
+            context = await self.context_builder.build_context(user_query, files, messages)
+            
+            # 2.5. Check if we need web search EARLY (before planning)
+            data_context_str = ""
+            if context['tabular_context']:
+                data_context_str += "\n\n".join(context['tabular_context']) + "\n\n"
+            if context['text_context']:
+                data_context_str += "\n\n".join(context['text_context']) + "\n\n"
+            
+            web_search_results = []
+            needs_web_search = self.answer_agent._needs_web_search(data_context_str, user_query)
+            
+            print(f"[WEB SEARCH] Early check: needs_web_search={needs_web_search}, enabled={self.answer_agent.web_search.enabled}")
+            
+            if needs_web_search and not self.answer_agent.web_search.enabled:
+                # Notify user that web search is needed but unavailable
+                warning_msg = "⚠️ Web search needed but disabled. Install: pip install duckduckgo-search"
+                print(f"[WEB SEARCH] {warning_msg}")
+                await stream_callback("web_search_unavailable", {
+                    "message": warning_msg,
+                    "install_command": "pip install duckduckgo-search"
+                })
+            
+            if needs_web_search and self.answer_agent.web_search.enabled:
+                try:
+                    print(f"[WEB SEARCH] Performing early web search for planning")
+                    await stream_callback("web_search_start", {"message": "Searching the web..."})
+                    
+                    web_search_results = await self.answer_agent.web_search.search(user_query, max_results=5)
+                    print(f"[WEB SEARCH] Early search got {len(web_search_results)} results")
+                    
+                    if web_search_results:
+                        await stream_callback("web_search_complete", {"results_count": len(web_search_results)})
+                except Exception as e:
+                    print(f"[WEB SEARCH] Early search error: {e}")
+                    await stream_callback("web_search_error", {"message": str(e)})
+            
+            # 3. Stream Plan (with web sources if available)
+            if web_search_results:
+                plan = await self.planner.stream_plan_with_sources(user_query, context, web_search_results, stream_callback)
+            else:
+                plan = await self.planner.stream_plan(user_query, context, stream_callback)
+            
+            # 4. Stream Answer (use existing web results)
+            answer = await self.answer_agent.stream_answer_with_web_results(
+                user_query, context, plan, web_search_results, stream_callback
+            )
+            
+            agents_used = ['ContextBuilder', 'SimplePlanner', 'AnswerAgent']
+            if self.answer_agent.web_search.enabled and web_search_results:
+                agents_used.append('WebSearchAgent')
+            
+            # Final Return
+            return {
+                'answer': answer,
+                'sources': context['sources'],
+                'plan': plan,
+                'agents_used': agents_used,
+                'web_sources': web_search_results
+            }
+
+        except Exception as e:
+            await stream_callback("error", {"message": str(e)})
+            raise e
+        finally:
+             end_token_aggregation(token_ctx, self.email, description="Multi-Model Pipeline")
+
+    def _get_files(self):
+        # Sync wrapper for DB
+        try:
+            raw_files = self.db.get_multi_model_files(self.session_id)
+            return [
+                {
+                    'file_name': f['file_name'],
+                    'file_type': f['file_type'],
+                    'storage_path': f['storage_path'],
+                    'vector_collection_id': f.get('vector_collection_id'),
+                    'db_table_name': f.get('db_table_name')
+                }
+                for f in raw_files
+            ]
+        except:
+             return []

@@ -23,6 +23,10 @@ import csv
 import time
 import shutil
 import gzip
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from llm_helper import get_llm_for_user
 
 
 SESSION_MEMORY = defaultdict(list)
@@ -968,7 +972,8 @@ Dataset Information ({'Frontend-Provided Report Dataset' if assume_ready else 'U
 
     history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
 
-    llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4.1-mini", temperature=0.1)
+    # Use llm_helper to get LLM with user's config (can pass email from request if available)
+    llm = get_llm_for_user(user_email=None, temperature=0.1)
 
     llm_prompt = f"""
 You are an expert data analyst AI. Your task is to analyze a user's question about a dataset and respond with a structured JSON object. You must also maintain a conversation and remember details from the chat history provided.
@@ -2290,7 +2295,8 @@ Result {i+1} (Similarity: {result.get('similarity_score', 0):.2f}):
             context_text = "\n".join(context_info)
             history_str = "\n".join([f'{msg["role"]}: {msg["content"]}' for msg in chat_history])
             
-            llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-3.5-turbo", temperature=0.1)
+            # Use llm_helper to get LLM with user's config
+            llm = get_llm_for_user(user_email=None, temperature=0.1)
             
             llm_prompt = f"""
 You are a knowledge base search assistant. Based on the user's query and the similar tickets found, provide a helpful explanation or solution.
