@@ -749,7 +749,7 @@ Note: The classification model could not analyze this image. Provide helpful gen
         # Call OpenAI
         try:
             response = call_llm_with_usage(
-                model="gpt-4o-mini",
+                model=None,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}

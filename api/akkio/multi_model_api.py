@@ -538,12 +538,15 @@ async def _generate_agent_config(model_name: str, system_prompt: str):
         # Get LLM configuration
         if LLM_CONFIG_AVAILABLE:
             config = get_llm_config(user_email=None)
-            llm_model = config.get("model", "gpt-4o")
+            llm_model = config["model"]
             llm_api_key = config.get("api_key")
             llm_provider = config.get("provider", "openai")
         else:
-            # Fallback to environment variable
-            llm_model = "gpt-4o"
+            try:
+                from llm_config import DEFAULT_MODEL
+                llm_model = DEFAULT_MODEL
+            except Exception:
+                llm_model = "gpt-4o-mini"
             llm_api_key = os.getenv("OPENAI_API_KEY")
             llm_provider = "openai"
         
@@ -633,11 +636,15 @@ Example format:
         try:
             if LLM_CONFIG_AVAILABLE:
                 config = get_llm_config(user_email=None)
-                llm_model = config.get("model", "gpt-4o")
+                llm_model = config["model"]
                 llm_api_key = config.get("api_key")
                 llm_provider = config.get("provider", "openai")
             else:
-                llm_model = "gpt-4o"
+                try:
+                    from llm_config import DEFAULT_MODEL
+                    llm_model = DEFAULT_MODEL
+                except Exception:
+                    llm_model = "gpt-4o-mini"
                 llm_api_key = os.getenv("OPENAI_API_KEY")
                 llm_provider = "openai"
             

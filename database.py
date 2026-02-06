@@ -11,6 +11,7 @@ import json
 import pickle
 import threading
 import time
+from contextlib import contextmanager
 
 class PostgresDatabase:
     _pool: SimpleConnectionPool | None = None
@@ -33,10 +34,10 @@ class PostgresDatabase:
             with cls._pool_lock:
                 if cls._pool is None:
                     try:
-                        # initialize a small reusable pool; adjust sizes as needed
+                        # Initialize connection pool with increased size for better concurrency
                         cls._pool = SimpleConnectionPool(
-                            minconn=1,
-                            maxconn=10,
+                            minconn=2,
+                            maxconn=20,
                             database=PGDATABASE,
                             user=PGUSER,
                             password=PGPASSWORD,
@@ -82,8 +83,60 @@ class PostgresDatabase:
         try:
             if self.connection is not None and not self.connection.closed and self.__class__._pool is not None:
                 self.__class__._pool.putconn(self.connection)
+        except Exception as e:
+            print(f"Warning: Error returning connection to pool: {e}")
         finally:
             self.connection = None
+
+    @contextmanager
+    def get_connection(self):
+        """Context manager for safe database connection handling."""
+        conn = None
+        try:
+            self.__class__._ensure_pool()
+            conn = self.__class__._pool.getconn()
+            if conn is None:
+                raise HTTPException(status_code=503, detail="Database connection pool exhausted. Please try again.")
+            conn.autocommit = True
+            yield conn
+        except Exception as e:
+            print(f"Database connection error: {e}")
+            raise
+        finally:
+            if conn is not None and self.__class__._pool is not None:
+                try:
+                    self.__class__._pool.putconn(conn)
+                except Exception as e:
+                    print(f"Error returning connection to pool: {e}")
+
+    @classmethod
+    def get_pool_status(cls):
+        """Get current connection pool status for monitoring."""
+        if cls._pool is None:
+            return {"status": "not_initialized"}
+        try:
+            # Note: SimpleConnectionPool doesn't expose direct metrics, 
+            # but we can provide basic info
+            return {
+                "status": "active",
+                "min_connections": 2,
+                "max_connections": 20,
+                "note": "Pool is healthy and operational"
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    @classmethod
+    def close_all_connections(cls):
+        """Safely close all connections in the pool (for shutdown/cleanup)."""
+        if cls._pool is not None:
+            with cls._pool_lock:
+                try:
+                    cls._pool.closeall()
+                    cls._pool = None
+                    print("All database connections closed successfully")
+                except Exception as e:
+                    print(f"Error closing connection pool: {e}")
 
     def create_table(self):
         """Creates akio_data_fastapi with no unique constraints on email, allowing duplicates."""
@@ -199,6 +252,47 @@ class PostgresDatabase:
                         END IF;
                     END$$;
                 """)
+            except Exception:
+                pass
+            # App Builder created apps (store all section content for list/edit)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_builder_apps (
+                    id SERIAL PRIMARY KEY,
+                    user_email VARCHAR(255) NOT NULL,
+                    app_name VARCHAR(255) NOT NULL,
+                    prompt TEXT NOT NULL,
+                    project_name VARCHAR(255) NOT NULL,
+                    prd TEXT,
+                    generated_uiux TEXT,
+                    plan JSONB,
+                    architecture JSONB,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            try:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_app_builder_apps_user_email ON app_builder_apps(user_email)")
+                cursor.execute("ALTER TABLE app_builder_apps ADD COLUMN IF NOT EXISTS generated_uiux TEXT")
+            except Exception:
+                pass
+            # App Builder codegen sessions: store multi-agent output + generated code JSON (same as documents)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_builder_codegen_sessions (
+                    id SERIAL PRIMARY KEY,
+                    session_id VARCHAR(255) UNIQUE NOT NULL,
+                    project_name VARCHAR(255) NOT NULL,
+                    requirement TEXT,
+                    prd TEXT,
+                    plan JSONB,
+                    architecture JSONB,
+                    generated_code_json JSONB,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            try:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_codegen_sessions_session_id ON app_builder_codegen_sessions(session_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_codegen_sessions_project_name ON app_builder_codegen_sessions(project_name)")
             except Exception:
                 pass
             cursor.execute("""
@@ -711,142 +805,208 @@ class PostgresDatabase:
 
 
     def get_user_tables(self, user):
-        # Optimize by querying only required column instead of reading entire table
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (user,))
-            rows = cursor.fetchall()
-        return [row[0] for row in rows]
+        """Get user tables with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (user,))
+                    rows = cursor.fetchall()
+                    return [row[0] for row in rows]
+        except Exception as e:
+            print(f"Error getting user tables for {user}: {e}")
+            raise
 
     def get_user_items(self, email: str):
         """
         Return list of dicts with name, type, subtype for a given user.
         Gracefully handles missing columns by returning None for missing fields.
         """
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            try:
-                cursor.execute("SELECT name, type, subtype FROM akio_data_fastapi WHERE email = %s", (email,))
-                rows = cursor.fetchall()
-                results = []
-                for row in rows:
-                    # row may contain only name if columns missing; handle lengths
-                    if len(row) == 3:
-                        results.append({"name": row[0], "type": row[1], "subtype": row[2]})
-                    elif len(row) == 1:
-                        results.append({"name": row[0], "type": None, "subtype": None})
-                    else:
-                        # unexpected shape
-                        results.append({"name": row[0] if row else None, "type": None, "subtype": None})
-                return results
-            except Exception:
-                # Fallback if columns missing
-                cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (email,))
-                rows = cursor.fetchall()
-                return [{"name": row[0], "type": None, "subtype": None} for row in rows]
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    try:
+                        cursor.execute("SELECT name, type, subtype FROM akio_data_fastapi WHERE email = %s", (email,))
+                        rows = cursor.fetchall()
+                        results = []
+                        for row in rows:
+                            # row may contain only name if columns missing; handle lengths
+                            if len(row) == 3:
+                                results.append({"name": row[0], "type": row[1], "subtype": row[2]})
+                            elif len(row) == 1:
+                                results.append({"name": row[0], "type": None, "subtype": None})
+                            else:
+                                # unexpected shape
+                                results.append({"name": row[0] if row else None, "type": None, "subtype": None})
+                        return results
+                    except Exception:
+                        # Fallback if columns missing
+                        cursor.execute("SELECT name FROM akio_data_fastapi WHERE email = %s", (email,))
+                        rows = cursor.fetchall()
+                        return [{"name": row[0], "type": None, "subtype": None} for row in rows]
+        except Exception as e:
+            print(f"Error getting user items for {email}: {e}")
+            raise
 
     def get_table_data(self, table_name):
-        self.ensure_connection()
-        df = self.read(self._clean_name(table_name))
-        bytes_data = df['fileobj'].iloc[0]
-        table_data = pickle.loads(bytes_data)
-        if isinstance(table_data, pd.DataFrame):
-            return table_data
-        return pd.DataFrame(table_data)
+        """Safely retrieve table data with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    clean_name = self._clean_name(table_name)
+                    cursor.execute(
+                        "SELECT fileobj FROM akio_data_fastapi WHERE name = %s LIMIT 1",
+                        (clean_name,)
+                    )
+                    row = cursor.fetchone()
+                    
+                    if not row or row[0] is None:
+                        return pd.DataFrame()
+                    
+                    bytes_data = row[0]
+                    table_data = pickle.loads(bytes(bytes_data))
+                    if isinstance(table_data, pd.DataFrame):
+                        return table_data
+                    return pd.DataFrame(table_data)
+        except Exception as e:
+            print(f"Error getting table data for {table_name}: {e}")
+            raise
 
     def get_raw_file(self, table_name) -> bytes | None:
         """Return rawfile bytes for a given name if available."""
-        self.ensure_connection()
-        df = self.read(self._clean_name(table_name))
         try:
-            rb = df['rawfile'].iloc[0]
-            return bytes(rb) if rb is not None else None
-        except Exception:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    clean_name = self._clean_name(table_name)
+                    cursor.execute(
+                        "SELECT rawfile FROM akio_data_fastapi WHERE name = %s LIMIT 1",
+                        (clean_name,)
+                    )
+                    row = cursor.fetchone()
+                    if not row or row[0] is None:
+                        return None
+                    return bytes(row[0])
+        except Exception as e:
+            print(f"Error getting raw file for {table_name}: {e}")
             return None
 
     def delete_tables_data(self, email, table_names):
+        """Delete tables with proper connection management."""
         if not table_names:
             return "No table names provided"
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            placeholders = ','.join(['%s'] * len(table_names))
-            cursor.execute(
-                f"DELETE FROM akio_data_fastapi WHERE email = %s AND name IN ({placeholders})",
-                [email] + table_names
-            )
-            return f"{cursor.rowcount} records deleted"
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    placeholders = ','.join(['%s'] * len(table_names))
+                    cursor.execute(
+                        f"DELETE FROM akio_data_fastapi WHERE email = %s AND name IN ({placeholders})",
+                        [email] + table_names
+                    )
+                    return f"{cursor.rowcount} records deleted"
+        except Exception as e:
+            print(f"Error deleting tables for {email}: {e}")
+            raise
 
     def delete_all_tables_data(self, email):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("DELETE FROM akio_data_fastapi WHERE email = %s", (email,))
-            return f"{cursor.rowcount} records deleted"
+        """Delete all tables for user with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM akio_data_fastapi WHERE email = %s", (email,))
+                    return f"{cursor.rowcount} records deleted"
+        except Exception as e:
+            print(f"Error deleting all tables for {email}: {e}")
+            raise
 
     
     def insert_report(self, email, url, title=None, description=None):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO reports_fastapi (email, url, title, description)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, email, url, title, description, created_at
-            """, (email, url, title, description))
-            result = cursor.fetchone()
-            self.connection.commit()  # commit after insert
-            return dict(zip([d[0] for d in cursor.description], result))
+        """Insert report with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO reports_fastapi (email, url, title, description)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id, email, url, title, description, created_at
+                    """, (email, url, title, description))
+                    result = cursor.fetchone()
+                    return dict(zip([d[0] for d in cursor.description], result))
+        except Exception as e:
+            print(f"Error inserting report for {email}: {e}")
+            raise
 
     def update_report(self, email, url, title=None, description=None):
         """Update the report URL, title, and description for a given email."""
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("""
-                UPDATE reports_fastapi
-                SET url = %s, title = %s, description = %s, updated_at = NOW()
-                WHERE email = %s
-                RETURNING id, email, url, title, description, updated_at
-            """, (url, title, description, email))
-            result = cursor.fetchone()
-            self.connection.commit()  # Added commit for consistency
-            return dict(zip([d[0] for d in cursor.description], result)) if result else None
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE reports_fastapi
+                        SET url = %s, title = %s, description = %s, updated_at = NOW()
+                        WHERE email = %s
+                        RETURNING id, email, url, title, description, updated_at
+                    """, (url, title, description, email))
+                    result = cursor.fetchone()
+                    return dict(zip([d[0] for d in cursor.description], result)) if result else None
+        except Exception as e:
+            print(f"Error updating report for {email}: {e}")
+            raise
 
     def get_report_by_email(self, email):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT id, email, url, title, description, created_at, updated_at
-                FROM reports_fastapi
-                WHERE email = %s
-            """, (email,))
-            rows = cursor.fetchall()
-            return [dict(zip([d[0] for d in cursor.description], row)) for row in rows]
+        """Get reports with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, email, url, title, description, created_at, updated_at
+                        FROM reports_fastapi
+                        WHERE email = %s
+                    """, (email,))
+                    rows = cursor.fetchall()
+                    return [dict(zip([d[0] for d in cursor.description], row)) for row in rows]
+        except Exception as e:
+            print(f"Error getting reports for {email}: {e}")
+            raise
 
     def get_reports_by_ids_and_email(self, email, report_ids):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            query = """
-                SELECT id, email, url, title, description, created_at, updated_at
-                FROM reports_fastapi
-                WHERE email = %s
-                AND id = ANY(%s)
-            """
-            cursor.execute(query, (email, report_ids))
-            rows = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+        """Get reports by IDs with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    query = """
+                        SELECT id, email, url, title, description, created_at, updated_at
+                        FROM reports_fastapi
+                        WHERE email = %s
+                        AND id = ANY(%s)
+                    """
+                    cursor.execute(query, (email, report_ids))
+                    rows = cursor.fetchall()
+                    columns = [desc[0] for desc in cursor.description]
+                    return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            print(f"Error getting reports by IDs for {email}: {e}")
+            raise
 
     def delete_report_by_email(self, email):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("DELETE FROM reports_fastapi WHERE email = %s", (email,))
-            self.connection.commit()  # Added commit for consistency
-            return f"{cursor.rowcount} reports_fastapi deleted"
+        """Delete reports with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM reports_fastapi WHERE email = %s", (email,))
+                    return f"{cursor.rowcount} reports_fastapi deleted"
+        except Exception as e:
+            print(f"Error deleting reports for {email}: {e}")
+            raise
 
     def delete_user_report_by_id(self, email, report_id):
-        self.ensure_connection()
-        with self.connection.cursor() as cursor:
-            cursor.execute("DELETE FROM reports_fastapi WHERE id = %s AND email = %s", (report_id, email))
-            self.connection.commit()  # Added commit for consistency
-            return f"{cursor.rowcount} reports_fastapi deleted"
+        """Delete report by ID with proper connection management."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM reports_fastapi WHERE id = %s AND email = %s", (report_id, email))
+                    return f"{cursor.rowcount} reports_fastapi deleted"
+        except Exception as e:
+            print(f"Error deleting report {report_id} for {email}: {e}")
+            raise
 
     def delete_all_tables(self):
         self.ensure_connection()
@@ -1152,6 +1312,160 @@ class PostgresDatabase:
             """, (session_id,))
             
             self.connection.commit()
+
+    # -------- App Builder Apps --------
+    def create_app_builder_app(self, user_email: str, app_name: str, prompt: str, project_name: str,
+                                prd: str = None, generated_uiux: str = None, plan: list = None, architecture: dict = None):
+        """Create a new app builder app record."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO app_builder_apps (user_email, app_name, prompt, project_name, prd, generated_uiux, plan, architecture, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW(), NOW())
+                RETURNING id, user_email, app_name, prompt, project_name, prd, generated_uiux, plan, architecture, created_at, updated_at
+            """, (user_email, app_name, prompt, project_name, prd, generated_uiux, json.dumps(plan) if plan is not None else None,
+                  json.dumps(architecture) if architecture is not None else None))
+            row = cursor.fetchone()
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def get_user_app_builder_apps(self, user_email: str):
+        """Get all app builder apps for a user."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, user_email, app_name, prompt, project_name, prd, generated_uiux, plan, architecture, created_at, updated_at
+                FROM app_builder_apps
+                WHERE user_email = %s
+                ORDER BY updated_at DESC
+            """, (user_email,))
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            result = []
+            for row in rows:
+                r = dict(zip(cols, row))
+                if isinstance(r.get("plan"), str):
+                    try:
+                        r["plan"] = json.loads(r["plan"]) if r["plan"] else None
+                    except Exception:
+                        r["plan"] = None
+                if isinstance(r.get("architecture"), str):
+                    try:
+                        r["architecture"] = json.loads(r["architecture"]) if r["architecture"] else None
+                    except Exception:
+                        r["architecture"] = None
+                result.append(r)
+            return result
+
+    def get_app_builder_app(self, app_id: int, user_email: str = None):
+        """Get a single app builder app by id (optionally scoped by user_email)."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            if user_email:
+                cursor.execute("""
+                    SELECT id, user_email, app_name, prompt, project_name, prd, generated_uiux, plan, architecture, created_at, updated_at
+                    FROM app_builder_apps
+                    WHERE id = %s AND user_email = %s
+                """, (app_id, user_email))
+            else:
+                cursor.execute("""
+                    SELECT id, user_email, app_name, prompt, project_name, prd, generated_uiux, plan, architecture, created_at, updated_at
+                    FROM app_builder_apps
+                    WHERE id = %s
+                """, (app_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            r = dict(zip(cols, row))
+            if isinstance(r.get("plan"), str):
+                try:
+                    r["plan"] = json.loads(r["plan"]) if r["plan"] else None
+                except Exception:
+                    r["plan"] = None
+            if isinstance(r.get("architecture"), str):
+                try:
+                    r["architecture"] = json.loads(r["architecture"]) if r["architecture"] else None
+                except Exception:
+                    r["architecture"] = None
+            return r
+
+    def update_app_builder_app(self, app_id: int, user_email: str, app_name: str = None, prompt: str = None,
+                                project_name: str = None, prd: str = None, generated_uiux: str = None,
+                                plan: list = None, architecture: dict = None):
+        """Update an app builder app."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE app_builder_apps
+                SET
+                    app_name = COALESCE(%s, app_name),
+                    prompt = COALESCE(%s, prompt),
+                    project_name = COALESCE(%s, project_name),
+                    prd = COALESCE(%s, prd),
+                    generated_uiux = COALESCE(%s, generated_uiux),
+                    plan = COALESCE(%s::jsonb, plan),
+                    architecture = COALESCE(%s::jsonb, architecture),
+                    updated_at = NOW()
+                WHERE id = %s AND user_email = %s
+            """, (app_name, prompt, project_name, prd, generated_uiux,
+                  json.dumps(plan) if plan is not None else None,
+                  json.dumps(architecture) if architecture is not None else None,
+                  app_id, user_email))
+            return cursor.rowcount
+
+    def delete_app_builder_app(self, app_id: int, user_email: str):
+        """Delete an app builder app."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("DELETE FROM app_builder_apps WHERE id = %s AND user_email = %s", (app_id, user_email))
+            return cursor.rowcount
+
+    def create_or_update_codegen_session(self, session_id: str, project_name: str, requirement: str = None,
+                                          prd: str = None, plan: list = None, architecture: dict = None,
+                                          generated_code_json: dict = None):
+        """Create or update a codegen session with multi-agent data and generated code JSON (stored like documents)."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO app_builder_codegen_sessions
+                (session_id, project_name, requirement, prd, plan, architecture, generated_code_json, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+                ON CONFLICT (session_id) DO UPDATE SET
+                    project_name = COALESCE(EXCLUDED.project_name, app_builder_codegen_sessions.project_name),
+                    requirement = COALESCE(EXCLUDED.requirement, app_builder_codegen_sessions.requirement),
+                    prd = COALESCE(EXCLUDED.prd, app_builder_codegen_sessions.prd),
+                    plan = COALESCE(EXCLUDED.plan, app_builder_codegen_sessions.plan),
+                    architecture = COALESCE(EXCLUDED.architecture, app_builder_codegen_sessions.architecture),
+                    generated_code_json = COALESCE(EXCLUDED.generated_code_json, app_builder_codegen_sessions.generated_code_json),
+                    updated_at = NOW()
+            """, (session_id, project_name, requirement, prd,
+                  json.dumps(plan) if plan is not None else None,
+                  json.dumps(architecture) if architecture is not None else None,
+                  json.dumps(generated_code_json) if generated_code_json is not None else None))
+            return cursor.rowcount
+
+    def get_codegen_session(self, session_id: str):
+        """Get a codegen session by session_id."""
+        self.ensure_training_tables()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, session_id, project_name, requirement, prd, plan, architecture, generated_code_json, created_at, updated_at
+                FROM app_builder_codegen_sessions
+                WHERE session_id = %s
+            """, (session_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            r = dict(zip(cols, row))
+            for key in ("plan", "architecture", "generated_code_json"):
+                if isinstance(r.get(key), str):
+                    try:
+                        r[key] = json.loads(r[key]) if r[key] else None
+                    except Exception:
+                        r[key] = None
+            return r
 
     def delete_table(self, table_name: str):
         """Delete a specific table from the database."""

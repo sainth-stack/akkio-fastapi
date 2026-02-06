@@ -99,7 +99,7 @@ def analyze_legal_content(df: pd.DataFrame, query: str, email: str = None) -> st
         IMPORTANT: Return ONLY the HTML content above, no additional text or explanations.
         """
         response = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             messages=[
                 {"role": "system", "content": "You are a senior legal analysis expert specializing in UAE legal documents and regulations. Provide comprehensive, professional legal analysis in the exact HTML format requested."},
                 {"role": "user", "content": analysis_prompt}

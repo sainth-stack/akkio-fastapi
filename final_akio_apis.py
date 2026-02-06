@@ -91,7 +91,7 @@ from api.sharepoint import (
 )
 from api.chat2doc_fastapi import chat2doc
 from api.akkio.usage_tracking import record_llm_usage
-from llm_config import get_llm_config, get_api_key, get_model_name
+from llm_config import get_llm_config, get_api_key, get_model_name, get_default_model_for_provider
 
 """
 =================================================================================
@@ -239,6 +239,14 @@ def _mark_file_as_processed(filename: str):
 
 @app.on_event("startup")
 async def _on_startup():
+    """Initialize application resources on startup."""
+    # Initialize database connection pool
+    try:
+        PostgresDatabase._ensure_pool()
+        print("✅ Database connection pool initialized")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize database pool: {e}")
+    
     # Initialize LLM settings table
     try:
         db.ensure_connection()
@@ -254,8 +262,16 @@ async def _on_startup():
 
 @app.on_event("shutdown")
 async def _on_shutdown():
+    """Clean up resources on shutdown."""
     if ENABLE_SHAREPOINT_AUTOMATION:
         stop_sharepoint_automation()
+    
+    # Close all database connections
+    try:
+        PostgresDatabase.close_all_connections()
+        print("✅ Database connections closed cleanly")
+    except Exception as e:
+        print(f"⚠️ Warning: Error closing database connections: {e}")
 
 # Automation control endpoints
 @app.get("/api/sharepoint/automation/status")
@@ -307,7 +323,61 @@ app.include_router(url_router)
 app.include_router(chat2doc)
 app.include_router(upload_router)
 
- 
+from api.app_creator.app_creator import router as app_builder_router
+from api.app_creator.apps_api import router as app_builder_apps_router
+from api.app_creator.prd_api import router as prd_router
+from api.app_creator.agent_api import router as agent_router
+from api.app_creator.codegen_api import router as codegen_router
+from api.app_creator.planning_api import router as planning_router
+
+app.include_router(app_builder_router)
+app.include_router(app_builder_apps_router, prefix="/api/app-builder")
+app.include_router(prd_router)
+app.include_router(agent_router)
+app.include_router(codegen_router)
+app.include_router(planning_router)
+
+
+# Health check endpoints
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    """
+    Health check endpoint to monitor API and database connectivity.
+    Returns the status of the API server and database connection pool.
+    """
+    health_status = {
+        "api": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "database": {}
+    }
+    
+    # Check database pool status
+    try:
+        pool_status = PostgresDatabase.get_pool_status()
+        health_status["database"] = pool_status
+        
+        # Try a simple database query to verify connectivity
+        try:
+            with db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+            health_status["database"]["connectivity"] = "connected"
+        except Exception as db_err:
+            health_status["database"]["connectivity"] = "error"
+            health_status["database"]["error"] = str(db_err)
+            health_status["api"] = "degraded"
+    except Exception as e:
+        health_status["database"] = {
+            "status": "error",
+            "error": str(e)
+        }
+        health_status["api"] = "degraded"
+    
+    status_code = 200 if health_status["api"] == "healthy" else 503
+    return JSONResponse(content=health_status, status_code=status_code)
+
 
 @app.get("/api/sharepoint/input_files")
 async def get_sharepoint_input_files():
@@ -603,16 +673,43 @@ async def upload_to_sharepoint_output(
 
 @app.post("/api/tabledata")
 async def read_data(tablename: str = Form(...)):
+    """
+    Retrieve table data with proper error handling and connection management.
+    """
+    df = None
     try:
-        df = db.get_table_data(tablename)
-        if df.empty:
-            return JSONResponse(content={"detail": "Table is empty or not found"}, status_code=404)
+        # Validate table name
+        if not tablename or not tablename.strip():
+            return JSONResponse(
+                content={"detail": "Table name is required and cannot be empty"}, 
+                status_code=400
+            )
+        
         print(f"Processing table: {tablename}")
-        # Ultra-safe conversion using pandas built-in JSON handling
-        json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
-        result = json.loads(json_str)
+        df = db.get_table_data(tablename)
+        
+        if df is None or df.empty:
+            return JSONResponse(
+                content={"detail": "Table is empty or not found"}, 
+                status_code=404
+            )
+        
+        print(f"Retrieved {len(df)} rows from table '{tablename}'")
+        
+        # Safe JSON conversion with proper error handling
+        try:
+            json_str = df.to_json(orient='records', date_format='iso', default_handler=str)
+            result = json.loads(json_str)
+        except Exception as json_err:
+            print(f"Error converting table data to JSON: {json_err}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Error converting table data to JSON format: {str(json_err)}"
+            )
+        
         print(f"Data for table '{tablename}' processed successfully.")
-        # Prepare ChromaDB embeddings for text-style docs (pdf/word/images) normalized to 'text_content'
+        
+        # Prepare ChromaDB embeddings for text-style docs (non-blocking, best effort)
         try:
             if 'text_content' in df.columns:
                 texts = [str(t).strip() for t in df['text_content'].dropna().astype(str).tolist() if str(t).strip()]
@@ -634,24 +731,39 @@ async def read_data(tablename: str = Form(...)):
                         ids = [f"{collection_name}_{i}" for i in range(len(texts))]
                         metadatas = [{"email": email, "name": tablename}] * len(texts)
                         vectordb.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+                        print(f"Successfully embedded {len(texts)} text documents")
                     except Exception as ve:
                         print(f"[WARNING] Chroma ingestion skipped: {ve}")
         except Exception as ve_outer:
             print(f"[WARNING] Vector prep failed for '{tablename}': {ve_outer}")
-        # Save CSV files (in background)
-        df.to_csv('data.csv', index=False)
         
-        # Create uploads directory and save table-specific CSV
-        os.makedirs("uploads", exist_ok=True)
-        df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
+        # Save CSV files (non-blocking, best effort)
+        try:
+            df.to_csv('data.csv', index=False)
+            os.makedirs("uploads", exist_ok=True)
+            df.to_csv(os.path.join("uploads", f"{tablename.lower()}.csv"), index=False)
+        except Exception as csv_err:
+            print(f"[WARNING] CSV export failed: {csv_err}")
         
         return JSONResponse(content=result)
     
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Unexpected error processing table '{tablename}': {str(e)}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(
-            content={"detail": f"Error processing table data: {str(e)}"}, 
+            content={
+                "detail": "An error occurred while processing the table data. Please try again or contact support if the issue persists.",
+                "error": str(e),
+                "table": tablename
+            }, 
             status_code=500
         )
+    finally:
+        # Ensure any open resources are cleaned up
+        del df
 
 
 # 3.Deleting the user-specific list of tables-----------------Deleting the list of tables corresponding to the specific user
@@ -996,8 +1108,10 @@ IMPORTANT: For any date columns on x-axis, format them properly:
 # Function to generate code from OpenAI API
 def generate_code4(prompt_eng):
     """Generate Python code for creating Plotly charts using AI"""
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",  # Updated model name
+    _client = get_openai_client(None)
+    _model = get_model_name(None)
+    response = _client.chat.completions.create(
+        model=_model,
         messages=[
             {"role": "system", "content": """
             You are VizCopilot, an expert Python data visualization assistant having 20+ years of experience in specialising in Plotly.
@@ -1351,8 +1465,10 @@ def markdown_to_html(md_text):
 
 
 def generate_text(prompt: str, email: Optional[str] = None) -> str:
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+    _client = get_openai_client(email)
+    _model = get_model_name(email)
+    response = _client.chat.completions.create(
+        model=_model,
         messages=[
             {"role": "system",
              "content": "You are a helpful data analyst that explains data visualizations and user queries. Provide clear, accurate analysis based on the data provided."},
@@ -1402,8 +1518,10 @@ def generate_prediction_insights_llm(payload: Dict[str, Any]) -> Dict[str, Any]:
         "}\n"
     )
 
-    resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
+    _client = get_openai_client(None)
+    _model = get_model_name(None)
+    resp = _client.chat.completions.create(
+        model=_model,
         messages=[
             {"role": "system", "content": "Return JSON only."},
             {"role": "user", "content": prompt},
@@ -3128,12 +3246,14 @@ async def gen_ai_bot(request_body: GenAIBotRequest):
 
         # Handle general data analysis requests
         else:
-            # Use full chat history as context for the LLM
-            response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+            # Use full chat history as context for the LLM (model from llm_config)
+            _client = get_openai_client(request_body.email)
+            _model = get_model_name(request_body.email)
+            response = _client.chat.completions.create(
+                model=_model,
                 messages=messages
             )
-            
+
             # Track AI credits usage
             record_llm_usage(request_body.email, response)
 
@@ -3197,8 +3317,10 @@ def generate_text_from_json(json_data: dict) -> str:
     data_summary = json.dumps(json_data, indent=2)
     full_prompt = f"{description}\nHere is the analysis output:\n{data_summary}\n"
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+    _client = get_openai_client(None)
+    _model = get_model_name(None)
+    response = _client.chat.completions.create(
+        model=_model,
         messages=[
             {"role": "system",
              "content": "You are a helpful data analyst who explains model outputs, data visualizations, and user queries clearly and insightfully."},
@@ -3242,15 +3364,17 @@ def extract_forecast_details_llm(prompt, column_names, df, email: Optional[str] 
             Ensure that the "target_variable" matches one of the available column names, even if the user misspells it.
             """
         forecast_details = ''
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+        _client = get_openai_client(email)
+        _model = get_model_name(email)
+        response = _client.chat.completions.create(
+            model=_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             temperature=0  # Make it deterministic
         )
-        
+
         # Track AI credits usage
         record_llm_usage(email, response)
         
@@ -3325,15 +3449,17 @@ def extract_forecast_details_rf(prompt, column_names, email: Optional[str] = Non
         """
 
         predict_details = ''
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+        _client = get_openai_client(email)
+        _model = get_model_name(email)
+        response = _client.chat.completions.create(
+            model=_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             temperature=0  # Make it deterministic
         )
-        
+
         # Track AI credits usage
         record_llm_usage(email, response)
         
@@ -5211,8 +5337,8 @@ def extract_num_rows_from_prompt1(prompt: str, api_key: str, user_email: str = N
         api_key = config["api_key"]
         model = config["model"]
     else:
-        model = "gpt-4o-mini"  # fallback model
-    
+        model = get_llm_config(None)["model"]  # use default from llm_config
+
     llm = ChatOpenAI(model=model, openai_api_key=api_key)
     messages = [
         SystemMessage(content="You extract the number of rows to generate from user input. Return only the integer."),
@@ -5841,18 +5967,19 @@ async def get_llm_settings(email: str = Query(...)):
         settings = db.get_llm_settings(email)
         db.close()
         
-        # Return defaults if no settings found
+        # Return defaults if no settings found (from llm_config)
         if not settings:
+            default_config = get_llm_config(None)
             return JSONResponse(content={
-                "provider": "openai",
-                "api_key": "",
-                "model_name": "gpt-4o-mini"
+                "provider": default_config["provider"],
+                "api_key": default_config["api_key"] or "",
+                "model_name": default_config["model"],
             })
-        
+
         return JSONResponse(content={
             "provider": settings.get("provider", "openai"),
             "api_key": settings.get("api_key", ""),
-            "model_name": settings.get("model_name", "gpt-4o-mini")
+            "model_name": settings.get("model_name") or get_default_model_for_provider(settings.get("provider") or "openai"),
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -5882,28 +6009,28 @@ async def get_llm_providers():
     """Get available LLM providers and their models."""
     try:
         from llm_config import get_provider_models
-        
+
         providers_info = {
             "openai": {
                 "name": "OpenAI",
                 "description": "To power RAG and/or AI queries",
                 "models": get_provider_models("openai"),
-                "default_model": "gpt-4o-mini"
+                "default_model": get_default_model_for_provider("openai"),
             },
             "anthropic": {
                 "name": "Anthropic",
                 "description": "To unlock Generative AI models from Anthropic",
                 "models": get_provider_models("anthropic"),
-                "default_model": "claude-3-5-sonnet-20241022"
+                "default_model": get_default_model_for_provider("anthropic"),
             },
             "google": {
                 "name": "Google",
                 "description": "To unlock Generative AI models from Google",
                 "models": get_provider_models("google"),
-                "default_model": "gemini-1.5-flash"
-            }
+                "default_model": get_default_model_for_provider("google"),
+            },
         }
-        
+
         return JSONResponse(content=providers_info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

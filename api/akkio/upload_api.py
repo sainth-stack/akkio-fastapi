@@ -169,7 +169,7 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str, email: str = None) -> d
             }
             # Use call_llm_with_usage
             resp = call_llm_with_usage(
-                model="gpt-4o-mini",
+                model=None,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -591,7 +591,7 @@ def _ocr_image_with_llm(image_bytes: bytes, email: str = None) -> Tuple[str, Opt
             "Respond as STRICT JSON: {\"text\": \"...\", \"subtype\": \"table|chart|other\"}"
         )
         resp = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},

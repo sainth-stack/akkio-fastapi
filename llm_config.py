@@ -8,9 +8,9 @@ import os
 from typing import Dict, Optional
 from database import PostgresDatabase
 
-# Default LLM configuration (Updated for latest models)
+# Default LLM configuration (aligned with app defaults and Settings UI)
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "gpt-5.2"  # Latest as of January 2026
+DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Provider-specific environment variables
@@ -20,7 +20,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 # Provider models mapping with all latest models (Updated January 2026)
 PROVIDER_MODELS = {
     "openai": {
-        "default": "gpt-5.2",
+        "default": "gpt-4o-mini",
         "models": [
             # GPT-5 Series (Latest - Released August 2025+)
             "gpt-5.2",                      # Most capable (December 2025)

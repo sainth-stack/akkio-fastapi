@@ -213,7 +213,7 @@ async def senior_data_analysis(
                             user_prompt = query
                         
                         chat = call_llm_with_usage(
-                            model="gpt-4o-mini",
+                            model=None,
                             messages=[
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": [
@@ -346,7 +346,7 @@ async def senior_data_analysis(
                                 user_prompt = f"Audio transcription:\n\n{full_text}\n\nProvide a detailed summary."
                                 
                                 chat = call_llm_with_usage(
-                                    model="gpt-4o-mini",
+                                    model=None,
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_prompt}
@@ -381,7 +381,7 @@ async def senior_data_analysis(
                                 user_prompt = f"Context from audio transcription:\n\n{context}\n\nQuestion: {query}"
                                 
                                 chat = call_llm_with_usage(
-                                    model="gpt-4o-mini",
+                                    model=None,
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_prompt}
@@ -494,7 +494,7 @@ async def senior_data_analysis(
                                     )
                                     user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
                                 chat = call_llm_with_usage(
-                                    model="gpt-4o-mini",
+                                    model=None,
                                     messages=[
                                         {"role": "system", "content": system_prompt},
                                         {"role": "user", "content": user_payload},
@@ -787,7 +787,7 @@ async def vector_chat(
                     b64 = base64.b64encode(raw).decode("utf-8")
                     system_prompt = "Answer the user's question about the provided image. Use visual reasoning."
                     chat = call_llm_with_usage(
-                        model="gpt-4o-mini",
+                        model=None,
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": [
@@ -880,7 +880,7 @@ async def vector_chat(
             )
             user_payload = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer using only the context, formatted in clean HTML."
         chat = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_payload},
@@ -1043,7 +1043,7 @@ async def explore_websocket(websocket: WebSocket):
                     
                     full_answer = ""
                     async for chunk in stream_llm_with_usage(
-                        model="gpt-4o-mini",
+                        model=None,
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": [
@@ -1151,7 +1151,7 @@ async def explore_websocket(websocket: WebSocket):
                         
                         full_answer = ""
                         async for chunk in stream_llm_with_usage(
-                            model="gpt-4o-mini",
+                            model=None,
                             messages=[
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": user_prompt}
@@ -1226,7 +1226,7 @@ async def explore_websocket(websocket: WebSocket):
                             
                             full_answer = ""
                             async for chunk in stream_llm_with_usage(
-                                model="gpt-4o-mini",
+                                model=None,
                                 messages=[
                                     {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_payload},

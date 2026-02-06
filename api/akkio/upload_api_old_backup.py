@@ -12,6 +12,7 @@ from database import PostgresDatabase
 from .training import start_training_job
 from .training import _detect_task_and_columns
 from api.akkio.explore_functions.llm import get_openai_client
+from llm_config import get_model_name
 import json as _json
 import threading
 import glob
@@ -173,7 +174,7 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
             }
             # Use chat.completions with JSON object response
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=get_model_name(None),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},

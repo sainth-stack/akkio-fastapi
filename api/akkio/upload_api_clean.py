@@ -10,6 +10,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from docx import Document
 from database import PostgresDatabase
 from api.akkio.explore_functions.llm import get_openai_client
+from llm_config import get_model_name
 import json as _json
 import glob
 from pathlib import Path
@@ -155,9 +156,9 @@ def _llm_detect_schema(df: pd.DataFrame, file_name: str) -> dict:
                 "file_stats": stats,
                 "rows": rows
             }
-            # Use chat.completions with JSON object response
+            # Use chat.completions with JSON object response (model from llm_config)
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=get_model_name(None),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},

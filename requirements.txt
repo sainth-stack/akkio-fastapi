@@ -85,3 +85,4 @@ faiss-cpu
 
 # Web search - Using Google for better accuracy
 googlesearch-python
+langgraph

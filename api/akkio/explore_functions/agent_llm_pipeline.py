@@ -18,7 +18,7 @@ from universal_prompts import (
 
 def generate_data_code(prompt_eng: str, email: str = None) -> str:
     response = call_llm_with_usage(
-        model="gpt-4o-mini",
+        model=None,
         messages=[
             {"role": "system", "content": prompt_for_data_analyst},
             {"role": "user", "content": prompt_eng}
@@ -81,7 +81,7 @@ def simulate_and_format_with_llm(code_to_simulate: str, dataframe: pd.DataFrame,
    - **If you got the basic code to execute, you MUST execute and give the exact result**. **DO NOT** add all the things regarding visualisation to that.
     """
     response = call_llm_with_usage(
-        model="gpt-4o-mini",
+        model=None,
         messages=[
             {"role": "system", "content": Visualisation_intelligence_engine + Prompt_for_code_execution},
             {"role": "user", "content": user_prompt}
@@ -210,7 +210,7 @@ IMPORTANT:
     system_message = "You are an expert data analyst AI assistant. You provide helpful, conversational responses with proper HTML formatting and are skilled at Python/Plotly code generation."
     try:
         response = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": llm_prompt}
@@ -269,7 +269,7 @@ def _extract_code_from_llm_text(all_text: str) -> str:
 
 def _llm_generate_code(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
     response = call_llm_with_usage(
-        model="gpt-4o-mini",
+        model=None,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -544,7 +544,7 @@ def _llm_generate_chart_title(query: str, x_col: str, y_col: str, chart_type: st
         )
         user = f"Query: {query}\nX-axis: {x_col}\nY-axis: {y_col}\nChart type: {chart_type}\nGenerate title:"
         resp = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
             temperature=0.3,
             max_tokens=50,
@@ -576,7 +576,7 @@ def _llm_parse_graph_intent(query: str, columns: List[str]) -> Optional[Dict[str
         )
         user = f"Query: {query}\nColumns: {columns}\nReturn ONLY the JSON."
         resp = call_llm_with_usage(
-            model="gpt-4o-mini",
+            model=None,
             messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
             temperature=0.0,
             # No email tracking for lightweight intent parsing as per original

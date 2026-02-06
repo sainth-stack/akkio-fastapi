@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from langchain_openai import ChatOpenAI
 from langchain_community.utilities import SQLDatabase
 from langchain_core.messages import SystemMessage, HumanMessage
 import boto3
@@ -45,11 +44,8 @@ class ChatResponse(BaseModel):
 # -----------------------------------------------------------------------------
 class MultiDatabaseAgent:
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4.1-mini",
-            temperature=0,
-            max_tokens=2000
-        )
+        from llm_helper import get_llm_for_user
+        self.llm = get_llm_for_user(None, temperature=0, max_tokens=2000)
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         # Supported connection patterns
