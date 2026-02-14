@@ -280,6 +280,50 @@ def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) ->
     return False
 
 
+def _ensure_backend_tables_created(backend_dir: str) -> None:
+    """
+    Ensure database tables are created on startup. Patch main.py with startup event if create_all is missing.
+    Prevents 'no such table' OperationalError when hitting API.
+    """
+    main_py = os.path.join(backend_dir, "main.py")
+    if not os.path.isfile(main_py):
+        return
+    try:
+        with open(main_py, "r", encoding="utf-8") as f:
+            content = f.read()
+        if "create_all" in content or "metadata.create_all" in content:
+            return
+        block = '''
+@app.on_event("startup")
+def _ensure_tables():
+    """Create database tables if they do not exist."""
+    import database
+    try:
+        import models
+    except ImportError:
+        pass
+    for mod in ("todo", "user", "item", "task", "project", "post"):
+        try:
+            __import__(f"models.{mod}")
+        except ImportError:
+            pass
+    try:
+        database.Base.metadata.create_all(bind=database.engine)
+    except Exception as e:
+        print(f"Warning: Could not create tables: {e}")
+'''
+        if "app = FastAPI()" in content:
+            content = content.replace("app = FastAPI()", "app = FastAPI()" + block, 1)
+        elif "app=FastAPI()" in content:
+            content = content.replace("app=FastAPI()", "app=FastAPI()" + block, 1)
+        else:
+            return
+        with open(main_py, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
+
+
 def _safe_join_project(project_name: str, relative_path: str) -> str:
     # Prevent path traversal
     root = os.path.abspath(_project_root(project_name))
@@ -664,7 +708,10 @@ fi
                 # Use SQLite by default so app runs without PostgreSQL (generated apps often use getenv("DATABASE_URL"))
                 backend_env = dict(os.environ)
                 backend_env.setdefault("DATABASE_URL", "sqlite:///./app.db")
-                
+
+                # Ensure database tables exist before starting (prevents "no such table" error)
+                _ensure_backend_tables_created(backend_dir)
+
                 yield json.dumps({"event": "status", "message": "Starting backend process..."}) + "\n"
                 backend_proc = process_registry.create(
                     name=f"{project_name}:backend",
@@ -676,6 +723,7 @@ fi
                 
                 # Wait for backend to start; on ModuleNotFoundError, Postgres error, or FastAPI response_model error, try fix and retry once
                 backend_ready = False
+                backend_failed_continue_to_frontend = False
                 last_log_idx = 0
                 stub_retry_done = False
                 db_retry_done = False
@@ -724,11 +772,14 @@ fi
                             last_log_idx = 0
                             await asyncio.sleep(1)
                             continue
+                        # Backend failed - continue to frontend anyway (frontend runs with or without backend)
+                        backend_url = None
+                        backend_proc = None
                         yield json.dumps({
-                            "event": "error",
-                            "message": f"Backend failed to start. Exit code: {backend_proc.return_code()}\n\nLogs:\n{log_content}"
+                            "event": "warning",
+                            "message": f"Backend failed to start. Frontend will run without backend.\n\nLogs:\n{log_content}"
                         }) + "\n"
-                        return
+                        break
                     
                     # Stream logs to user
                     next_idx, lines = backend_proc.get_logs(since=last_log_idx)
@@ -740,19 +791,28 @@ fi
                             # Check for common error patterns
                             if "ModuleNotFoundError" in s or "ImportError" in s:
                                 yield json.dumps({
-                                    "event": "error",
-                                    "message": f"Backend has missing dependencies. Try running with install=true. Error: {s}"
+                                    "event": "warning",
+                                    "message": f"Backend has missing dependencies. Frontend will run without backend. Try install=true for backend."
                                 }) + "\n"
                                 backend_proc.terminate()
-                                return
+                                backend_url = None
+                                backend_proc = None
+                                backend_failed_continue_to_frontend = True
+                                break
                             if "Error" in s and "Address already in use" in s:
                                 yield json.dumps({
-                                    "event": "error",
-                                    "message": f"Backend port {backend_port} is still in use. Please wait and try again."
+                                    "event": "warning",
+                                    "message": f"Backend port {backend_port} in use. Frontend will run without backend."
                                 }) + "\n"
                                 backend_proc.terminate()
-                                return
+                                backend_url = None
+                                backend_proc = None
+                                backend_failed_continue_to_frontend = True
+                                break
                     
+                    if backend_failed_continue_to_frontend:
+                        break
+
                     # FIXED: Actually check if backend is listening on port
                     if _is_port_listening(backend_port):
                         backend_ready = True
@@ -761,26 +821,39 @@ fi
                     
                     await asyncio.sleep(1)
                 
-                if not backend_ready:
+                if not backend_ready and backend_proc:
                     _, logs = backend_proc.get_logs()
                     log_content = "\n".join(logs[-20:]) if logs else "No logs captured"
                     yield json.dumps({
-                        "event": "error",
-                        "message": f"Backend did not start listening on port {backend_port} within 30 seconds.\n\nLogs:\n{log_content}"
+                        "event": "warning",
+                        "message": f"Backend did not start within 30 seconds. Frontend will run without backend.\n\nLogs:\n{log_content}"
                     }) + "\n"
                     backend_proc.terminate()
-                    return
+                    backend_url = None
+                    backend_proc = None
 
             # ----- Start frontend (if present) -----
             if frontend_dir:
                 yield json.dumps({"event": "status", "message": "Preparing frontend..."}) + "\n"
+                # Write .env so CRA/Vite reliably gets backend URL (avoids undefined in browser)
+                backend_url_val = backend_url or f"http://localhost:{backend_port}"
+                env_file = os.path.join(frontend_dir, ".env")
+                try:
+                    with open(env_file, "w", encoding="utf-8") as f:
+                        f.write(f"PORT={frontend_port}\n")
+                        f.write(f"REACT_APP_BACKEND_URL={backend_url_val}\n")
+                        f.write(f"VITE_BACKEND_URL={backend_url_val}\n")
+                        f.write("BROWSER=none\n")
+                except Exception as e:
+                    yield json.dumps({"event": "warning", "message": f"Could not write .env: {e}"}) + "\n"
                 # Use full env so node/npm/nvm are on PATH; then override app vars
                 frontend_env = dict(os.environ)
                 frontend_env.update({
                     "PORT": str(frontend_port),
                     "BROWSER": "none",
-                    "REACT_APP_BACKEND_URL": backend_url or "",
-                    "VITE_BACKEND_URL": backend_url or "",
+                    "REACT_APP_BACKEND_URL": backend_url_val,
+                    "VITE_BACKEND_URL": backend_url_val,
+                    "NODE_OPTIONS": os.environ.get("NODE_OPTIONS", "--openssl-legacy-provider"),
                 })
                 frontend_cmd = "npm start"
                 pkg_path = os.path.join(frontend_dir, "package.json")
@@ -883,6 +956,7 @@ fi
                     if _is_port_listening(frontend_port):
                         frontend_ready = True
                         yield json.dumps({"event": "status", "message": f"Frontend is ready on http://localhost:{frontend_port}"}) + "\n"
+                        yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Open this URL to view your app"}) + "\n"
                         break
                 
                 if not frontend_ready:
@@ -892,9 +966,10 @@ fi
                         "event": "warning",
                         "message": f"Frontend did not start listening within 60 seconds. It may still be compiling. Check http://localhost:{frontend_port} in a moment.\n\nRecent logs:\n{log_content}"
                     }) + "\n"
-                    # FIXED: Don't return here - let it continue but warn user
+                    # Still emit frontend_url so user can try opening it
+                    yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Frontend may still be compiling - try opening this URL"}) + "\n"
 
-            # FIXED: Only return success if everything is actually ready
+            # Always return frontend_url when frontend exists - app runs with or without backend
             state = {
                 "project_name": project_name,
                 "backend_url": backend_url,

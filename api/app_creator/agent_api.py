@@ -22,22 +22,11 @@ from app_builder.agents.code_generator_agent import code_generator_agent
 from app_builder.agents.dynamic_code_generator import generate_code_from_plan
 from app_builder.services.file_writer import file_writer, write_project_file
 from llm_helper import get_llm_for_user
-from database import PostgresDatabase
+from app_builder_db import get_app_builder_db
 
 router = APIRouter(prefix="/api/agents", tags=["Agents"])
 
-db = PostgresDatabase()
-try:
-    db.create_connection(
-        user=os.environ.get("PGUSER", "test_owner"),
-        password=os.environ.get("PGPASSWORD", "tcWI7unQ6REA"),
-        database=os.environ.get("PGDATABASE", "test"),
-        host=os.environ.get("PGHOST", "ep-yellow-recipe-a5fny139.us-east-2.aws.neon.tech"),
-    )
-    db.create_table()
-    db.create_training_tables()
-except Exception as e:
-    print(f"Agent API: DB init warning: {e}")
+db = get_app_builder_db()
 
 
 class AgentExecutionRequest(BaseModel):

@@ -14,22 +14,11 @@ import json
 from api.app_creator.agent_api import execute_code_generator_agent
 from app_builder.agents.validation_agent import validate_and_fix_code
 from app_builder.services.file_writer import write_project_file
-from database import PostgresDatabase
+from app_builder_db import get_app_builder_db
 
 router = APIRouter(prefix="/api/codegen", tags=["Code Generation"])
 
-db = PostgresDatabase()
-try:
-    db.create_connection(
-        user=os.environ.get("PGUSER", "test_owner"),
-        password=os.environ.get("PGPASSWORD", "tcWI7unQ6REA"),
-        database=os.environ.get("PGDATABASE", "test"),
-        host=os.environ.get("PGHOST", "ep-yellow-recipe-a5fny139.us-east-2.aws.neon.tech"),
-    )
-    db.create_table()
-    db.create_training_tables()
-except Exception as e:
-    print(f"Codegen API: DB init warning: {e}")
+db = get_app_builder_db()
 
 
 class ConnectionManager:

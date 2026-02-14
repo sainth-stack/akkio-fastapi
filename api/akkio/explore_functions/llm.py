@@ -53,7 +53,7 @@ def get_language_context(query: str) -> Tuple[str, str]:
 def call_llm_with_usage(
     messages: List[Dict[str, str]],
     model: str = None,
-    temperature: float = 0.3,
+    temperature: Optional[float] = 0.3,
     email: Optional[str] = None,
     **kwargs
 ) -> Any:
@@ -86,11 +86,17 @@ def call_llm_with_usage(
     
     client = get_openai_client(email)
     try:
+        request_args = {
+            "model": model,
+            "messages": messages,
+            **kwargs,
+        }
+        # Some models only support provider-default temperature and reject explicit values.
+        if temperature is not None:
+            request_args["temperature"] = temperature
+
         response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            **kwargs
+            **request_args
         )
         
         # Track usage
@@ -105,7 +111,7 @@ def call_llm_with_usage(
 async def stream_llm_with_usage(
     messages: List[Dict[str, str]],
     model: str = None,
-    temperature: float = 0.3,
+    temperature: Optional[float] = 0.3,
     email: Optional[str] = None,
     **kwargs
 ):
@@ -134,13 +140,16 @@ async def stream_llm_with_usage(
     full_response = None
     
     try:
-        stream = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            stream=True,
-            **kwargs
-        )
+        request_args = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            **kwargs,
+        }
+        if temperature is not None:
+            request_args["temperature"] = temperature
+
+        stream = client.chat.completions.create(**request_args)
         
         for chunk in stream:
             if chunk.choices and len(chunk.choices) > 0:

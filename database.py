@@ -295,6 +295,27 @@ class PostgresDatabase:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_codegen_sessions_project_name ON app_builder_codegen_sessions(project_name)")
             except Exception:
                 pass
+            # App Builder deployments: store deployed app URLs and status
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_builder_deployments (
+                    id SERIAL PRIMARY KEY,
+                    app_id INTEGER REFERENCES app_builder_apps(id) ON DELETE CASCADE,
+                    project_name VARCHAR(255) NOT NULL,
+                    frontend_url VARCHAR(512),
+                    backend_url VARCHAR(512),
+                    frontend_port INTEGER,
+                    backend_port INTEGER,
+                    deployment_status VARCHAR(50) DEFAULT 'pending',
+                    error_message TEXT,
+                    deployed_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            try:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_deployments_app_id ON app_builder_deployments(app_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_deployments_project_name ON app_builder_deployments(project_name)")
+            except Exception:
+                pass
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS trained_models (
                     id SERIAL PRIMARY KEY,
@@ -1420,6 +1441,98 @@ class PostgresDatabase:
         with self.connection.cursor() as cursor:
             cursor.execute("DELETE FROM app_builder_apps WHERE id = %s AND user_email = %s", (app_id, user_email))
             return cursor.rowcount
+
+    # Deployment methods
+    def create_deployment(self, app_id: int = None, project_name: str = None, frontend_url: str = None, 
+                         backend_url: str = None, frontend_port: int = None, backend_port: int = None,
+                         deployment_status: str = 'pending', error_message: str = None):
+        """Create a new deployment record. app_id is optional."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO app_builder_deployments (app_id, project_name, frontend_url, backend_url, 
+                                                     frontend_port, backend_port, deployment_status, 
+                                                     error_message, deployed_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                RETURNING id, app_id, project_name, frontend_url, backend_url, frontend_port, backend_port, 
+                         deployment_status, error_message, deployed_at, updated_at
+            """, (app_id, project_name, frontend_url, backend_url, frontend_port, backend_port, 
+                  deployment_status, error_message))
+            row = cursor.fetchone()
+            if row:
+                keys = ["id", "app_id", "project_name", "frontend_url", "backend_url", "frontend_port", 
+                       "backend_port", "deployment_status", "error_message", "deployed_at", "updated_at"]
+                return dict(zip(keys, row))
+            return None
+
+    def update_deployment(self, deployment_id: int, frontend_url: str = None, backend_url: str = None,
+                         deployment_status: str = None, error_message: str = None):
+        """Update an existing deployment record."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            updates = []
+            params = []
+            if frontend_url is not None:
+                updates.append("frontend_url = %s")
+                params.append(frontend_url)
+            if backend_url is not None:
+                updates.append("backend_url = %s")
+                params.append(backend_url)
+            if deployment_status is not None:
+                updates.append("deployment_status = %s")
+                params.append(deployment_status)
+            if error_message is not None:
+                updates.append("error_message = %s")
+                params.append(error_message)
+            
+            if updates:
+                updates.append("updated_at = NOW()")
+                params.append(deployment_id)
+                cursor.execute(f"""
+                    UPDATE app_builder_deployments
+                    SET {', '.join(updates)}
+                    WHERE id = %s
+                """, params)
+                return cursor.rowcount
+            return 0
+
+    def get_deployment_by_app_id(self, app_id: int):
+        """Get the latest deployment for an app."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, app_id, project_name, frontend_url, backend_url, frontend_port, backend_port,
+                       deployment_status, error_message, deployed_at, updated_at
+                FROM app_builder_deployments
+                WHERE app_id = %s
+                ORDER BY deployed_at DESC
+                LIMIT 1
+            """, (app_id,))
+            row = cursor.fetchone()
+            if row:
+                keys = ["id", "app_id", "project_name", "frontend_url", "backend_url", "frontend_port",
+                       "backend_port", "deployment_status", "error_message", "deployed_at", "updated_at"]
+                return dict(zip(keys, row))
+            return None
+
+    def get_deployment_by_project_name(self, project_name: str):
+        """Get the latest deployment for a project."""
+        self.ensure_connection()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, app_id, project_name, frontend_url, backend_url, frontend_port, backend_port,
+                       deployment_status, error_message, deployed_at, updated_at
+                FROM app_builder_deployments
+                WHERE project_name = %s
+                ORDER BY deployed_at DESC
+                LIMIT 1
+            """, (project_name,))
+            row = cursor.fetchone()
+            if row:
+                keys = ["id", "app_id", "project_name", "frontend_url", "backend_url", "frontend_port",
+                       "backend_port", "deployment_status", "error_message", "deployed_at", "updated_at"]
+                return dict(zip(keys, row))
+            return None
 
     def create_or_update_codegen_session(self, session_id: str, project_name: str, requirement: str = None,
                                           prd: str = None, plan: list = None, architecture: dict = None,

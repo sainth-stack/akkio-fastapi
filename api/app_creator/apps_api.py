@@ -1,5 +1,6 @@
 """
 App Builder Apps API – CRUD for created apps (list, create, get, update, delete).
+Uses MongoDB for app creator storage (Akkio main app uses Postgres only).
 """
 
 import os
@@ -12,22 +13,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List, Any
 
-from database import PostgresDatabase
+from app_builder_db import get_app_builder_db
 
 router = APIRouter(tags=["App Builder Apps"])
 
-db = PostgresDatabase()
-try:
-    db.create_connection(
-        user=os.environ.get("PGUSER", "test_owner"),
-        password=os.environ.get("PGPASSWORD", "tcWI7unQ6REA"),
-        database=os.environ.get("PGDATABASE", "test"),
-        host=os.environ.get("PGHOST", "ep-yellow-recipe-a5fny139.us-east-2.aws.neon.tech"),
-    )
-    db.create_table()
-    db.create_training_tables()
-except Exception as e:
-    print(f"App Builder Apps API: DB init warning: {e}")
+db = get_app_builder_db()
 
 
 class CreateAppRequest(BaseModel):
@@ -81,7 +71,7 @@ async def create_app(request: CreateAppRequest):
 
 
 @router.get("/apps/{app_id}")
-async def get_app(app_id: int, user_email: str = Query(..., description="User email")):
+async def get_app(app_id: str, user_email: str = Query(..., description="User email")):
     """Get a single app by id (for edit)."""
     try:
         app = db.get_app_builder_app(app_id, user_email=user_email)
@@ -95,7 +85,7 @@ async def get_app(app_id: int, user_email: str = Query(..., description="User em
 
 
 @router.put("/apps/{app_id}")
-async def update_app(app_id: int, request: UpdateAppRequest, user_email: str = Query(..., description="User email")):
+async def update_app(app_id: str, request: UpdateAppRequest, user_email: str = Query(..., description="User email")):
     """Update an app (e.g. after PRD/plan/architecture generated)."""
     try:
         count = db.update_app_builder_app(
@@ -120,7 +110,7 @@ async def update_app(app_id: int, request: UpdateAppRequest, user_email: str = Q
 
 
 @router.delete("/apps/{app_id}")
-async def delete_app(app_id: int, user_email: str = Query(..., description="User email")):
+async def delete_app(app_id: str, user_email: str = Query(..., description="User email")):
     """Delete an app."""
     try:
         count = db.delete_app_builder_app(app_id, user_email)

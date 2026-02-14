@@ -10,28 +10,29 @@ def code_generator_agent(architecture: ArchitectureDecision) -> Dict[str, str]:
     """
     files = {}
 
-    # Backend - FastAPI (pinned versions to avoid install/version issues)
+    # Backend - FastAPI + SQLite (Python 3.9+, minimal deps only)
     files["backend/requirements.txt"] = (
-        "fastapi==0.109.2\n"
-        "uvicorn==0.27.1\n"
-        "sqlalchemy==2.0.25\n"
-        "psycopg2-binary==2.9.9\n"
-        "pydantic==1.10.19\n"
+        "# Python 3.9+\n"
+        "fastapi\n"
+        "uvicorn\n"
+        "sqlalchemy\n"
+        "pydantic\n"
     )
     
+    # SQLite by default - no external credentials needed, runs out of the box
     files["backend/database.py"] = """
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 """
 
@@ -62,7 +63,7 @@ class Item(ItemBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 """
 
     files["backend/main.py"] = """
@@ -79,9 +80,10 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 def get_db():
@@ -93,7 +95,8 @@ def get_db():
 
 @app.post("/items/", response_model=schemas.Item)
 def create_item(item: schemas.ItemCreate, db: Session = Depends(get_db)):
-    db_item = models.Item(**item.dict())
+    item_data = item.model_dump() if hasattr(item, "model_dump") else item.dict()
+    db_item = models.Item(**item_data)
     db.add(db_item)
     db.commit()
     db.refresh(db_item)
@@ -105,37 +108,26 @@ def read_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return items
 """
 
-    # Frontend - React (Simplified)
+    # Frontend - React with styles.css (minimal, works with Node 20+)
     files["frontend/package.json"] = """
 {
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
   "dependencies": {
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "react-scripts": "5.0.1"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build"
+    "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
+    "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build"
   },
-  "eslintConfig": {
-    "extends": [
-      "react-app"
-    ]
-  },
+  "engines": { "node": ">=20" },
+  "eslintConfig": { "extends": ["react-app"] },
   "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
   }
 }
 """
@@ -146,6 +138,7 @@ def read_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>React App</title>
   </head>
   <body>
@@ -159,6 +152,7 @@ def read_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import './styles.css';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
@@ -166,6 +160,45 @@ root.render(
     <App />
   </React.StrictMode>
 );
+"""
+
+    files["frontend/src/styles.css"] = """
+/* App styles - fonts, colors, layout */
+:root {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-text: #1e293b;
+  --color-text-muted: #64748b;
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-border: #e2e8f0;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); -webkit-font-smoothing: antialiased; }
+
+.app { min-height: 100vh; padding: 2rem; }
+.app-container { max-width: 42rem; margin: 0 auto; }
+.app-title { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+.app-subtitle { color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem; }
+
+.form-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 2rem; }
+.input { flex: 1; min-width: 120px; padding: 0.5rem 1rem; border: 1px solid var(--color-border); border-radius: 0.5rem; font-family: inherit; font-size: 1rem; }
+.input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(79,70,229,0.2); }
+
+.btn { padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: 500; font-family: inherit; cursor: pointer; border: none; transition: background 0.2s; }
+.btn-primary { background: var(--color-primary); color: white; }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.list { list-style: none; padding: 0; margin: 0; }
+.list-item { padding: 1rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 0.75rem; margin-bottom: 0.75rem; box-shadow: var(--shadow-sm); transition: box-shadow 0.2s; }
+.list-item:hover { box-shadow: var(--shadow-md); }
+.list-item strong { font-weight: 500; }
+.list-item .muted { color: var(--color-text-muted); margin-left: 0.5rem; }
 """
 
     files["frontend/src/App.js"] = """
@@ -181,16 +214,12 @@ function App() {
     if (!backendUrl) return;
     try {
       const response = await fetch(`${backendUrl}/items/`);
-      const data = await response.json();
-      setItems(data);
-    } catch (error) {
-      console.error('Error fetching items:', error);
-    }
+      const data = await response.json().catch(() => []);
+      setItems(Array.isArray(data) ? data : []);
+    } catch (error) { console.error('Error fetching items:', error); setItems([]); }
   };
 
-  useEffect(() => {
-    fetchItems();
-  }, []);
+  useEffect(() => { fetchItems(); }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -198,49 +227,50 @@ function App() {
     try {
       await fetch(`${backendUrl}/items/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, description }),
       });
       setName("");
       setDescription("");
       fetchItems();
-    } catch (error) {
-      console.error('Error creating item:', error);
-    }
+    } catch (error) { console.error('Error creating item:', error); }
   };
 
   return (
-    <div style={{ padding: "20px" }}>
-      <h1>Items</h1>
-      {!backendUrl && (
-        <p style={{ color: "#666", marginBottom: "20px" }}>Backend not configured. Set REACT_APP_BACKEND_URL or VITE_BACKEND_URL when running with a backend.</p>
-      )}
-      <form onSubmit={handleSubmit} style={{ marginBottom: "20px" }}>
-        <input
-          type="text"
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          style={{ marginRight: "10px" }}
-        />
-        <input
-          type="text"
-          placeholder="Description"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          style={{ marginRight: "10px" }}
-        />
-        <button type="submit" disabled={!backendUrl}>Add Item</button>
-      </form>
-      <ul>
-        {items.map((item) => (
-          <li key={item.id}>
-            <strong>{item.name}</strong>: {item.description}
-          </li>
-        ))}
-      </ul>
+    <div className="app">
+      <div className="app-container">
+        <h1 className="app-title">Items</h1>
+        {!backendUrl && (
+          <p className="app-subtitle">Backend not configured. Set REACT_APP_BACKEND_URL or VITE_BACKEND_URL when running with a backend.</p>
+        )}
+        <form onSubmit={handleSubmit} className="form-row">
+          <input
+            type="text"
+            placeholder="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="input"
+          />
+          <input
+            type="text"
+            placeholder="Description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="input"
+          />
+          <button type="submit" disabled={!backendUrl} className="btn btn-primary">
+            Add Item
+          </button>
+        </form>
+        <ul className="list">
+          {(items || []).map((item) => (
+            <li key={item.id} className="list-item">
+              <strong>{item.name}</strong>
+              {item.description && <span className="muted">— {item.description}</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -251,15 +281,16 @@ export default App;
     files["README.md"] = """
 # Generated Project
 
-## Backend
-1. cd backend
-2. pip install -r requirements.txt --force-reinstall
-3. uvicorn main:app --reload --port 8001
+**Requirements:** Node.js 20+, Python 3.9+
+
+## Backend (SQLite - no setup)
+1. cd backend && pip install -r requirements.txt
+2. uvicorn main:app --reload --port 8001
+   (Tables are created automatically on startup)
 
 ## Frontend
-1. cd frontend
-2. npm install --force
-3. REACT_APP_BACKEND_URL=http://localhost:8001 npm start
+1. cd frontend && npm install
+2. REACT_APP_BACKEND_URL=http://localhost:8001 npm start
 """
 
     return files

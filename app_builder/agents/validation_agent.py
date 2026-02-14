@@ -2,12 +2,21 @@ import re
 import json
 from typing import Dict, Any, List
 
+from app_builder.agents.dynamic_code_generator import (
+    _fix_frontend_map_safety,
+    _fix_frontend_backend_url_undefined,
+    _fix_backend_routes_import,
+)
+
+
 def validate_and_fix_code(files: Dict[str, str], architecture: Dict[str, Any]) -> Dict[str, str]:
     """
     Validates and attempts to fix the generated code.
     1. Checks imports in backend/*.py and ensures they are in backend/requirements.txt
     2. Checks imports in frontend/src/** and ensures they are in frontend/package.json
     3. Verifies existence of critical files.
+    4. Fixes frontend .map() safety (todos.map -> (todos||[]).map) to prevent "map is not a function"
+    5. Fixes backend routes import (from routes import todo_router) to prevent ImportError
     """
     
     # 1. Backend Validation
@@ -16,20 +25,24 @@ def validate_and_fix_code(files: Dict[str, str], architecture: Dict[str, Any]) -
     # 2. Frontend Validation
     _validate_frontend_dependencies(files)
     
+    # 3. Frontend .map() safety - prevent "X.map is not a function"
+    _fix_frontend_map_safety(files)
+    # 4. Frontend API URL - prevent 404 on /undefined/tasks/
+    _fix_frontend_backend_url_undefined(files)
+    
+    # 5. Backend routes import - prevent "cannot import todo_router from routes"
+    _fix_backend_routes_import(files)
+    
     return files
 
-# Hardcoded stable versions to prevent "notarget" errors from hallucinations (e.g. lucide-react@0.1.0)
+# Minimal frontend - no Tailwind, no heavy deps. Only add if explicitly needed.
 KNOWN_STABLE_VERSIONS = {
-    "lucide-react": "^0.263.1",
-    "framer-motion": "^10.16.4",
-    "clsx": "^2.0.0",
-    "tailwind-merge": "^1.14.0",
     "react-router-dom": "^6.16.0",
-    "date-fns": "^2.30.0",
     "axios": "^1.5.0",
-    "@radix-ui/react-slot": "^1.0.2",
-    "class-variance-authority": "^0.7.0"
 }
+
+# Packages to never add - use styles.css instead, keep minimal
+FRONTEND_BLOCKLIST = {"tailwindcss", "postcss", "autoprefixer", "framer-motion", "lucide-react", "clsx", "tailwind-merge"}
 
 def _validate_backend_dependencies(files: Dict[str, str]):
     """
@@ -37,8 +50,7 @@ def _validate_backend_dependencies(files: Dict[str, str]):
     """
     req_path = "backend/requirements.txt"
     if req_path not in files:
-        # If requirements doesn't exist, create it (shouldn't happen with correct gen, but safety net)
-        files[req_path] = "fastapi\nuvicorn\nsqlalchemy\npsycopg2-binary\npydantic\n"
+        files[req_path] = "fastapi\nuvicorn\nsqlalchemy\npydantic\n"
     
     existing_reqs = set()
     req_content = files[req_path]
@@ -104,20 +116,38 @@ def _validate_backend_dependencies(files: Dict[str, str]):
                 if f"backend/{top_level}.py" in files:
                     continue
                     
+                # Skip local modules (services, etc.) - not PyPI packages
+                if package_name in ("services",):
+                    continue
+                if f"backend/{top_level}.py" in files:
+                    continue
+                if any(k.startswith(f"backend/{top_level}/") for k in files.keys()):
+                    continue
                 if package_name not in existing_reqs:
-                    # Heuristic: verify if it looks like a package
                     missing_packages.add(package_name)
 
-    # Add missing packages
+    # Add missing packages (package names only, no version numbers)
     if missing_packages:
-        new_reqs = []
-        for pkg in missing_packages:
-            # Simple addition, no version pinning (could improve later)
-            new_reqs.append(f"{pkg}")
+        new_reqs = [pkg for pkg in missing_packages if pkg not in existing_reqs]
+        for pkg in new_reqs:
             existing_reqs.add(pkg)
-            
         if new_reqs:
             files[req_path] = files[req_path].strip() + "\n" + "\n".join(new_reqs) + "\n"
+    
+    # Normalize: strip version numbers, remove erroneous packages (services=local module)
+    REQ_BLOCKLIST = {"services"}
+    lines = []
+    seen = set()
+    for raw in files[req_path].strip().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            lines.append(line)
+            continue
+        pkg = line.split("==")[0].split(">=")[0].split("[")[0].strip().lower()
+        if pkg and pkg not in seen and pkg not in REQ_BLOCKLIST:
+            seen.add(pkg)
+            lines.append(pkg)
+    files[req_path] = "\n".join(lines) + "\n"
 
 
 def _validate_frontend_dependencies(files: Dict[str, str]):
@@ -171,10 +201,15 @@ def _validate_frontend_dependencies(files: Dict[str, str]):
                 if pkg_check == "react" or pkg_check == "react-dom":
                     continue 
                 
-                if pkg_check not in all_deps and pkg_check not in ["./", "../"]:
+                if pkg_check not in all_deps and pkg_check not in ["./", "../"] and pkg_check not in FRONTEND_BLOCKLIST:
                     missing_deps.add(pkg_check)
 
-    # 2. Enforce Known Stable Versions (Fixes bad versions like ^0.1.0)
+    # 2. Remove blocklisted packages (keep minimal - no Tailwind)
+    for pkg in FRONTEND_BLOCKLIST:
+        dependencies.pop(pkg, None)
+        dev_dependencies.pop(pkg, None)
+
+    # 3. Enforce Known Stable Versions (Fixes bad versions like ^0.1.0)
     for pkg, stable_ver in KNOWN_STABLE_VERSIONS.items():
         # If package is used (either already in deps or found missing)
         # We enforce the stable version.
@@ -184,13 +219,12 @@ def _validate_frontend_dependencies(files: Dict[str, str]):
             if pkg in missing_deps:
                 missing_deps.remove(pkg)
 
-    # 3. Add remaining missing deps as "latest"
+    # 4. Add remaining missing deps as "latest" (excluding blocklist)
     if missing_deps:
         for dep in missing_deps:
             dependencies[dep] = "latest"
     
-    # Always save if we touched dependencies (which we likely did with Enforce Stable)
-    # But only if changes actually happened. To be safe, just write it.
     pkg_json["dependencies"] = dependencies
+    pkg_json["devDependencies"] = dev_dependencies
     files[pkg_path] = json.dumps(pkg_json, indent=2)
 

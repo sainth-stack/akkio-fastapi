@@ -55,7 +55,7 @@ You must analyze the requirements and output a JSON architecture decision in thi
   }},
   "backend_structure": {{
     "framework": "<FastAPI/Express/Django/etc based on requirement>",
-    "database": "<PostgreSQL/MongoDB/MySQL/etc based on data needs>",
+    "database": "SQLite",
     "orm": "<SQLAlchemy/Prisma/TypeORM/etc>",
     "api_style": "<REST/GraphQL>",
     "auth": "<JWT/Session/OAuth>",
@@ -66,7 +66,7 @@ You must analyze the requirements and output a JSON architecture decision in thi
       {{
         "name": "<table name based on domain>",
         "columns": [
-          {{"name": "id", "type": "Integer/UUID/String", "primary_key": true}},
+          {{"name": "id", "type": "Integer", "primary_key": true}},
           {{"name": "<field>", "type": "<type>", "nullable": false}},
           ...
         ],
@@ -82,15 +82,18 @@ You must analyze the requirements and output a JSON architecture decision in thi
   "rationale": "<brief explanation of why these choices>",
   "project_structure": {{
     "backend": ["main.py", "requirements.txt", "database.py", "models.py", "schemas.py"],
-    "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js"]
+    "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
   }}
+}}
 }}
 ```
 Use a robust, production-ready project structure with proper separation of concerns. Include folders for components, services, and hooks as needed.
+Do NOT add routes.py to backend - all FastAPI endpoints must be in main.py to avoid ImportError.
 
 CRITICAL RULES:
+0. **Database MUST be SQLite** – app runs without any setup. Use Integer for id columns (not UUID). No PostgreSQL.
 1. Choose technologies that FIT THE REQUIREMENT - don't use defaults
-2. **For React frontends use Create React App (react-scripts) ONLY.** Do NOT use Vite. Do NOT add vite.config.js. Frontend must be package.json (with react, react-dom, react-scripts), public/index.html, src/index.js, src/App.js. This avoids npm peer dependency conflicts and ensures the app runs easily.
+2. **For React frontends use Create React App (react-scripts) ONLY.** Do NOT use Vite or Tailwind. Use src/styles.css for all styling. Frontend: package.json (react, react-dom, react-scripts only), public/index.html, src/index.js, src/App.js, src/styles.css. Scripts must include NODE_OPTIONS=--openssl-legacy-provider for Node 20+.
 3. Design database schema based on the ACTUAL DOMAIN (not generic "items")
 4. If it's an e-commerce app, use orders/products; if it's a blog, use posts/comments, etc.
 5. **DESIGN FOR PRODUCTION** – include a logical project structure that scales.
@@ -166,16 +169,9 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
     prd_lower = prd.lower()
     combined = requirement_lower + " " + prd_lower
     
-    # Determine database type
-    if any(word in combined for word in ["document", "mongodb", "flexible schema", "json"]):
-        database = "MongoDB"
-        orm = "Motor"
-    elif any(word in combined for word in ["graph", "neo4j", "relationships"]):
-        database = "Neo4j"
-        orm = "Neo4j Driver"
-    else:
-        database = "PostgreSQL"
-        orm = "SQLAlchemy"
+    # SQLite by default - runs without any setup
+    database = "SQLite"
+    orm = "SQLAlchemy"
     
     # Determine frontend framework
     if "vue" in combined:
@@ -212,7 +208,7 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
                 {
                     "name": entity,
                     "columns": [
-                        {"name": "id", "type": "UUID", "primary_key": True},
+                        {"name": "id", "type": "Integer", "primary_key": True},
                         {"name": "created_at", "type": "DateTime", "nullable": False},
                         {"name": "updated_at", "type": "DateTime", "nullable": False},
                         {"name": "name", "type": "String", "nullable": False},
@@ -231,7 +227,7 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
         "rationale": f"Architecture designed for {requirement}. Using {framework} for modern UI, FastAPI for high-performance backend, and {database} for data persistence.",
         "project_structure": {
             "backend": ["main.py", "requirements.txt", "database.py", "models.py", "schemas.py"],
-            "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js"]
+            "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
         }
     }
 
@@ -277,7 +273,7 @@ def architecture_agent(plan: ProjectPlan) -> ArchitectureDecision:
         },
         backend_structure={
             "framework": "FastAPI",
-            "database": "PostgreSQL",
+            "database": "SQLite",
             "orm": "SQLAlchemy"
         },
         database_schema={
