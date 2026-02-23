@@ -169,6 +169,27 @@ def invoke_llm_for_user(user_email: str, prompt: str, **llm_kwargs) -> str:
     return str(response)
 
 
+async def ainvoke_llm_for_user(user_email: str, prompt: str, **llm_kwargs) -> str:
+    """
+    Async version of invoke_llm_for_user.
+    
+    Args:
+        user_email: User email to look up settings
+        prompt: The prompt to send to the LLM
+        **llm_kwargs: Additional parameters for the LLM
+    
+    Returns:
+        String response from the LLM
+    """
+    llm = get_llm_for_user(user_email, **llm_kwargs)
+    response = await llm.ainvoke(prompt)
+    
+    # Handle different response types
+    if hasattr(response, 'content'):
+        return response.content
+    return str(response)
+
+
 # Example usage functions for common patterns
 
 def chat_completion_for_user(user_email: str, messages: list, **llm_kwargs) -> str:

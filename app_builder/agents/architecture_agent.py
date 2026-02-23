@@ -47,64 +47,50 @@ You must analyze the requirements and output a JSON architecture decision in thi
 ```json
 {{
   "frontend_structure": {{
-    "framework": "<React/Vue/Angular/etc based on requirement>",
-    "template": "<For React use 'Create React App (react-scripts)'. For Vue/Angular describe structure. Do NOT use Vite for React>",
-    "state_management": "<Redux/Context/Zustand/etc>",
-    "ui_library": "<MUI/Tailwind/Bootstrap/etc if applicable>",
+    "framework": "React",
+    "template": "Create React App (No Zustand)",
+    "state_management": "Plain React (useState, useEffect) with LocalStorage",
+    "ui_library": "Tailwind CSS",
     "key_components": ["<list main components>"]
   }},
   "backend_structure": {{
-    "framework": "<FastAPI/Express/Django/etc based on requirement>",
-    "database": "SQLite",
-    "orm": "<SQLAlchemy/Prisma/TypeORM/etc>",
-    "api_style": "<REST/GraphQL>",
-    "auth": "<JWT/Session/OAuth>",
+    "framework": "FastAPI",
+    "database": "MongoDB",
+    "orm": "PyMongo (Sync API)",
+    "api_style": "REST",
+    "auth": "JWT",
     "key_services": ["<list main services>"]
   }},
   "database_schema": {{
-    "tables": [
+    "collections": [
       {{
-        "name": "<table name based on domain>",
-        "columns": [
-          {{"name": "id", "type": "Integer", "primary_key": true}},
-          {{"name": "<field>", "type": "<type>", "nullable": false}},
-          ...
-        ],
-        "relationships": ["<describe relationships>"]
+        "name": "<collection name>",
+        "fields": [
+          {{"name": "id", "type": "string"}},
+          {{"name": "<field>", "type": "<type>"}},
+          {{"name": "created_at", "type": "datetime"}},
+          {{"name": "updated_at", "type": "datetime"}}
+        ]
       }}
     ]
   }},
   "deployment": {{
-    "containerization": "Docker",
-    "orchestration": "<if needed>",
-    "cloud_provider": "<AWS/GCP/Azure if specified>"
+    "containerization": "Docker"
   }},
-  "rationale": "<brief explanation of why these choices>",
+  "rationale": "<brief explanation>",
   "project_structure": {{
     "backend": ["main.py", "requirements.txt", "database.py", "models.py", "schemas.py"],
     "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
   }}
 }}
-}}
 ```
-Use a robust, production-ready project structure with proper separation of concerns. Include folders for components, services, and hooks as needed.
-Do NOT add routes.py to backend - all FastAPI endpoints must be in main.py to avoid ImportError.
-
 CRITICAL RULES:
-0. **Database MUST be SQLite** – app runs without any setup. Use Integer for id columns (not UUID). No PostgreSQL.
-1. Choose technologies that FIT THE REQUIREMENT - don't use defaults
-2. **For React frontends use Create React App (react-scripts) ONLY.** Do NOT use Vite or Tailwind. Use src/styles.css for all styling. Frontend: package.json (react, react-dom, react-scripts only), public/index.html, src/index.js, src/App.js, src/styles.css. Scripts must include NODE_OPTIONS=--openssl-legacy-provider for Node 20+.
-3. Design database schema based on the ACTUAL DOMAIN (not generic "items")
-4. If it's an e-commerce app, use orders/products; if it's a blog, use posts/comments, etc.
-5. **DESIGN FOR PRODUCTION** – include a logical project structure that scales.
-   - Modularize the frontend: use `src/components/`, `src/services/`, and `src/hooks/` for a clean architecture.
-   - Organize the backend: separate `models.py`, `schemas.py`, and `database.py`. If the app is large, design a service-oriented structure.
-   - Ensure the `project_structure` JSON accurately reflects this modular organization.
-   - **UI/UX INTEGRATION**: Analyze the **UI/UX Design Specification** and ensure the project structure includes necessary files for its implementation (e.g., `src/styles/theme.js`, custom UI components, global CSS matching the color palette).
-   - DESIGN FOR QUALITY: Include files that contribute to a premium, production-level experience (e.g., custom hooks, theme configurations).
-6. Output ONLY the JSON, nothing else
-
-Generate the architecture now:"""
+1. **Database MUST be MongoDB**. Use 'id' (string) for ObjectId representation. 
+2. **Use PyMongo (SYNCHRONOUS driver)**. NEVER use Motor, SQLAlchemy, or SQLite.
+3. **Use Tailwind CSS for styling**. 
+4. **Use Plain React State + LocalStorage**. NEVER use Zustand, Redux, or any external state manager.
+5. Output ONLY the JSON, nothing else.
+"""
 
     messages = [
         SystemMessage(content="You are a senior solutions architect. Design optimal architectures based on requirements."),
@@ -169,9 +155,9 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
     prd_lower = prd.lower()
     combined = requirement_lower + " " + prd_lower
     
-    # SQLite by default - runs without any setup
-    database = "SQLite"
-    orm = "SQLAlchemy"
+    # MongoDB by default
+    database = "MongoDB"
+    orm = "PyMongo (Sync API)"
     
     # Determine frontend framework
     if "vue" in combined:
@@ -182,7 +168,7 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
         state_management = "NgRx"
     else:
         framework = "React"
-        state_management = "Context API with Hooks"
+        state_management = "Plain React (useState) with LocalStorage"
     
     # Infer domain entities
     entities = infer_entities_from_requirement(requirement, prd)
@@ -193,7 +179,7 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
             "template": "Modern SPA with component-based architecture",
             "state_management": state_management,
             "ui_library": "Tailwind CSS",
-            "key_components": [f"{entity.title()}List", f"{entity.title()}Detail", f"{entity.title()}Form"] if entities else ["Dashboard", "ListView", "DetailView"]
+            "key_components": [comp for entity in entities for comp in [f"{entity.title()}List", f"{entity.title()}Detail", f"{entity.title()}Form"]] if entities else ["Dashboard", "ListView", "DetailView"]
         },
         "backend_structure": {
             "framework": "FastAPI",
@@ -204,17 +190,16 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
             "key_services": [f"{entity}_service" for entity in entities] if entities else ["data_service", "auth_service"]
         },
         "database_schema": {
-            "tables": [
+            "collections": [
                 {
                     "name": entity,
-                    "columns": [
-                        {"name": "id", "type": "Integer", "primary_key": True},
-                        {"name": "created_at", "type": "DateTime", "nullable": False},
-                        {"name": "updated_at", "type": "DateTime", "nullable": False},
-                        {"name": "name", "type": "String", "nullable": False},
-                        {"name": "description", "type": "Text", "nullable": True}
-                    ],
-                    "relationships": []
+                    "fields": [
+                        {"name": "id", "type": "string"},
+                        {"name": "created_at", "type": "datetime"},
+                        {"name": "updated_at", "type": "datetime"},
+                        {"name": "name", "type": "string"},
+                        {"name": "description", "type": "string"}
+                    ]
                 }
                 for entity in (entities[:3] if entities else ["items"])
             ]
@@ -249,7 +234,8 @@ def infer_entities_from_requirement(requirement: str, prd: str) -> list:
         "project": ["project", "workspace"],
         "ticket": ["ticket", "issue", "support"],
         "event": ["event", "appointment", "booking"],
-        "message": ["message", "chat", "conversation"]
+        "message": ["message", "chat", "conversation"],
+        "book": ["book", "library", "publication", "volume"]
     }
     
     found_entities = []
@@ -260,38 +246,33 @@ def infer_entities_from_requirement(requirement: str, prd: str) -> list:
     return found_entities[:3] if found_entities else ["item"]
 
 
-def architecture_agent(plan: ProjectPlan) -> ArchitectureDecision:
+def architecture_agent(plan: ProjectPlan, requirement: str = "") -> ArchitectureDecision:
     """
-    Legacy sync function - kept for backward compatibility.
-    Returns a basic architecture decision with minimal project_structure.
+    Legacy sync function - updated to be more dynamic.
+    Returns an architecture decision with entities inferred from the requirement/plan.
     """
+    plan_text = " ".join(plan.steps)
+    combined = (requirement + " " + plan_text).lower()
+    
+    entities = infer_entities_from_requirement(requirement, plan_text)
+    
     return ArchitectureDecision(
         frontend_structure={
             "framework": "React",
-            "template": "Create React App (react-scripts) - NOT Vite; easy to run, minimal dependency issues",
-            "state_management": "Context API or local state"
+            "template": "Create React App",
+            "state_management": "Plain React (useState) with LocalStorage",
+            "ui_library": "Tailwind CSS"
         },
         backend_structure={
             "framework": "FastAPI",
-            "database": "SQLite",
-            "orm": "SQLAlchemy"
+            "database": "MongoDB",
+            "orm": "PyMongo (Sync API)"
         },
-        database_schema={
-            "tables": [
-                {
-                    "name": "items",
-                    "columns": [
-                        {"name": "id", "type": "Integer", "primary_key": True},
-                        {"name": "name", "type": "String", "nullable": False},
-                        {"name": "description", "type": "String"}
-                    ]
-                }
-            ]
-        },
+        database_schema={"collections": []},
         deployment={},
-        rationale="Minimal architecture for simple CRUD app.",
+        rationale=f"Dynamic architecture for {requirement or 'app'}.",
         project_structure={
             "backend": ["main.py", "requirements.txt", "database.py", "models.py", "schemas.py"],
-            "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js"]
+            "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
         }
     )

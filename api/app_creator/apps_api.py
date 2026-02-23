@@ -11,7 +11,8 @@ sys.path.insert(0, parent_dir)
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
+from .app_creator import tree_from_files_dict
 
 from app_builder_db import get_app_builder_db
 
@@ -29,6 +30,8 @@ class CreateAppRequest(BaseModel):
     generated_uiux: Optional[str] = None
     plan: Optional[List[Any]] = None
     architecture: Optional[dict] = None
+    agents_state: Optional[dict] = None
+    generated_code_json: Optional[dict] = None
 
 
 class UpdateAppRequest(BaseModel):
@@ -39,6 +42,8 @@ class UpdateAppRequest(BaseModel):
     generated_uiux: Optional[str] = None
     plan: Optional[List[Any]] = None
     architecture: Optional[dict] = None
+    agents_state: Optional[dict] = None
+    generated_code_json: Optional[dict] = None
 
 
 @router.get("/apps")
@@ -64,6 +69,8 @@ async def create_app(request: CreateAppRequest):
             generated_uiux=request.generated_uiux,
             plan=request.plan,
             architecture=request.architecture,
+            agents_state=request.agents_state,
+            generated_code_json=request.generated_code_json,
         )
         return {"status": "success", "app": app, "message": "App created"}
     except Exception as e:
@@ -98,6 +105,8 @@ async def update_app(app_id: str, request: UpdateAppRequest, user_email: str = Q
             generated_uiux=request.generated_uiux,
             plan=request.plan,
             architecture=request.architecture,
+            agents_state=request.agents_state,
+            generated_code_json=request.generated_code_json,
         )
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")
@@ -117,6 +126,29 @@ async def delete_app(app_id: str, user_email: str = Query(..., description="User
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")
         return {"status": "success", "message": "App deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/apps/{app_id}/code")
+async def get_app_code(app_id: str, user_email: str = Query(..., description="User email")):
+    """Retrieve the generated code and file tree from the database."""
+    try:
+        app = db.get_app_builder_app(app_id, user_email=user_email)
+        if not app:
+            raise HTTPException(status_code=404, detail="App not found")
+        
+        files = app.get("generated_code_json") or {}
+        tree = tree_from_files_dict(files) if files else []
+        
+        return {
+            "status": "success",
+            "project_name": app.get("project_name"),
+            "files": files,
+            "tree": tree
+        }
     except HTTPException:
         raise
     except Exception as e:

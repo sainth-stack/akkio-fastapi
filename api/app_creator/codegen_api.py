@@ -58,11 +58,30 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         request_data = json.loads(data)
 
         requirement = request_data.get("requirement")
-        prd = request_data.get("prd", "")
+        prd = request_data.get("prd", "") or ""
         plan = request_data.get("plan", [])
         architecture = request_data.get("architecture", {})
         project_name = request_data.get("project_name")
-        uiux = request_data.get("uiux", "")
+        uiux = request_data.get("uiux", "") or ""
+        app_id = request_data.get("app_id")
+
+        # When PRD/UIUX not in request, load from DB
+        if (not prd or not uiux) and (app_id or project_name):
+            try:
+                app_from_db = None
+                if app_id:
+                    app_from_db = db.get_app_builder_app(app_id)
+                if not app_from_db and project_name:
+                    app_from_db = db.get_app_by_project_name(project_name)
+                if app_from_db:
+                    if not prd:
+                        prd = app_from_db.get("prd") or ""
+                    if not uiux:
+                        uiux = app_from_db.get("generated_uiux") or ""
+                    if not plan and app_from_db.get("plan"):
+                        plan = app_from_db.get("plan", [])
+            except Exception as e:
+                print(f"[codegen_api] DB fallback for PRD/UIUX: {e}", file=sys.stderr)
 
         if not requirement or not project_name or not architecture:
             await websocket.send_text(json.dumps({
@@ -131,6 +150,14 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 architecture=architecture,
                 generated_code_json=files,
             )
+            
+            # Also update the main app record if app_id available
+            if app_id:
+                db.update_app_builder_app(
+                    app_id=app_id,
+                    user_email=None,
+                    generated_code_json=files
+                )
         except Exception as store_err:
             try:
                 await websocket.send_text(json.dumps({

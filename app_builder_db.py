@@ -104,6 +104,11 @@ class AppBuilderMongoDB:
         generated_uiux: str = None,
         plan: list = None,
         architecture: dict = None,
+        api_contract: str = None,
+        db_schema: str = None,
+        agents_state: dict = None,
+        generated_code_json: dict = None,
+        generated_files: dict = None,
     ) -> dict:
         """Create a new app builder app record."""
         coll = self._db[COLL_APPS]
@@ -117,6 +122,11 @@ class AppBuilderMongoDB:
             "generated_uiux": generated_uiux,
             "plan": plan,
             "architecture": architecture,
+            "api_contract": api_contract,
+            "db_schema": db_schema,
+            "agents_state": agents_state,
+            "generated_code_json": generated_code_json,
+            "generated_files": generated_files,
             "created_at": now,
             "updated_at": now,
         }
@@ -129,6 +139,17 @@ class AppBuilderMongoDB:
         coll = self._db[COLL_APPS]
         cursor = coll.find({"user_email": user_email}).sort("updated_at", -1)
         return [self._doc_to_app(d) for d in cursor]
+
+    def get_app_by_project_name(self, project_name: str) -> Optional[dict]:
+        """Get the most recently updated app for a given project_name. Used when PRD/UIUX not in request."""
+        if not project_name or not project_name.strip():
+            return None
+        coll = self._db[COLL_APPS]
+        doc = coll.find_one(
+            {"project_name": project_name.strip()},
+            sort=[("updated_at", -1)]
+        )
+        return self._doc_to_app(doc)
 
     def get_app_builder_app(self, app_id, user_email: str = None) -> Optional[dict]:
         """Get a single app by id (supports both str ObjectId and legacy int). Scoped by user_email if provided."""
@@ -158,6 +179,11 @@ class AppBuilderMongoDB:
         generated_uiux: str = None,
         plan: list = None,
         architecture: dict = None,
+        api_contract: str = None,
+        db_schema: str = None,
+        agents_state: dict = None,
+        generated_code_json: dict = None,
+        generated_files: dict = None,
     ) -> int:
         """Update an app builder app. Returns number of docs modified."""
         coll = self._db[COLL_APPS]
@@ -180,6 +206,16 @@ class AppBuilderMongoDB:
             update["$set"]["plan"] = plan
         if architecture is not None:
             update["$set"]["architecture"] = architecture
+        if api_contract is not None:
+            update["$set"]["api_contract"] = api_contract
+        if db_schema is not None:
+            update["$set"]["db_schema"] = db_schema
+        if agents_state is not None:
+            update["$set"]["agents_state"] = agents_state
+        if generated_code_json is not None:
+            update["$set"]["generated_code_json"] = generated_code_json
+        if generated_files is not None:
+            update["$set"]["generated_files"] = generated_files
         r = coll.update_one({"_id": oid, "user_email": user_email}, update)
         return r.modified_count
 
@@ -288,8 +324,12 @@ class AppBuilderMongoDB:
         requirement: str = None,
         prd: str = None,
         plan: list = None,
-        architecture: dict = None,
+        architecture: Any = None,
+        api_contract: str = None,
+        db_schema: str = None,
         generated_code_json: dict = None,
+        generated_files: dict = None,
+        app_id: str = None,
     ) -> int:
         """Create or update a codegen session."""
         coll = self._db[COLL_CODEGEN]
@@ -307,8 +347,16 @@ class AppBuilderMongoDB:
                 update["$set"]["plan"] = plan
             if architecture is not None:
                 update["$set"]["architecture"] = architecture
+            if api_contract is not None:
+                update["$set"]["api_contract"] = api_contract
+            if db_schema is not None:
+                update["$set"]["db_schema"] = db_schema
             if generated_code_json is not None:
                 update["$set"]["generated_code_json"] = generated_code_json
+            if generated_files is not None:
+                update["$set"]["generated_files"] = generated_files
+            if app_id is not None:
+                update["$set"]["app_id"] = app_id
             r = coll.update_one({"session_id": session_id}, update)
             return r.modified_count
         doc = {
@@ -318,7 +366,11 @@ class AppBuilderMongoDB:
             "prd": prd,
             "plan": plan,
             "architecture": architecture,
+            "api_contract": api_contract,
+            "db_schema": db_schema,
             "generated_code_json": generated_code_json,
+            "generated_files": generated_files,
+            "app_id": app_id,
             "created_at": now,
             "updated_at": now,
         }

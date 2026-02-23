@@ -35,6 +35,17 @@ class AgentExecutionRequest(BaseModel):
     project_name: str
 
 
+class UpdateCodeRequest(BaseModel):
+    user_request: str
+    project_name: str
+    app_id: Optional[str] = None
+
+
+from app_builder.agents.code_update_agent import update_code_from_chat
+from app_builder.services.runtime_paths import get_projects_dir
+
+
+
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
@@ -56,25 +67,39 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def execute_requirement_agent(websocket: WebSocket, requirement: str):
-    """Execute requirement clarification agent"""
+async def execute_requirement_agent(
+    websocket: WebSocket,
+    requirement: str,
+    prd: str = "",
+    uiux: str = "",
+    llm=None
+):
+    """Execute requirement agent: fetches PRD + UI/UX, produces minimal end-to-end consolidated output."""
     try:
         await websocket.send_text(json.dumps({
             "event": "agent_start",
             "agent": "requirement_agent",
-            "message": "Analyzing and clarifying requirements..."
+            "message": "Fetching details from PRD and UI/UX design, consolidating requirements..."
         }))
         
-        # Simulate some processing time for better UX
-        await asyncio.sleep(0.5)
-        
-        clarified = requirement_agent(UserRequirement(description=requirement))
+        # Use LLM when PRD/UIUX provided for consolidation
+        if prd or uiux:
+            await asyncio.sleep(0.3)  # Brief delay for UX
+            clarified = await requirement_agent(
+                UserRequirement(description=requirement),
+                prd=prd or "",
+                uiux=uiux or "",
+                llm=llm
+            )
+        else:
+            await asyncio.sleep(0.5)
+            clarified = await requirement_agent(UserRequirement(description=requirement))
         
         await websocket.send_text(json.dumps({
             "event": "agent_complete",
             "agent": "requirement_agent",
             "data": clarified,
-            "message": "Requirements clarified successfully"
+            "message": "Requirements consolidated from PRD and UI/UX successfully"
         }))
         
         return clarified
@@ -311,11 +336,30 @@ async def regenerate_code(websocket: WebSocket, session_id: str):
         request_data = json.loads(data)
         
         requirement = request_data.get("requirement")
-        prd = request_data.get("prd", "")
+        prd = request_data.get("prd", "") or ""
         plan = request_data.get("plan", [])
         architecture = request_data.get("architecture", {})
         project_name = request_data.get("project_name")
-        uiux = request_data.get("uiux", "")
+        uiux = request_data.get("uiux", "") or ""
+        app_id = request_data.get("app_id")
+        
+        # When PRD/UIUX not in request, load from DB
+        if (not prd or not uiux) and (app_id or project_name):
+            try:
+                app_from_db = None
+                if app_id:
+                    app_from_db = db.get_app_builder_app(app_id)
+                if not app_from_db and project_name:
+                    app_from_db = db.get_app_by_project_name(project_name)
+                if app_from_db:
+                    if not prd:
+                        prd = app_from_db.get("prd") or ""
+                    if not uiux:
+                        uiux = app_from_db.get("generated_uiux") or ""
+                    if not plan and app_from_db.get("plan"):
+                        plan = app_from_db.get("plan", [])
+            except Exception as e:
+                print(f"[agent_api] DB fallback for regenerate-code: {e}", file=sys.stderr)
         
         if not requirement or not project_name:
             await websocket.send_text(json.dumps({
@@ -397,22 +441,11 @@ async def regenerate_code(websocket: WebSocket, session_id: str):
 @router.websocket("/execute/{session_id}")
 async def execute_agents(websocket: WebSocket, session_id: str):
     """
-    WebSocket endpoint for executing agents with real-time updates.
-    
-    Client sends:
-    {
-        "requirement": "...",
-        "plan": [...],
-        "project_name": "..."
-    }
-    
-    Server sends events:
-    - {"event": "agent_start", "agent": "...", "message": "..."}
-    - {"event": "agent_progress", "agent": "...", "message": "..."}
-    - {"event": "agent_complete", "agent": "...", "data": {...}}
-    - {"event": "agent_error", "agent": "...", "error": "..."}
-    - {"event": "all_complete", "message": "..."}
+    WebSocket endpoint for executing the full agent pipeline using LangGraph.
+    Streams events: agent_start, agent_progress, agent_complete.
     """
+    from app_builder.graph.builder_graph import app_builder_graph
+    
     await manager.connect(session_id, websocket)
     
     try:
@@ -421,10 +454,8 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         request_data = json.loads(data)
         
         requirement = request_data.get("requirement")
-        plan_data = request_data.get("plan", [])
-        prd_text = request_data.get("prd", "")  # Get PRD from request
         project_name = request_data.get("project_name")
-        uiux_text = request_data.get("uiux", "")
+        app_id = request_data.get("app_id")
         
         if not requirement or not project_name:
             await websocket.send_text(json.dumps({
@@ -432,63 +463,332 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                 "message": "Missing requirement or project_name"
             }))
             return
-        
+
         await websocket.send_text(json.dumps({
             "event": "execution_start",
-            "message": "Starting agent execution pipeline..."
+            "message": "Starting new agent execution pipeline..."
         }))
-        
-        # Initialize LLM for agents (from llm_config; no user_email in websocket)
-        llm = get_llm_for_user(None, temperature=0.7)
-        
-        # Execute agents in sequence
-        # 1. Requirement Agent
-        clarified_requirement = await execute_requirement_agent(websocket, requirement)
-        
-        # 2. Architecture Agent (dynamic, streaming)
-        architecture = await execute_architecture_agent(
-            websocket, 
-            requirement,
-            prd_text,
-            plan_data,
-            llm,
-            uiux_text
-        )
-        
-        # Convert architecture to dict
-        architecture_dict = {
-            "backend_structure": architecture.backend_structure,
-            "frontend_structure": architecture.frontend_structure,
-            "database_schema": architecture.database_schema,
-            "deployment": architecture.deployment,
-            "rationale": architecture.rationale,
-            "project_structure": architecture.project_structure
+
+        # Initialize State for LangGraph
+        initial_state = {
+            "user_requirement": UserRequirement(description=requirement),
+            "project_name": project_name,
+            "structured_requirement": {},
+            "architecture": {},
+            "api_contract": {},
+            "db_schema": {},
+            "generated_files": {},
+            "validation_results": {},
+            "error": ""
         }
 
-        # Save artifacts to DB so they persist
-        try:
-            db.create_or_update_codegen_session(
-                session_id=session_id,
-                project_name=project_name,
-                requirement=requirement,
-                prd=prd_text,
-                plan=plan_data,
-                architecture=architecture_dict,
-                generated_code_json=None
-            )
-        except Exception as e:
-            print(f"Error saving codegen session: {e}", file=sys.stderr)
+        # Node name to human-friendly display name mapping (matches AgentsView.js)
+        node_to_agent = {
+            "structuring_step": "structuring_agent",
+            "architecture_step": "architecture_agent",
+            "contract_step": "contract_agent",
+            "schema_step": "schema_agent",
+            "coding_step": "coding_agent",
+            "validation_step": "validation_agent"
+        }
 
-        # All done
+        final_state = initial_state
+        
+        # Proactively send start for the first node
+        await websocket.send_text(json.dumps({
+            "event": "agent_start",
+            "agent": "structuring_agent",
+            "message": "Analyzing and structuring your requirement..."
+        }))
+
+        # Stream from LangGraph
+        async for output in app_builder_graph.astream(initial_state):
+            for node_name, result in output.items():
+                agent_id = node_to_agent.get(node_name, node_name)
+                
+                # Check for errors in state
+                if result and result.get("error"):
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_error",
+                        "agent": agent_id,
+                        "error": result["error"],
+                        "project_name": project_name
+                    }))
+                    continue
+
+                # Update project_name if structuring_step returned one
+                if result and result.get("project_name"):
+                    project_name = result["project_name"]
+
+                # Prepare data for completion
+                completion_data = result
+                
+                # Disk persistence for coding and validation steps
+                if node_name in ["coding_step", "validation_step"]:
+                    files_dict = result.get("generated_files", {})
+                    if files_dict:
+                        for rel_path, content in files_dict.items():
+                            try:
+                                write_project_file(project_name, rel_path, content)
+                                if node_name == "coding_step":
+                                    await websocket.send_text(json.dumps({
+                                        "event": "agent_progress",
+                                        "agent": agent_id,
+                                        "message": f"Generated and saved: {rel_path}",
+                                        "project_name": project_name
+                                    }))
+                            except Exception as write_err:
+                                print(f"[agent_api] Error writing file {rel_path}: {write_err}")
+                        
+                        # Add updated_files list so frontend can refresh its cache
+                        completion_data = {**result, "updated_files": list(files_dict.keys())}
+                
+                # Special handling for schema_step to ensure it's not double-stringified in the UI
+                if node_name == "schema_step" and result.get("db_schema"):
+                    # If db_schema is already a dict, keep it as is. 
+                    # Our agent returns a string for 'schema'.
+                    pass
+
+                # Send completion event for the node
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": agent_id,
+                    "message": f"Completed {agent_id.replace('_', ' ')}",
+                    "data": completion_data,
+                    "project_name": project_name
+                }))
+                
+                # Proactively send start for the NEXT node in flow
+                next_agent_map = {
+                    "structuring_step": ("architecture_agent", "Designing the system architecture..."),
+                    "architecture_step": ("contract_agent", "Generating API contracts..."),
+                    "contract_step": ("schema_agent", "Defining database schema..."),
+                    "schema_step": ("coding_agent", "Generating backend and frontend code (this may take a minute)..."),
+                    "coding_step": ("validation_agent", "Validating and fixing generated code...")
+                }
+                if node_name in next_agent_map:
+                    next_id, next_msg = next_agent_map[node_name]
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_start",
+                        "agent": next_id,
+                        "message": next_msg,
+                        "project_name": project_name
+                    }))
+
+                # Special events for specific updates
+                if node_name == "architecture_step":
+                    await websocket.send_text(json.dumps({
+                        "event": "architecture_updated",
+                        "data": result.get("architecture"),
+                        "project_name": project_name
+                    }))
+                
+                # Cumulative state update
+                final_state.update(result)
+
+        # Final Persistence to MongoDB
+        try:
+            if not final_state.get("error"):
+                db.create_or_update_codegen_session(
+                    session_id=session_id,
+                    project_name=project_name,
+                    requirement=requirement,
+                    prd=json.dumps(final_state.get("structured_requirement")), # New structured PRD
+                    architecture=json.dumps(final_state.get("architecture")),
+                    api_contract=json.dumps(final_state.get("api_contract")),
+                    db_schema=json.dumps(final_state.get("db_schema")),
+                    generated_files=json.dumps(final_state.get("generated_files", {})),
+                    app_id=app_id
+                )
+                
+                if app_id:
+                    db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email="", # scoping user_email
+                        project_name=project_name,
+                        architecture=final_state.get("architecture"),
+                        generated_code_json=final_state.get("generated_files"),
+                        prd=json.dumps(final_state.get("structured_requirement"))
+                    )
+                    print(f"[agent_api] Saved final app state to MongoDB for app {app_id}")
+        except Exception as db_err:
+            print(f"[agent_api] Final DB save failed: {db_err}", file=sys.stderr)
+
         await websocket.send_text(json.dumps({
             "event": "all_complete",
-            "message": "All agents completed successfully",
+            "message": "Full generation pipeline completed successfully",
             "data": {
                 "project_name": project_name,
-                "files_count": 0
+                "files_count": len(final_state.get("generated_files", {}))
             }
         }))
         
+    except WebSocketDisconnect:
+        manager.disconnect(session_id)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.send_text(json.dumps({
+                "event": "error",
+                "message": str(e)
+            }))
+        except:
+            pass
+        manager.disconnect(session_id)
+
+
+@router.post("/update-code")
+async def update_code(request: UpdateCodeRequest):
+    """Update existing code based on user prompt, then persist changes to DB."""
+    try:
+        project_root = os.path.join(get_projects_dir(), request.project_name)
+        if not os.path.exists(project_root):
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Fetch PRD and original requirement from DB for richer LLM context
+        prd_text = ""
+        original_requirement = ""
+        app_record = None
+        try:
+            if request.app_id:
+                app_record = db.get_app_builder_app(request.app_id)
+            if not app_record:
+                app_record = db.get_app_by_project_name(request.project_name)
+            if app_record:
+                prd_text = app_record.get("prd") or ""
+                original_requirement = app_record.get("prompt") or ""
+        except Exception as db_err:
+            print(f"[update-code] DB fetch warning: {db_err}", file=sys.stderr)
+
+        result = await update_code_from_chat(
+            project_name=request.project_name,
+            project_root=project_root,
+            user_request=request.user_request,
+            prd=prd_text,
+            original_requirement=original_requirement,
+        )
+
+        # Persist updated files back to MongoDB so the app record stays in sync
+        if result.get("status") == "success" and result.get("updated_code_dict"):
+            try:
+                updated_code = result["updated_code_dict"]
+                # Merge with existing generated_code_json if available
+                existing_code = {}
+                if app_record and app_record.get("generated_code_json"):
+                    existing_code = app_record["generated_code_json"] or {}
+                merged_code = {**existing_code, **updated_code}
+
+                target_id = request.app_id or (app_record.get("id") if app_record else None)
+                if target_id:
+                    db.update_app_builder_app(
+                        app_id=target_id,
+                        user_email=app_record.get("user_email", "") if app_record else "",
+                        generated_code_json=merged_code,
+                    )
+                    print(f"[update-code] Saved {len(updated_code)} updated files to DB for app {target_id}")
+            except Exception as save_err:
+                print(f"[update-code] DB save warning: {save_err}", file=sys.stderr)
+
+        # Don't expose internal dict to client
+        result.pop("updated_code_dict", None)
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.websocket("/update-code-ws/{session_id}")
+async def update_code_ws(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for updating existing code with real-time feedback."""
+    await manager.connect(session_id, websocket)
+
+    try:
+        data = await websocket.receive_text()
+        request_data = json.loads(data)
+
+        user_request = request_data.get("user_request")
+        project_name = request_data.get("project_name")
+        app_id = request_data.get("app_id")
+
+        if not user_request or not project_name:
+            await websocket.send_text(json.dumps({
+                "event": "error",
+                "message": "Missing user_request or project_name"
+            }))
+            return
+
+        project_root = os.path.join(get_projects_dir(), project_name)
+        if not os.path.exists(project_root):
+             await websocket.send_text(json.dumps({
+                "event": "error",
+                "message": "Project not found"
+            }))
+             return
+
+        prd_text = ""
+        original_requirement = ""
+        architecture = {}
+        app_record = None
+        try:
+            if app_id:
+                app_record = db.get_app_builder_app(app_id)
+            if not app_record:
+                app_record = db.get_app_by_project_name(project_name)
+            if app_record:
+                prd_text = app_record.get("prd") or ""
+                original_requirement = app_record.get("prompt") or ""
+                architecture = app_record.get("architecture") or {}
+        except Exception as db_err:
+            print(f"[update-code-ws] DB fetch warning: {db_err}", file=sys.stderr)
+
+        result = await update_code_from_chat(
+            project_name=project_name,
+            project_root=project_root,
+            user_request=user_request,
+            prd=prd_text,
+            original_requirement=original_requirement,
+            architecture=architecture,
+            websocket=websocket
+        )
+
+        if result.get("status") == "success":
+            try:
+                updated_code = result.get("updated_code_dict") or {}
+                updated_prd = result.get("updated_prd")
+                updated_architecture = result.get("updated_architecture")
+                
+                existing_code = {}
+                if app_record and app_record.get("generated_code_json"):
+                    existing_code = app_record["generated_code_json"] or {}
+                merged_code = {**existing_code, **updated_code}
+
+                target_id = app_id or (app_record.get("id") if app_record else None)
+                if target_id:
+                    db.update_app_builder_app(
+                        app_id=target_id,
+                        user_email=app_record.get("user_email", "") if app_record else "",
+                        generated_code_json=merged_code,
+                        prd=updated_prd,
+                        architecture=updated_architecture
+                    )
+            except Exception as save_err:
+                print(f"[update-code-ws] DB save warning: {save_err}", file=sys.stderr)
+
+        result.pop("updated_code_dict", None)
+
+        await websocket.send_text(json.dumps({
+            "event": "agent_complete",
+            "agent": "update_code_agent",
+            "data": result,
+            "message": "Code update completed"
+        }))
+
+        websocket.close()
+
     except WebSocketDisconnect:
         manager.disconnect(session_id)
     except Exception as e:

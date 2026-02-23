@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 VITE_REACT_PLUGIN = "@vitejs/plugin-react"
 
-# Minimal CRA package.json - Node 20+, no Tailwind
+# Minimal CRA package.json - Node 20+, with Tailwind
 _CRA_PACKAGE_JSON = {
     "name": "frontend",
     "version": "1.0.0",
@@ -22,6 +22,11 @@ _CRA_PACKAGE_JSON = {
     "scripts": {
         "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
         "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build",
+    },
+    "devDependencies": {
+        "tailwindcss": "latest",
+        "postcss": "latest",
+        "autoprefixer": "latest"
     },
     "eslintConfig": {"extends": ["react-app"]},
     "browserslist": {
@@ -72,10 +77,7 @@ def _normalize_frontend_package_json_to_cra(files: Dict[str, str]) -> None:
                 "const root = ReactDOM.createRoot(document.getElementById('root'));\n"
                 "root.render(<React.StrictMode><App /></React.StrictMode>);"
             )
-        # Ensure styles.css exists (mandatory for styling)
-        if "frontend/src/styles.css" not in files:
-            files["frontend/src/styles.css"] = _DEFAULT_STYLES_CSS
-        # Remove Tailwind config files
+        # Ensure index.js exists (CRA entry point)
         for f in ("frontend/tailwind.config.js", "frontend/postcss.config.js"):
             if f in files:
                 del files[f]
@@ -83,48 +85,139 @@ def _normalize_frontend_package_json_to_cra(files: Dict[str, str]) -> None:
         pass
 
 
-_DEFAULT_STYLES_CSS = """/* App styles - fonts, colors, layout */
+_DEFAULT_STYLES_CSS = """/* App styles - modern primitives, colors, layout */
 :root {
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
-  --color-text: #1e293b;
+  --color-text: #0f172a;
   --color-text-muted: #64748b;
-  --color-primary: #4f46e5;
-  --color-primary-hover: #4338ca;
+  --color-primary: #6366f1;
+  --color-primary-hover: #4f46e5;
   --color-border: #e2e8f0;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
 }
 
-* { box-sizing: border-box; }
-body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); -webkit-font-smoothing: antialiased; }
+* { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.5; }
 
-.app { min-height: 100vh; padding: 2rem; }
-.app-container { max-width: 42rem; margin: 0 auto; }
-.app-title { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
-.app-subtitle { color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem; }
-.form-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 2rem; }
-.input { flex: 1; min-width: 120px; padding: 0.5rem 1rem; border: 1px solid var(--color-border); border-radius: 0.5rem; font-family: inherit; }
-.input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(79,70,229,0.2); }
-.btn { padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: 500; font-family: inherit; cursor: pointer; border: none; transition: background 0.2s; }
-.btn-primary { background: var(--color-primary); color: white; }
-.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.app { min-height: 100vh; padding: 2rem 1rem; }
+.app-container { max-width: 48rem; margin: 0 auto; }
+.header { margin-bottom: 2.5rem; text-align: center; }
+.app-title { font-size: 2.25rem; font-weight: 700; color: #1e293b; letter-spacing: -0.025em; margin: 0 0 0.5rem 0; }
+.app-subtitle { color: var(--color-text-muted); font-size: 1.125rem; }
+
+.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 1.5rem; margin-bottom: 2rem; }
+
+.form-row { display: flex; flex-direction: row; gap: 0.75rem; margin-bottom: 1.5rem; }
+.input { flex: 1; padding: 0.625rem 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); font-family: inherit; font-size: 1rem; transition: all 0.2s; box-shadow: var(--shadow-sm); }
+.input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.625rem 1.25rem; border-radius: var(--radius-md); font-weight: 600; font-family: inherit; cursor: pointer; border: none; transition: all 0.2s; font-size: 0.875rem; }
+.btn-primary { background: var(--color-primary); color: white; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.list { list-style: none; padding: 0; margin: 0; }
-.list-item { padding: 1rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 0.75rem; margin-bottom: 0.75rem; box-shadow: var(--shadow-sm); }
-.list-item:hover { box-shadow: var(--shadow-md); }
-.list-item strong { font-weight: 500; }
-.list-item .muted { color: var(--color-text-muted); margin-left: 0.5rem; }
+
+.list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.list-item { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); transition: all 0.2s; box-shadow: var(--shadow-sm); }
+.list-item:hover { transform: translateX(4px); border-color: var(--color-primary); box-shadow: var(--shadow-md); }
+.list-item strong { font-weight: 600; color: #1e293b; }
+.list-item .muted { color: var(--color-text-muted); font-size: 0.875rem; }
+"""
+
+_TODO_APP_PREMIUM_CSS = """
+/* Premium Todo Specific Styles */
+.todo-card {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: white;
+  border-radius: var(--radius-md);
+  margin-bottom: 0.5rem;
+  transition: all 0.2s ease;
+  border: 1px solid var(--color-border);
+}
+
+.todo-item:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+  transform: scale(1.01);
+}
+
+.todo-checkbox {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.todo-checkbox.checked {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.todo-checkbox.checked::after {
+  content: '✓';
+  color: white;
+  font-size: 0.75rem;
+}
+
+.todo-text {
+  flex: 1;
+  font-size: 1rem;
+  color: var(--color-text);
+  transition: all 0.2s;
+}
+
+.todo-text.completed {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+.todo-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.todo-badge-high { background: #fee2e2; color: #dc2626; }
+.todo-badge-medium { background: #fef3c7; color: #d97706; }
+.todo-badge-low { background: #dcfce7; color: #16a34a; }
 """
 
 
-def _ensure_frontend_styles_and_node_compat(files: Dict[str, str]) -> None:
+def _detect_todo_app(requirement: str) -> bool:
+    """Check if the requirement refers to a todo list or task manager."""
+    keywords = ["todo", "to-do", "task", "checklist", "inventory", "list app"]
+    req_lower = requirement.lower()
+    return any(kw in req_lower for kw in keywords)
+
+
+def _ensure_node_compat(files: Dict[str, str]) -> None:
     """
-    Ensure frontend uses styles.css (not Tailwind), works with Node 20+.
+    Ensure frontend works with Node 20+.
     - Add NODE_OPTIONS=--openssl-legacy-provider to react-scripts start/build
-    - Ensure styles.css exists and is imported
-    - Remove Tailwind packages
     """
     pkg_path = "frontend/package.json"
     if pkg_path in files:
@@ -137,45 +230,17 @@ def _ensure_frontend_styles_and_node_compat(files: Dict[str, str]) -> None:
                 if key in scripts and "react-scripts" in str(scripts[key]) and "NODE_OPTIONS" not in str(scripts[key]):
                     scripts[key] = f"NODE_OPTIONS=--openssl-legacy-provider {scripts[key]}"
             pkg["scripts"] = scripts
-            # Remove Tailwind and other heavy deps
-            deps = pkg.get("dependencies") or {}
-            for k in list(deps.keys()):
-                if k in ("tailwindcss", "postcss", "autoprefixer", "framer-motion", "lucide-react", "clsx", "tailwind-merge"):
-                    del deps[k]
-            pkg["dependencies"] = deps
-            dev_deps = pkg.get("devDependencies") or {}
-            for k in list(dev_deps.keys()):
-                if k in ("tailwindcss", "postcss", "autoprefixer"):
-                    del dev_deps[k]
-            pkg["devDependencies"] = dev_deps
             files[pkg_path] = json.dumps(pkg, indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
-    # Ensure styles.css exists
-    if "frontend/src/styles.css" not in files:
-        files["frontend/src/styles.css"] = _DEFAULT_STYLES_CSS
-    # Ensure index.js imports styles.css
-    for idx_path in ("frontend/src/index.js", "frontend/src/index.jsx"):
-        if idx_path in files:
-            content = files[idx_path]
-            if "styles.css" not in content:
-                content = content.replace("import './index.css'", "import './styles.css'")
-                content = content.replace('import "./index.css"', 'import "./styles.css"')
-                content = content.replace("import './App.css'", "import './styles.css'")
-                if "styles.css" not in content:
-                    content = content.replace("import App from", "import './styles.css';\nimport App from", 1)
-                files[idx_path] = content
-    # Remove Tailwind config files
-    for f in ("frontend/tailwind.config.js", "frontend/postcss.config.js"):
-        if f in files:
-            del files[f]
+iles[f]
 
 
 # Core backend packages for FastAPI + SQLite (no version numbers, no external DB)
 _BACKEND_CORE_PACKAGES = ["fastapi", "uvicorn", "sqlalchemy", "pydantic"]
 
 # PyPI packages to NEVER add - usually local modules in generated apps (services, etc.)
-_BACKEND_BLOCKLIST = {"services"}
+_BACKEND_BLOCKLIST = {"services", "motor"}
 
 
 def _normalize_backend_requirements(files: Dict[str, str]) -> None:
@@ -194,8 +259,8 @@ def _normalize_backend_requirements(files: Dict[str, str]) -> None:
         if not line or line.startswith("#"):
             lines.append(line)
             continue
-        # Strip version: package, package==x, package>=x, package[extra] -> package
-        pkg = line.split("==")[0].split(">=")[0].split("[")[0].strip().lower()
+        # Strip version: package, package==x, package>=x, package~=x, package[extra] -> package
+        pkg = re.split(r'[=<>~!\[]', line)[0].strip().lower()
         if pkg and pkg not in seen and pkg not in _BACKEND_BLOCKLIST:
             seen.add(pkg)
             lines.append(pkg)
@@ -418,7 +483,7 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
     request to /undefined/tasks/ (relative URL). Fix by ensuring proper fallback.
     """
     safe_backend_url_expr = (
-        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5001').trim()"
+        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5002').trim()"
     )
     for path in list(files.keys()):
         if not path.startswith("frontend/") or path.split(".")[-1] not in ("js", "jsx", "ts", "tsx"):
@@ -452,15 +517,15 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
                 changed = True
 
         # Fix: (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || '').trim()
-        # Replace || '' with || 'http://localhost:5001' for dev default
+        # Replace || '' with || 'http://localhost:5002' for dev default
         if "process.env.REACT_APP_BACKEND_URL" in content or "process.env.VITE_BACKEND_URL" in content:
             # Ensure we have a default so it's never undefined
             content = re.sub(
                 r"(\|\|\s*['\"]['\"]\s*)\s*\)\s*\.trim\(\)",
-                "|| 'http://localhost:5001').trim()",
+                "|| 'http://localhost:5002').trim()",
                 content,
             )
-            if "|| 'http://localhost:5001'" in content or "|| \"http://localhost:5001\"" in content:
+            if "|| 'http://localhost:5002'" in content or "|| \"http://localhost:5002\"" in content:
                 changed = True
 
         # Fix generic: any var = process.env.REACT_APP_BACKEND_URL (single env, no fallback)
@@ -481,13 +546,13 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
             content = new_content
             changed = True
 
-        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5001'}
+        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5002'}
         for var in ("backendUrl", "apiUrl", "apiBase", "baseUrl", "API_URL"):
             pat = re.escape(f"${{{var}}}") + r"(?!\s*\|\|)"  # Match ${var} not already followed by ||
             if re.search(pat, content):
                 content = re.sub(
                     pat,
-                    f"${{{var} || 'http://localhost:5001'}}",
+                    f"${{{var} || 'http://localhost:5002'}}",
                     content,
                 )
                 changed = True
@@ -609,6 +674,67 @@ def _ensure_vite_react_plugin_in_package_json(files: Dict[str, str]) -> None:
     except (json.JSONDecodeError, TypeError):
         pass
 
+
+def _validate_and_fix_backend_imports(files: Dict[str, str]) -> None:
+    """
+    Fix backend import errors:
+    1. If main.py imports 'services' but services/ is a directory, create services/__init__.py
+    2. Remove imports of non-existent modules
+    """
+    main_path = "backend/main.py"
+    if main_path not in files:
+        return
+    
+    content = files[main_path]
+    
+    # Check if services is imported
+    if "import services" in content or "from services import" in content:
+        # Check if services is a directory (has services/*.py files)
+        has_services_dir = any(p.startswith("backend/services/") and p.endswith(".py") and "__init__" not in p for p in files)
+        has_services_file = "backend/services.py" in files
+        has_services_init = "backend/services/__init__.py" in files
+        
+        if has_services_dir and not has_services_file and not has_services_init:
+            # Create __init__.py to make it a proper module
+            service_files = [p for p in files if p.startswith("backend/services/") and p.endswith(".py") and "__init__" not in p]
+            exports = []
+            for sf in service_files:
+                # Extract class names from service files
+                service_content = files[sf]
+                class_names = re.findall(r"^class (\w+Service):", service_content, re.MULTILINE)
+                module_name = sf.replace("backend/services/", "").replace(".py", "")
+                for cls in class_names:
+                    exports.append(f"from .{module_name} import {cls}")
+            
+            if exports:
+                files["backend/services/__init__.py"] = "\n".join(exports) + "\n"
+
+
+def _ensure_complete_styles_css(files: Dict[str, str]) -> None:
+    """
+    Ensure styles.css has all required classes. If generated CSS is too minimal,
+    replace with the comprehensive default template.
+    """
+    css_path = "frontend/src/styles.css"
+    if css_path not in files:
+        files[css_path] = _DEFAULT_STYLES_CSS
+        return
+    
+    css_content = files[css_path]
+    required_classes = [".app", ".btn", ".input", ".form-row", ".list-item"]
+    missing = [cls for cls in required_classes if cls not in css_content]
+    
+    # If missing critical classes or CSS is too short (less than 80 lines), use default
+    line_count = len(css_content.strip().split('\n'))
+    if missing or line_count < 80:
+        files[css_path] = _DEFAULT_STYLES_CSS
+
+    # Special case: If it looks like a todo app (has todo classes in JSX), ensure premium todo CSS is present
+    has_todo_markup = any("todo-" in content for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx")))
+    if has_todo_markup and ".todo-card" not in css_content:
+        files[css_path] += _TODO_APP_PREMIUM_CSS
+
+
 async def generate_code_from_plan(
     requirement: str,
     prd: str,
@@ -677,29 +803,42 @@ async def generate_code_from_plan(
 
 **PRODUCTION READY CODE – GENERATE HIGH-QUALITY APPLICATIONS:**
 1. **Visual Excellence**:
-   - Use `src/styles.css` for ALL styling. NO Tailwind. Define :root variables (--color-primary, --font-sans, etc).
-   - Font: Inter (add Google Fonts link in index.html). Use CSS variables for colors.
+   - Use Tailwind CSS for ALL styling.
+   - Font: Inter (add Google Fonts link in index.html).
    - Whitespace: padding 1-2rem, gap 0.75rem. Avoid cramped UIs.
 2. **Interactive**: Add :hover states in styles.css. Use transition for smooth interactions.
 3. **No Placeholders**: Write the FULL code. No `# implementation here`.
 4. **Design Fidelity**: Follow UI/UX colors and fonts in styles.css.
 
 **STRICT FILE GENERATION RULES:**
-5. **Dependencies**: MINIMAL. React: `react`, `react-dom`, `react-scripts` only. NO Tailwind, Vite, framer-motion, lucide-react.
+5. **Dependencies**: Minimal. React: `react`, `react-dom`, `react-scripts`. Add `tailwindcss`, `postcss`, `autoprefixer` for styling.
 6. **package.json scripts**: MUST use `NODE_OPTIONS=--openssl-legacy-provider` for Node 20+ compatibility:
    "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start"
-7. **frontend/src/styles.css**: MANDATORY. Define :root variables, body, .app, .btn, .input, .list-item, etc.
+7. **Tailwind CSS**: MANDATORY. Always generate `tailwind.config.js` and `postcss.config.js`. Use Tailwind utility classes in JSX.
 8. **frontend/src/index.js**: MUST import `./styles.css` before App.
-9. **Backend**: Use absolute imports. SQLite only. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
+9. **Backend**: Use absolute imports. MongoDB only. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
 
 **UI/UX Design Specification:**
 {uiux if uiux else "Standard modern UI/UX design (CLEAN, MODERN, USER-FRIENDLY)."}
 
+{f'''**PREMIUM TODO APP INSTRUCTIONS**:
+- This is a TODO/TASK app. USE the premium CSS classes: .todo-card, .todo-item, .todo-checkbox, .todo-text, .todo-badge.
+- Layout: Header with title, Input area at top inside a .todo-card, Filter tabs (All, Active, Completed), List of .todo-item below.
+- Interactions: Checkbox click toggles .checked class, .todo-text gets .completed class. Show priority with .todo-badge-high/medium/low.
+''' if _detect_todo_app(requirement) else ""}
+
 **CRITICAL STYLE INSTRUCTIONS:**
-1. **styles.css MANDATORY** - NO Tailwind:
-   - You MUST generate `frontend/src/styles.css` with :root variables (--font-sans, --color-primary, --color-bg, etc).
+1. **Tailwind CSS MANDATORY**:
+   - You MUST generate `tailwind.config.js` and `postcss.config.js`.
+   - In `frontend/src/index.css`, include:
+     @tailwind base;
+     @tailwind components;
+     @tailwind utilities;
    - Add Inter font: <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" /> in index.html.
-   - Use CSS classes (.app, .btn, .input, .app-title, .list-item, etc) in styles.css. Reference them in JSX with className.
+   - **REQUIRED CSS classes** (all must be present): .app, .app-container, .app-title, .app-subtitle, .btn, .btn-primary, .input, .form-row, .list, .list-item
+   - Each class MUST have: proper padding/margins, borders, border-radius, hover states with transitions, focus states for inputs
+   - Minimum 100 lines of CSS - use comprehensive styling, never generate minimal CSS
+   - Use CSS classes in JSX with className.
 
 2. **UI/UX COMPLIANCE**:
    - Extract Primary, Secondary, Background colors from UI/UX spec and put in :root in styles.css.
@@ -708,11 +847,22 @@ async def generate_code_from_plan(
 3. **ROBUSTNESS**:
    - Ensure the app is "npm install" ready. All deps used in code must be in `package.json`.
 
-4. **FRONTEND WORKS WITH OR WITHOUT BACKEND**:
-   - Frontend MUST run and display UI even when backend is not configured or not running.
-   - Use useState for local state. Initialize with empty array/defaults. NEVER throw or crash when API fails.
-   - When fetching: wrap in try/catch, on error set empty data or keep previous state. Show UI with local state only.
-   - API base URL: ALWAYS use `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5001').trim();` - NEVER leave it undefined (causes 404 on /undefined/tasks/). Guard API calls: if (!backendUrl) return; before fetch when optional.
+4. **FRONTEND MUST WORK END-TO-END EVEN IF BACKEND IS DOWN — USE LOCALSTORAGE**:
+   - Frontend MUST be a FULLY FUNCTIONAL app even when backend never starts. Use localStorage as the data layer.
+   - **On component mount**: Load data from localStorage FIRST (`JSON.parse(localStorage.getItem('appName_items')) || []`), THEN try API fetch.
+   - **On every state change (add/edit/delete)**: Save to localStorage immediately: `localStorage.setItem('appName_items', JSON.stringify(updatedItems))`.
+   - **API calls are OPTIONAL enhancements**: Wrap ALL fetch() calls in try/catch. On success, sync localStorage. On failure, silently continue with localStorage data.
+   - **CRUD operations must work 100% with localStorage alone**:
+     * CREATE: Push new item (with `id: Date.now()`) to state + localStorage. Try API in background.
+     * READ: Load from localStorage. Try API, merge if available.
+     * UPDATE: Update state + localStorage. Try API in background.
+     * DELETE: Remove from state + localStorage. Try API in background.
+   - **Pattern to use in EVERY component that manages data**:
+     Initialize state from localStorage: const [items, setItems] = useState(() => JSON.parse(localStorage.getItem(STORAGE_KEY)) || []);
+     Sync to localStorage on change: useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items]);
+     Optional API fetch on mount: useEffect(() => fetch(url).then(r => r.json()).then(d => Array.isArray(d) && setItems(d)).catch(() => {{}}), []);
+   - API base URL: ALWAYS use `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5002').trim();`
+   - NEVER leave backendUrl undefined. Guard API calls: if (!backendUrl) return;
 
 5. **FRONTEND ARRAY SAFETY - PREVENT "X.map is not a function"**:
    - ALWAYS use safe patterns for .map(): use (items || []).map(...) or items?.map(...) - NEVER bare variable.map().
@@ -722,18 +872,24 @@ async def generate_code_from_plan(
 
 
 **CRITICAL - APP MUST RUN END-TO-END WITH ZERO MANUAL FIXES:**
-- Use SQLite only (sqlite:///./app.db). No PostgreSQL, no external DB.
-- **Backend**: MUST call `database.Base.metadata.create_all(bind=database.engine)` at startup (or @app.on_event("startup")). Import all model modules first. Tables must be created automatically - no manual migration.
-- For id columns: use `Integer` (preferred) or `from sqlalchemy.types import Uuid as UUID` – NEVER `from sqlalchemy.dialects.sqlite import UUID` or `from sqlalchemy.dialects.postgresql import UUID`.
-- Use `from_attributes = True` in Pydantic models (not orm_mode). Use `.model_dump()` not `.dict()`.
-- Use `JSON` from sqlalchemy, NOT `JSONB` (PostgreSQL-specific).
-- NEVER add "services" to requirements.txt – it is a local module.
-- **Backend routes**: Define ALL FastAPI endpoints directly in backend/main.py. NEVER use `from routes import todo_router, user_router` or create a separate routes.py. Do NOT split into router modules - keep all @app.get, @app.post, etc. in main.py to avoid ImportError.
+- Use MongoDB only. Connection string: `mongodb+srv://prashanth:BnHRQrqZHdnosfEe@cluster0.cpydc.mongodb.net/akkio?retryWrites=true&w=majority`
+- **Backend**: MUST connect to MongoDB at startup and ensure indexes. Use PyMongo (SYNCHRONOUS).
+- **Documents**: use `_id: ObjectId` from `bson`. Expose as string `id` in responses.
+- **Pydantic v2 patterns**:
+  - Use `from pydantic import BaseModel, ConfigDict, field_validator`.
+  - Use `model_config = ConfigDict(arbitrary_types_allowed=True)`.
+  - Use `.model_dump()` instead of `.dict()`.
+- **Backend structure**:
+  - `backend/models.py`: MongoDB document helpers (serialization, ObjectId conversion).
+  - `backend/schemas.py`: Pydantic BaseModel classes.
+  - `backend/database.py`: PyMongo MongoClient + get_database() (sync).
+  - `backend/main.py`: FastAPI app, synchronous endpoints (def, not async def).
+- requirements.txt MUST include ONLY: fastapi, uvicorn, pymongo, pydantic. No version numbers.
 
 **Target Architecture:**
 - Backend Framework: {backend_framework}
 - Frontend Framework: {frontend_framework}
-- Database: SQLite (sqlite:///./app.db) – runs without any setup.
+- Database: MongoDB (Synchronous PyMongo) – runs with hardcoded cloud URI.
 
 **Expected Backend Files:**
 {json.dumps(backend_files, indent=2)}
@@ -756,10 +912,11 @@ from fastapi import FastAPI
 {arch_summary}
 
 **Dependencies:**
-- **backend/requirements.txt**: Minimal only: fastapi, uvicorn, sqlalchemy, pydantic. No version numbers. Python 3.9+. Do NOT add unnecessary packages.
-- **backend/database.py**: MUST use SQLite by default (sqlite:///./app.db). No external database setup - app runs out of the box. Include connect_args={{"check_same_thread": False}} for SQLite.
-- **backend/models.py**: For UUID columns use `from sqlalchemy.types import Uuid as UUID` or `String(36)`. NEVER use `from sqlalchemy.dialects.sqlite import UUID` (SQLite has no UUID - use types.Uuid).
-- **Frontend**: Minimal deps only: react, react-dom, react-scripts. Node 20+. Add "engines": {{"node": ">=20"}} to package.json. NO Tailwind. Use styles.css. Scripts MUST include NODE_OPTIONS=--openssl-legacy-provider.
+- **backend/requirements.txt**: Minimal only: fastapi, uvicorn, pymongo, pydantic. No version numbers. Python 3.13+. Do NOT add motor (incompatible with Python 3.13). Do NOT add unnecessary packages.
+- **backend/database.py**: MUST use PyMongo (sync). Connection string is hardcoded.
+- **backend/models.py**: Handle ObjectId to string conversion.
+- **Frontend**: Minimal deps only: react, react-dom, react-scripts. Node 20+. Add "engines": {{"node": ">=20"}} to package.json. Use Tailwind CSS. Scripts MUST include NODE_OPTIONS=--openssl-legacy-provider.
+- **Frontend State**: Use ONLY React useState and useEffect for state management. Do NOT use Zustand, Redux, MobX, or any external state library. Keep all state in App.js or pass via props. Use localStorage for persistence.
 - In README.md: `pip install -r requirements.txt` and `npm install`.
 """
 
@@ -930,8 +1087,8 @@ Start generating strictly using the "FILE: <path>" format.
 
     # Prefer CRA (react-scripts) over Vite: if generated frontend has Vite or @dnd-kit, replace with minimal runnable CRA
     _normalize_frontend_package_json_to_cra(files_generated)
-    # Ensure styles.css, Node 20+ compat, no Tailwind
-    _ensure_frontend_styles_and_node_compat(files_generated)
+    # Ensure Node 20+ compat
+    _ensure_node_compat(files_generated)
     # Fix "X.map is not a function" - add (var || []) fallback for all .map() in JSX
     _fix_frontend_map_safety(files_generated)
     # Fix "cannot import todo_router from routes" - inline routes into main.py
@@ -954,6 +1111,10 @@ Start generating strictly using the "FILE: <path>" format.
     _ensure_cors_in_backend(files_generated)
     # Prevent 404 on /undefined/tasks/ - ensure API URL is never undefined
     _fix_frontend_backend_url_undefined(files_generated)
+    # Fix backend import errors (services/ directory without __init__.py)
+    _validate_and_fix_backend_imports(files_generated)
+    # Ensure styles.css is complete with all required classes
+    _ensure_complete_styles_css(files_generated)
 
     yield {
         "event": "generation_complete",

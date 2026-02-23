@@ -50,6 +50,7 @@ botocore
 # Database
 psycopg2-binary
 SQLAlchemy
+pymongo
 
 # LangChain ecosystem
 langchain

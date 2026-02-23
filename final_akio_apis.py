@@ -332,6 +332,7 @@ from api.app_creator.codegen_api import router as codegen_router
 from api.app_creator.planning_api import router as planning_router
 from api.app_creator.deployment_api import router as deployment_router
 from api.app_creator.github_api import router as github_router
+from api.app_creator.test_api import router as test_router
 
 app.include_router(app_builder_router)
 app.include_router(app_builder_apps_router, prefix="/api/app-builder")
@@ -341,6 +342,7 @@ app.include_router(codegen_router)
 app.include_router(planning_router)
 app.include_router(deployment_router)
 app.include_router(github_router)
+app.include_router(test_router)
 
 
 # Health check endpoints

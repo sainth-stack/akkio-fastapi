@@ -16,6 +16,8 @@ from app_builder.schemas.requirements import UserRequirement
 from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import get_projects_dir
 from app_builder.services.command_runner import find_free_port, process_registry
+from app_builder.agents.runner_agent import auto_fix_error
+
 
 router = APIRouter(prefix="/api/app-builder", tags=["App Builder"])
 
@@ -23,9 +25,9 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps (5000 often used by macOS AirPlay, so use 5002 for frontend)
-FIXED_BACKEND_PORT = 5001
-FIXED_FRONTEND_PORT = 5002
+# Fixed ports for generated apps
+FIXED_BACKEND_PORT = 5002
+FIXED_FRONTEND_PORT = 3000
 
 
 def kill_process_on_port(port: int) -> None:
@@ -280,49 +282,6 @@ def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) ->
     return False
 
 
-def _ensure_backend_tables_created(backend_dir: str) -> None:
-    """
-    Ensure database tables are created on startup. Patch main.py with startup event if create_all is missing.
-    Prevents 'no such table' OperationalError when hitting API.
-    """
-    main_py = os.path.join(backend_dir, "main.py")
-    if not os.path.isfile(main_py):
-        return
-    try:
-        with open(main_py, "r", encoding="utf-8") as f:
-            content = f.read()
-        if "create_all" in content or "metadata.create_all" in content:
-            return
-        block = '''
-@app.on_event("startup")
-def _ensure_tables():
-    """Create database tables if they do not exist."""
-    import database
-    try:
-        import models
-    except ImportError:
-        pass
-    for mod in ("todo", "user", "item", "task", "project", "post"):
-        try:
-            __import__(f"models.{mod}")
-        except ImportError:
-            pass
-    try:
-        database.Base.metadata.create_all(bind=database.engine)
-    except Exception as e:
-        print(f"Warning: Could not create tables: {e}")
-'''
-        if "app = FastAPI()" in content:
-            content = content.replace("app = FastAPI()", "app = FastAPI()" + block, 1)
-        elif "app=FastAPI()" in content:
-            content = content.replace("app=FastAPI()", "app=FastAPI()" + block, 1)
-        else:
-            return
-        with open(main_py, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception:
-        pass
-
 
 def _safe_join_project(project_name: str, relative_path: str) -> str:
     # Prevent path traversal
@@ -409,7 +368,7 @@ def _build_tree(project_name: str) -> List[Dict[str, Any]]:
     return top_level
 
 
-def _tree_from_files_dict(files: Dict[str, str]) -> List[Dict[str, Any]]:
+def tree_from_files_dict(files: Dict[str, str]) -> List[Dict[str, Any]]:
     """Build a lightweight tree from an in-memory files dict."""
     root: List[Dict[str, Any]] = []
 
@@ -469,6 +428,7 @@ async def generate_app(request: GenerateRequest):
                 "plan": None,
                 "architecture": None,
                 "generated_files": None,
+                "template_data": None,
                 "error": ""
             }
             
@@ -500,7 +460,7 @@ async def generate_app(request: GenerateRequest):
                         files = node_output["generated_files"]
                         # Write files to disk
                         file_writer(request.project_name, files)
-                        tree = _tree_from_files_dict(files.files)
+                        tree = tree_from_files_dict(files.files)
                         yield json.dumps(
                             {"event": "files", "agent": node_name, "files": files.files, "tree": tree}
                         ) + "\n"
@@ -728,10 +688,15 @@ fi
                 stub_retry_done = False
                 db_retry_done = False
                 response_model_retry_done = False
-                for attempt in range(30):  # 30 seconds max wait
+                llm_fix_attempts = 0
+                max_llm_fix_attempts = 2
+
+                for attempt in range(60):  # Increased timeout to 60s to allow for LLM fixes
                     if backend_proc.return_code() is not None:
                         _, logs = backend_proc.get_logs()
-                        log_content = "\n".join(logs[-25:]) if logs else "No logs captured"
+                        log_content = "\n".join(logs[-50:]) if logs else "No logs captured"
+                        
+                        # Existing specific fixes
                         if not stub_retry_done and "ModuleNotFoundError" in log_content:
                             if _try_create_missing_backend_module_stub(backend_dir, log_content):
                                 stub_retry_done = True
@@ -754,7 +719,7 @@ fi
                                 command=["/bin/bash", "-c", backend_cmd],
                                 cwd=backend_dir,
                                 env=backend_env,
-                            )
+                                )
                             backend_proc.start()
                             last_log_idx = 0
                             await asyncio.sleep(1)
@@ -772,14 +737,40 @@ fi
                             last_log_idx = 0
                             await asyncio.sleep(1)
                             continue
+                        
+                        # New LLM-based general fix
+                        if llm_fix_attempts < max_llm_fix_attempts:
+                            llm_fix_attempts += 1
+                            yield json.dumps({"event": "status", "message": f"Backend failed. Attempting LLM auto-fix (attempt {llm_fix_attempts}/{max_llm_fix_attempts})..."}) + "\n"
+                            
+                            # Capture logs for LLM
+                            full_logs = "\n".join(logs)
+                            success = await auto_fix_error(project_name, project_root, full_logs, "backend")
+                            
+                            if success:
+                                yield json.dumps({"event": "status", "message": "LLM fix applied successfully, retrying backend..."}) + "\n"
+                                backend_proc = process_registry.create(
+                                    name=f"{project_name}:backend",
+                                    command=["/bin/bash", "-c", backend_cmd],
+                                    cwd=backend_dir,
+                                    env=backend_env,
+                                )
+                                backend_proc.start()
+                                last_log_idx = 0
+                                await asyncio.sleep(1)
+                                continue
+                            else:
+                                yield json.dumps({"event": "status", "message": "LLM fix failed to apply."}) + "\n"
+
                         # Backend failed - continue to frontend anyway (frontend runs with or without backend)
                         backend_url = None
                         backend_proc = None
                         yield json.dumps({
                             "event": "warning",
-                            "message": f"Backend failed to start. Frontend will run without backend.\n\nLogs:\n{log_content}"
+                            "message": f"Backend failed to start after fixes. Frontend will run without backend.\n\nLogs:\n{log_content}"
                         }) + "\n"
                         break
+
                     
                     # Stream logs to user
                     next_idx, lines = backend_proc.get_logs(since=last_log_idx)
@@ -907,8 +898,11 @@ fi
                 
                 last_log_idx = 0
                 frontend_ready = False
+                frontend_fix_attempts = 0
+                max_frontend_fix_attempts = 2
+
                 # FIXED: Increase timeout for frontend compilation and add better error checking
-                for attempt in range(60):  # 60 seconds for frontend (needs more time for compilation)
+                for attempt in range(120):  # 120 seconds for frontend (allowing for fixes)
                     await asyncio.sleep(1)
                     
                     # Check if frontend process crashed
@@ -916,7 +910,29 @@ fi
                         # Brief wait so reader thread flushes stdout; then get full log
                         await asyncio.sleep(0.5)
                         _, lines = frontend_proc.get_logs(since=0)
-                        all_logs = "\n".join(lines).strip() or "No output captured (process may have exited before npm produced output; check that node/npm are on PATH)."
+                        all_logs = "\n".join(lines).strip() or "No output captured"
+                        
+                        if frontend_fix_attempts < max_frontend_fix_attempts:
+                            frontend_fix_attempts += 1
+                            yield json.dumps({"event": "status", "message": f"Frontend crashed. Attempting LLM auto-fix (attempt {frontend_fix_attempts}/{max_frontend_fix_attempts})..."}) + "\n"
+                            
+                            success = await auto_fix_error(project_name, project_root, all_logs, "frontend")
+                            
+                            if success:
+                                yield json.dumps({"event": "status", "message": "LLM fix applied successfully, retrying frontend..."}) + "\n"
+                                frontend_proc = process_registry.create(
+                                    name=f"{project_name}:frontend",
+                                    command=["/bin/bash", "-c", frontend_cmd],
+                                    cwd=frontend_dir,
+                                    env=frontend_env,
+                                )
+                                frontend_proc.start()
+                                last_log_idx = 0
+                                await asyncio.sleep(1)
+                                continue
+                            else:
+                                yield json.dumps({"event": "status", "message": "LLM fix failed to apply."}) + "\n"
+
                         yield json.dumps({
                             "event": "error",
                             "message": f"Frontend process exited with code {frontend_proc.return_code()}.\n\nLogs:\n{all_logs}"
@@ -924,6 +940,7 @@ fi
                         if backend_proc:
                             backend_proc.terminate()
                         return
+
                     
                     # Stream logs and check for errors
                     next_idx, lines = frontend_proc.get_logs(since=last_log_idx)
