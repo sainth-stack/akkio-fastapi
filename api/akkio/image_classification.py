@@ -755,7 +755,7 @@ Note: The classification model could not analyze this image. Provide helpful gen
                     {"role": "user", "content": user_message}
                 ],
                 temperature=0.7,
-                max_tokens=500,
+                max_completion_tokens=500,
                 email=user_email
             )
 

@@ -547,7 +547,7 @@ def _llm_generate_chart_title(query: str, x_col: str, y_col: str, chart_type: st
             model=None,
             messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
             temperature=0.3,
-            max_tokens=50,
+            max_completion_tokens=50,
         )
         
         title = ""

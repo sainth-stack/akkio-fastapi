@@ -85,27 +85,29 @@ def call_llm_with_usage(
         model = get_model_name(email)
     
     client = get_openai_client(email)
-    try:
-        request_args = {
-            "model": model,
-            "messages": messages,
-            **kwargs,
-        }
-        # Some models only support provider-default temperature and reject explicit values.
-        if temperature is not None:
-            request_args["temperature"] = temperature
+    request_args = {
+        "model": model,
+        "messages": messages,
+        **kwargs,
+    }
+    # Some models only support provider-default temperature and reject explicit values.
+    if temperature is not None:
+        request_args["temperature"] = temperature
 
-        response = client.chat.completions.create(
-            **request_args
-        )
-        
-        # Track usage
-        record_llm_usage(email, response)
-        
-        return response
+    try:
+        response = client.chat.completions.create(**request_args)
     except Exception as e:
-        # Rethrow or handle? For now rethrow so caller handles logic
-        raise e
+        # Retry without temperature if model doesn't support custom values (e.g. o1, reasoning models)
+        err_msg = str(e).lower()
+        if temperature is not None and ("temperature" in err_msg and ("unsupported" in err_msg or "does not support" in err_msg)):
+            request_args.pop("temperature", None)
+            response = client.chat.completions.create(**request_args)
+        else:
+            raise e
+
+    # Track usage
+    record_llm_usage(email, response)
+    return response
 
 
 async def stream_llm_with_usage(
@@ -138,45 +140,41 @@ async def stream_llm_with_usage(
     client = get_openai_client(email)
     full_content = ""
     full_response = None
-    
-    try:
-        request_args = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            **kwargs,
-        }
-        if temperature is not None:
-            request_args["temperature"] = temperature
 
+    request_args = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        **kwargs,
+    }
+    if temperature is not None:
+        request_args["temperature"] = temperature
+
+    try:
         stream = client.chat.completions.create(**request_args)
-        
-        for chunk in stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    content = delta.content
-                    full_content += content
-                    yield content
-            
-            # Store the last chunk for usage tracking
-            if chunk.choices and len(chunk.choices) > 0:
-                full_response = chunk
-        
-        # Track usage with accumulated response
-        # Create a mock response object for usage tracking
-        if full_response:
-            # We need to reconstruct a response-like object for usage tracking
-            # For now, we'll track tokens manually or skip detailed tracking for streams
-            # The usage tracking function expects a response object with usage attribute
-            try:
-                # Try to get usage from the stream if available
-                if hasattr(full_response, 'usage') and full_response.usage:
-                    record_llm_usage(email, full_response)
-            except Exception:
-                # If we can't track usage from stream, we'll skip it
-                # In production, you might want to estimate tokens or track differently
-                pass
-                
     except Exception as e:
-        raise e
+        # Retry without temperature if model doesn't support custom values
+        err_msg = str(e).lower()
+        if temperature is not None and ("temperature" in err_msg and ("unsupported" in err_msg or "does not support" in err_msg)):
+            request_args.pop("temperature", None)
+            stream = client.chat.completions.create(**request_args)
+        else:
+            raise e
+
+    for chunk in stream:
+        if chunk.choices and len(chunk.choices) > 0:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                content = delta.content
+                full_content += content
+                yield content
+
+        if chunk.choices and len(chunk.choices) > 0:
+            full_response = chunk
+
+    if full_response:
+        try:
+            if hasattr(full_response, 'usage') and full_response.usage:
+                record_llm_usage(email, full_response)
+        except Exception:
+            pass

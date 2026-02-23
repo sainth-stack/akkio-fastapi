@@ -233,14 +233,14 @@ def _ensure_node_compat(files: Dict[str, str]) -> None:
             files[pkg_path] = json.dumps(pkg, indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
-iles[f]
 
 
 # Core backend packages for FastAPI + SQLite (no version numbers, no external DB)
 _BACKEND_CORE_PACKAGES = ["fastapi", "uvicorn", "sqlalchemy", "pydantic"]
 
 # PyPI packages to NEVER add - usually local modules in generated apps (services, etc.)
-_BACKEND_BLOCKLIST = {"services", "motor"}
+# "bson" = standalone package that conflicts with pymongo's built-in bson (ImportError: cannot import SON)
+_BACKEND_BLOCKLIST = {"services", "motor", "bson"}
 
 
 def _normalize_backend_requirements(files: Dict[str, str]) -> None:
@@ -483,7 +483,7 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
     request to /undefined/tasks/ (relative URL). Fix by ensuring proper fallback.
     """
     safe_backend_url_expr = (
-        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5002').trim()"
+        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5003').trim()"
     )
     for path in list(files.keys()):
         if not path.startswith("frontend/") or path.split(".")[-1] not in ("js", "jsx", "ts", "tsx"):
@@ -517,15 +517,15 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
                 changed = True
 
         # Fix: (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || '').trim()
-        # Replace || '' with || 'http://localhost:5002' for dev default
+        # Replace || '' with || 'http://localhost:5003' for dev default
         if "process.env.REACT_APP_BACKEND_URL" in content or "process.env.VITE_BACKEND_URL" in content:
             # Ensure we have a default so it's never undefined
             content = re.sub(
                 r"(\|\|\s*['\"]['\"]\s*)\s*\)\s*\.trim\(\)",
-                "|| 'http://localhost:5002').trim()",
+                "|| 'http://localhost:5003').trim()",
                 content,
             )
-            if "|| 'http://localhost:5002'" in content or "|| \"http://localhost:5002\"" in content:
+            if "|| 'http://localhost:5003'" in content or "|| \"http://localhost:5003\"" in content:
                 changed = True
 
         # Fix generic: any var = process.env.REACT_APP_BACKEND_URL (single env, no fallback)
@@ -546,13 +546,13 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
             content = new_content
             changed = True
 
-        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5002'}
+        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5003'}
         for var in ("backendUrl", "apiUrl", "apiBase", "baseUrl", "API_URL"):
             pat = re.escape(f"${{{var}}}") + r"(?!\s*\|\|)"  # Match ${var} not already followed by ||
             if re.search(pat, content):
                 content = re.sub(
                     pat,
-                    f"${{{var} || 'http://localhost:5002'}}",
+                    f"${{{var} || 'http://localhost:5003'}}",
                     content,
                 )
                 changed = True
@@ -861,7 +861,7 @@ async def generate_code_from_plan(
      Initialize state from localStorage: const [items, setItems] = useState(() => JSON.parse(localStorage.getItem(STORAGE_KEY)) || []);
      Sync to localStorage on change: useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items]);
      Optional API fetch on mount: useEffect(() => fetch(url).then(r => r.json()).then(d => Array.isArray(d) && setItems(d)).catch(() => {{}}), []);
-   - API base URL: ALWAYS use `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5002').trim();`
+   - API base URL: ALWAYS use `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5003').trim();`
    - NEVER leave backendUrl undefined. Guard API calls: if (!backendUrl) return;
 
 5. **FRONTEND ARRAY SAFETY - PREVENT "X.map is not a function"**:

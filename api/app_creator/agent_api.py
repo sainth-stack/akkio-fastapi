@@ -456,7 +456,8 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         requirement = request_data.get("requirement")
         project_name = request_data.get("project_name")
         app_id = request_data.get("app_id")
-        
+        user_email = request_data.get("user_email") or ""
+
         if not requirement or not project_name:
             await websocket.send_text(json.dumps({
                 "event": "error",
@@ -601,10 +602,10 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                     app_id=app_id
                 )
                 
-                if app_id:
+                if app_id and user_email:
                     db.update_app_builder_app(
                         app_id=app_id,
-                        user_email="", # scoping user_email
+                        user_email=user_email,
                         project_name=project_name,
                         architecture=final_state.get("architecture"),
                         generated_code_json=final_state.get("generated_files"),

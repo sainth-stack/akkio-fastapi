@@ -97,7 +97,7 @@ Rules:
 2. Add new tables, columns, or components required by the update.
 3. Stay consistent with MongoDB and the current tech stack.
 4. Python 3.13 compatibility: NEVER use Motor (use PyMongo sync). Use Pydantic v2 (model_config, .model_dump()).
-5. Hardcode the Backend Base URL to `http://localhost:5002` if updating API calls.
+5. Hardcode the Backend Base URL to `http://localhost:5003` if updating API calls.
 
 Respond ONLY with a valid JSON object matching the architecture schema."""
 

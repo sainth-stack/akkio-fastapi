@@ -1159,7 +1159,7 @@ def generate_code4(prompt_eng):
             {"role": "user", "content": prompt_eng}
         ],
         temperature=0.7,  # Add some randomness for variety in chart generation
-        max_tokens=4000
+        max_completion_tokens=4000
     )
 
     all_text = ""
@@ -1482,7 +1482,7 @@ def generate_text(prompt: str, email: Optional[str] = None) -> str:
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
-        max_tokens=800
+        max_completion_tokens=800
     )
     # Track AI credits usage
     record_llm_usage(email, response)
@@ -1534,7 +1534,7 @@ def generate_prediction_insights_llm(payload: Dict[str, Any]) -> Dict[str, Any]:
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
-        max_tokens=600,
+        max_completion_tokens=600,
     )
     text = (resp.choices[0].message.content or "").strip()
     data = json.loads(text)
@@ -3334,7 +3334,7 @@ def generate_text_from_json(json_data: dict) -> str:
             {"role": "user", "content": full_prompt}
         ],
         temperature=0.3,
-        max_tokens=500
+        max_completion_tokens=500
     )
     return response.choices[0].message.content.strip()
 

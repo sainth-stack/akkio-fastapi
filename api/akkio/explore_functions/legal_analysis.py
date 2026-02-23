@@ -104,7 +104,7 @@ def analyze_legal_content(df: pd.DataFrame, query: str, email: str = None) -> st
                 {"role": "system", "content": "You are a senior legal analysis expert specializing in UAE legal documents and regulations. Provide comprehensive, professional legal analysis in the exact HTML format requested."},
                 {"role": "user", "content": analysis_prompt}
             ],
-            max_tokens=2000,
+            max_completion_tokens=2000,
             temperature=0.3,
             email=email
         )

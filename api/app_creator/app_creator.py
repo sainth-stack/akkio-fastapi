@@ -25,9 +25,9 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps
-FIXED_BACKEND_PORT = 5002
-FIXED_FRONTEND_PORT = 3000
+# Fixed ports for generated apps (frontend on 5002, backend on 5003 to avoid conflict)
+FIXED_BACKEND_PORT = 5003
+FIXED_FRONTEND_PORT = 5002
 
 
 def kill_process_on_port(port: int) -> None:
@@ -237,6 +237,67 @@ def _try_patch_backend_response_model(backend_dir: str, log_content: str) -> boo
     except Exception:
         pass
     return False
+
+
+def _ensure_backend_tables_created(backend_dir: str) -> None:
+    """
+    Ensure database tables exist before starting uvicorn. Best-effort only;
+    generated apps have a startup event in main.py that creates tables when
+    uvicorn starts, so this is a pre-flight check. Failures are ignored.
+    """
+    if not os.path.isdir(backend_dir):
+        return
+    venv_python = os.path.join(backend_dir, "venv", "bin", "python")
+    python_cmd = venv_python if os.path.isfile(venv_python) else "python3"
+    for script in [
+        # database.Base + models package
+        "import sys; sys.path.insert(0, %r); import database; "
+        "import models; database.Base.metadata.create_all(bind=database.engine)",
+        # Try models.Base (some generators use models.Base)
+        "import sys; sys.path.insert(0, %r); import database; "
+        "import models; models.Base.metadata.create_all(bind=database.engine)",
+    ]:
+        try:
+            r = subprocess.run(
+                [python_cmd, "-c", script % backend_dir],
+                cwd=backend_dir,
+                capture_output=True,
+                timeout=10,
+            )
+            if r.returncode == 0:
+                break
+        except Exception:
+            pass
+
+
+def _try_fix_backend_bson_pymongo_conflict(backend_dir: str, log_content: str) -> bool:
+    """
+    Fix ImportError: cannot import name 'SON' from 'bson'.
+    Standalone 'bson' package from PyPI conflicts with pymongo's built-in bson.
+    Uninstall standalone bson, reinstall pymongo so pymongo's bson is used.
+    """
+    if "cannot import name 'SON' from 'bson'" not in log_content:
+        return False
+    venv_pip = os.path.join(backend_dir, "venv", "bin", "pip")
+    if not os.path.isfile(venv_pip):
+        return False
+    try:
+        # Uninstall standalone bson (conflicts), reinstall pymongo
+        subprocess.run(
+            [venv_pip, "uninstall", "bson", "-y"],
+            cwd=backend_dir,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            [venv_pip, "install", "--force-reinstall", "pymongo"],
+            cwd=backend_dir,
+            capture_output=True,
+            timeout=60,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) -> bool:
@@ -656,6 +717,8 @@ async def run_project(project_name: str, request: RunRequest):
 if [ ! -d "venv" ]; then 
     {python_cmd} -m venv venv
 fi
+# Remove standalone bson if present (conflicts with pymongo's built-in bson)
+{venv_pip} uninstall bson -y 2>/dev/null || true
 {venv_pip} install -q -r requirements.txt
 {venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}
 """
@@ -687,6 +750,7 @@ fi
                 last_log_idx = 0
                 stub_retry_done = False
                 db_retry_done = False
+                bson_retry_done = False
                 response_model_retry_done = False
                 llm_fix_attempts = 0
                 max_llm_fix_attempts = 2
@@ -696,6 +760,20 @@ fi
                         _, logs = backend_proc.get_logs()
                         log_content = "\n".join(logs[-50:]) if logs else "No logs captured"
                         
+                        # Fix bson/pymongo conflict (standalone bson shadows pymongo's bson)
+                        if not bson_retry_done and _try_fix_backend_bson_pymongo_conflict(backend_dir, log_content):
+                            bson_retry_done = True
+                            yield json.dumps({"event": "status", "message": "Fixed bson/pymongo conflict, retrying backend..."}) + "\n"
+                            backend_proc = process_registry.create(
+                                name=f"{project_name}:backend",
+                                command=["/bin/bash", "-c", backend_cmd],
+                                cwd=backend_dir,
+                                env=backend_env,
+                            )
+                            backend_proc.start()
+                            last_log_idx = 0
+                            await asyncio.sleep(1)
+                            continue
                         # Existing specific fixes
                         if not stub_retry_done and "ModuleNotFoundError" in log_content:
                             if _try_create_missing_backend_module_stub(backend_dir, log_content):

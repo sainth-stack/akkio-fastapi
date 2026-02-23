@@ -64,6 +64,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         project_name = request_data.get("project_name")
         uiux = request_data.get("uiux", "") or ""
         app_id = request_data.get("app_id")
+        user_email = request_data.get("user_email") or ""
 
         # When PRD/UIUX not in request, load from DB
         if (not prd or not uiux) and (app_id or project_name):
@@ -151,11 +152,11 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 generated_code_json=files,
             )
             
-            # Also update the main app record if app_id available
-            if app_id:
+            # Also update the main app record if app_id and user_email available
+            if app_id and user_email:
                 db.update_app_builder_app(
                     app_id=app_id,
-                    user_email=None,
+                    user_email=user_email,
                     generated_code_json=files
                 )
         except Exception as store_err:

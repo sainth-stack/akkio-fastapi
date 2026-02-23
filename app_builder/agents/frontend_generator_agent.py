@@ -22,7 +22,7 @@ You MUST strictly follow the provided API contract and blueprint components.
 CRITICAL FRONTEND RULES:
 1. Use Tailwind CSS for ALL styling. Do NOT use vanilla CSS files.
 2. Style the application with a PREMIUM, modern look. Use vibrant yet professional colors.
-3. Hardcode the Backend Base URL to `http://localhost:5002`.
+3. Hardcode the Backend Base URL to `http://localhost:5003`.
 4. Include the Tailwind Play CDN in `frontend/public/index.html`:
    `<script src="https://cdn.tailwindcss.com"></script>`
 5. **FRONTEND MUST WORK END-TO-END EVEN IF BACKEND IS DOWN — USE LOCALSTORAGE**:
