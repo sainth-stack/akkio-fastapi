@@ -35,9 +35,9 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps (frontend on 5002, backend on 5001)
-FIXED_BACKEND_PORT = 5001
-FIXED_FRONTEND_PORT = 5002
+# Fixed ports for generated apps (frontend on 5003, backend on 5004)
+FIXED_BACKEND_PORT = 5004
+FIXED_FRONTEND_PORT = 5003
 
 
 def kill_process_on_port(port: int) -> None:
@@ -856,13 +856,14 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                 # Write .env so CRA/Vite reliably gets backend URL (avoids undefined in browser)
                 # Use empty REACT_APP_BACKEND_URL so frontend falls back to window.location.hostname - works
                 # for localhost (dev) and EC2/public IP (deployment). Templates use getBackendUrl() which
-                # returns window.location.protocol//hostname:5001 when env is empty.
+                # returns window.location.protocol//hostname:5004 when env is empty.
                 backend_url_val = ""
                 env_file = os.path.join(frontend_dir, ".env")
                 try:
                     with open(env_file, "w", encoding="utf-8") as f:
                         f.write(f"PORT={frontend_port}\n")
-                        f.write(f"HOST=0.0.0.0\n")
+                        f.write("HOST=0.0.0.0\n")
+                        f.write("DANGEROUSLY_DISABLE_HOST_CHECK=true\n")
                         f.write(f"REACT_APP_BACKEND_URL={backend_url_val}\n")
                         f.write(f"VITE_BACKEND_URL={backend_url_val}\n")
                         f.write("BROWSER=none\n")
@@ -870,10 +871,12 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                     yield json.dumps({"event": "warning", "message": f"Could not write .env: {e}"}) + "\n"
                 # Use full env so node/npm/nvm are on PATH; then override app vars
                 # HOST=0.0.0.0 so React dev server listens on all interfaces (EC2 deployment)
+                # DANGEROUSLY_DISABLE_HOST_CHECK=true so CRA accepts requests from external IP (not just localhost)
                 frontend_env = dict(os.environ)
                 frontend_env.update({
                     "PORT": str(frontend_port),
                     "HOST": "0.0.0.0",
+                    "DANGEROUSLY_DISABLE_HOST_CHECK": "true",
                     "BROWSER": "none",
                     "REACT_APP_BACKEND_URL": backend_url_val,
                     "VITE_BACKEND_URL": backend_url_val,

@@ -17,9 +17,9 @@ function getBackendUrl() {
   if (env) return env;
   if (typeof window !== 'undefined') {
     if (window.__BACKEND_URL__) return window.__BACKEND_URL__;
-    return `${window.location.protocol}//${window.location.hostname}:5001`;
+    return `${window.location.protocol}//${window.location.hostname}:5004`;
   }
-  return 'http://localhost:5001';
+  return 'http://localhost:5004';
 }
 
 function App() {
@@ -66,7 +66,7 @@ function App() {
       setError(
         cachedList.length > 0
           ? 'Backend not running. Cached ideas below – click to view.'
-          : 'Backend not running. Add OPENAI_API_KEY to .env and start backend (cd backend && uvicorn main:app --port 5001) for AI ideas.',
+          : 'Backend not running. Add OPENAI_API_KEY to .env and start backend (cd backend && uvicorn main:app --port 5004) for AI ideas.',
       );
       setCachedList(getCache());
     } finally {

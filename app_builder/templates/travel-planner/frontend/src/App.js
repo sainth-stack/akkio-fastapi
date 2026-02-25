@@ -193,9 +193,9 @@ function App() {
     if (env) return env;
     if (typeof window !== 'undefined') {
       if (window.__BACKEND_URL__) return window.__BACKEND_URL__;
-      return `${window.location.protocol}//${window.location.hostname}:5001`;
-    }
-    return 'http://localhost:5001';
+return `${window.location.protocol}//${window.location.hostname}:5004`;
+  }
+  return 'http://localhost:5004';
   };
   const backendUrl = getBackendUrl();
   return (

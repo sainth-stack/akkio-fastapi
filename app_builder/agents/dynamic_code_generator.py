@@ -483,7 +483,7 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
     """
     safe_backend_url_expr = (
         "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || "
-        "(typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()"
+        "(typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5004') : 'http://localhost:5004')).trim()"
     )
     for path in list(files.keys()):
         if not path.startswith("frontend/") or path.split(".")[-1] not in ("js", "jsx", "ts", "tsx"):
@@ -517,18 +517,18 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
                 changed = True
 
         # Upgrade static localhost to dynamic URL (works when deployed on different host)
-        static_pat = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5001['\"]\s*\)\s*\.trim\(\)"
+        static_pat = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5004['\"]\s*\)\s*\.trim\(\)"
         if re.search(static_pat, content):
             content = re.sub(static_pat, safe_backend_url_expr, content)
             changed = True
-        static_pat2 = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5001['\"]\s*\)\s*\.trim\(\)"
+        static_pat2 = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5004['\"]\s*\)\s*\.trim\(\)"
         if re.search(static_pat2, content):
             content = re.sub(static_pat2, safe_backend_url_expr, content)
             changed = True
         # Fix: (process.env.X || '').trim() - replace empty fallback with dynamic
         new_content = re.sub(
             r"(\|\|\s*['\"]['\"]\s*)\s*\)\s*\.trim\(\)",
-            "|| (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()",
+            "|| (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5004') : 'http://localhost:5004')).trim()",
             content,
         )
         if new_content != content:
@@ -553,13 +553,13 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
             content = new_content
             changed = True
 
-        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5001'}
+        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5004'}
         for var in ("backendUrl", "apiUrl", "apiBase", "baseUrl", "API_URL"):
             pat = re.escape(f"${{{var}}}") + r"(?!\s*\|\|)"  # Match ${var} not already followed by ||
             if re.search(pat, content):
                 content = re.sub(
                     pat,
-                    f"${{{var} || 'http://localhost:5001'}}",
+                    f"${{{var} || 'http://localhost:5004'}}",
                     content,
                 )
                 changed = True
@@ -887,7 +887,7 @@ async def generate_code_from_plan(
      Initialize state from localStorage: const [items, setItems] = useState(() => JSON.parse(localStorage.getItem(STORAGE_KEY)) || []);
      Sync to localStorage on change: useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items]);
      Optional API fetch on mount: useEffect(() => fetch(url).then(r => r.json()).then(d => Array.isArray(d) && setItems(d)).catch(() => {{}}), []);
-   - API base URL: Use dynamic URL for local + deployment: `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim();`
+   - API base URL: Use dynamic URL for local + deployment: `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5004') : 'http://localhost:5004')).trim();`
    - NEVER leave backendUrl undefined. Guard API calls: if (!backendUrl) return;
 
 5. **FRONTEND ARRAY SAFETY - PREVENT "X.map is not a function"**:

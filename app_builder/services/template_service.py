@@ -172,7 +172,7 @@ root.render(<React.StrictMode><App /></React.StrictMode>);
             "private": True,
             "dependencies": {"react": "^18.2.0", "react-dom": "^18.2.0", "react-scripts": "5.0.1"},
             "scripts": {
-                "start": "PORT=5002 NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
+                "start": "HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=5003 NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
                 "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build",
             },
             "engines": {"node": ">=20"},

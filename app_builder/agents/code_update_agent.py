@@ -162,7 +162,7 @@ Rules:
 2. Add new tables, columns, or components required by the update.
 3. Stay consistent with SQLite/SQLAlchemy and the current tech stack.
 4. Python 3.13 compatibility. Use Pydantic v2 (model_config, .model_dump()).
-5. Use dynamic backend URL: env vars first, then derive from window.location (same host + :5001) for deployment.
+5. Use dynamic backend URL: env vars first, then derive from window.location (same host + :5004) for deployment.
 
 Respond ONLY with a valid JSON object matching the architecture schema."""
 
