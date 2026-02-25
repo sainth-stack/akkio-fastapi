@@ -5,6 +5,71 @@ from typing import Dict, Any, Optional
 from llm_helper import get_llm_for_user
 
 
+async def tailor_template_to_requirement(
+    template_files: Dict[str, str],
+    user_requirement: str,
+    template_name: str,
+) -> Dict[str, str]:
+    """
+    Tailor template files to user's requirement: update styles, colors, field names, functionality.
+    Uses same surgical update logic as update_code_from_chat but on in-memory files.
+    """
+    if not template_files:
+        return template_files
+    req = (user_requirement or "").strip()
+    req_lower = req.lower()
+    files_to_tailor = [
+        p for p in ["frontend/src/styles.css", "frontend/styles.css", "frontend/src/App.js", "frontend/App.js"]
+        if p in template_files
+    ]
+    if not files_to_tailor:
+        files_to_tailor = [p for p in template_files if p.endswith((".css", ".js", ".jsx")) and "node_modules" not in p][:3]
+    if not files_to_tailor:
+        return template_files
+    llm = get_llm_for_user(None, temperature=0.15)
+    result = dict(template_files)
+    for rel_path in files_to_tailor:
+        existing = result.get(rel_path, "")
+        if not existing or len(existing) > 15000:
+            continue
+        prompt = f"""You are updating a file for a "{template_name}" template. The user requested: "{req}"
+
+CURRENT FILE ({rel_path}):
+```
+{existing[:8000]}{"..." if len(existing) > 8000 else ""}
+```
+
+Update this file to match the user's requirement:
+- STYLING: Adjust colors, fonts, spacing, borders, shadows if they mentioned appearance, theme, or layout
+- ALIGNMENT: Fix alignment, padding, margins, centering, grid/flex layout per their preference
+- LAYOUT: Improve spacing, whitespace, component positioning for a clean, polished look
+- FIELDS/FEATURES: Change field names, labels, or add features if they mentioned functionality
+Keep the structure and don't break the app. Return the COMPLETE updated file.
+
+Respond ONLY with a JSON object: {{"content": "FULL_UPDATED_FILE_CONTENT"}}"""
+        try:
+            resp = await llm.ainvoke(prompt)
+            text = resp.content if hasattr(resp, "content") else str(resp)
+            m = re.search(r"\{[\s\S]*\"content\"[\s\S]*\}", text)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    try:
+                        from json_repair import repair_json
+                        data = json.loads(repair_json(m.group(0)))
+                    except Exception:
+                        continue
+                content = data.get("content", "").strip()
+                if content and len(content) > 50:
+                    result[rel_path] = content
+                    print(f"[tailor] updated {rel_path} for requirement")
+        except Exception as e:
+            print(f"[tailor] skip {rel_path}: {e}")
+            continue
+    return result
+
+
 async def update_code_from_chat(
     project_name: str,
     project_root: str,
@@ -95,9 +160,9 @@ User Request:
 Rules:
 1. Preserve existing tables, columns, and components unless they need modification.
 2. Add new tables, columns, or components required by the update.
-3. Stay consistent with MongoDB and the current tech stack.
-4. Python 3.13 compatibility: NEVER use Motor (use PyMongo sync). Use Pydantic v2 (model_config, .model_dump()).
-5. Hardcode the Backend Base URL to `http://localhost:5003` if updating API calls.
+3. Stay consistent with SQLite/SQLAlchemy and the current tech stack.
+4. Python 3.13 compatibility. Use Pydantic v2 (model_config, .model_dump()).
+5. Use dynamic backend URL: env vars first, then derive from window.location (same host + :5001) for deployment.
 
 Respond ONLY with a valid JSON object matching the architecture schema."""
 
@@ -181,10 +246,11 @@ Your job: Decide which files need to be CREATED or MODIFIED to fulfill the reque
 
 Rules:
 1. If the request is about UI (inputs, buttons, forms, tables, styling, layout) → include frontend JS/JSX/CSS files.
-2. If the request is about data, API, or backend logic → include backend Python files.
-3. If both are needed, include both.
-4. Be precise — only list files that genuinely need changes.
-5. For new files that don't exist yet, include them with path relative to project root.
+2. If the request mentions colors, theme, appearance, or styles → ALWAYS include ALL .css files (e.g. frontend/src/styles.css, frontend/src/App.css).
+3. If the request is about data, API, or backend logic → include backend Python files.
+4. If both are needed, include both.
+5. Be precise — only list files that genuinely need changes.
+6. For new files that don't exist yet, include them with path relative to project root.
 
 Respond ONLY with a valid JSON object (no markdown):
 {{
@@ -213,6 +279,13 @@ Respond ONLY with a valid JSON object (no markdown):
 
         files_to_change = plan_data.get("files_to_change", [])
         reasoning = plan_data.get("reasoning", "")
+        style_keywords = ("color", "colour", "style", "theme", "appearance", "css", "styling")
+        if any(k in user_request.lower() for k in style_keywords):
+            css_in_project = [p for p in files_context if p.endswith(".css")]
+            paths_in_plan = {f.get("path", "") for f in files_to_change}
+            for css_path in css_in_project:
+                if css_path not in paths_in_plan:
+                    files_to_change.append({"path": css_path, "action": "modify", "reason": "User requested style/color changes"})
         print(f"[Step 2] Files to change: {[f['path'] for f in files_to_change]}")
 
         if not files_to_change:
@@ -226,12 +299,10 @@ Respond ONLY with a valid JSON object (no markdown):
 
     except Exception as e:
         print(f"[Step 2] Planning failed: {e}. Falling back to single-step update.")
-        # Fallback: treat all frontend files as candidates
-        files_to_change = [
-            {"path": p, "action": "modify", "reason": "fallback"}
-            for p in files_context
-            if p.endswith(('.js', '.jsx', '.tsx', '.css'))
-        ][:5]
+        candidates = [(p, 1 if p.endswith(".css") and any(k in user_request.lower() for k in ("color", "colour", "style", "theme", "css")) else 0)
+                     for p in files_context if p.endswith(('.js', '.jsx', '.tsx', '.css'))]
+        candidates.sort(key=lambda x: -x[1])
+        files_to_change = [{"path": p, "action": "modify", "reason": "fallback"} for p, _ in candidates[:8]]
         reasoning = ""
 
     # ── STEP 3: Surgical Re-generation — update files ────────────────────────
@@ -320,13 +391,18 @@ Respond ONLY with a JSON object:
             file_response = await llm.ainvoke(file_prompt)
             file_text = file_response.content if hasattr(file_response, 'content') else str(file_response)
 
-            # Parse JSON response
             fj_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', file_text, re.DOTALL)
-            if fj_match:
-                file_data = json.loads(fj_match.group(1))
-            else:
-                obj_match = re.search(r'\{[\s\S]*\}', file_text)
-                file_data = json.loads(obj_match.group(0)) if obj_match else json.loads(file_text.strip())
+            json_str = fj_match.group(1).strip() if fj_match else (
+                obj_match.group(0) if (obj_match := re.search(r'\{[\s\S]*\}', file_text)) else file_text.strip()
+            )
+            try:
+                file_data = json.loads(json_str)
+            except json.JSONDecodeError:
+                try:
+                    from json_repair import repair_json
+                    file_data = json.loads(repair_json(json_str))
+                except ImportError:
+                    raise
 
             new_content = file_data.get("content", "").strip()
             analysis = file_data.get("analysis", "")
@@ -344,10 +420,17 @@ You likely truncated the file. Write the FULL content."""
                 retry_text = retry_response.content if hasattr(retry_response, 'content') else str(retry_response)
                 
                 fj2 = re.search(r'```(?:json)?\s*\n(.*?)\n```', retry_text, re.DOTALL)
-                if fj2: file_data = json.loads(fj2.group(1))
-                else:
-                    obj2 = re.search(r'\{[\s\S]*\}', retry_text)
-                    file_data = json.loads(obj2.group(0)) if obj2 else {}
+                json_str2 = fj2.group(1).strip() if fj2 else (
+                    obj2.group(0) if (obj2 := re.search(r'\{[\s\S]*\}', retry_text)) else "{}"
+                )
+                try:
+                    file_data = json.loads(json_str2)
+                except json.JSONDecodeError:
+                    try:
+                        from json_repair import repair_json
+                        file_data = json.loads(repair_json(json_str2))
+                    except ImportError:
+                        file_data = {}
                 
                 new_content = file_data.get("content", new_content).strip()
                 analysis = file_data.get("analysis", analysis)

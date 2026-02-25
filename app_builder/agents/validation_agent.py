@@ -9,6 +9,290 @@ from app_builder.agents.dynamic_code_generator import (
 )
 
 
+# Enhanced styles applied when using templates - improves spacing, alignment, format
+POLISHED_STYLES_CSS = """/* Polished template styles - improved spacing, alignment, and format */
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-primary: #6366f1;
+  --color-primary-hover: #4f46e5;
+  --color-text: #1e293b;
+  --color-text-muted: #64748b;
+  --color-border: #e2e8f0;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  padding: var(--spacing-xl) var(--spacing-lg);
+  max-width: 720px;
+  margin: 0 auto;
+  min-height: 100vh;
+}
+
+.app-header {
+  margin-bottom: var(--spacing-xl);
+  text-align: center;
+}
+.app-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0 0 var(--spacing-sm) 0;
+  letter-spacing: -0.025em;
+}
+.app-subtitle {
+  color: var(--color-text-muted);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.section { margin-bottom: var(--spacing-xl); }
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 2px solid var(--color-border);
+}
+
+.card {
+  background: var(--color-surface);
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--color-border);
+  margin-bottom: var(--spacing-lg);
+}
+.todo-card {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(12px);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+@media (max-width: 500px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+.input-group { margin-bottom: var(--spacing-md); }
+.input-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  margin-bottom: var(--spacing-xs);
+}
+.input {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+.btn-primary {
+  background: var(--color-primary);
+  color: white;
+}
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+  transform: translateY(-1px);
+}
+.btn-danger {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.btn-danger:hover { background: #fecaca; }
+
+.filter-tabs {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+  flex-wrap: wrap;
+}
+.filter-tab {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: white;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.filter-tab:hover,
+.filter-tab.active {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+.list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: white;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: all 0.2s;
+}
+.list-item:hover {
+  transform: translateX(4px);
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+}
+
+.todo-item { gap: var(--spacing-md); }
+.todo-item-left {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  flex: 1;
+}
+.todo-checkbox {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.2rem;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+.todo-text { font-weight: 500; }
+.todo-text.completed {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+.todo-desc {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  margin-top: var(--spacing-xs);
+}
+.todo-item-completed { opacity: 0.85; }
+.todo-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.todo-badge-high { background: #fecaca; color: #b91c1c; }
+.todo-badge-medium { background: #fef3c7; color: #b45309; }
+.todo-badge-low { background: #d1fae5; color: #047857; }
+"""
+
+
+def polish_template_output(files: Dict[str, str], template_name: str) -> Dict[str, str]:
+    """
+    Improves template output: styles, format, alignment.
+    - Applies enhanced CSS for todo-list/travel-planner (light theme with consistent spacing).
+    - For language-translator/ideas-generator keeps their styles but appends alignment utilities.
+    - Normalizes code formatting (trim, collapse blanks).
+    """
+    result = dict(files)
+    # 1. Enhance styles.css - full polished version for todo/travel; append utilities for others
+    for path in ["frontend/src/styles.css", "frontend/styles.css"]:
+        if path not in result:
+            continue
+        existing = result[path]
+        if template_name in ("todo-list", "travel-planner", "vacation-budget-planner"):
+            result[path] = POLISHED_STYLES_CSS + _travel_planner_extras() if "trip-card" in existing else POLISHED_STYLES_CSS
+        else:
+            # Append alignment/format utilities without replacing template's design
+            if ".text-center" not in existing and "align-items: center" not in existing:
+                result[path] = existing.rstrip() + "\n\n/* Alignment utilities */\n.app { display: flex; flex-direction: column; align-items: center; }\n.app-header { width: 100%; }\n"
+        break
+    # 2. Normalize formatting in frontend JS/JSX
+    for path, content in list(result.items()):
+        if path.startswith("frontend/") and path.endswith((".js", ".jsx", ".ts", ".tsx")):
+            result[path] = _normalize_js_format(content)
+    return result
+
+
+def _travel_planner_extras() -> str:
+    """Extra CSS for travel-planner template (trip-card, itinerary-item)."""
+    return """
+.travel-app { max-width: 800px; margin: 0 auto; padding: var(--spacing-xl) var(--spacing-lg); }
+.trip-cards { display: flex; flex-wrap: wrap; gap: var(--spacing-md); margin-top: var(--spacing-md); }
+.trip-card { padding: var(--spacing-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s; }
+.trip-card:hover, .trip-card.selected { border-color: var(--color-primary); box-shadow: var(--shadow-md); }
+.trip-card-title { margin: 0 0 var(--spacing-xs) 0; font-size: 1rem; font-weight: 600; }
+.trip-card-dest { margin: 0; font-size: 0.875rem; color: var(--color-text-muted); }
+.trip-card-dates { margin: var(--spacing-xs) 0; font-size: 0.8rem; color: var(--color-text-muted); }
+.trip-card-budget { margin: var(--spacing-xs) 0 0 0; font-weight: 600; color: var(--color-primary); }
+.itinerary-list { display: flex; flex-direction: column; gap: var(--spacing-sm); margin-top: var(--spacing-md); }
+.itinerary-item { display: flex; align-items: flex-start; justify-content: space-between; padding: var(--spacing-md); background: white; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.itinerary-day { font-size: 0.75rem; font-weight: 600; color: var(--color-primary); }
+.itinerary-time { font-size: 0.8rem; color: var(--color-text-muted); margin-right: var(--spacing-sm); }
+.itinerary-title { display: block; margin: 0 0 var(--spacing-xs) 0; }
+.itinerary-desc { margin: 0; font-size: 0.875rem; color: var(--color-text-muted); }
+.btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
+.textarea { min-height: 80px; resize: vertical; }
+"""
+
+
+def _normalize_js_format(content: str) -> str:
+    """Normalize format: trim, collapse excessive blanks, ensure trailing newline."""
+    lines = content.split("\n")
+    out = []
+    prev_blank = False
+    for line in lines:
+        is_blank = not line.strip()
+        if is_blank:
+            if not prev_blank:
+                out.append("")
+            prev_blank = True
+        else:
+            out.append(line.rstrip())
+            prev_blank = False
+    result = "\n".join(out).strip()
+    return result + "\n" if result else ""
+
+
 def validate_and_fix_code(files: Dict[str, str], architecture: Dict[str, Any]) -> Dict[str, str]:
     """
     Validates and attempts to fix the generated code.

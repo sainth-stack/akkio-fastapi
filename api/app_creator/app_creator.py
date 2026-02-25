@@ -2,9 +2,19 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Tuple
+import logging
 import os
+
+logger = logging.getLogger("app_builder")
+# Ensure app_builder logs are visible (INFO level, console handler)
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[%(name)s] %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 import json
 import re
+import shlex
 import time
 import subprocess
 import signal
@@ -13,10 +23,10 @@ import tempfile
 
 from app_builder.graph.builder_graph import app_builder_graph
 from app_builder.schemas.requirements import UserRequirement
+from app_builder.schemas.files import GeneratedFiles
 from app_builder.services.file_writer import file_writer
-from app_builder.services.runtime_paths import get_projects_dir
+from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
 from app_builder.services.command_runner import find_free_port, process_registry
-from app_builder.agents.runner_agent import auto_fix_error
 
 
 router = APIRouter(prefix="/api/app-builder", tags=["App Builder"])
@@ -25,8 +35,8 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps (frontend on 5002, backend on 5003 to avoid conflict)
-FIXED_BACKEND_PORT = 5003
+# Fixed ports for generated apps (frontend on 5002, backend on 5001)
+FIXED_BACKEND_PORT = 5001
 FIXED_FRONTEND_PORT = 5002
 
 
@@ -56,13 +66,7 @@ def kill_process_on_port(port: int) -> None:
 
 
 def _project_root(project_name: str) -> str:
-    primary = os.path.join(PROJECTS_DIR, project_name)
-    if os.path.exists(primary):
-        return primary
-    legacy = os.path.join(LEGACY_PROJECTS_DIR, project_name)
-    if os.path.exists(legacy):
-        return legacy
-    return primary
+    return resolve_project_root(project_name)
 
 
 def _is_port_available(port: int) -> bool:
@@ -239,21 +243,27 @@ def _try_patch_backend_response_model(backend_dir: str, log_content: str) -> boo
     return False
 
 
+def _is_mongodb_backend(backend_dir: str) -> bool:
+    for name in ("database.py", "db.py", "config.py"):
+        path = os.path.join(backend_dir, name)
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    if "MongoClient" in f.read() or "pymongo" in f.read():
+                        return True
+            except Exception:
+                pass
+    return False
+
+
 def _ensure_backend_tables_created(backend_dir: str) -> None:
-    """
-    Ensure database tables exist before starting uvicorn. Best-effort only;
-    generated apps have a startup event in main.py that creates tables when
-    uvicorn starts, so this is a pre-flight check. Failures are ignored.
-    """
-    if not os.path.isdir(backend_dir):
+    if not os.path.isdir(backend_dir) or _is_mongodb_backend(backend_dir):
         return
     venv_python = os.path.join(backend_dir, "venv", "bin", "python")
     python_cmd = venv_python if os.path.isfile(venv_python) else "python3"
     for script in [
-        # database.Base + models package
         "import sys; sys.path.insert(0, %r); import database; "
         "import models; database.Base.metadata.create_all(bind=database.engine)",
-        # Try models.Base (some generators use models.Base)
         "import sys; sys.path.insert(0, %r); import database; "
         "import models; models.Base.metadata.create_all(bind=database.engine)",
     ]:
@@ -270,47 +280,11 @@ def _ensure_backend_tables_created(backend_dir: str) -> None:
             pass
 
 
-def _try_fix_backend_bson_pymongo_conflict(backend_dir: str, log_content: str) -> bool:
-    """
-    Fix ImportError: cannot import name 'SON' from 'bson'.
-    Standalone 'bson' package from PyPI conflicts with pymongo's built-in bson.
-    Uninstall standalone bson, reinstall pymongo so pymongo's bson is used.
-    """
-    if "cannot import name 'SON' from 'bson'" not in log_content:
-        return False
-    venv_pip = os.path.join(backend_dir, "venv", "bin", "pip")
-    if not os.path.isfile(venv_pip):
-        return False
-    try:
-        # Uninstall standalone bson (conflicts), reinstall pymongo
-        subprocess.run(
-            [venv_pip, "uninstall", "bson", "-y"],
-            cwd=backend_dir,
-            capture_output=True,
-            timeout=30,
-        )
-        subprocess.run(
-            [venv_pip, "install", "--force-reinstall", "pymongo"],
-            cwd=backend_dir,
-            capture_output=True,
-            timeout=60,
-        )
-        return True
-    except Exception:
-        return False
-
-
 def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) -> bool:
-    """
-    If logs show PostgreSQL connection error (psycopg2, Connection refused, 5432),
-    patch backend database config to use SQLite so app runs without PostgreSQL.
-    Returns True if a patch was applied so caller can retry backend start.
-    """
     if "5432" not in log_content and "Connection refused" not in log_content:
         return False
     if "psycopg2" not in log_content and "postgresql" not in log_content.lower():
         return False
-    # Find database.py or similar that sets DB URL
     for name in ("database.py", "db.py", "config.py"):
         path = os.path.join(backend_dir, name)
         if not os.path.isfile(path):
@@ -320,7 +294,6 @@ def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) ->
                 content = f.read()
             if "postgresql" not in content.lower():
                 continue
-            # Replace postgresql URL with sqlite default so app runs without Postgres
             new_content = re.sub(
                 r"getenv\s*\(\s*[\"']DATABASE_URL[\"']\s*,\s*[\"']postgresql[^\"']*[\"']\s*\)",
                 "getenv(\"DATABASE_URL\", \"sqlite:///./app.db\")",
@@ -478,11 +451,11 @@ PROJECT_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 async def generate_app(request: GenerateRequest):
     async def event_generator():
         try:
+            logger.info("[generate] START | requirement=%r | project_name=%s", request.requirement[:80] + "..." if len(request.requirement) > 80 else request.requirement, request.project_name)
             yield json.dumps(
                 {"event": "meta", "project_name": request.project_name, "message": "Starting app generation..."}
             ) + "\n"
-            print(f"Received requirement: {request.requirement} (project={request.project_name})")
-            
+
             initial_state = {
                 "user_requirement": UserRequirement(description=request.requirement),
                 "clarified_requirement": "",
@@ -492,10 +465,17 @@ async def generate_app(request: GenerateRequest):
                 "template_data": None,
                 "error": ""
             }
-            
-            # Using .stream() to get updates as they happen
+
             for step in app_builder_graph.stream(initial_state):
                 for node_name, node_output in step.items():
+                    logger.info("[generate] step=%s | output_keys=%s", node_name, list(node_output.keys()) if node_output else [])
+
+                    if "structured_requirement" in node_output:
+                        sr = node_output.get("structured_requirement", {})
+                        tmpl = sr.get("template_name") if isinstance(sr, dict) else None
+                        proj = sr.get("project_name", "?") if isinstance(sr, dict) else "?"
+                        logger.info("[generate] structuring done | project_name=%s | template_name=%s", proj, tmpl)
+
                     if "clarified_requirement" in node_output and node_output["clarified_requirement"]:
                         yield json.dumps(
                             {
@@ -516,22 +496,27 @@ async def generate_app(request: GenerateRequest):
                         yield json.dumps(
                             {"event": "architecture", "agent": node_name, "message": "Architecture decided."}
                         ) + "\n"
-                    
+
                     if "generated_files" in node_output and node_output["generated_files"]:
-                        files = node_output["generated_files"]
-                        # Write files to disk
-                        file_writer(request.project_name, files)
-                        tree = tree_from_files_dict(files.files)
+                        files_raw = node_output["generated_files"]
+                        files_obj = GeneratedFiles(files=files_raw) if isinstance(files_raw, dict) else files_raw
+                        files_dict = files_obj.files if hasattr(files_obj, "files") else files_raw
+                        logger.info("[generate] writing %d files to project=%s", len(files_dict), request.project_name)
+                        file_writer(request.project_name, GeneratedFiles(files=files_dict))
+                        tree = tree_from_files_dict(files_dict)
                         yield json.dumps(
-                            {"event": "files", "agent": node_name, "files": files.files, "tree": tree}
+                            {"event": "files", "agent": node_name, "files": files_dict, "tree": tree}
                         ) + "\n"
-                    
+
                     if "error" in node_output and node_output["error"]:
+                        logger.error("[generate] error from %s: %s", node_name, node_output["error"])
                         yield json.dumps({"event": "error", "agent": node_name, "message": node_output["error"]}) + "\n"
 
+            logger.info("[generate] DONE | project=%s", request.project_name)
             yield json.dumps({"event": "done", "message": "App generation successful"}) + "\n"
 
         except Exception as e:
+            logger.exception("[generate] EXCEPTION: %s", e)
             import traceback
             traceback.print_exc()
             yield json.dumps({"event": "error", "message": str(e)}) + "\n"
@@ -624,10 +609,12 @@ async def run_project(project_name: str, request: RunRequest):
 
     async def event_generator():
         try:
+            logger.info("[run] START | project=%s | backend_port=%s | frontend_port=%s", project_name, request.backend_port or FIXED_BACKEND_PORT, request.frontend_port or FIXED_FRONTEND_PORT)
             yield json.dumps({"event": "status", "message": f"Initializing run for {project_name}..."}) + "\n"
 
             project_root = _project_root(project_name)
             if not os.path.exists(project_root):
+                logger.error("[run] project not found: %s", project_root)
                 yield json.dumps({"event": "error", "message": "Project not found"}) + "\n"
                 return
 
@@ -695,6 +682,10 @@ async def run_project(project_name: str, request: RunRequest):
                 venv_path = os.path.join(backend_dir, "venv")
                 venv_python = os.path.join(venv_path, "bin", "python")
                 venv_pip = os.path.join(venv_path, "bin", "pip")
+                # Quote paths for shell (handles project names with spaces)
+                q_venv_python = shlex.quote(venv_python)
+                q_venv_pip = shlex.quote(venv_pip)
+                q_python_cmd = shlex.quote(python_cmd)
                 
                 # Check if it's a Node.js backend
                 if os.path.exists(os.path.join(backend_dir, "package.json")):
@@ -710,23 +701,21 @@ async def run_project(project_name: str, request: RunRequest):
                         
                 # Python backend
                 elif os.path.exists(os.path.join(backend_dir, "requirements.txt")):
-                    # FIXED: Create venv and install dependencies properly
                     if request.install:
                         yield json.dumps({"event": "status", "message": "Setting up Python environment and installing dependencies..."}) + "\n"
-                        backend_cmd = f"""
-if [ ! -d "venv" ]; then 
-    {python_cmd} -m venv venv
-fi
-# Remove standalone bson if present (conflicts with pymongo's built-in bson)
-{venv_pip} uninstall bson -y 2>/dev/null || true
-{venv_pip} install -q -r requirements.txt
-{venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}
-"""
+                        setup_cmd = f"if [ ! -d venv ]; then {q_python_cmd} -m venv venv; fi && {q_venv_pip} install -q -r requirements.txt"
+                        try:
+                            r = subprocess.run(["/bin/bash", "-c", setup_cmd], cwd=backend_dir, capture_output=True, timeout=120)
+                            if r.returncode != 0:
+                                yield json.dumps({"event": "warning", "message": f"Dependency install had issues: {r.stderr.decode()[:500]}"}) + "\n"
+                        except Exception as e:
+                            yield json.dumps({"event": "warning", "message": f"Setup failed: {e}"}) + "\n"
+                        backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
                     else:
-                        backend_cmd = f"{venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
+                        backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{q_python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
                 else:
                     # Default Python backend without requirements.txt
-                    backend_cmd = f"{venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
+                    backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{q_python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
                 
                 # Use SQLite by default so app runs without PostgreSQL (generated apps often use getenv("DATABASE_URL"))
                 backend_env = dict(os.environ)
@@ -750,31 +739,13 @@ fi
                 last_log_idx = 0
                 stub_retry_done = False
                 db_retry_done = False
-                bson_retry_done = False
                 response_model_retry_done = False
-                llm_fix_attempts = 0
-                max_llm_fix_attempts = 2
 
-                for attempt in range(60):  # Increased timeout to 60s to allow for LLM fixes
+                for attempt in range(60):
                     if backend_proc.return_code() is not None:
                         _, logs = backend_proc.get_logs()
                         log_content = "\n".join(logs[-50:]) if logs else "No logs captured"
-                        
-                        # Fix bson/pymongo conflict (standalone bson shadows pymongo's bson)
-                        if not bson_retry_done and _try_fix_backend_bson_pymongo_conflict(backend_dir, log_content):
-                            bson_retry_done = True
-                            yield json.dumps({"event": "status", "message": "Fixed bson/pymongo conflict, retrying backend..."}) + "\n"
-                            backend_proc = process_registry.create(
-                                name=f"{project_name}:backend",
-                                command=["/bin/bash", "-c", backend_cmd],
-                                cwd=backend_dir,
-                                env=backend_env,
-                            )
-                            backend_proc.start()
-                            last_log_idx = 0
-                            await asyncio.sleep(1)
-                            continue
-                        # Existing specific fixes
+
                         if not stub_retry_done and "ModuleNotFoundError" in log_content:
                             if _try_create_missing_backend_module_stub(backend_dir, log_content):
                                 stub_retry_done = True
@@ -804,7 +775,7 @@ fi
                             continue
                         if not response_model_retry_done and _try_patch_backend_response_model(backend_dir, log_content):
                             response_model_retry_done = True
-                            yield json.dumps({"event": "status", "message": "Fixed FastAPI response_model (use Pydantic schemas), retrying backend..."}) + "\n"
+                            yield json.dumps({"event": "status", "message": "Fixed FastAPI response_model, retrying backend..."}) + "\n"
                             backend_proc = process_registry.create(
                                 name=f"{project_name}:backend",
                                 command=["/bin/bash", "-c", backend_cmd],
@@ -815,32 +786,8 @@ fi
                             last_log_idx = 0
                             await asyncio.sleep(1)
                             continue
-                        
-                        # New LLM-based general fix
-                        if llm_fix_attempts < max_llm_fix_attempts:
-                            llm_fix_attempts += 1
-                            yield json.dumps({"event": "status", "message": f"Backend failed. Attempting LLM auto-fix (attempt {llm_fix_attempts}/{max_llm_fix_attempts})..."}) + "\n"
-                            
-                            # Capture logs for LLM
-                            full_logs = "\n".join(logs)
-                            success = await auto_fix_error(project_name, project_root, full_logs, "backend")
-                            
-                            if success:
-                                yield json.dumps({"event": "status", "message": "LLM fix applied successfully, retrying backend..."}) + "\n"
-                                backend_proc = process_registry.create(
-                                    name=f"{project_name}:backend",
-                                    command=["/bin/bash", "-c", backend_cmd],
-                                    cwd=backend_dir,
-                                    env=backend_env,
-                                )
-                                backend_proc.start()
-                                last_log_idx = 0
-                                await asyncio.sleep(1)
-                                continue
-                            else:
-                                yield json.dumps({"event": "status", "message": "LLM fix failed to apply."}) + "\n"
 
-                        # Backend failed - continue to frontend anyway (frontend runs with or without backend)
+                        # Backend failed - continue to frontend anyway
                         backend_url = None
                         backend_proc = None
                         yield json.dumps({
@@ -976,41 +923,14 @@ fi
                 
                 last_log_idx = 0
                 frontend_ready = False
-                frontend_fix_attempts = 0
-                max_frontend_fix_attempts = 2
 
-                # FIXED: Increase timeout for frontend compilation and add better error checking
-                for attempt in range(120):  # 120 seconds for frontend (allowing for fixes)
+                for attempt in range(120):
                     await asyncio.sleep(1)
-                    
-                    # Check if frontend process crashed
+
                     if frontend_proc.return_code() is not None:
-                        # Brief wait so reader thread flushes stdout; then get full log
                         await asyncio.sleep(0.5)
                         _, lines = frontend_proc.get_logs(since=0)
                         all_logs = "\n".join(lines).strip() or "No output captured"
-                        
-                        if frontend_fix_attempts < max_frontend_fix_attempts:
-                            frontend_fix_attempts += 1
-                            yield json.dumps({"event": "status", "message": f"Frontend crashed. Attempting LLM auto-fix (attempt {frontend_fix_attempts}/{max_frontend_fix_attempts})..."}) + "\n"
-                            
-                            success = await auto_fix_error(project_name, project_root, all_logs, "frontend")
-                            
-                            if success:
-                                yield json.dumps({"event": "status", "message": "LLM fix applied successfully, retrying frontend..."}) + "\n"
-                                frontend_proc = process_registry.create(
-                                    name=f"{project_name}:frontend",
-                                    command=["/bin/bash", "-c", frontend_cmd],
-                                    cwd=frontend_dir,
-                                    env=frontend_env,
-                                )
-                                frontend_proc.start()
-                                last_log_idx = 0
-                                await asyncio.sleep(1)
-                                continue
-                            else:
-                                yield json.dumps({"event": "status", "message": "LLM fix failed to apply."}) + "\n"
-
                         yield json.dumps({
                             "event": "error",
                             "message": f"Frontend process exited with code {frontend_proc.return_code()}.\n\nLogs:\n{all_logs}"
@@ -1074,9 +994,11 @@ fi
                 "started_at": time.time(),
             }
             PROJECT_RUN_STATE[project_name] = state
+            logger.info("[run] DONE | project=%s | backend=%s | frontend=%s", project_name, backend_url, frontend_url)
             yield json.dumps({"event": "ready", "data": state, "message": "Application is running!"}) + "\n"
 
         except Exception as e:
+            logger.exception("[run] FAILED: %s", e)
             import traceback
             tb = traceback.format_exc()
             yield json.dumps({"event": "error", "message": f"{str(e)}\n\nTraceback:\n{tb}"}) + "\n"

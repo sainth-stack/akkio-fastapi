@@ -1,0 +1,58 @@
+{
+  "app_name": "travel_planner",
+  "version": "1.0",
+  "database": {"type": "sqlite"},
+  "api": {"base_path": "/api", "entity_routes": true},
+  "entities": [
+    {
+      "name": "Trip",
+      "table_name": "trips",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true, "auto_increment": true},
+        {"name": "title", "type": "string", "required": true, "max_length": 255},
+        {"name": "destination", "type": "string", "required": true, "max_length": 255},
+        {"name": "start_date", "type": "datetime", "required": true},
+        {"name": "end_date", "type": "datetime", "required": true},
+        {"name": "budget", "type": "float", "required": false},
+        {"name": "notes", "type": "string", "required": false, "max_length": 2000},
+        {"name": "created_at", "type": "datetime", "required": true, "auto_now_add": true}
+      ],
+      "endpoints": {
+        "list": {"method": "GET", "path": "/trips"},
+        "retrieve": {"method": "GET", "path": "/trips/{id}"},
+        "create": {"method": "POST", "path": "/trips"},
+        "update": {"method": "PUT", "path": "/trips/{id}"},
+        "delete": {"method": "DELETE", "path": "/trips/{id}"}
+      }
+    },
+    {
+      "name": "ItineraryItem",
+      "table_name": "itinerary_items",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true, "auto_increment": true},
+        {"name": "trip_id", "type": "integer", "required": true, "foreign_key": {"table": "trips", "field": "id", "on_delete": "cascade"}},
+        {"name": "day", "type": "integer", "required": true},
+        {"name": "title", "type": "string", "required": true, "max_length": 255},
+        {"name": "description", "type": "string", "required": false, "max_length": 1000},
+        {"name": "time_slot", "type": "string", "required": false, "max_length": 100},
+        {"name": "created_at", "type": "datetime", "required": true, "auto_now_add": true}
+      ],
+      "endpoints": {
+        "list": {"method": "GET", "path": "/itinerary"},
+        "retrieve": {"method": "GET", "path": "/itinerary/{id}"},
+        "create": {"method": "POST", "path": "/itinerary"},
+        "update": {"method": "PUT", "path": "/itinerary/{id}"},
+        "delete": {"method": "DELETE", "path": "/itinerary/{id}"}
+      }
+    }
+  ],
+  "frontend": {
+    "framework": "react",
+    "form_generation": true,
+    "table_view": true,
+    "relationship_views": true,
+    "api_client": "fetch",
+    "typescript": false,
+    "features": ["trip_cards", "itinerary_by_trip", "date_display", "localStorage_fallback"]
+  }
+}

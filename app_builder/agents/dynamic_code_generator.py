@@ -239,8 +239,7 @@ def _ensure_node_compat(files: Dict[str, str]) -> None:
 _BACKEND_CORE_PACKAGES = ["fastapi", "uvicorn", "sqlalchemy", "pydantic"]
 
 # PyPI packages to NEVER add - usually local modules in generated apps (services, etc.)
-# "bson" = standalone package that conflicts with pymongo's built-in bson (ImportError: cannot import SON)
-_BACKEND_BLOCKLIST = {"services", "motor", "bson"}
+_BACKEND_BLOCKLIST = {"services", "motor"}
 
 
 def _normalize_backend_requirements(files: Dict[str, str]) -> None:
@@ -483,7 +482,8 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
     request to /undefined/tasks/ (relative URL). Fix by ensuring proper fallback.
     """
     safe_backend_url_expr = (
-        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5003').trim()"
+        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || "
+        "(typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()"
     )
     for path in list(files.keys()):
         if not path.startswith("frontend/") or path.split(".")[-1] not in ("js", "jsx", "ts", "tsx"):
@@ -516,17 +516,24 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
                 )
                 changed = True
 
-        # Fix: (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || '').trim()
-        # Replace || '' with || 'http://localhost:5003' for dev default
-        if "process.env.REACT_APP_BACKEND_URL" in content or "process.env.VITE_BACKEND_URL" in content:
-            # Ensure we have a default so it's never undefined
-            content = re.sub(
-                r"(\|\|\s*['\"]['\"]\s*)\s*\)\s*\.trim\(\)",
-                "|| 'http://localhost:5003').trim()",
-                content,
-            )
-            if "|| 'http://localhost:5003'" in content or "|| \"http://localhost:5003\"" in content:
-                changed = True
+        # Upgrade static localhost to dynamic URL (works when deployed on different host)
+        static_pat = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5001['\"]\s*\)\s*\.trim\(\)"
+        if re.search(static_pat, content):
+            content = re.sub(static_pat, safe_backend_url_expr, content)
+            changed = True
+        static_pat2 = r"\(\s*process\.env\.(?:REACT_APP_BACKEND_URL|VITE_BACKEND_URL)\s*\|\|\s*['\"]http://localhost:5001['\"]\s*\)\s*\.trim\(\)"
+        if re.search(static_pat2, content):
+            content = re.sub(static_pat2, safe_backend_url_expr, content)
+            changed = True
+        # Fix: (process.env.X || '').trim() - replace empty fallback with dynamic
+        new_content = re.sub(
+            r"(\|\|\s*['\"]['\"]\s*)\s*\)\s*\.trim\(\)",
+            "|| (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()",
+            content,
+        )
+        if new_content != content:
+            content = new_content
+            changed = True
 
         # Fix generic: any var = process.env.REACT_APP_BACKEND_URL (single env, no fallback)
         new_content = re.sub(
@@ -546,13 +553,13 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
             content = new_content
             changed = True
 
-        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5003'}
+        # Ensure fetch/axios never get undefined - replace ${var} with ${var || 'http://localhost:5001'}
         for var in ("backendUrl", "apiUrl", "apiBase", "baseUrl", "API_URL"):
             pat = re.escape(f"${{{var}}}") + r"(?!\s*\|\|)"  # Match ${var} not already followed by ||
             if re.search(pat, content):
                 content = re.sub(
                     pat,
-                    f"${{{var} || 'http://localhost:5003'}}",
+                    f"${{{var} || 'http://localhost:5001'}}",
                     content,
                 )
                 changed = True
@@ -745,6 +752,7 @@ async def generate_code_from_plan(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Generates actual code based on PRD and implementation plan using LLM.
+    When a matching template exists in app_builder/templates, uses template code modules instead.
     
     Args:
         requirement: Original user requirement
@@ -756,7 +764,25 @@ async def generate_code_from_plan(
     Yields:
         Dictionary events with file generation progress
     """
-    
+    # Check for template - use template code modules when available
+    try:
+        from app_builder.services.template_service import detect_template, get_template_code_files
+        template_name = detect_template(requirement)
+        if template_name:
+            template_files = get_template_code_files(template_name)
+            if template_files:
+                yield {"event": "generation_start", "message": f"Using template: {template_name}"}
+                from app_builder.agents.code_update_agent import tailor_template_to_requirement
+                tailored = await tailor_template_to_requirement(template_files, requirement, template_name)
+                for path, content in tailored.items():
+                    yield {"event": "file_generated", "file": path, "content": content}
+                _normalize_frontend_package_json_to_cra(tailored)
+                _ensure_complete_styles_css(tailored)
+                yield {"event": "generation_complete", "data": tailored}
+                return
+    except ImportError:
+        pass
+
     # Extract key information from plan
     plan_summary = "\n".join([
         f"{i+1}. {step.get('title', step) if isinstance(step, dict) else step}"
@@ -816,7 +842,7 @@ async def generate_code_from_plan(
    "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start"
 7. **Tailwind CSS**: MANDATORY. Always generate `tailwind.config.js` and `postcss.config.js`. Use Tailwind utility classes in JSX.
 8. **frontend/src/index.js**: MUST import `./styles.css` before App.
-9. **Backend**: Use absolute imports. MongoDB only. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
+9. **Backend**: Use absolute imports. SQLite + SQLAlchemy. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
 
 **UI/UX Design Specification:**
 {uiux if uiux else "Standard modern UI/UX design (CLEAN, MODERN, USER-FRIENDLY)."}
@@ -861,7 +887,7 @@ async def generate_code_from_plan(
      Initialize state from localStorage: const [items, setItems] = useState(() => JSON.parse(localStorage.getItem(STORAGE_KEY)) || []);
      Sync to localStorage on change: useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items]);
      Optional API fetch on mount: useEffect(() => fetch(url).then(r => r.json()).then(d => Array.isArray(d) && setItems(d)).catch(() => {{}}), []);
-   - API base URL: ALWAYS use `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || 'http://localhost:5003').trim();`
+   - API base URL: Use dynamic URL for local + deployment: `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim();`
    - NEVER leave backendUrl undefined. Guard API calls: if (!backendUrl) return;
 
 5. **FRONTEND ARRAY SAFETY - PREVENT "X.map is not a function"**:
@@ -872,24 +898,20 @@ async def generate_code_from_plan(
 
 
 **CRITICAL - APP MUST RUN END-TO-END WITH ZERO MANUAL FIXES:**
-- Use MongoDB only. Connection string: `mongodb+srv://prashanth:BnHRQrqZHdnosfEe@cluster0.cpydc.mongodb.net/akkio?retryWrites=true&w=majority`
-- **Backend**: MUST connect to MongoDB at startup and ensure indexes. Use PyMongo (SYNCHRONOUS).
-- **Documents**: use `_id: ObjectId` from `bson`. Expose as string `id` in responses.
-- **Pydantic v2 patterns**:
-  - Use `from pydantic import BaseModel, ConfigDict, field_validator`.
-  - Use `model_config = ConfigDict(arbitrary_types_allowed=True)`.
-  - Use `.model_dump()` instead of `.dict()`.
+- Use SQLite + SQLAlchemy. No external database. DATABASE_URL defaults to sqlite:///./app.db
+- **Backend**: SQLAlchemy engine, SessionLocal, Base. models.Base.metadata.create_all() on startup.
+- **Pydantic v2**: model_config = ConfigDict(from_attributes=True), .model_dump()
 - **Backend structure**:
-  - `backend/models.py`: MongoDB document helpers (serialization, ObjectId conversion).
+  - `backend/models.py`: SQLAlchemy model classes (Column, Integer, String, etc).
   - `backend/schemas.py`: Pydantic BaseModel classes.
-  - `backend/database.py`: PyMongo MongoClient + get_database() (sync).
-  - `backend/main.py`: FastAPI app, synchronous endpoints (def, not async def).
-- requirements.txt MUST include ONLY: fastapi, uvicorn, pymongo, pydantic. No version numbers.
+  - `backend/database.py`: create_engine, SessionLocal, Base, get_db() generator.
+  - `backend/main.py`: FastAPI app, Depends(get_db), create_all on startup.
+- requirements.txt: fastapi, uvicorn, sqlalchemy, pydantic. No version numbers.
 
 **Target Architecture:**
 - Backend Framework: {backend_framework}
 - Frontend Framework: {frontend_framework}
-- Database: MongoDB (Synchronous PyMongo) – runs with hardcoded cloud URI.
+- Database: SQLite (SQLAlchemy) – runs out of the box.
 
 **Expected Backend Files:**
 {json.dumps(backend_files, indent=2)}
@@ -912,9 +934,9 @@ from fastapi import FastAPI
 {arch_summary}
 
 **Dependencies:**
-- **backend/requirements.txt**: Minimal only: fastapi, uvicorn, pymongo, pydantic. No version numbers. Python 3.13+. Do NOT add motor (incompatible with Python 3.13). Do NOT add unnecessary packages.
-- **backend/database.py**: MUST use PyMongo (sync). Connection string is hardcoded.
-- **backend/models.py**: Handle ObjectId to string conversion.
+- **backend/requirements.txt**: fastapi, uvicorn, sqlalchemy, pydantic. No version numbers.
+- **backend/database.py**: SQLAlchemy create_engine, SessionLocal, Base. SQLite by default.
+- **backend/models.py**: SQLAlchemy declarative models with Column, Integer, String, etc.
 - **Frontend**: Minimal deps only: react, react-dom, react-scripts. Node 20+. Add "engines": {{"node": ">=20"}} to package.json. Use Tailwind CSS. Scripts MUST include NODE_OPTIONS=--openssl-legacy-provider.
 - **Frontend State**: Use ONLY React useState and useEffect for state management. Do NOT use Zustand, Redux, MobX, or any external state library. Keep all state in App.js or pass via props. Use localStorage for persistence.
 - In README.md: `pip install -r requirements.txt` and `npm install`.

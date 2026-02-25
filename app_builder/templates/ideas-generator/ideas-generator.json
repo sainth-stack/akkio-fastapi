@@ -1,0 +1,19 @@
+{
+  "app_name": "ideas_generator",
+  "version": "1.0",
+  "type": "utility",
+  "api": {
+    "base_path": "/api",
+    "endpoints": [
+      {
+        "path": "/generate-ideas",
+        "method": "POST",
+        "description": "Generate creative ideas for a given topic using LLM"
+      }
+    ]
+  },
+  "frontend": {
+    "framework": "react",
+    "features": ["topic_input", "ideas_display", "localStorage_cache"]
+  }
+}

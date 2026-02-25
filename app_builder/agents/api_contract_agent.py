@@ -35,7 +35,7 @@ Contract Structure:
 CRITICAL RULES:
 1. Define every route listed in the blueprint.
 2. Ensure types are explicit (string, integer, boolean, etc.).
-3. Database is MongoDB: 'id' fields MUST be 'string' type (as they represent Hex ObjectIds).
+3. Database is SQLite: 'id' fields are integer. Use integer for IDs in paths.
 4. Request bodies for POST/PUT must be detailed.
 5. Response bodies must include the full entity structure.
 6. Output ONLY the JSON.

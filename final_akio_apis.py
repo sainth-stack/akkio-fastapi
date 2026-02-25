@@ -6047,6 +6047,23 @@ if __name__ == "__main__":
     import uvicorn
     import os
 
+    from app_builder.services.runtime_paths import get_runtime_root
+
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("final_akio_apis:app", host=host, port=port, reload=True)
+    # Exclude app_builder runtime dirs so generated app code never triggers main server reload
+    _runtime_root = os.path.abspath(get_runtime_root())
+    os.makedirs(_runtime_root, exist_ok=True)  # ensure exists so uvicorn can exclude it
+    _candidates = [
+        _runtime_root,
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "app_builder", ".runtime")),
+        os.path.join(os.path.expanduser("~"), ".akkio", "app_builder", "runtime"),
+    ]
+    _reload_excludes = [d for d in _candidates if os.path.isdir(d)]
+    uvicorn.run(
+        "final_akio_apis:app",
+        host=host,
+        port=port,
+        reload=True,
+        reload_excludes=_reload_excludes,
+    )

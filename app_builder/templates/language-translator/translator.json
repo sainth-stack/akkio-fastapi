@@ -1,0 +1,25 @@
+{
+  "app_name": "language_translator",
+  "version": "1.0",
+  "type": "utility",
+  "api": {
+    "base_path": "/api",
+    "endpoints": [
+      {
+        "path": "/translate",
+        "method": "POST",
+        "description": "Translate text from one language to another"
+      },
+      {
+        "path": "/languages",
+        "method": "GET",
+        "description": "List supported languages"
+      }
+    ]
+  },
+  "frontend": {
+    "framework": "react",
+    "components": ["TranslateForm", "LanguageSelector", "ResultDisplay"],
+    "features": ["input_text", "source_lang", "target_lang", "translate_button", "display_result"]
+  }
+}

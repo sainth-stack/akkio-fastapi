@@ -55,17 +55,17 @@ You must analyze the requirements and output a JSON architecture decision in thi
   }},
   "backend_structure": {{
     "framework": "FastAPI",
-    "database": "MongoDB",
-    "orm": "PyMongo (Sync API)",
+    "database": "SQLite",
+    "orm": "SQLAlchemy",
     "api_style": "REST",
     "auth": "JWT",
     "key_services": ["<list main services>"]
   }},
   "database_schema": {{
-    "collections": [
+    "tables": [
       {{
-        "name": "<collection name>",
-        "fields": [
+        "name": "<table name>",
+        "columns": [
           {{"name": "id", "type": "string"}},
           {{"name": "<field>", "type": "<type>"}},
           {{"name": "created_at", "type": "datetime"}},
@@ -85,8 +85,8 @@ You must analyze the requirements and output a JSON architecture decision in thi
 }}
 ```
 CRITICAL RULES:
-1. **Database MUST be MongoDB**. Use 'id' (string) for ObjectId representation. 
-2. **Use PyMongo (SYNCHRONOUS driver)**. NEVER use Motor, SQLAlchemy, or SQLite.
+1. **Database MUST be SQLite**. Use SQLAlchemy with integer id primary keys.
+2. **Use SQLAlchemy + SQLite**. No external database. Runs out of the box.
 3. **Use Tailwind CSS for styling**. 
 4. **Use Plain React State + LocalStorage**. NEVER use Zustand, Redux, or any external state manager.
 5. Output ONLY the JSON, nothing else.
@@ -155,9 +155,8 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
     prd_lower = prd.lower()
     combined = requirement_lower + " " + prd_lower
     
-    # MongoDB by default
-    database = "MongoDB"
-    orm = "PyMongo (Sync API)"
+    database = "SQLite"
+    orm = "SQLAlchemy"
     
     # Determine frontend framework
     if "vue" in combined:
@@ -190,18 +189,18 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
             "key_services": [f"{entity}_service" for entity in entities] if entities else ["data_service", "auth_service"]
         },
         "database_schema": {
-            "collections": [
+            "tables": [
                 {
-                    "name": entity,
-                    "fields": [
-                        {"name": "id", "type": "string"},
-                        {"name": "created_at", "type": "datetime"},
-                        {"name": "updated_at", "type": "datetime"},
-                        {"name": "name", "type": "string"},
-                        {"name": "description", "type": "string"}
+                    "name": entity + "s",
+                    "columns": [
+                        {"name": "id", "type": "Integer", "primary_key": True},
+                        {"name": "created_at", "type": "DateTime"},
+                        {"name": "updated_at", "type": "DateTime"},
+                        {"name": "name", "type": "String"},
+                        {"name": "description", "type": "Text"}
                     ]
                 }
-                for entity in (entities[:3] if entities else ["items"])
+                for entity in (entities[:3] if entities else ["item"])
             ]
         },
         "deployment": {
@@ -265,10 +264,10 @@ def architecture_agent(plan: ProjectPlan, requirement: str = "") -> Architecture
         },
         backend_structure={
             "framework": "FastAPI",
-            "database": "MongoDB",
-            "orm": "PyMongo (Sync API)"
+            "database": "SQLite",
+            "orm": "SQLAlchemy"
         },
-        database_schema={"collections": []},
+        database_schema={"tables": []},
         deployment={},
         rationale=f"Dynamic architecture for {requirement or 'app'}.",
         project_structure={

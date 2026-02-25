@@ -42,7 +42,7 @@ class UpdateCodeRequest(BaseModel):
 
 
 from app_builder.agents.code_update_agent import update_code_from_chat
-from app_builder.services.runtime_paths import get_projects_dir
+from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
 
 
 
@@ -494,6 +494,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         }
 
         final_state = initial_state
+        agents_state = {}  # accumulate for DB save (fallback if frontend save fails)
         
         # Proactively send start for the first node
         await websocket.send_text(json.dumps({
@@ -515,6 +516,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                         "error": result["error"],
                         "project_name": project_name
                     }))
+                    agents_state[agent_id] = {"status": "error", "error": result["error"]}
                     continue
 
                 # Update project_name if structuring_step returned one
@@ -530,8 +532,8 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                     if files_dict:
                         for rel_path, content in files_dict.items():
                             try:
-                                write_project_file(project_name, rel_path, content)
-                                if node_name == "coding_step":
+                                wrote = write_project_file(project_name, rel_path, content)
+                                if wrote and node_name == "coding_step":
                                     await websocket.send_text(json.dumps({
                                         "event": "agent_progress",
                                         "agent": agent_id,
@@ -558,6 +560,15 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                     "data": completion_data,
                     "project_name": project_name
                 }))
+                
+                # Accumulate for agents_state (backend fallback save)
+                agents_state[agent_id] = {
+                    "status": "complete",
+                    "message": f"Completed {agent_id.replace('_', ' ')}",
+                    "data": completion_data,
+                    "progress": [{"type": "complete", "text": f"Completed {agent_id}", "timestamp": None}],
+                    "completed_at": None
+                }
                 
                 # Proactively send start for the NEXT node in flow
                 next_agent_map = {
@@ -609,9 +620,10 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                         project_name=project_name,
                         architecture=final_state.get("architecture"),
                         generated_code_json=final_state.get("generated_files"),
-                        prd=json.dumps(final_state.get("structured_requirement"))
+                        prd=json.dumps(final_state.get("structured_requirement")),
+                        agents_state=agents_state
                     )
-                    print(f"[agent_api] Saved final app state to MongoDB for app {app_id}")
+                    print(f"[agent_api] Saved final app state (incl. agents_state) to MongoDB for app {app_id}")
         except Exception as db_err:
             print(f"[agent_api] Final DB save failed: {db_err}", file=sys.stderr)
 
@@ -643,7 +655,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
 async def update_code(request: UpdateCodeRequest):
     """Update existing code based on user prompt, then persist changes to DB."""
     try:
-        project_root = os.path.join(get_projects_dir(), request.project_name)
+        project_root = resolve_project_root(request.project_name)
         if not os.path.exists(project_root):
             raise HTTPException(status_code=404, detail="Project not found")
 
@@ -722,7 +734,7 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             }))
             return
 
-        project_root = os.path.join(get_projects_dir(), project_name)
+        project_root = resolve_project_root(project_name)
         if not os.path.exists(project_root):
              await websocket.send_text(json.dumps({
                 "event": "error",

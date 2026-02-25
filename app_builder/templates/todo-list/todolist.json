@@ -1,0 +1,33 @@
+{
+  "app_name": "todo_app",
+  "version": "1.0",
+  "database": {"type": "sqlite"},
+  "api": {"base_path": "/api", "entity_routes": true},
+  "entities": [{
+    "name": "Todo",
+    "table_name": "todos",
+    "fields": [
+      {"name": "id", "type": "integer", "primary_key": true, "auto_increment": true},
+      {"name": "title", "type": "string", "required": true, "max_length": 255},
+      {"name": "description", "type": "string", "required": false, "max_length": 1000},
+      {"name": "completed", "type": "boolean", "required": true, "default": false},
+      {"name": "priority", "type": "string", "required": false, "max_length": 20, "default": "medium"},
+      {"name": "created_at", "type": "datetime", "required": true, "auto_now_add": true}
+    ],
+    "endpoints": {
+      "list": {"method": "GET", "path": "/todos"},
+      "retrieve": {"method": "GET", "path": "/todos/{id}"},
+      "create": {"method": "POST", "path": "/todos"},
+      "update": {"method": "PUT", "path": "/todos/{id}"},
+      "delete": {"method": "DELETE", "path": "/todos/{id}"}
+    }
+  }],
+  "frontend": {
+    "framework": "react",
+    "form_generation": true,
+    "table_view": true,
+    "api_client": "fetch",
+    "typescript": false,
+    "features": ["filter_tabs", "priority_badges", "completion_toggle", "localStorage_fallback"]
+  }
+}

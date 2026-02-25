@@ -4,21 +4,18 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 async def database_schema_agent(structured_requirement: Dict[str, Any], llm=None) -> str:
     """
-    Database Schema Agent - Converts entity JSON into MongoDB collection definitions.
-    No backend logic.
+    Database Schema Agent - Converts entity JSON into SQLite table definitions.
     """
     if llm is None:
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0)
 
-    system_prompt = """You are a Database Architect. Your task is to define the structure for MongoDB collections based on entity definitions.
-Output a concise description of the collections, their fields, and any indexes that should be created.
+    system_prompt = """You are a Database Architect. Define SQLite tables based on entity definitions.
+Output a concise description of tables, columns, types (Integer, String, Boolean, DateTime, Text, Float), and primary/foreign keys.
 
 CRITICAL RULES:
-1. Every collection will automatically have an '_id' (ObjectId).
-2. Every document MUST have `created_at` and `updated_at` (datetime).
-3. Specify which fields should be indexed (e.g., Searchable terms, Foreign Keys).
-4. Output ONLY the description. No markdown block.
+1. Use integer primary keys. Include created_at, updated_at (DateTime) where needed.
+2. Output ONLY the description. No markdown block.
 """
 
     user_prompt = f"Entities: {json.dumps(structured_requirement.get('entities', []), indent=2)}"

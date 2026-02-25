@@ -27,7 +27,8 @@ def test_loading():
     
     data = load_template("vacation-budget-planner")
     assert data is not None
-    assert data["app_name"] == "vacation_budget_planner"
+    # vacation-budget-planner uses travel-planner template
+    assert data["app_name"] == "travel_planner"
     print("Loading test passed!")
 
 async def test_graph_with_todo_template():
@@ -67,7 +68,7 @@ async def test_graph_with_vacation_template():
     result = await app_builder_graph.ainvoke(initial_state)
     assert not result.get("error")
     assert result.get("template_data") is not None
-    assert result["template_data"]["app_name"] == "vacation_budget_planner"
+    assert result["template_data"]["app_name"] == "travel_planner"
     assert result.get("generated_files") is not None
     assert "backend/main.py" in result["generated_files"].files
     print("Graph test for vacation-budget-planner passed!")

@@ -81,6 +81,9 @@ openpyxl
 prophet
 statsmodels
 
+# JSON repair for LLM responses with malformed JSON
+json-repair
+
 # Updated: langchain (unpinned)
 faiss-cpu
 

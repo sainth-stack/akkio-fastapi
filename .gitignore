@@ -3,3 +3,14 @@ final_apis.py
 __pycache__
 generated_charts
 validation_reports
+
+# Dependencies (templates and generated apps)
+node_modules/
+venv/
+
+# All template frontends and backends
+app_builder/templates/*/frontend/node_modules/
+app_builder/templates/*/backend/venv/
+
+# Generated app projects (local runtime)
+app_builder/runtime/
