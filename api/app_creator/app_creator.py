@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Tuple
@@ -604,7 +604,7 @@ def _resolve_frontend_dir(project_root: str, frontend_sub: str):
 
 
 @router.post("/projects/{project_name}/run")
-async def run_project(project_name: str, request: RunRequest):
+async def run_project(project_name: str, request: RunRequest, http_request: Request):
     import asyncio
 
     async def event_generator():
@@ -667,8 +667,10 @@ async def run_project(project_name: str, request: RunRequest):
                 frontend_port = find_free_port()
                 yield json.dumps({"event": "status", "message": f"Frontend port in use, switching to {frontend_port}..."}) + "\n"
 
-            backend_url = f"http://localhost:{backend_port}" if backend_dir else None
-            frontend_url = f"http://localhost:{frontend_port}" if frontend_dir else None
+            # Use request host so displayed URL works when accessed via EC2 IP (e.g. http://18.143.150.140/)
+            _host = (http_request.headers.get("x-forwarded-host") or http_request.url.hostname or "localhost").split(":")[0]
+            backend_url = f"http://{_host}:{backend_port}" if backend_dir else None
+            frontend_url = f"http://{_host}:{frontend_port}" if frontend_dir else None
 
             backend_proc = None
             frontend_proc = None
@@ -852,20 +854,26 @@ async def run_project(project_name: str, request: RunRequest):
             if frontend_dir:
                 yield json.dumps({"event": "status", "message": "Preparing frontend..."}) + "\n"
                 # Write .env so CRA/Vite reliably gets backend URL (avoids undefined in browser)
-                backend_url_val = backend_url or f"http://localhost:{backend_port}"
+                # Use empty REACT_APP_BACKEND_URL so frontend falls back to window.location.hostname - works
+                # for localhost (dev) and EC2/public IP (deployment). Templates use getBackendUrl() which
+                # returns window.location.protocol//hostname:5001 when env is empty.
+                backend_url_val = ""
                 env_file = os.path.join(frontend_dir, ".env")
                 try:
                     with open(env_file, "w", encoding="utf-8") as f:
                         f.write(f"PORT={frontend_port}\n")
+                        f.write(f"HOST=0.0.0.0\n")
                         f.write(f"REACT_APP_BACKEND_URL={backend_url_val}\n")
                         f.write(f"VITE_BACKEND_URL={backend_url_val}\n")
                         f.write("BROWSER=none\n")
                 except Exception as e:
                     yield json.dumps({"event": "warning", "message": f"Could not write .env: {e}"}) + "\n"
                 # Use full env so node/npm/nvm are on PATH; then override app vars
+                # HOST=0.0.0.0 so React dev server listens on all interfaces (EC2 deployment)
                 frontend_env = dict(os.environ)
                 frontend_env.update({
                     "PORT": str(frontend_port),
+                    "HOST": "0.0.0.0",
                     "BROWSER": "none",
                     "REACT_APP_BACKEND_URL": backend_url_val,
                     "VITE_BACKEND_URL": backend_url_val,
