@@ -1,6 +1,6 @@
 """
-Template Service - Templates live in app_builder/templates.
-Detects templates, loads config and code files for code generation.
+Template Service - Two templates: ideas-generator (LLM) and todo-list (normal).
+Templates live in app_builder/templates.
 """
 import logging
 import os
@@ -11,31 +11,23 @@ from typing import Dict, Any, Optional
 
 TEMPLATES_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
 
+# Only two templates: LLM (ideas-generator) and normal (todo-list)
 TEMPLATE_MAPPING = {
+    "ideas-generator": {
+        "keywords": [
+            "ideas generator", "idea generator", "generate ideas", "brainstorm", "creative ideas", "startup ideas",
+            "linkedin post", "linkedin post generator", "linkedin-post-generator", "linkedin-post", "generate linkedin post", "linkedin content", "social media post",
+            "travel planner", "travel plan", "trip planner", "vacation", "itinerary", "travel suggestion",
+            "translate", "translation", "language translator", "translator",
+            "genai", "gen ai", "ai generator", "ai post", "content generator",
+        ],
+        "template_path": "ideas-generator",
+        "config": "ideas-generator.json",
+    },
     "todo-list": {
         "keywords": ["todo", "to-do", "todo list", "task list", "checklist", "todolist", "tasks", "list application"],
         "template_path": "todo-list",
         "config": "todolist.json",
-    },
-    "vacation-budget-planner": {
-        "keywords": ["vacation", "holiday", "budget planner", "trip planner"],
-        "template_path": "travel-planner",
-        "config": "travel-planner.json",
-    },
-    "language-translator": {
-        "keywords": ["translate", "translation", "language translator", "translate text", "multilingual"],
-        "template_path": "language-translator",
-        "config": "translator.json",
-    },
-    "travel-planner": {
-        "keywords": ["travel", "trip planner", "vacation", "itinerary", "trip planning", "travel plan"],
-        "template_path": "travel-planner",
-        "config": "travel-planner.json",
-    },
-    "ideas-generator": {
-        "keywords": ["ideas generator", "idea generator", "generate ideas", "brainstorm", "creative ideas", "startup ideas"],
-        "template_path": "ideas-generator",
-        "config": "ideas-generator.json",
     },
 }
 
@@ -172,7 +164,7 @@ root.render(<React.StrictMode><App /></React.StrictMode>);
             "private": True,
             "dependencies": {"react": "^18.2.0", "react-dom": "^18.2.0", "react-scripts": "5.0.1"},
             "scripts": {
-                "start": "HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=5003 NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
+                "start": "HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=5002 NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
                 "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build",
             },
             "engines": {"node": ">=20"},

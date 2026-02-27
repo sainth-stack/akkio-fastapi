@@ -35,9 +35,9 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps (frontend on 5003, backend on 5004)
-FIXED_BACKEND_PORT = 5004
-FIXED_FRONTEND_PORT = 5003
+# Fixed ports for generated apps (frontend on 5002, backend on 5001)
+FIXED_BACKEND_PORT = 5001
+FIXED_FRONTEND_PORT = 5002
 
 
 def kill_process_on_port(port: int) -> None:
@@ -856,7 +856,7 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                 # Write .env so CRA/Vite reliably gets backend URL (avoids undefined in browser)
                 # Use empty REACT_APP_BACKEND_URL so frontend falls back to window.location.hostname - works
                 # for localhost (dev) and EC2/public IP (deployment). Templates use getBackendUrl() which
-                # returns window.location.protocol//hostname:5004 when env is empty.
+                # returns window.location.protocol//hostname:5001 when env is empty.
                 backend_url_val = ""
                 env_file = os.path.join(frontend_dir, ".env")
                 try:

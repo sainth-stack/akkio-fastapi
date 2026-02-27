@@ -31,9 +31,9 @@ function getBackendUrl() {
   if (env) return env;
   if (typeof window !== 'undefined') {
     if (window.__BACKEND_URL__) return window.__BACKEND_URL__;
-    return `${window.location.protocol}//${window.location.hostname}:5004`;
+    return `${window.location.protocol}//${window.location.hostname}:5001`;
   }
-  return 'http://localhost:5004';
+  return 'http://localhost:5001';
 }
 
 function App() {
@@ -82,7 +82,7 @@ function App() {
       setCachedList(cache);
       setError(cache.length > 0
         ? 'Backend not running. Cached translations below – click to view.'
-        : 'Backend not running. Start backend (cd backend && uvicorn main:app --port 5004) for live translation.');
+        : 'Backend not running. Start backend (cd backend && uvicorn main:app --port 5001) for live translation.');
     } finally {
       setLoading(false);
     }

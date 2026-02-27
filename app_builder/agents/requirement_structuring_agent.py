@@ -21,7 +21,7 @@ No creativity. No markdown. Only the following structure:
 
 {
   "project_name": "string (use hyphens, no spaces, e.g. todo-list-application)",
-  "template_name": "string or null (e.g. todo-list, travel-planner, language-translator, ideas-generator - set null if no match)",
+  "template_name": "string or null (ideas-generator for LLM/GenAI apps, todo-list for normal CRUD apps - set null if no match)",
   "frontend": "react",
   "backend": "fastapi",
   "database": "sqlite",
@@ -45,7 +45,7 @@ CRITICAL RULES:
 3. Be exhaustive in listing fields based on the description.
 4. Output ONLY the raw JSON string.
 5. project_name MUST use hyphens not spaces (e.g. todo-list-application, travel-planner) to avoid path issues.
-6. template_name: Set to the matching template if requirement matches (todo/task list->todo-list, travel/trip->travel-planner, translate->language-translator, ideas->ideas-generator). Otherwise null.
+6. template_name: ideas-generator for LLM apps (ideas, linkedin post, travel planner, translator, genai). todo-list for todo/task/checklist. Otherwise null.
 """
 
     user_prompt = f"Requirement: {requirement.description}"
@@ -68,6 +68,8 @@ CRITICAL RULES:
         data = json.loads(content)
         desc = requirement.description if hasattr(requirement, "description") else str(requirement)
         template_name = detect_template(desc)
+        if not template_name:
+            template_name = detect_template(data.get("project_name", "") or "")
         data["template_name"] = template_name
         logger.info("[structuring_agent] parsed | project_name=%s | template_name=%s", data.get("project_name"), template_name)
         return data
