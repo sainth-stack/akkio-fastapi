@@ -324,6 +324,8 @@ app.include_router(url_router)
 app.include_router(chat2doc)
 app.include_router(upload_router)
 
+from api.app_creator.dynamic_app_router import router as dynamic_app_router
+from api.app_creator.static_app_router import router as static_app_router
 from api.app_creator.app_creator import router as app_builder_router
 from api.app_creator.apps_api import router as app_builder_apps_router
 from api.app_creator.prd_api import router as prd_router
@@ -334,6 +336,8 @@ from api.app_creator.deployment_api import router as deployment_router
 from api.app_creator.github_api import router as github_router
 from api.app_creator.test_api import router as test_router
 
+app.include_router(dynamic_app_router)
+app.include_router(static_app_router)
 app.include_router(app_builder_router)
 app.include_router(app_builder_apps_router, prefix="/api/app-builder")
 app.include_router(prd_router)

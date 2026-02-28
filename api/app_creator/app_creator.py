@@ -17,7 +17,6 @@ import re
 import shlex
 import time
 import subprocess
-import signal
 import shutil
 import tempfile
 
@@ -26,7 +25,7 @@ from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.files import GeneratedFiles
 from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
-from app_builder.services.command_runner import find_free_port, process_registry
+# Legacy: find_free_port, process_registry no longer used (single-backend mode)
 
 
 router = APIRouter(prefix="/api/app-builder", tags=["App Builder"])
@@ -35,60 +34,11 @@ PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
 
-# Fixed ports for generated apps (frontend on 5002, backend on 5001)
-FIXED_BACKEND_PORT = 5001
-FIXED_FRONTEND_PORT = 5002
-
-
-def kill_process_on_port(port: int) -> None:
-    """Kill any process using the specified port."""
-    try:
-        # Find process using the port
-        result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
-            capture_output=True,
-            text=True
-        )
-        if result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            for pid in pids:
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                    print(f"Killed process {pid} on port {port}")
-                except ProcessLookupError:
-                    pass
-                except Exception as e:
-                    print(f"Error killing process {pid}: {e}")
-            # Wait a moment for processes to die
-            time.sleep(1)
-    except Exception as e:
-        print(f"Error checking port {port}: {e}")
+# Legacy: FIXED_BACKEND_PORT, FIXED_FRONTEND_PORT, kill_process_on_port removed (single-backend mode)
 
 
 def _project_root(project_name: str) -> str:
     return resolve_project_root(project_name)
-
-
-def _is_port_available(port: int) -> bool:
-    try:
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
-
-
-def _is_port_listening(port: int) -> bool:
-    """Return True if something is accepting connections on the port."""
-    try:
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)
-            s.connect(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
 
 
 def _fix_backend_python_relative_imports(backend_dir: str) -> None:
@@ -443,8 +393,63 @@ class RunRequest(BaseModel):
     install: bool = True
 
 
-# Simple in-memory index of processes per project.
+class BuildRequest(BaseModel):
+    install: bool = True
+
+
+# Simple in-memory index of processes per project (legacy; no longer used for proc_id).
 PROJECT_RUN_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[str], Optional[str]]:
+    """Run npm build in frontend dir. Returns (static_dir_path, error_message)."""
+    project_root = _project_root(project_name)
+    if not os.path.exists(project_root):
+        return None, "Project not found"
+    frontend_dir = None
+    if os.path.isdir(os.path.join(project_root, "frontend")):
+        frontend_dir = _resolve_frontend_dir(project_root, "frontend")
+        if not frontend_dir:
+            frontend_dir = os.path.join(project_root, "frontend")
+    elif os.path.exists(os.path.join(project_root, "package.json")):
+        frontend_dir = project_root
+    if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
+        return None, "No frontend found"
+    try:
+        if install:
+            r = subprocess.run(
+                ["npm", "install", "--legacy-peer-deps", "--silent"],
+                cwd=frontend_dir,
+                capture_output=True,
+                timeout=120,
+            )
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout or b"").decode()[:500]
+                return None, f"npm install failed: {err}"
+        # PUBLIC_URL ensures CRA/Vite build asset paths match /app/{project_id} base path
+        build_env = os.environ.copy()
+        build_env["PUBLIC_URL"] = f"/app/{project_name}"
+        r = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=frontend_dir,
+            capture_output=True,
+            timeout=180,
+            env=build_env,
+        )
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or b"").decode()[:500]
+            return None, f"npm run build failed: {err}"
+        dist = os.path.join(frontend_dir, "dist")
+        build_dir = os.path.join(frontend_dir, "build")
+        if os.path.isdir(dist):
+            return dist, None
+        if os.path.isdir(build_dir):
+            return build_dir, None
+        return None, "Build completed but dist/build not found"
+    except subprocess.TimeoutExpired:
+        return None, "Build timed out"
+    except Exception as e:
+        return None, str(e)
 
 
 @router.post("/generate")
@@ -522,6 +527,22 @@ async def generate_app(request: GenerateRequest):
             yield json.dumps({"event": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@router.post("/projects/{project_name}/build")
+async def build_project(project_name: str, request: BuildRequest = BuildRequest()):
+    """Build frontend. Output served at /app/{project_name}."""
+    static_dir, err = _build_frontend(project_name, install=request.install)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "project_name": project_name,
+            "static_url": f"/app/{project_name}",
+            "backend_url": f"/api/apps/{project_name}",
+        }
+    )
 
 
 @router.get("/projects/{project_name}/tree")
@@ -605,12 +626,12 @@ def _resolve_frontend_dir(project_root: str, frontend_sub: str):
 
 @router.post("/projects/{project_name}/run")
 async def run_project(project_name: str, request: RunRequest, http_request: Request):
-    import asyncio
+    """Build frontend and serve via main backend. No subprocess spawn."""
 
     async def event_generator():
         try:
-            logger.info("[run] START | project=%s | backend_port=%s | frontend_port=%s", project_name, request.backend_port or FIXED_BACKEND_PORT, request.frontend_port or FIXED_FRONTEND_PORT)
-            yield json.dumps({"event": "status", "message": f"Initializing run for {project_name}..."}) + "\n"
+            logger.info("[run] START | project=%s (single-backend mode)", project_name)
+            yield json.dumps({"event": "status", "message": f"Building and serving {project_name}..."}) + "\n"
 
             project_root = _project_root(project_name)
             if not os.path.exists(project_root):
@@ -618,394 +639,29 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                 yield json.dumps({"event": "error", "message": "Project not found"}) + "\n"
                 return
 
-            backend_dir_candidate = os.path.join(project_root, "backend")
-            frontend_dir_candidate = os.path.join(project_root, "frontend")
-            root_has_package = os.path.exists(os.path.join(project_root, "package.json"))
-
-            has_backend_dir = os.path.isdir(backend_dir_candidate)
-            has_frontend_dir = os.path.isdir(frontend_dir_candidate)
-
-            # Resolve backend dir (optional)
-            backend_dir = None
-            if has_backend_dir:
-                backend_dir = backend_dir_candidate
-                possible = os.path.join(backend_dir, "server")
-                if os.path.isdir(possible) and (
-                    os.path.exists(os.path.join(possible, "package.json"))
-                    or os.path.exists(os.path.join(possible, "requirements.txt"))
-                ):
-                    backend_dir = possible
-                    yield json.dumps({"event": "status", "message": "Detected nested backend..."}) + "\n"
-
-            # Resolve frontend dir: frontend/ subdir, or project root if it has package.json (frontend-only app)
-            frontend_dir = None
-            if has_frontend_dir:
-                frontend_dir = _resolve_frontend_dir(project_root, "frontend")
-                if frontend_dir != frontend_dir_candidate:
-                    yield json.dumps({"event": "status", "message": "Detected nested frontend..."}) + "\n"
-            elif root_has_package:
-                # Single app at root (e.g. Vite/React only)
-                frontend_dir = project_root
-                yield json.dumps({"event": "status", "message": "Running as single frontend app (project root)."}) + "\n"
-
-            if not backend_dir and not frontend_dir:
-                yield json.dumps({
-                    "event": "error",
-                    "message": "Project has no runnable app: add backend/, frontend/, or package.json in project root.",
-                }) + "\n"
+            yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
+            static_dir, err = _build_frontend(project_name, install=request.install)
+            if err:
+                yield json.dumps({"event": "error", "message": err}) + "\n"
                 return
 
-            backend_port = request.backend_port or FIXED_BACKEND_PORT
-            frontend_port = request.frontend_port or FIXED_FRONTEND_PORT
-            yield json.dumps({"event": "status", "message": f"Cleaning up ports {backend_port} and {frontend_port}..."}) + "\n"
-            kill_process_on_port(backend_port)
-            kill_process_on_port(frontend_port)
-            if not _is_port_available(backend_port):
-                backend_port = find_free_port()
-                yield json.dumps({"event": "status", "message": f"Backend port in use, switching to {backend_port}..."}) + "\n"
-            if not _is_port_available(frontend_port):
-                frontend_port = find_free_port()
-                yield json.dumps({"event": "status", "message": f"Frontend port in use, switching to {frontend_port}..."}) + "\n"
+            yield json.dumps({"event": "status", "message": "Build complete. Serving from main backend."}) + "\n"
 
-            # Use request host so displayed URL works when accessed via EC2 IP (e.g. http://18.143.150.140/)
-            _host = (http_request.headers.get("x-forwarded-host") or http_request.url.hostname or "localhost").split(":")[0]
-            backend_url = f"http://{_host}:{backend_port}" if backend_dir else None
-            frontend_url = f"http://{_host}:{frontend_port}" if frontend_dir else None
+            base = str(http_request.base_url).rstrip("/")
+            frontend_url = f"{base}/app/{project_name}"
+            backend_url = f"{base}/api/apps/{project_name}"
 
-            backend_proc = None
-            frontend_proc = None
-
-            # ----- Start backend (if present) -----
-            if backend_dir:
-                yield json.dumps({"event": "status", "message": "Preparing backend..."}) + "\n"
-                # Fix relative imports in all backend .py files so uvicorn main:app works (existing projects)
-                _fix_backend_python_relative_imports(backend_dir)
-                python_cmd = os.environ.get("PYTHON", "python3")
-                venv_path = os.path.join(backend_dir, "venv")
-                venv_python = os.path.join(venv_path, "bin", "python")
-                venv_pip = os.path.join(venv_path, "bin", "pip")
-                # Quote paths for shell (handles project names with spaces)
-                q_venv_python = shlex.quote(venv_python)
-                q_venv_pip = shlex.quote(venv_pip)
-                q_python_cmd = shlex.quote(python_cmd)
-                
-                # Check if it's a Node.js backend
-                if os.path.exists(os.path.join(backend_dir, "package.json")):
-                    # FIXED: Always install dependencies if request.install is True
-                    if request.install:
-                        yield json.dumps({"event": "status", "message": "Installing backend dependencies..."}) + "\n"
-                        install_cmd = "npm install --silent"
-                        start_cmd = "npm run start:dev"
-                        backend_cmd = f"{install_cmd} && PORT={backend_port} {start_cmd}"
-                    else:
-                        start_cmd = "npm run start:dev"
-                        backend_cmd = f"PORT={backend_port} {start_cmd}"
-                        
-                # Python backend
-                elif os.path.exists(os.path.join(backend_dir, "requirements.txt")):
-                    if request.install:
-                        yield json.dumps({"event": "status", "message": "Setting up Python environment and installing dependencies..."}) + "\n"
-                        setup_cmd = f"if [ ! -d venv ]; then {q_python_cmd} -m venv venv; fi && {q_venv_pip} install -q -r requirements.txt"
-                        try:
-                            r = subprocess.run(["/bin/bash", "-c", setup_cmd], cwd=backend_dir, capture_output=True, timeout=120)
-                            if r.returncode != 0:
-                                yield json.dumps({"event": "warning", "message": f"Dependency install had issues: {r.stderr.decode()[:500]}"}) + "\n"
-                        except Exception as e:
-                            yield json.dumps({"event": "warning", "message": f"Setup failed: {e}"}) + "\n"
-                        backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
-                    else:
-                        backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{q_python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
-                else:
-                    # Default Python backend without requirements.txt
-                    backend_cmd = f"{q_venv_python} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}" if os.path.exists(venv_python) else f"{q_python_cmd} -m uvicorn main:app --host 0.0.0.0 --port {backend_port}"
-                
-                # Use SQLite by default so app runs without PostgreSQL (generated apps often use getenv("DATABASE_URL"))
-                backend_env = dict(os.environ)
-                backend_env.setdefault("DATABASE_URL", "sqlite:///./app.db")
-
-                # Ensure database tables exist before starting (prevents "no such table" error)
-                _ensure_backend_tables_created(backend_dir)
-
-                yield json.dumps({"event": "status", "message": "Starting backend process..."}) + "\n"
-                backend_proc = process_registry.create(
-                    name=f"{project_name}:backend",
-                    command=["/bin/bash", "-c", backend_cmd],
-                    cwd=backend_dir,
-                    env=backend_env,
-                )
-                backend_proc.start()
-                
-                # Wait for backend to start; on ModuleNotFoundError, Postgres error, or FastAPI response_model error, try fix and retry once
-                backend_ready = False
-                backend_failed_continue_to_frontend = False
-                last_log_idx = 0
-                stub_retry_done = False
-                db_retry_done = False
-                response_model_retry_done = False
-
-                for attempt in range(60):
-                    if backend_proc.return_code() is not None:
-                        _, logs = backend_proc.get_logs()
-                        log_content = "\n".join(logs[-50:]) if logs else "No logs captured"
-
-                        if not stub_retry_done and "ModuleNotFoundError" in log_content:
-                            if _try_create_missing_backend_module_stub(backend_dir, log_content):
-                                stub_retry_done = True
-                                yield json.dumps({"event": "status", "message": "Created missing module stub, retrying backend..."}) + "\n"
-                                backend_proc = process_registry.create(
-                                    name=f"{project_name}:backend",
-                                    command=["/bin/bash", "-c", backend_cmd],
-                                    cwd=backend_dir,
-                                    env=backend_env,
-                                )
-                                backend_proc.start()
-                                last_log_idx = 0
-                                await asyncio.sleep(1)
-                                continue
-                        if not db_retry_done and _try_patch_backend_database_to_sqlite(backend_dir, log_content):
-                            db_retry_done = True
-                            yield json.dumps({"event": "status", "message": "Switched database to SQLite (PostgreSQL not running), retrying backend..."}) + "\n"
-                            backend_proc = process_registry.create(
-                                name=f"{project_name}:backend",
-                                command=["/bin/bash", "-c", backend_cmd],
-                                cwd=backend_dir,
-                                env=backend_env,
-                                )
-                            backend_proc.start()
-                            last_log_idx = 0
-                            await asyncio.sleep(1)
-                            continue
-                        if not response_model_retry_done and _try_patch_backend_response_model(backend_dir, log_content):
-                            response_model_retry_done = True
-                            yield json.dumps({"event": "status", "message": "Fixed FastAPI response_model, retrying backend..."}) + "\n"
-                            backend_proc = process_registry.create(
-                                name=f"{project_name}:backend",
-                                command=["/bin/bash", "-c", backend_cmd],
-                                cwd=backend_dir,
-                                env=backend_env,
-                            )
-                            backend_proc.start()
-                            last_log_idx = 0
-                            await asyncio.sleep(1)
-                            continue
-
-                        # Backend failed - continue to frontend anyway
-                        backend_url = None
-                        backend_proc = None
-                        yield json.dumps({
-                            "event": "warning",
-                            "message": f"Backend failed to start after fixes. Frontend will run without backend.\n\nLogs:\n{log_content}"
-                        }) + "\n"
-                        break
-
-                    
-                    # Stream logs to user
-                    next_idx, lines = backend_proc.get_logs(since=last_log_idx)
-                    last_log_idx = next_idx
-                    for line in lines:
-                        s = line.strip()
-                        if s:
-                            yield json.dumps({"event": "status", "message": f"[Backend] {s}"}) + "\n"
-                            # Check for common error patterns
-                            if "ModuleNotFoundError" in s or "ImportError" in s:
-                                yield json.dumps({
-                                    "event": "warning",
-                                    "message": f"Backend has missing dependencies. Frontend will run without backend. Try install=true for backend."
-                                }) + "\n"
-                                backend_proc.terminate()
-                                backend_url = None
-                                backend_proc = None
-                                backend_failed_continue_to_frontend = True
-                                break
-                            if "Error" in s and "Address already in use" in s:
-                                yield json.dumps({
-                                    "event": "warning",
-                                    "message": f"Backend port {backend_port} in use. Frontend will run without backend."
-                                }) + "\n"
-                                backend_proc.terminate()
-                                backend_url = None
-                                backend_proc = None
-                                backend_failed_continue_to_frontend = True
-                                break
-                    
-                    if backend_failed_continue_to_frontend:
-                        break
-
-                    # FIXED: Actually check if backend is listening on port
-                    if _is_port_listening(backend_port):
-                        backend_ready = True
-                        yield json.dumps({"event": "status", "message": f"Backend is ready on http://localhost:{backend_port}"}) + "\n"
-                        break
-                    
-                    await asyncio.sleep(1)
-                
-                if not backend_ready and backend_proc:
-                    _, logs = backend_proc.get_logs()
-                    log_content = "\n".join(logs[-20:]) if logs else "No logs captured"
-                    yield json.dumps({
-                        "event": "warning",
-                        "message": f"Backend did not start within 30 seconds. Frontend will run without backend.\n\nLogs:\n{log_content}"
-                    }) + "\n"
-                    backend_proc.terminate()
-                    backend_url = None
-                    backend_proc = None
-
-            # ----- Start frontend (if present) -----
-            if frontend_dir:
-                yield json.dumps({"event": "status", "message": "Preparing frontend..."}) + "\n"
-                # Write .env so CRA/Vite reliably gets backend URL (avoids undefined in browser)
-                # Use empty REACT_APP_BACKEND_URL so frontend falls back to window.location.hostname - works
-                # for localhost (dev) and EC2/public IP (deployment). Templates use getBackendUrl() which
-                # returns window.location.protocol//hostname:5001 when env is empty.
-                backend_url_val = ""
-                env_file = os.path.join(frontend_dir, ".env")
-                try:
-                    with open(env_file, "w", encoding="utf-8") as f:
-                        f.write(f"PORT={frontend_port}\n")
-                        f.write("HOST=0.0.0.0\n")
-                        f.write("DANGEROUSLY_DISABLE_HOST_CHECK=true\n")
-                        f.write(f"REACT_APP_BACKEND_URL={backend_url_val}\n")
-                        f.write(f"VITE_BACKEND_URL={backend_url_val}\n")
-                        f.write("BROWSER=none\n")
-                except Exception as e:
-                    yield json.dumps({"event": "warning", "message": f"Could not write .env: {e}"}) + "\n"
-                # Use full env so node/npm/nvm are on PATH; then override app vars
-                # HOST=0.0.0.0 so React dev server listens on all interfaces (EC2 deployment)
-                # DANGEROUSLY_DISABLE_HOST_CHECK=true so CRA accepts requests from external IP (not just localhost)
-                frontend_env = dict(os.environ)
-                frontend_env.update({
-                    "PORT": str(frontend_port),
-                    "HOST": "0.0.0.0",
-                    "DANGEROUSLY_DISABLE_HOST_CHECK": "true",
-                    "BROWSER": "none",
-                    "REACT_APP_BACKEND_URL": backend_url_val,
-                    "VITE_BACKEND_URL": backend_url_val,
-                    "NODE_OPTIONS": os.environ.get("NODE_OPTIONS", "--openssl-legacy-provider"),
-                })
-                frontend_cmd = "npm start"
-                pkg_path = os.path.join(frontend_dir, "package.json")
-                if os.path.exists(pkg_path):
-                    try:
-                        with open(pkg_path, "r", encoding="utf-8") as f:
-                            pkg = json.load(f)
-                        scripts = (pkg.get("scripts") or {})
-                        if scripts.get("dev"):
-                            frontend_cmd = f"npm run dev -- --host 0.0.0.0 --port {frontend_port}"
-                        elif scripts.get("preview"):
-                            frontend_cmd = f"npm run preview -- --host 0.0.0.0 --port {frontend_port}"
-                        elif scripts.get("start"):
-                            frontend_cmd = "npm start"
-                    except Exception:
-                        pass
-                
-                # FIXED: Install dependencies before starting. For Vite projects, ensure
-                # @vitejs/plugin-react is installed (generated package.json sometimes omits it).
-                if request.install and os.path.exists(pkg_path):
-                    yield json.dumps({"event": "status", "message": "Installing frontend dependencies (this may take a moment)..."}) + "\n"
-                    # Use --legacy-peer-deps and --force so peer/missing-version issues don't block install
-                    install_parts = ["npm install --legacy-peer-deps --force"]
-                    vite_config_js = os.path.join(frontend_dir, "vite.config.js")
-                    vite_config_ts = os.path.join(frontend_dir, "vite.config.ts")
-                    if os.path.exists(vite_config_js) or os.path.exists(vite_config_ts):
-                        install_parts.append("npm install @vitejs/plugin-react --save-dev --legacy-peer-deps --force")
-                    # CRA (react-scripts) often needs ajv@8; MUI needs @emotion/react, @emotion/styled, @mui/icons-material
-                    try:
-                        with open(pkg_path, "r", encoding="utf-8") as f:
-                            pkg_data = json.load(f)
-                        deps = pkg_data.get("dependencies") or {}
-                        if deps.get("react-scripts"):
-                            install_parts.append("npm install ajv@8 --legacy-peer-deps --force")
-                        if deps.get("@mui/material") or deps.get("@mui/icons-material"):
-                            install_parts.append(
-                                "npm install @emotion/react @emotion/styled @mui/material @mui/icons-material --legacy-peer-deps --force"
-                            )
-                    except Exception:
-                        pass
-                    frontend_cmd = " && ".join(install_parts) + " && " + frontend_cmd
-                
-                frontend_proc = process_registry.create(
-                    name=f"{project_name}:frontend",
-                    command=["/bin/bash", "-c", frontend_cmd],
-                    cwd=frontend_dir,
-                    env=frontend_env,
-                )
-                frontend_proc.start()
-                yield json.dumps({"event": "status", "message": f"Frontend starting on port {frontend_port}..."}) + "\n"
-                
-                last_log_idx = 0
-                frontend_ready = False
-
-                for attempt in range(120):
-                    await asyncio.sleep(1)
-
-                    if frontend_proc.return_code() is not None:
-                        await asyncio.sleep(0.5)
-                        _, lines = frontend_proc.get_logs(since=0)
-                        all_logs = "\n".join(lines).strip() or "No output captured"
-                        yield json.dumps({
-                            "event": "error",
-                            "message": f"Frontend process exited with code {frontend_proc.return_code()}.\n\nLogs:\n{all_logs}"
-                        }) + "\n"
-                        if backend_proc:
-                            backend_proc.terminate()
-                        return
-
-                    
-                    # Stream logs and check for errors
-                    next_idx, lines = frontend_proc.get_logs(since=last_log_idx)
-                    last_log_idx = next_idx
-                    for line in lines:
-                        s = line.strip()
-                        if s:
-                            yield json.dumps({"event": "status", "message": f"[Frontend] {s}"}) + "\n"
-                            # Check for common error patterns
-                            if "Module not found" in s or "Cannot find module" in s:
-                                yield json.dumps({
-                                    "event": "error",
-                                    "message": f"Frontend has missing dependencies. Try running with install=true. Error: {s}"
-                                }) + "\n"
-                                frontend_proc.terminate()
-                                if backend_proc:
-                                    backend_proc.terminate()
-                                return
-                            if "EADDRINUSE" in s:
-                                yield json.dumps({
-                                    "event": "error",
-                                    "message": f"Frontend port {frontend_port} is already in use."
-                                }) + "\n"
-                                frontend_proc.terminate()
-                                if backend_proc:
-                                    backend_proc.terminate()
-                                return
-                    
-                    # Check if frontend is listening
-                    if _is_port_listening(frontend_port):
-                        frontend_ready = True
-                        yield json.dumps({"event": "status", "message": f"Frontend is ready on http://localhost:{frontend_port}"}) + "\n"
-                        yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Open this URL to view your app"}) + "\n"
-                        break
-                
-                if not frontend_ready:
-                    _, all_logs = frontend_proc.get_logs()
-                    log_content = "\n".join(all_logs[-30:]) if all_logs else "No logs captured"
-                    yield json.dumps({
-                        "event": "warning",
-                        "message": f"Frontend did not start listening within 60 seconds. It may still be compiling. Check http://localhost:{frontend_port} in a moment.\n\nRecent logs:\n{log_content}"
-                    }) + "\n"
-                    # Still emit frontend_url so user can try opening it
-                    yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Frontend may still be compiling - try opening this URL"}) + "\n"
-
-            # Always return frontend_url when frontend exists - app runs with or without backend
             state = {
                 "project_name": project_name,
                 "backend_url": backend_url,
                 "frontend_url": frontend_url,
-                "backend": {"proc_id": backend_proc.id} if backend_proc else None,
-                "frontend": {"proc_id": frontend_proc.id} if frontend_proc else None,
+                "backend": None,
+                "frontend": None,
                 "started_at": time.time(),
             }
             PROJECT_RUN_STATE[project_name] = state
-            logger.info("[run] DONE | project=%s | backend=%s | frontend=%s", project_name, backend_url, frontend_url)
+            logger.info("[run] DONE | project=%s | frontend=%s | backend=%s", project_name, frontend_url, backend_url)
+            yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Open this URL to view your app"}) + "\n"
             yield json.dumps({"event": "ready", "data": state, "message": "Application is running!"}) + "\n"
 
         except Exception as e:
@@ -1015,3 +671,10 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
             yield json.dumps({"event": "error", "message": f"{str(e)}\n\nTraceback:\n{tb}"}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@router.post("/projects/{project_name}/stop")
+async def stop_project(project_name: str):
+    """No-op: single-backend mode has no per-project processes to terminate."""
+    return JSONResponse(content={"status": "ok", "message": "No processes to stop (single-backend mode)"})
+

@@ -273,7 +273,7 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
 
     app_js.extend([
         "function App() {",
-        "  const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim();",
+        "  const backendUrl = ((typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) ? (window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2]) : (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || window.location?.origin || '')).trim();",
         "  return (",
         "    <div className=\"app\">",
         f"      <header className=\"app-header\"><h1 className=\"app-title\">{arch_dict.get('rationale', 'Generated App').split(' ')[0]} Management</h1></header>",
@@ -614,7 +614,7 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
     # Main App Component
     app_js.extend([
         "function App() {",
-        "  const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim();",
+        "  const backendUrl = ((typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) ? (window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2]) : (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || window.location?.origin || '')).trim();",
         "  return (",
         "    <div className=\"app\">",
         f"      <header className=\"app-header\"><h1 className=\"app-title\">{app_name.replace('_', ' ').title()}</h1></header>",

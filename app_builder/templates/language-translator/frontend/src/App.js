@@ -27,11 +27,14 @@ function saveToCache(entry) {
 }
 
 function getBackendUrl() {
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) {
+    return window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2];
+  }
   const env = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || '').trim();
   if (env) return env;
   if (typeof window !== 'undefined') {
     if (window.__BACKEND_URL__) return window.__BACKEND_URL__;
-    return `${window.location.protocol}//${window.location.hostname}:5001`;
+    return window.location.origin || 'http://localhost:5001';
   }
   return 'http://localhost:5001';
 }

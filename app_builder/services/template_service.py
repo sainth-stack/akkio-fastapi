@@ -11,14 +11,19 @@ from typing import Dict, Any, Optional
 
 TEMPLATES_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
 
-# Only two templates: LLM (ideas-generator) and normal (todo-list)
+# Templates: order matters for detect_template (first match wins)
 TEMPLATE_MAPPING = {
+    "language-translator": {
+        "keywords": ["language translator", "translation app", "translate text", "translate between languages"],
+        "template_path": "language-translator",
+        "config": "translator.json",
+    },
     "ideas-generator": {
         "keywords": [
             "ideas generator", "idea generator", "generate ideas", "brainstorm", "creative ideas", "startup ideas",
             "linkedin post", "linkedin post generator", "linkedin-post-generator", "linkedin-post", "generate linkedin post", "linkedin content", "social media post",
             "travel planner", "travel plan", "trip planner", "vacation", "itinerary", "travel suggestion",
-            "translate", "translation", "language translator", "translator",
+            "translate", "translation", "translator",
             "genai", "gen ai", "ai generator", "ai post", "content generator",
         ],
         "template_path": "ideas-generator",

@@ -481,9 +481,11 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
     When env is not set, apiBase is undefined, and fetch(`${apiBase}/tasks/`) produces
     request to /undefined/tasks/ (relative URL). Fix by ensuring proper fallback.
     """
+    # Same-origin: when served at /app/{projectId}, API is /api/apps/{projectId}
     safe_backend_url_expr = (
-        "(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || "
-        "(typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()"
+        "((typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) "
+        "? (window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2]) "
+        ": (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5001')) || '').trim()"
     )
     for path in list(files.keys()):
         if not path.startswith("frontend/") or path.split(".")[-1] not in ("js", "jsx", "ts", "tsx"):
@@ -570,7 +572,7 @@ def _fix_frontend_backend_url_undefined(files: Dict[str, str]) -> None:
         if re.search(inline_env_pat, content):
             def _repl_inline(m):
                 path = m.group(1)
-                return f"fetch(`${{(process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim()}}{path}`)"
+                return f"fetch(`${{((typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) ? (window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2]) : (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5001')) || '').trim()}}{path}`)"
             content = re.sub(inline_env_pat, _repl_inline, content)
             changed = True
 

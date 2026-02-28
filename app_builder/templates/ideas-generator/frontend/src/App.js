@@ -15,11 +15,14 @@ function saveToCache(topic, content, genType) {
 }
 
 function getBackendUrl() {
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/app/')) {
+    return window.location.origin + '/api/apps/' + window.location.pathname.split('/')[2];
+  }
   const env = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || '').trim();
   if (env) return env;
   if (typeof window !== 'undefined') {
     if (window.__BACKEND_URL__) return window.__BACKEND_URL__;
-    return `${window.location.protocol}//${window.location.hostname}:5001`;
+    return window.location.origin || 'http://localhost:5001';
   }
   return 'http://localhost:5001';
 }
@@ -78,10 +81,11 @@ function App() {
       setContent(items);
       saveToCache(topic.trim(), items, genType);
     } catch (err) {
+      const msg = err?.message || (typeof err === 'string' ? err : 'Request failed');
       setError(
         cachedList.length > 0
-          ? 'Backend not running. Cached results below – click to view.'
-          : 'Backend not running. Add OPENAI_API_KEY to .env and start backend (cd backend && uvicorn main:app --port 5001) for AI generation.',
+          ? `${msg}. Cached results below – click to view.`
+          : msg,
       );
       setCachedList(getCache());
     } finally {

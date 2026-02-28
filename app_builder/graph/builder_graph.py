@@ -16,6 +16,8 @@ from ..agents.backend_generator_agent import backend_generator_agent
 from ..agents.frontend_generator_agent import frontend_generator_agent
 from ..agents.validation_agent import validate_and_fix_code
 from ..services.file_writer import file_writer
+from ..services.project_config import build_project_config, persist_project_config
+from ..services.db_init import ensure_project_db_initialized
 from ..schemas.files import GeneratedFiles
 
 logger = logging.getLogger("app_builder")
@@ -169,9 +171,23 @@ async def run_validation_step(state: BuilderState):
             from ..agents.validation_agent import polish_template_output
             files = polish_template_output(files, template_name)
             logger.info("[validation] polished template=%s", template_name)
-        fixed_files = validate_and_fix_code(files, arch)
+        fixed_files = validate_and_fix_code(files, arch, template_name=template_name)
         logger.info("[validation] persisting %d fixed files to project=%s", len(fixed_files), project_name)
         file_writer(project_name, GeneratedFiles(files=fixed_files))
+        # Persist project config for single-backend dynamic CRUD/LLM
+        try:
+            config = build_project_config(
+                project_name=project_name,
+                structured_requirement=state.get("structured_requirement") or {},
+                architecture=state.get("architecture") or {},
+                api_contract=state.get("api_contract") or {},
+                db_schema=state.get("db_schema") or {},
+                template_name=state.get("template_name"),
+            )
+            persist_project_config(project_name, config)
+            ensure_project_db_initialized(project_name, config)
+        except Exception as cfg_err:
+            logger.warning("[validation] project_config persist failed (non-fatal): %s", cfg_err)
         logger.info("[validation] DONE")
         return {"generated_files": fixed_files, "validation_results": {"status": "success"}}
     except Exception as e:

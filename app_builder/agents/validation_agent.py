@@ -1,6 +1,9 @@
+import logging
 import re
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger("app_builder")
 
 from app_builder.agents.dynamic_code_generator import (
     _fix_frontend_map_safety,
@@ -293,9 +296,14 @@ def _normalize_js_format(content: str) -> str:
     return result + "\n" if result else ""
 
 
-def validate_and_fix_code(files: Dict[str, str], architecture: Dict[str, Any]) -> Dict[str, str]:
+def validate_and_fix_code(
+    files: Dict[str, str],
+    architecture: Dict[str, Any],
+    template_name: Optional[str] = None,
+) -> Dict[str, str]:
     """
     Validates and attempts to fix the generated code.
+    For ideas-generator template, verifies generate-ideas API contract (topic, count, gen_type -> content[]).
     """
     
     # 0. Fix cross-file imports FIRST (most common LLM error)
@@ -321,7 +329,38 @@ def validate_and_fix_code(files: Dict[str, str], architecture: Dict[str, Any]) -
     # 7. Fix Zustand import (default -> named export for v4+)
     _fix_zustand_import(files)
     
+    # 8. Custom endpoints: validate frontend matches API contract (any template with custom endpoints)
+    if template_name:
+        custom = {"generate-ideas": "llm_content", "generate": "llm_content"} if template_name == "ideas-generator" else {}
+        if template_name == "language-translator":
+            custom = {"translate": "llm_translate"}
+        if custom:
+            _validate_custom_endpoint_api(files, template_name, custom)
+    
     return files
+
+
+def _validate_ideas_generator_api(files: Dict[str, str]) -> None:
+    """
+    Validate ideas-generator frontend matches generate-ideas API contract:
+    - Request: { topic, count?, gen_type? }
+    - Response: { topic, gen_type, content: string[], raw_text? }
+    - Frontend must: POST to .../generate-ideas, send body, use data.content
+    """
+    for path in ["frontend/src/App.js", "frontend/App.js"]:
+        if path not in files:
+            continue
+        content = files[path]
+        issues = []
+        if "/generate-ideas" not in content:
+            issues.append("missing /generate-ideas in fetch URL")
+        if "topic" not in content or "gen_type" not in content:
+            issues.append("request body should include topic and gen_type")
+        if "data.content" not in content and "data?.content" not in content:
+            issues.append("response must use data.content (array)")
+        if issues:
+            logger.warning("[validation] ideas-generator API contract issues in %s: %s", path, issues)
+        break
 
 
 def _fix_zustand_import(files: Dict[str, str]):

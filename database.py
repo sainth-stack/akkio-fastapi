@@ -273,6 +273,7 @@ class PostgresDatabase:
             try:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_app_builder_apps_user_email ON app_builder_apps(user_email)")
                 cursor.execute("ALTER TABLE app_builder_apps ADD COLUMN IF NOT EXISTS generated_uiux TEXT")
+                cursor.execute("ALTER TABLE app_builder_apps ADD COLUMN IF NOT EXISTS project_config JSONB")
             except Exception:
                 pass
             # App Builder codegen sessions: store multi-agent output + generated code JSON (same as documents)
@@ -293,6 +294,7 @@ class PostgresDatabase:
             try:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_codegen_sessions_session_id ON app_builder_codegen_sessions(session_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_codegen_sessions_project_name ON app_builder_codegen_sessions(project_name)")
+                cursor.execute("ALTER TABLE app_builder_codegen_sessions ADD COLUMN IF NOT EXISTS project_config JSONB")
             except Exception:
                 pass
             # App Builder deployments: store deployed app URLs and status

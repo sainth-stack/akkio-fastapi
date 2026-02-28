@@ -8,7 +8,18 @@
       {
         "path": "/generate-ideas",
         "method": "POST",
-        "description": "Generate creative ideas for a given topic using LLM"
+        "description": "Generate creative ideas for a given topic using LLM",
+        "request": {
+          "topic": "string (required)",
+          "count": "number (optional, default 5)",
+          "gen_type": "string (optional: ideas|linkedin_post|travel|translate|general)"
+        },
+        "response": {
+          "topic": "string",
+          "gen_type": "string",
+          "content": "string[]",
+          "raw_text": "string (optional)"
+        }
       }
     ]
   },
