@@ -391,6 +391,7 @@ class RunRequest(BaseModel):
     backend_port: Optional[int] = None
     frontend_port: Optional[int] = None
     install: bool = True
+    skip_build: bool = False  # True when frontend is already built/deployed (e.g. S3)
 
 
 class BuildRequest(BaseModel):
@@ -401,8 +402,8 @@ class BuildRequest(BaseModel):
 PROJECT_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 
 
-def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str) -> str:
-    """Build error message from npm subprocess result. Handles empty output (e.g. --silent or PATH issues)."""
+def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str, cwd: Optional[str] = None) -> str:
+    """Build error message from npm subprocess result. Handles empty output (e.g. PATH or permission issues)."""
     raw = (r.stderr or b"") + (r.stdout or b"")
     try:
         err = raw.decode("utf-8", errors="replace").strip()[:500]
@@ -411,8 +412,10 @@ def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str) -> str:
     if not err:
         err = (
             f"Exit code {r.returncode}. No output captured. "
-            "On servers, ensure Node.js and npm are installed and in PATH for the process user."
+            "On servers: ensure Node.js and npm are in PATH for the process user, and the process has read/write access to the project directory."
         )
+        if cwd:
+            err += f" Cwd was: {cwd}"
     return f"{prefix} (exit {r.returncode}): {err}"
 
 
@@ -432,14 +435,15 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
         return None, "No frontend found"
     try:
         if install:
+            # Do not use --silent so we capture real errors (e.g. on EC2: permissions, network, node version)
             r = subprocess.run(
-                ["npm", "install", "--legacy-peer-deps", "--silent"],
+                ["npm", "install", "--legacy-peer-deps"],
                 cwd=frontend_dir,
                 capture_output=True,
                 timeout=120,
             )
             if r.returncode != 0:
-                return None, _capture_npm_error(r, "npm install failed")
+                return None, _capture_npm_error(r, "npm install failed", cwd=frontend_dir)
         # PUBLIC_URL ensures CRA/Vite build asset paths match /app/{project_id} base path
         build_env = os.environ.copy()
         build_env["PUBLIC_URL"] = f"/app/{project_name}"
@@ -451,7 +455,7 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
             env=build_env,
         )
         if r.returncode != 0:
-            return None, _capture_npm_error(r, "npm run build failed")
+            return None, _capture_npm_error(r, "npm run build failed", cwd=frontend_dir)
         dist = os.path.join(frontend_dir, "dist")
         build_dir = os.path.join(frontend_dir, "build")
         if os.path.isdir(dist):
@@ -657,13 +661,16 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                 yield json.dumps({"event": "error", "message": "Project not found"}) + "\n"
                 return
 
-            yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
-            static_dir, err = _build_frontend(project_name, install=request.install)
-            if err:
-                yield json.dumps({"event": "error", "message": err}) + "\n"
-                return
-
-            yield json.dumps({"event": "status", "message": "Build complete. Serving from main backend."}) + "\n"
+            if request.skip_build:
+                yield json.dumps({"event": "status", "message": "Skipping build (frontend already deployed)."}) + "\n"
+                static_dir = None  # main backend may still serve from existing mount or S3
+            else:
+                yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
+                static_dir, err = _build_frontend(project_name, install=request.install)
+                if err:
+                    yield json.dumps({"event": "error", "message": err}) + "\n"
+                    return
+                yield json.dumps({"event": "status", "message": "Build complete. Serving from main backend."}) + "\n"
 
             base = str(http_request.base_url).rstrip("/")
             frontend_url = f"{base}/app/{project_name}"
