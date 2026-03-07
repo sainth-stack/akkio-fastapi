@@ -401,6 +401,21 @@ class BuildRequest(BaseModel):
 PROJECT_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 
 
+def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str) -> str:
+    """Build error message from npm subprocess result. Handles empty output (e.g. --silent or PATH issues)."""
+    raw = (r.stderr or b"") + (r.stdout or b"")
+    try:
+        err = raw.decode("utf-8", errors="replace").strip()[:500]
+    except Exception:
+        err = raw[:500].decode("latin-1", errors="replace").strip()
+    if not err:
+        err = (
+            f"Exit code {r.returncode}. No output captured. "
+            "On servers, ensure Node.js and npm are installed and in PATH for the process user."
+        )
+    return f"{prefix} (exit {r.returncode}): {err}"
+
+
 def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[str], Optional[str]]:
     """Run npm build in frontend dir. Returns (static_dir_path, error_message)."""
     project_root = _project_root(project_name)
@@ -424,8 +439,7 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
                 timeout=120,
             )
             if r.returncode != 0:
-                err = (r.stderr or r.stdout or b"").decode()[:500]
-                return None, f"npm install failed: {err}"
+                return None, _capture_npm_error(r, "npm install failed")
         # PUBLIC_URL ensures CRA/Vite build asset paths match /app/{project_id} base path
         build_env = os.environ.copy()
         build_env["PUBLIC_URL"] = f"/app/{project_name}"
@@ -437,8 +451,7 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
             env=build_env,
         )
         if r.returncode != 0:
-            err = (r.stderr or r.stdout or b"").decode()[:500]
-            return None, f"npm run build failed: {err}"
+            return None, _capture_npm_error(r, "npm run build failed")
         dist = os.path.join(frontend_dir, "dist")
         build_dir = os.path.join(frontend_dir, "build")
         if os.path.isdir(dist):
@@ -448,6 +461,11 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
         return None, "Build completed but dist/build not found"
     except subprocess.TimeoutExpired:
         return None, "Build timed out"
+    except FileNotFoundError as e:
+        msg = str(e).lower()
+        if "npm" in msg or getattr(e, "filename", "") == "npm":
+            return None, "npm not found. On the server, install Node.js and npm and ensure they are in PATH for the process (e.g. systemd service)."
+        return None, str(e)
     except Exception as e:
         return None, str(e)
 
