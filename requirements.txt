@@ -1,92 +1,48 @@
-# Core Python libraries
-# ast, base64, io, os, re, smtplib, sys, tempfile, traceback, enum, pathlib
-# email.mime.image, email.mime.multipart, email.mime.text
-# datetime, collections, json, typing, uuid, pickle
-
-# Web framework and API
+# --- Web ---
 fastapi
 starlette
 uvicorn
 pydantic
-
-# Data science and machine learning
-numpy
-pandas
-scikit-learn
-joblib
-
-# Supervised AutoML extras
-xgboost
-lightgbm
-
-# Data visualization
-plotly
-
-# Image processing
-Pillow
-torch
-torchvision
-
-# HTTP requests
-requests
-
-# Web scraping
-beautifulsoup4
-lxml
-
-# Date/time parsing
-python-dateutil
-
-# Markdown processing
-markdown
-
-# Environment variables
+python-multipart
 python-dotenv
 
-# AWS SDK
-boto3
-botocore
+# --- HTTP / scraping (multi-agent web search) ---
+requests
+beautifulsoup4
+lxml
+googlesearch-python
 
-# Database
+# --- Data ---
+numpy
+pandas
+openpyxl
+
+# --- Database ---
 psycopg2-binary
 SQLAlchemy
 pymongo
 
-# LangChain ecosystem
+# --- LangChain / LLM ---
 langchain
 langchain-community
 langchain-openai
+langchain-anthropic
+langchain-google-genai
 langchain-core
-
-# OpenAI
+langgraph
 openai
 
+# --- Vector store (multi-model) ---
 chromadb
 
-# PDF processing
+# --- Documents ---
 pypdf
 PyPDF2
-
-# DOCX processing
 python-docx
 
-# Timezone handling
-tzdata
-
-reportlab
-python-multipart
-openpyxl
-
-# Time series / forecasting (used in backend imports)
-prophet
-statsmodels
-
-# JSON repair for LLM responses with malformed JSON
+# --- JSON repair (app builder code update agent) ---
 json-repair
 
-# Updated: langchain (unpinned)
-faiss-cpu
-
-# Web search - Using Google for better accuracy
-googlesearch-python
-langgraph
+# --- Date/time ---
+python-dateutil
+tzdata

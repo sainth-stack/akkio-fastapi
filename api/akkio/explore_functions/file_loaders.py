@@ -24,6 +24,27 @@ def _find_latest_file_in_directory(directory_path: str, extensions: Tuple[str, .
         return None
 
 
+def process_pdf(file_path: str) -> str:
+    """Extract plain text from a PDF (used by multi_model_api)."""
+    loader = PyPDFLoader(file_path)
+    pages = loader.load()
+    if not pages:
+        return ""
+    return "\n".join([p.page_content or "" for p in pages])
+
+
+def process_docx(file_path: str) -> str:
+    """Extract plain text from a Word document."""
+    doc = Document(file_path)
+    return "\n".join([para.text for para in doc.paragraphs])
+
+
+def process_txt(file_path: str) -> str:
+    """Read a UTF-8 text file."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
 def _process_pdf_file(file_path: str) -> pd.DataFrame:
     try:
         loader = PyPDFLoader(file_path)
