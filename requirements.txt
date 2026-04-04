@@ -43,6 +43,9 @@ python-docx
 # --- JSON repair (app builder code update agent) ---
 json-repair
 
+# --- App builder: optional E2B cloud sandbox for npm install/build (set E2B_API_KEY) ---
+e2b>=1.0.0
+
 # --- Date/time ---
 python-dateutil
 tzdata

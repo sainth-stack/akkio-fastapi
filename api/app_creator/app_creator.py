@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import logging
 import os
 
@@ -25,6 +25,7 @@ from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.files import GeneratedFiles
 from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from api.app_creator.e2b_sandbox_build import build_frontend_in_e2b, e2b_available
 # Legacy: find_free_port, process_registry no longer used (single-backend mode)
 
 
@@ -392,10 +393,13 @@ class RunRequest(BaseModel):
     frontend_port: Optional[int] = None
     install: bool = True
     skip_build: bool = False  # True when frontend is already built/deployed (e.g. S3)
+    # None = follow APP_BUILDER_USE_E2B + E2B_API_KEY; True = require E2B; False = local npm only
+    use_sandbox: Optional[bool] = None
 
 
 class BuildRequest(BaseModel):
     install: bool = True
+    use_sandbox: Optional[bool] = None
 
 
 # Simple in-memory index of processes per project (legacy; no longer used for proc_id).
@@ -419,8 +423,38 @@ def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str, cwd: Optiona
     return f"{prefix} (exit {r.returncode}): {err}"
 
 
-def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[str], Optional[str]]:
-    """Run npm build in frontend dir. Returns (static_dir_path, error_message)."""
+def _resolve_e2b_build(use_sandbox: Optional[bool]) -> Tuple[bool, Optional[str]]:
+    """
+    Decide whether to run npm in an E2B sandbox.
+    Returns (use_e2b, error_message). error_message is set only when use_sandbox=True but deps are missing.
+    """
+    if use_sandbox is True:
+        if not os.environ.get("E2B_API_KEY"):
+            return False, "use_sandbox=true requires E2B_API_KEY (https://e2b.dev)"
+        try:
+            __import__("e2b")
+        except ImportError:
+            return False, "use_sandbox=true requires the `e2b` package (add to requirements.txt)"
+        return True, None
+    if use_sandbox is False:
+        return False, None
+    if os.environ.get("APP_BUILDER_USE_E2B", "").lower() not in ("1", "true", "yes"):
+        return False, None
+    if not e2b_available():
+        logger.warning(
+            "APP_BUILDER_USE_E2B is set but E2B_API_KEY or e2b package is missing; using local npm"
+        )
+        return False, None
+    return True, None
+
+
+def _build_frontend(
+    project_name: str,
+    install: bool = True,
+    use_sandbox: Optional[bool] = None,
+    on_sandbox_log: Optional[Callable[[str], None]] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Run npm build in frontend dir or E2B sandbox. Returns (static_dir_path, error_message)."""
     project_root = _project_root(project_name)
     if not os.path.exists(project_root):
         return None, "Project not found"
@@ -433,6 +467,18 @@ def _build_frontend(project_name: str, install: bool = True) -> Tuple[Optional[s
         frontend_dir = project_root
     if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
         return None, "No frontend found"
+
+    use_e2b, forced_err = _resolve_e2b_build(use_sandbox)
+    if forced_err:
+        return None, forced_err
+    if use_e2b:
+        return build_frontend_in_e2b(
+            project_name,
+            frontend_dir,
+            install=install,
+            on_log=on_sandbox_log,
+        )
+
     try:
         if install:
             # Do not use --silent so we capture real errors (e.g. on EC2: permissions, network, node version)
@@ -554,7 +600,9 @@ async def generate_app(request: GenerateRequest):
 @router.post("/projects/{project_name}/build")
 async def build_project(project_name: str, request: BuildRequest = BuildRequest()):
     """Build frontend. Output served at /app/{project_name}."""
-    static_dir, err = _build_frontend(project_name, install=request.install)
+    static_dir, err = _build_frontend(
+        project_name, install=request.install, use_sandbox=request.use_sandbox
+    )
     if err:
         raise HTTPException(status_code=400, detail=err)
     return JSONResponse(
@@ -665,8 +713,25 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
                 yield json.dumps({"event": "status", "message": "Skipping build (frontend already deployed)."}) + "\n"
                 static_dir = None  # main backend may still serve from existing mount or S3
             else:
-                yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
-                static_dir, err = _build_frontend(project_name, install=request.install)
+                use_e2b, e2b_err = _resolve_e2b_build(request.use_sandbox)
+                if e2b_err:
+                    yield json.dumps({"event": "error", "message": e2b_err}) + "\n"
+                    return
+                if use_e2b:
+                    yield json.dumps(
+                        {
+                            "event": "status",
+                            "message": "Building frontend in E2B cloud sandbox (npm install + build)...",
+                        }
+                    ) + "\n"
+                else:
+                    yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
+
+                static_dir, err = _build_frontend(
+                    project_name,
+                    install=request.install,
+                    use_sandbox=request.use_sandbox,
+                )
                 if err:
                     yield json.dumps({"event": "error", "message": err}) + "\n"
                     return
