@@ -173,5 +173,6 @@ root.render(<React.StrictMode><App /></React.StrictMode>);
                 "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build",
             },
             "engines": {"node": ">=20"},
+            "overrides": {"ajv": "^8.12.0"},
         }, indent=2)
     return files

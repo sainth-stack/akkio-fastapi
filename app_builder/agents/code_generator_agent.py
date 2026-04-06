@@ -297,13 +297,13 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
         "private": True,
         "dependencies": { "react": "^18.2.0", "react-dom": "^18.2.0", "react-scripts": "5.0.1" },
         "scripts": { "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start", "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build" },
-        "engines": { "node": ">=20" }
+        "engines": { "node": ">=20" },
+        "overrides": { "ajv": "^8.12.0" },
     }, indent=2)
     files["frontend/public/index.html"] = "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>App</title><script src=\"https://cdn.tailwindcss.com\"></script><link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\" /></head><body class=\"bg-slate-50 text-slate-900\"><div id=\"root\"></div></body></html>"
     files["frontend/src/index.js"] = "import React from 'react';\nimport ReactDOM from 'react-dom/client';\nimport App from './App';\nimport './styles.css';\nconst root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(<React.StrictMode><App /></React.StrictMode>);"
 
     files["README.md"] = "# Generated App\\n\\n## Backend\\ncd backend && pip install -r requirements.txt && uvicorn main:app --reload --port 5001\\n\\n## Frontend\\ncd frontend && npm install && npm start"
-    return files
     return files
 
 def generate_from_template(template: Dict[str, Any]) -> Dict[str, str]:
@@ -645,7 +645,8 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
             "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
             "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build"
         },
-        "engines": { "node": ">=20" }
+        "engines": { "node": ">=20" },
+        "overrides": { "ajv": "^8.12.0" },
     }, indent=2)
 
     files["frontend/public/index.html"] = """

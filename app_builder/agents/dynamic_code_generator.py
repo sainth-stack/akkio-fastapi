@@ -33,6 +33,8 @@ _CRA_PACKAGE_JSON = {
         "production": [">0.2%", "not dead", "not op_mini all"],
         "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"],
     },
+    # Node 20 + npm: nested webpack deps can pull wrong ajv; force ajv v8 for schema-utils / ajv-keywords
+    "overrides": {"ajv": "^8.12.0"},
 }
 
 
@@ -230,6 +232,11 @@ def _ensure_node_compat(files: Dict[str, str]) -> None:
                 if key in scripts and "react-scripts" in str(scripts[key]) and "NODE_OPTIONS" not in str(scripts[key]):
                     scripts[key] = f"NODE_OPTIONS=--openssl-legacy-provider {scripts[key]}"
             pkg["scripts"] = scripts
+            deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+            if "react-scripts" in deps:
+                ov = dict(pkg.get("overrides") or {})
+                ov.setdefault("ajv", "^8.12.0")
+                pkg["overrides"] = ov
             files[pkg_path] = json.dumps(pkg, indent=2)
         except (json.JSONDecodeError, TypeError):
             pass

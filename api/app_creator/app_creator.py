@@ -25,6 +25,7 @@ from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.files import GeneratedFiles
 from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from api.app_creator.cra_npm_patch import patch_package_json_for_cra_ajv
 from api.app_creator.e2b_sandbox_build import build_frontend_in_e2b, e2b_available
 # Legacy: find_free_port, process_registry no longer used (single-backend mode)
 
@@ -467,6 +468,9 @@ def _build_frontend(
         frontend_dir = project_root
     if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
         return None, "No frontend found"
+
+    if patch_package_json_for_cra_ajv(frontend_dir):
+        logger.info("[build] Patched package.json (npm overrides for CRA / react-scripts + ajv)")
 
     use_e2b, forced_err = _resolve_e2b_build(use_sandbox)
     if forced_err:
