@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Optional, Dict
 
-from database import PostgresDatabase
+from db import PostgresDatabase
 
 from .usage_store import deduct_tokens
 

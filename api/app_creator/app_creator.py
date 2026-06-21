@@ -20,10 +20,6 @@ import subprocess
 import shutil
 import tempfile
 
-from app_builder.graph.builder_graph import app_builder_graph
-from app_builder.schemas.requirements import UserRequirement
-from app_builder.schemas.files import GeneratedFiles
-from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
 from api.app_creator.cra_npm_patch import patch_package_json_for_cra_ajv
 from api.app_creator.e2b_sandbox_build import build_frontend_in_e2b, e2b_available
@@ -354,36 +350,6 @@ def _build_tree(project_name: str) -> List[Dict[str, Any]]:
     return top_level
 
 
-def tree_from_files_dict(files: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Build a lightweight tree from an in-memory files dict."""
-    root: List[Dict[str, Any]] = []
-
-    def ensure_folder(children: List[Dict[str, Any]], name: str, path: str) -> Dict[str, Any]:
-        existing = next((c for c in children if c.get("type") == "folder" and c.get("name") == name), None)
-        if existing:
-            return existing
-        node = {"name": name, "type": "folder", "path": path, "children": []}
-        children.append(node)
-        return node
-
-    for rel_path in sorted(files.keys()):
-        parts = rel_path.split("/")
-        cur_children = root
-        cur_path = ""
-        for part in parts[:-1]:
-            cur_path = f"{cur_path}/{part}" if cur_path else part
-            folder = ensure_folder(cur_children, part, cur_path)
-            cur_children = folder["children"]
-        cur_children.append({"name": parts[-1], "type": "file", "path": rel_path})
-
-    return root
-
-
-class GenerateRequest(BaseModel):
-    requirement: str
-    project_name: Optional[str] = "generated_app"
-
-
 class UpdateFileRequest(BaseModel):
     path: str
     content: str
@@ -395,11 +361,6 @@ class RunRequest(BaseModel):
     install: bool = True
     skip_build: bool = False  # True when frontend is already built/deployed (e.g. S3)
     # None = follow APP_BUILDER_USE_E2B + E2B_API_KEY; True = require E2B; False = local npm only
-    use_sandbox: Optional[bool] = None
-
-
-class BuildRequest(BaseModel):
-    install: bool = True
     use_sandbox: Optional[bool] = None
 
 
@@ -522,101 +483,6 @@ def _build_frontend(
         return None, str(e)
     except Exception as e:
         return None, str(e)
-
-
-@router.post("/generate")
-async def generate_app(request: GenerateRequest):
-    async def event_generator():
-        try:
-            logger.info("[generate] START | requirement=%r | project_name=%s", request.requirement[:80] + "..." if len(request.requirement) > 80 else request.requirement, request.project_name)
-            yield json.dumps(
-                {"event": "meta", "project_name": request.project_name, "message": "Starting app generation..."}
-            ) + "\n"
-
-            initial_state = {
-                "user_requirement": UserRequirement(description=request.requirement),
-                "clarified_requirement": "",
-                "plan": None,
-                "architecture": None,
-                "generated_files": None,
-                "template_data": None,
-                "error": ""
-            }
-
-            for step in app_builder_graph.stream(initial_state):
-                for node_name, node_output in step.items():
-                    logger.info("[generate] step=%s | output_keys=%s", node_name, list(node_output.keys()) if node_output else [])
-
-                    if "structured_requirement" in node_output:
-                        sr = node_output.get("structured_requirement", {})
-                        tmpl = sr.get("template_name") if isinstance(sr, dict) else None
-                        proj = sr.get("project_name", "?") if isinstance(sr, dict) else "?"
-                        logger.info("[generate] structuring done | project_name=%s | template_name=%s", proj, tmpl)
-
-                    if "clarified_requirement" in node_output and node_output["clarified_requirement"]:
-                        yield json.dumps(
-                            {
-                                "event": "clarified",
-                                "agent": node_name,
-                                "message": "Requirement clarified.",
-                                "clarified_requirement": node_output["clarified_requirement"],
-                            }
-                        ) + "\n"
-
-                    if "plan" in node_output and node_output["plan"]:
-                        plan = node_output["plan"]
-                        yield json.dumps(
-                            {"event": "plan", "agent": node_name, "plan": plan.steps, "message": "Plan ready."}
-                        ) + "\n"
-
-                    if "architecture" in node_output and node_output["architecture"]:
-                        yield json.dumps(
-                            {"event": "architecture", "agent": node_name, "message": "Architecture decided."}
-                        ) + "\n"
-
-                    if "generated_files" in node_output and node_output["generated_files"]:
-                        files_raw = node_output["generated_files"]
-                        files_obj = GeneratedFiles(files=files_raw) if isinstance(files_raw, dict) else files_raw
-                        files_dict = files_obj.files if hasattr(files_obj, "files") else files_raw
-                        logger.info("[generate] writing %d files to project=%s", len(files_dict), request.project_name)
-                        file_writer(request.project_name, GeneratedFiles(files=files_dict))
-                        tree = tree_from_files_dict(files_dict)
-                        yield json.dumps(
-                            {"event": "files", "agent": node_name, "files": files_dict, "tree": tree}
-                        ) + "\n"
-
-                    if "error" in node_output and node_output["error"]:
-                        logger.error("[generate] error from %s: %s", node_name, node_output["error"])
-                        yield json.dumps({"event": "error", "agent": node_name, "message": node_output["error"]}) + "\n"
-
-            logger.info("[generate] DONE | project=%s", request.project_name)
-            yield json.dumps({"event": "done", "message": "App generation successful"}) + "\n"
-
-        except Exception as e:
-            logger.exception("[generate] EXCEPTION: %s", e)
-            import traceback
-            traceback.print_exc()
-            yield json.dumps({"event": "error", "message": str(e)}) + "\n"
-
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
-
-
-@router.post("/projects/{project_name}/build")
-async def build_project(project_name: str, request: BuildRequest = BuildRequest()):
-    """Build frontend. Output served at /app/{project_name}."""
-    static_dir, err = _build_frontend(
-        project_name, install=request.install, use_sandbox=request.use_sandbox
-    )
-    if err:
-        raise HTTPException(status_code=400, detail=err)
-    return JSONResponse(
-        content={
-            "status": "ok",
-            "project_name": project_name,
-            "static_url": f"/app/{project_name}",
-            "backend_url": f"/api/apps/{project_name}",
-        }
-    )
 
 
 @router.get("/projects/{project_name}/tree")
@@ -765,10 +631,4 @@ async def run_project(project_name: str, request: RunRequest, http_request: Requ
             yield json.dumps({"event": "error", "message": f"{str(e)}\n\nTraceback:\n{tb}"}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
-
-
-@router.post("/projects/{project_name}/stop")
-async def stop_project(project_name: str):
-    """No-op: single-backend mode has no per-project processes to terminate."""
-    return JSONResponse(content={"status": "ok", "message": "No processes to stop (single-backend mode)"})
 

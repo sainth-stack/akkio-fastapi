@@ -1,17 +1,17 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import asyncio
 import subprocess
-from app_builder_db import get_app_builder_db
+from api.auth.request_auth import resolve_user
+from api.auth.dependencies import CurrentUser
 from llm_helper import get_llm_for_user
 from app_builder.agents.test_generator_agent import generate_tests
 from app_builder.services.file_reader import read_project_files
 from app_builder.services.runtime_paths import get_projects_dir
 
 router = APIRouter(prefix="/api/test-suite", tags=["Test Suite"])
-db = get_app_builder_db()
 
 class GenerateTestsRequest(BaseModel):
     project_name: str
@@ -21,7 +21,10 @@ class RunTestsRequest(BaseModel):
     test_files: Optional[List[str]] = None
 
 @router.post("/generate")
-async def trigger_generate_tests(req: GenerateTestsRequest):
+async def trigger_generate_tests(
+    req: GenerateTestsRequest,
+    _: CurrentUser = Depends(resolve_user),
+):
     """
     Generates test scripts for the given project.
     """
@@ -48,7 +51,7 @@ async def trigger_generate_tests(req: GenerateTestsRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/list/{project_name}")
-async def list_tests(project_name: str):
+async def list_tests(project_name: str, _: CurrentUser = Depends(resolve_user)):
     """
     Lists all test files in the project.
     """
@@ -66,7 +69,7 @@ async def list_tests(project_name: str):
     return {"tests": tests}
 
 @router.post("/run")
-async def run_tests(req: RunTestsRequest):
+async def run_tests(req: RunTestsRequest, _: CurrentUser = Depends(resolve_user)):
     """
     Runs pytest for the project and returns the output.
     """

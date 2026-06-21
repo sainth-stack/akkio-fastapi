@@ -6,13 +6,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 import json
 import asyncio
-import sys
 import os
-
-# Add parent directory to path for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(os.path.dirname(current_dir))
-sys.path.append(parent_dir)
 
 from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.plan import ProjectPlan
@@ -22,7 +16,9 @@ from app_builder.agents.code_generator_agent import code_generator_agent
 from app_builder.agents.dynamic_code_generator import generate_code_from_plan
 from app_builder.services.file_writer import file_writer, write_project_file
 from llm_helper import get_llm_for_user
-from app_builder_db import get_app_builder_db
+from db.app_builder import get_app_builder_db
+from api.auth.ws_auth import authenticate_websocket
+from api.auth.request_auth import user_email_from
 
 router = APIRouter(prefix="/api/agents", tags=["Agents"])
 
@@ -33,12 +29,6 @@ class AgentExecutionRequest(BaseModel):
     requirement: str
     plan: List[Dict[str, Any]]
     project_name: str
-
-
-class UpdateCodeRequest(BaseModel):
-    user_request: str
-    project_name: str
-    app_id: Optional[str] = None
 
 
 from app_builder.agents.code_update_agent import update_code_from_chat
@@ -314,130 +304,6 @@ async def execute_code_generator_agent(
         raise
 
 
-@router.websocket("/regenerate-code/{session_id}")
-async def regenerate_code(websocket: WebSocket, session_id: str):
-    """
-    WebSocket endpoint specifically for code regeneration.
-    
-    Client sends:
-    {
-        "requirement": "...",
-        "prd": "...",
-        "plan": [...],
-        "architecture": {...},
-        "project_name": "..."
-    }
-    """
-    await manager.connect(session_id, websocket)
-    
-    try:
-        # Wait for request
-        data = await websocket.receive_text()
-        request_data = json.loads(data)
-        
-        requirement = request_data.get("requirement")
-        prd = request_data.get("prd", "") or ""
-        plan = request_data.get("plan", [])
-        architecture = request_data.get("architecture", {})
-        project_name = request_data.get("project_name")
-        uiux = request_data.get("uiux", "") or ""
-        app_id = request_data.get("app_id")
-        
-        # When PRD/UIUX not in request, load from DB
-        if (not prd or not uiux) and (app_id or project_name):
-            try:
-                app_from_db = None
-                if app_id:
-                    app_from_db = db.get_app_builder_app(app_id)
-                if not app_from_db and project_name:
-                    app_from_db = db.get_app_by_project_name(project_name)
-                if app_from_db:
-                    if not prd:
-                        prd = app_from_db.get("prd") or ""
-                    if not uiux:
-                        uiux = app_from_db.get("generated_uiux") or ""
-                    if not plan and app_from_db.get("plan"):
-                        plan = app_from_db.get("plan", [])
-            except Exception as e:
-                print(f"[agent_api] DB fallback for regenerate-code: {e}", file=sys.stderr)
-        
-        if not requirement or not project_name:
-            await websocket.send_text(json.dumps({
-                "event": "error",
-                "message": "Missing requirement or project_name"
-            }))
-            return
-        
-        await websocket.send_text(json.dumps({
-            "event": "generation_start",
-            "message": "Starting code regeneration..."
-        }))
-        
-        # Log architecture for debugging
-        import sys
-        print("=" * 80, file=sys.stderr)
-        print("CODE REGENERATION DEBUG:", file=sys.stderr)
-        print(f"Requirement: {requirement[:100]}...", file=sys.stderr)
-        print(f"Architecture received:", file=sys.stderr)
-        print(f"  - Backend: {architecture.get('backend_structure', {})}", file=sys.stderr)
-        print(f"  - Database Schema: {architecture.get('database_schema', {})}", file=sys.stderr)
-        
-        db_tables = architecture.get('database_schema', {}).get('tables', [])
-        print(f"  - Tables found: {[t.get('name') for t in db_tables]}", file=sys.stderr)
-        print("=" * 80, file=sys.stderr)
-        
-        # Generate code
-        files = await execute_code_generator_agent(
-            websocket,
-            requirement,
-            prd,
-            plan,
-            architecture,
-            project_name,
-            uiux
-        )
-
-        # Store multi-agent output and generated code JSON in DB (same as documents)
-        try:
-            db.create_or_update_codegen_session(
-                session_id=session_id,
-                project_name=project_name,
-                requirement=requirement,
-                prd=prd,
-                plan=plan,
-                architecture=architecture,
-                generated_code_json=files,
-            )
-        except Exception as store_err:
-            pass  # non-fatal
-
-        await websocket.send_text(json.dumps({
-            "event": "regeneration_complete",
-            "message": "Code regeneration completed",
-            "data": {
-                "project_name": project_name,
-                "files_count": len(files),
-                "files": list(files.keys())
-            }
-        }))
-        
-        websocket.close()
-        
-    except WebSocketDisconnect:
-        manager.disconnect(session_id)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        try:
-            await websocket.send_text(json.dumps({
-                "event": "error",
-                "message": str(e)
-            }))
-        except:
-            pass
-        manager.disconnect(session_id)
-
-
 @router.websocket("/execute/{session_id}")
 async def execute_agents(websocket: WebSocket, session_id: str):
     """
@@ -452,11 +318,12 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         # Wait for initial request
         data = await websocket.receive_text()
         request_data = json.loads(data)
-        
+        current, request_data = await authenticate_websocket(websocket, first_message=request_data)
+        user_email = user_email_from(current)
+
         requirement = request_data.get("requirement")
         project_name = request_data.get("project_name")
         app_id = request_data.get("app_id")
-        user_email = request_data.get("user_email") or ""
 
         if not requirement or not project_name:
             await websocket.send_text(json.dumps({
@@ -598,7 +465,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                 # Cumulative state update
                 final_state.update(result)
 
-        # Final Persistence to MongoDB
+        # Final persistence to Postgres (builder_apps)
         try:
             if not final_state.get("error"):
                 db.create_or_update_codegen_session(
@@ -623,7 +490,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                         prd=json.dumps(final_state.get("structured_requirement")),
                         agents_state=agents_state
                     )
-                    print(f"[agent_api] Saved final app state (incl. agents_state) to MongoDB for app {app_id}")
+                    print(f"[agent_api] Saved final app state (incl. agents_state) to Postgres for app {app_id}")
         except Exception as db_err:
             print(f"[agent_api] Final DB save failed: {db_err}", file=sys.stderr)
 
@@ -650,69 +517,6 @@ async def execute_agents(websocket: WebSocket, session_id: str):
             pass
         manager.disconnect(session_id)
 
-
-@router.post("/update-code")
-async def update_code(request: UpdateCodeRequest):
-    """Update existing code based on user prompt, then persist changes to DB."""
-    try:
-        project_root = resolve_project_root(request.project_name)
-        if not os.path.exists(project_root):
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        # Fetch PRD and original requirement from DB for richer LLM context
-        prd_text = ""
-        original_requirement = ""
-        app_record = None
-        try:
-            if request.app_id:
-                app_record = db.get_app_builder_app(request.app_id)
-            if not app_record:
-                app_record = db.get_app_by_project_name(request.project_name)
-            if app_record:
-                prd_text = app_record.get("prd") or ""
-                original_requirement = app_record.get("prompt") or ""
-        except Exception as db_err:
-            print(f"[update-code] DB fetch warning: {db_err}", file=sys.stderr)
-
-        result = await update_code_from_chat(
-            project_name=request.project_name,
-            project_root=project_root,
-            user_request=request.user_request,
-            prd=prd_text,
-            original_requirement=original_requirement,
-        )
-
-        # Persist updated files back to MongoDB so the app record stays in sync
-        if result.get("status") == "success" and result.get("updated_code_dict"):
-            try:
-                updated_code = result["updated_code_dict"]
-                # Merge with existing generated_code_json if available
-                existing_code = {}
-                if app_record and app_record.get("generated_code_json"):
-                    existing_code = app_record["generated_code_json"] or {}
-                merged_code = {**existing_code, **updated_code}
-
-                target_id = request.app_id or (app_record.get("id") if app_record else None)
-                if target_id:
-                    db.update_app_builder_app(
-                        app_id=target_id,
-                        user_email=app_record.get("user_email", "") if app_record else "",
-                        generated_code_json=merged_code,
-                    )
-                    print(f"[update-code] Saved {len(updated_code)} updated files to DB for app {target_id}")
-            except Exception as save_err:
-                print(f"[update-code] DB save warning: {save_err}", file=sys.stderr)
-
-        # Don't expose internal dict to client
-        result.pop("updated_code_dict", None)
-        return result
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.websocket("/update-code-ws/{session_id}")
 async def update_code_ws(websocket: WebSocket, session_id: str):

@@ -1,16 +1,18 @@
 .env
-final_apis.py
-__pycache__
-generated_charts
-validation_reports
-
-# Dependencies (templates and generated apps)
-node_modules/
+.env.local
+__pycache__/
+*.pyc
 venv/
+.pytest_cache/
 
-# All template frontends and backends
+# Runtime / generated data
+chroma_store/
+uploads_multi_model/
+generated_charts/
+validation_reports/
+app_builder/runtime/
+
+# Dependencies in templates
+node_modules/
 app_builder/templates/*/frontend/node_modules/
 app_builder/templates/*/backend/venv/
-
-# Generated app projects (local runtime)
-app_builder/runtime/

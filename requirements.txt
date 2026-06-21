@@ -1,51 +1,44 @@
 # --- Web ---
-fastapi
-starlette
-uvicorn
-pydantic
-python-multipart
-python-dotenv
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.32.0,<1.0
+pydantic>=2.10.0,<3.0
+python-multipart>=0.0.12
+python-dotenv>=1.0.0
 
-# --- HTTP / scraping (multi-agent web search) ---
-requests
-beautifulsoup4
-lxml
-googlesearch-python
+# --- HTTP / scraping (multi-model web search) ---
+requests>=2.32.0,<3.0
+beautifulsoup4>=4.12.0,<5.0
+googlesearch-python>=1.2.0,<2.0
 
 # --- Data ---
-numpy
-pandas
-openpyxl
+numpy>=1.26.0,<3.0
+pandas>=2.2.0,<3.0
+openpyxl>=3.1.0,<4.0
 
 # --- Database ---
-psycopg2-binary
-SQLAlchemy
-pymongo
+psycopg2-binary>=2.9.9,<3.0
+
+# --- Auth ---
+python-jose[cryptography]>=3.3.0,<4.0
+passlib[bcrypt]>=1.7.4,<2.0
+bcrypt>=4.0.1,<4.1.0
+google-auth>=2.36.0,<3.0
+email-validator>=2.2.0,<3.0
 
 # --- LangChain / LLM ---
-langchain
-langchain-community
-langchain-openai
-langchain-anthropic
-langchain-google-genai
-langchain-core
-langgraph
-openai
+langchain-core>=0.3.0,<0.4
+langchain-openai>=0.2.0,<0.4
+langchain-anthropic>=0.2.0,<0.4
+langchain-google-genai>=2.0.0,<3.0
+langgraph>=0.2.0,<0.4
+openai>=1.55.0,<2.0
 
-# --- Vector store (multi-model) ---
-chromadb
+# --- Vector store (lazy-loaded) ---
+chromadb>=0.5.0,<0.6
 
 # --- Documents ---
-pypdf
-PyPDF2
-python-docx
+pypdf>=5.0.0,<6.0
+python-docx>=1.1.0,<2.0
 
-# --- JSON repair (app builder code update agent) ---
-json-repair
-
-# --- App builder: optional E2B cloud sandbox for npm install/build (set E2B_API_KEY) ---
-e2b>=1.0.0
-
-# --- Date/time ---
-python-dateutil
-tzdata
+# --- JSON repair ---
+json-repair>=0.30.0,<1.0

@@ -8,14 +8,11 @@ import asyncio
 import base64
 import os
 import io
-import sys
 from typing import List, Dict, Any, Optional, Callable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 import pandas as pd
 from .usage_tracking import record_llm_usage, start_token_aggregation, end_token_aggregation
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[3]))
 from llm_helper import get_llm_for_user
 
 # Web search imports - Using Google for better results

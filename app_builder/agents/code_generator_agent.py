@@ -214,12 +214,13 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
         class_name = "".join([part.capitalize() for part in table_name.split("_")])
         if class_name.endswith("s"): class_name = class_name[:-1]
         fields = [c["name"] for c in table["columns"] if not c.get("primary_key")]
+        form_init = ", ".join([f'{f}: ""' for f in fields])
         
         app_js.extend([
             f"function {class_name}Manager({{ backendUrl }}) {{",
             f"  const STORAGE_KEY = 'items_{table_name}';",
             f"  const [items, setItems] = useState(() => {{ try {{ return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }} catch {{ return []; }} }});",
-            f"  const [formData, setFormData] = useState({{{', '.join([f'{f}: \"\"' for f in fields])}}});",
+            f"  const [formData, setFormData] = useState({{{form_init}}});",
             "",
             "  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); }, [items]);",
             "",
@@ -234,7 +235,7 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
             f"    const newItem = {{ ...formData, id: Date.now() }};",
             f"    setItems([...items, newItem]);",
             f"    try {{ await fetch(`${{backendUrl}}/{table_name}`, {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(formData) }}); fetchData(); }} catch(e) {{}}",
-            f"    setFormData({{{', '.join([f'{f}: \"\"' for f in fields])}}});",
+            f"    setFormData({{{form_init}}});",
             "  };",
             "",
             "  return (",
@@ -548,12 +549,13 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
         list_path = entity["endpoints"]["list"]["path"]
         create_path = entity["endpoints"]["create"]["path"]
         delete_path_template = entity["endpoints"].get("delete", {}).get("path", f"/{table}/{{id}}")
+        form_init = ", ".join([f'{f["name"]}: ""' for f in fields])
         
         app_js.extend([
             f"function {name}Manager({{ backendUrl }}) {{",
             f"  const STORAGE_KEY = 'items_{table}';",
             f"  const [items, setItems] = useState(() => {{ try {{ return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }} catch {{ return []; }} }});",
-            f"  const [formData, setFormData] = useState({{{', '.join([f'{f["name"]}: \"\"' for f in fields])}}});",
+            f"  const [formData, setFormData] = useState({{{form_init}}});",
             "",
             "  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); }, [items]);",
             "",
@@ -568,7 +570,7 @@ body { margin: 0; font-family: var(--font-sans); background: var(--color-bg); co
             f"    const newItem = {{ ...formData, id: Date.now() }};",
             f"    setItems([...items, newItem]);",
             f"    try {{ await fetch(`${{backendUrl}}{create_path}`, {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(formData) }}); fetchData(); }} catch(e) {{}}",
-            f"    setFormData({{{', '.join([f'{f["name"]}: \"\"' for f in fields])}}});",
+            f"    setFormData({{{form_init}}});",
             "  };",
             "",
             "  return (",

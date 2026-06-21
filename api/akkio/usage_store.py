@@ -2,7 +2,7 @@ import math
 import os
 from typing import Optional, TypedDict
 
-from database import PostgresDatabase
+from db import PostgresDatabase
 # Import log_transaction to record usage history
 try:
     from .settings_store import log_transaction

@@ -1,28 +1,45 @@
 """
-App Builder Apps API – CRUD for created apps (list, create, get, update, delete).
-Uses MongoDB for app creator storage (Akkio main app uses Postgres only).
+App Builder Apps API — CRUD for created apps (Postgres-backed).
 """
 
-import os
-import sys
+from typing import Any, Dict, List, Optional
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Any, Dict
-from .app_creator import tree_from_files_dict
 
-from app_builder_db import get_app_builder_db
+from api.auth.dependencies import CurrentUser
+from api.auth.request_auth import resolve_user, user_email_from
+from db.app_builder import get_app_builder_db
 
 router = APIRouter(tags=["App Builder Apps"])
 
 db = get_app_builder_db()
 
 
+def _tree_from_files_dict(files: Dict[str, str]) -> List[Dict[str, Any]]:
+    root: List[Dict[str, Any]] = []
+
+    def ensure_folder(children: List[Dict[str, Any]], name: str, path: str) -> Dict[str, Any]:
+        existing = next((c for c in children if c.get("type") == "folder" and c.get("name") == name), None)
+        if existing:
+            return existing
+        node = {"name": name, "type": "folder", "path": path, "children": []}
+        children.append(node)
+        return node
+
+    for rel_path in sorted(files.keys()):
+        parts = rel_path.split("/")
+        cur_children = root
+        cur_path = ""
+        for part in parts[:-1]:
+            cur_path = f"{cur_path}/{part}" if cur_path else part
+            folder = ensure_folder(cur_children, part, cur_path)
+            cur_children = folder["children"]
+        cur_children.append({"name": parts[-1], "type": "file", "path": rel_path})
+    return root
+
+
 class CreateAppRequest(BaseModel):
-    user_email: str
     app_name: str
     prompt: str
     project_name: str
@@ -47,21 +64,21 @@ class UpdateAppRequest(BaseModel):
 
 
 @router.get("/apps")
-async def list_apps(user_email: str = Query(..., description="User email")):
-    """List all app builder apps for the user."""
+async def list_apps(current: CurrentUser = Depends(resolve_user)):
     try:
-        apps = db.get_user_app_builder_apps(user_email)
+        apps = db.get_user_app_builder_apps(
+            user_email_from(current), user_id=current.id or None
+        )
         return {"status": "success", "apps": apps}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/apps")
-async def create_app(request: CreateAppRequest):
-    """Create a new app builder app (e.g. after user enters prompt)."""
+async def create_app(request: CreateAppRequest, current: CurrentUser = Depends(resolve_user)):
     try:
         app = db.create_app_builder_app(
-            user_email=request.user_email,
+            user_email=user_email_from(current),
             app_name=request.app_name,
             prompt=request.prompt,
             project_name=request.project_name,
@@ -71,6 +88,7 @@ async def create_app(request: CreateAppRequest):
             architecture=request.architecture,
             agents_state=request.agents_state,
             generated_code_json=request.generated_code_json,
+            user_id=current.id or None,
         )
         return {"status": "success", "app": app, "message": "App created"}
     except Exception as e:
@@ -78,10 +96,11 @@ async def create_app(request: CreateAppRequest):
 
 
 @router.get("/apps/{app_id}")
-async def get_app(app_id: str, user_email: str = Query(..., description="User email")):
-    """Get a single app by id (for edit)."""
+async def get_app(app_id: str, current: CurrentUser = Depends(resolve_user)):
     try:
-        app = db.get_app_builder_app(app_id, user_email=user_email)
+        app = db.get_app_builder_app(
+            app_id, user_email=user_email_from(current), user_id=current.id or None
+        )
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
         return {"status": "success", "app": app}
@@ -92,12 +111,16 @@ async def get_app(app_id: str, user_email: str = Query(..., description="User em
 
 
 @router.put("/apps/{app_id}")
-async def update_app(app_id: str, request: UpdateAppRequest, user_email: str = Query(..., description="User email")):
-    """Update an app (e.g. after PRD/plan/architecture generated)."""
+async def update_app(
+    app_id: str,
+    request: UpdateAppRequest,
+    current: CurrentUser = Depends(resolve_user),
+):
     try:
+        email = user_email_from(current)
         count = db.update_app_builder_app(
             app_id=app_id,
-            user_email=user_email,
+            user_email=email,
             app_name=request.app_name,
             prompt=request.prompt,
             project_name=request.project_name,
@@ -107,10 +130,11 @@ async def update_app(app_id: str, request: UpdateAppRequest, user_email: str = Q
             architecture=request.architecture,
             agents_state=request.agents_state,
             generated_code_json=request.generated_code_json,
+            user_id=current.id or None,
         )
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")
-        app = db.get_app_builder_app(app_id, user_email=user_email)
+        app = db.get_app_builder_app(app_id, user_email=email, user_id=current.id or None)
         return {"status": "success", "app": app, "message": "App updated"}
     except HTTPException:
         raise
@@ -119,10 +143,11 @@ async def update_app(app_id: str, request: UpdateAppRequest, user_email: str = Q
 
 
 @router.delete("/apps/{app_id}")
-async def delete_app(app_id: str, user_email: str = Query(..., description="User email")):
-    """Delete an app."""
+async def delete_app(app_id: str, current: CurrentUser = Depends(resolve_user)):
     try:
-        count = db.delete_app_builder_app(app_id, user_email)
+        count = db.delete_app_builder_app(
+            app_id, user_email_from(current), user_id=current.id or None
+        )
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")
         return {"status": "success", "message": "App deleted"}
@@ -133,21 +158,22 @@ async def delete_app(app_id: str, user_email: str = Query(..., description="User
 
 
 @router.get("/apps/{app_id}/code")
-async def get_app_code(app_id: str, user_email: str = Query(..., description="User email")):
-    """Retrieve the generated code and file tree from the database."""
+async def get_app_code(app_id: str, current: CurrentUser = Depends(resolve_user)):
     try:
-        app = db.get_app_builder_app(app_id, user_email=user_email)
+        app = db.get_app_builder_app(
+            app_id, user_email=user_email_from(current), user_id=current.id or None
+        )
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
-        
+
         files = app.get("generated_code_json") or {}
-        tree = tree_from_files_dict(files) if files else []
-        
+        tree = _tree_from_files_dict(files) if files else []
+
         return {
             "status": "success",
             "project_name": app.get("project_name"),
             "files": files,
-            "tree": tree
+            "tree": tree,
         }
     except HTTPException:
         raise

@@ -1,6 +1,0 @@
-# Optional extras for multi-model / embeddings tuning (not required for core install).
-# Install on top of requirements.txt if needed:
-#   pip install -r requirements.txt -r requirements_multi_model.txt
-
-sentence-transformers>=2.2.2
-tiktoken>=0.5.2

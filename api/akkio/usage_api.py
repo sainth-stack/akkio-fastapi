@@ -1,13 +1,13 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends
 
-from database import PostgresDatabase
+from db import PostgresDatabase
 
+from api.auth.dependencies import CurrentUser
+from api.auth.request_auth import resolve_user, user_email_from
 from .usage_store import TOKENS_PER_CREDIT, get_or_init_usage
-
 
 usage_router = APIRouter()
 
-# Safe default when DB is unavailable (e.g. SSL/connection errors)
 _DEFAULT_USAGE = {
     "email": "anonymous",
     "credits_remaining": 0,
@@ -17,7 +17,8 @@ _DEFAULT_USAGE = {
 
 
 @usage_router.get("/usage")
-async def get_usage(user_email: str = Query(default="anonymous")):
+async def get_usage(current: CurrentUser = Depends(resolve_user)):
+    user_email = user_email_from(current)
     try:
         db = PostgresDatabase()
         db.ensure_connection()
@@ -33,10 +34,4 @@ async def get_usage(user_email: str = Query(default="anonymous")):
             "tokens_per_credit": TOKENS_PER_CREDIT,
         }
     except Exception:
-        return {
-            **_DEFAULT_USAGE,
-            "email": (user_email or "anonymous").strip() or "anonymous",
-        }
-
-
-
+        return {**_DEFAULT_USAGE, "email": user_email}

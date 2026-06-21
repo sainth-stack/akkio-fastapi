@@ -1,8 +1,9 @@
 """
-Akkio FastAPI — minimal surface for Multi-Agent, App Builder, and health checks.
-Legacy BI/SharePoint/automl endpoints were removed; use git history if needed.
+Akkio FastAPI — Multi-Agent, App Builder, auth, and health checks.
 """
+import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -10,47 +11,42 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-load_dotenv()
+load_dotenv(override=True)
 
-from database import PostgresDatabase
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("akkio")
 
-app = FastAPI(title="Akkio", version="2")
+from db import PostgresDatabase
+from db.init_db import init_schemas, shutdown_db
+
+_env = os.getenv("ENV", "development").lower()
+_default_origins = os.getenv("CORS_ORIGINS", "http://localhost:3002" if _env != "production" else "")
+if not _default_origins and _env == "production":
+    raise RuntimeError("CORS_ORIGINS must be set when ENV=production")
+CORS_ORIGINS = [o.strip() for o in _default_origins.split(",") if o.strip()]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        init_schemas()
+    except Exception as exc:
+        logger.error("Database initialization failed: %s", exc)
+        raise
+    yield
+    shutdown_db()
+
+
+app = FastAPI(title="Akkio", version="2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def _on_startup():
-    try:
-        PostgresDatabase._ensure_pool()
-        print("✅ Database connection pool initialized")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not initialize database pool: {e}")
-    try:
-        _db = PostgresDatabase()
-        _db.ensure_connection()
-        _db.create_llm_settings_table()
-        _db.close()
-        print("✅ LLM settings table initialized")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not initialize LLM settings table: {e}")
-
-
-@app.on_event("shutdown")
-async def _on_shutdown():
-    try:
-        PostgresDatabase.close_all_connections()
-        print("✅ Database connections closed cleanly")
-    except Exception as e:
-        print(f"⚠️ Warning: Error closing database connections: {e}")
-
 
 db = PostgresDatabase()
 
@@ -58,11 +54,16 @@ from api.akkio.main import akkio_router
 
 app.include_router(akkio_router, prefix="/api")
 
+from api.auth.router import router as auth_router
+from api.admin.router import router as admin_router
+
+app.include_router(auth_router, prefix="/api/auth")
+app.include_router(admin_router, prefix="/api/admin")
+
 from api.app_creator.dynamic_app_router import router as dynamic_app_router
 from api.app_creator.static_app_router import router as static_app_router
 from api.app_creator.app_creator import router as app_builder_router
 from api.app_creator.apps_api import router as app_builder_apps_router
-from api.app_creator.prd_api import router as prd_router
 from api.app_creator.agent_api import router as agent_router
 from api.app_creator.codegen_api import router as codegen_router
 from api.app_creator.planning_api import router as planning_router
@@ -74,7 +75,6 @@ app.include_router(dynamic_app_router)
 app.include_router(static_app_router)
 app.include_router(app_builder_router)
 app.include_router(app_builder_apps_router, prefix="/api/app-builder")
-app.include_router(prd_router)
 app.include_router(agent_router)
 app.include_router(codegen_router)
 app.include_router(planning_router)
@@ -83,7 +83,6 @@ app.include_router(github_router)
 app.include_router(test_router)
 
 
-@app.get("/health")
 @app.get("/api/health")
 async def health_check():
     health_status = {
@@ -94,16 +93,11 @@ async def health_check():
     try:
         pool_status = PostgresDatabase.get_pool_status()
         health_status["database"] = pool_status
-        try:
-            with db.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT 1")
-                    cursor.fetchone()
-            health_status["database"]["connectivity"] = "connected"
-        except Exception as db_err:
-            health_status["database"]["connectivity"] = "error"
-            health_status["database"]["error"] = str(db_err)
-            health_status["api"] = "degraded"
+        with db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        health_status["database"]["connectivity"] = "connected"
     except Exception as e:
         health_status["database"] = {"status": "error", "error": str(e)}
         health_status["api"] = "degraded"
@@ -127,7 +121,7 @@ if __name__ == "__main__":
     ]
     _reload_excludes = [d for d in _candidates if os.path.isdir(d)]
     uvicorn.run(
-        "final_akio_apis:app",
+        "main:app",
         host=host,
         port=port,
         reload=True,

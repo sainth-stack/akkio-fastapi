@@ -1,0 +1,8 @@
+# Optional — install when needed:
+#   pip install -r requirements-optional.txt
+
+# Cloud sandbox for npm install/build (set E2B_API_KEY)
+e2b>=1.0.0,<2.0
+
+# SQLAlchemy used by generated app templates
+SQLAlchemy>=2.0.0,<3.0

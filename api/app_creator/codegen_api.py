@@ -1,12 +1,6 @@
 """
 Code Generation API - Handles dedicated code generation WebSocket
 """
-import os
-import sys
-
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Dict
 import json
@@ -14,7 +8,9 @@ import json
 from api.app_creator.agent_api import execute_code_generator_agent
 from app_builder.agents.validation_agent import validate_and_fix_code
 from app_builder.services.file_writer import write_project_file
-from app_builder_db import get_app_builder_db
+from db.app_builder import get_app_builder_db
+from api.auth.ws_auth import authenticate_websocket
+from api.auth.request_auth import user_email_from
 
 router = APIRouter(prefix="/api/codegen", tags=["Code Generation"])
 
@@ -56,6 +52,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
     try:
         data = await websocket.receive_text()
         request_data = json.loads(data)
+        current, request_data = await authenticate_websocket(websocket, first_message=request_data)
+        user_email = user_email_from(current)
 
         requirement = request_data.get("requirement")
         prd = request_data.get("prd", "") or ""
@@ -64,7 +62,6 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         project_name = request_data.get("project_name")
         uiux = request_data.get("uiux", "") or ""
         app_id = request_data.get("app_id")
-        user_email = request_data.get("user_email") or ""
 
         # When PRD/UIUX not in request, load from DB
         if (not prd or not uiux) and (app_id or project_name):

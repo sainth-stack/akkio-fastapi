@@ -3,16 +3,19 @@ Multi-Model Training API
 Handles training, progress tracking, and querying for multi-domain AI models
 """
 
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from typing import List, Optional, Callable
+
+from api.auth.dependencies import CurrentUser
+from api.auth.request_auth import resolve_user, resolve_user_flexible, user_email_from
+from api.auth.ws_auth import authenticate_websocket
 import uuid
 import os
 import json
 import pandas as pd
 from datetime import datetime
-import chromadb
 import shutil
 import requests
 import base64
@@ -22,20 +25,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-# Import existing utilities
-import sys
-# Add parent directories to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-grandparent_dir = os.path.dirname(parent_dir)
-sys.path.insert(0, parent_dir)
-sys.path.insert(0, grandparent_dir)
-
-from database import PostgresDatabase
+from db import PostgresDatabase
 from .multi_model_agents import MultiModelAgentSystem
 from .usage_tracking import set_current_email, reset_current_email
 from .usage_tracking import record_llm_usage
+from .explore_functions.file_loaders import process_pdf, process_docx, process_txt
 
-# Import llm_config utilities directly (more reliable than llm_helper)
 try:
     from llm_config import get_llm_config, get_api_key, get_model_name
     LLM_CONFIG_AVAILABLE = True
@@ -43,29 +38,22 @@ except ImportError as e:
     print(f"Warning: Could not import llm_config: {e}")
     LLM_CONFIG_AVAILABLE = False
 
-# Import document processing utilities
-try:
-    from .explore_functions.file_loaders import process_pdf, process_docx, process_txt
-except:
-    pass
-
 router = APIRouter()
 
-# Initialize database
 db = PostgresDatabase()
-db.create_connection(
-    user=os.getenv('PGUSER', 'test_owner'),
-    password=os.getenv('PGPASSWORD', 'tcWI7unQ6REA'),
-    database=os.getenv('PGDATABASE', 'test'),
-    host=os.getenv('PGHOST', 'ep-yellow-recipe-a5fny139.us-east-2.aws.neon.tech')
-)
-db.create_table()
-db.create_training_tables()
 
-# Initialize ChromaDB
-CHROMA_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'chroma_store')
-os.makedirs(CHROMA_PATH, exist_ok=True)
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+_chroma_client = None
+
+
+def get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        import chromadb
+
+        chroma_path = os.path.join(os.path.dirname(__file__), "..", "..", "chroma_store")
+        os.makedirs(chroma_path, exist_ok=True)
+        _chroma_client = chromadb.PersistentClient(path=chroma_path)
+    return _chroma_client
 
 # Upload directory
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'uploads_multi_model')
@@ -113,25 +101,11 @@ def process_document_file(file_path: str, file_name: str, session_id: str) -> di
     try:
         # Extract text based on file type
         if file_path.endswith('.pdf'):
-            try:
-                text = process_pdf(file_path)
-            except:
-                # Fallback PDF processing
-                import PyPDF2
-                with open(file_path, 'rb') as f:
-                    reader = PyPDF2.PdfReader(f)
-                    text = "\n".join([page.extract_text() for page in reader.pages])
+            text = process_pdf(file_path)
         elif file_path.endswith(('.doc', '.docx')):
-            try:
-                text = process_docx(file_path)
-            except:
-                # Fallback DOCX processing
-                import docx
-                doc = docx.Document(file_path)
-                text = "\n".join([para.text for para in doc.paragraphs])
+            text = process_docx(file_path)
         elif file_path.endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                text = f.read()
+            text = process_txt(file_path)
         else:
             raise ValueError(f"Unsupported document format: {file_path}")
         
@@ -150,9 +124,9 @@ def process_document_file(file_path: str, file_name: str, session_id: str) -> di
         collection_name = collection_name.strip('_')
         
         try:
-            collection = chroma_client.get_or_create_collection(collection_name)
+            collection = get_chroma_client().get_or_create_collection(collection_name)
         except:
-            collection = chroma_client.create_collection(collection_name)
+            collection = get_chroma_client().create_collection(collection_name)
         
         # Add documents to collection
         ids = [f"{file_name}_chunk_{i}" for i in range(len(chunks))]
@@ -181,9 +155,9 @@ def process_image_file(file_path: str, file_name: str, session_id: str) -> dict:
         collection_name = collection_name.replace('-', '_').replace(' ', '_')
         
         try:
-            collection = chroma_client.get_or_create_collection(collection_name)
+            collection = get_chroma_client().get_or_create_collection(collection_name)
         except:
-            collection = chroma_client.create_collection(collection_name)
+            collection = get_chroma_client().create_collection(collection_name)
             
         print(f"Fetched image data from {file_name}")
         
@@ -328,7 +302,7 @@ def train_multi_model_background(
             session_id=session_id,
             system_prompt=system_prompt,
             db_connection=db,
-            chroma_client=chroma_client,
+            chroma_client=get_chroma_client(),
             temperature=temperature,
             workflow=workflow,
             output_format=output_format,
@@ -352,89 +326,19 @@ def write_file_sync(file_path: str, content: bytes):
         f.write(content)
 
 
-@router.post("/multi-model/train")
-async def train_multi_model(
-    background_tasks: BackgroundTasks,
-    model_name: str = Form(...),
-    system_prompt: str = Form(...),
-    user_email: str = Form(...),
-    files: List[UploadFile] = File(default=[]),
-    file_types: str = Form(...),
-    temperature: float = Form(0.0),
-    workflow: str = Form(None),
-    output_format: str = Form(None)
-):
-    email_token = set_current_email(user_email)
-    try:
-        final_workflow = workflow
-        final_output_format = output_format
-
-        if not final_workflow or not final_output_format:
-            gen_result = await _generate_agent_config(model_name, system_prompt)
-            if gen_result['status'] == 'success':
-                if not final_workflow: final_workflow = gen_result['background']
-                if not final_output_format: final_output_format = gen_result['output_format']
-
-        file_types_dict = json.loads(file_types)
-        session_id = str(uuid.uuid4())
-        
-        await run_in_threadpool(
-            db.create_multi_model_session,
-            session_id=session_id,
-            model_name=model_name,
-            user_email=user_email,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            workflow=final_workflow,
-            output_format=final_output_format
-        )
-
-        session_dir = os.path.join(UPLOAD_DIR, session_id)
-        os.makedirs(session_dir, exist_ok=True)
-        
-        saved_files = []
-        if files:
-            for file in files:
-                file_path = os.path.join(session_dir, file.filename)
-                content = await file.read()
-                await run_in_threadpool(write_file_sync, file_path, content)
-                file_type = file_types_dict.get(file.filename, 'other')
-                saved_files.append((file_path, file.filename, file_type))
-
-        background_tasks.add_task(
-            train_multi_model_background,
-            session_id,
-            model_name,
-            user_email,
-            system_prompt,
-            saved_files,
-            temperature,
-            final_workflow,
-            final_output_format,
-        )
-        return {
-            "status": "success",
-            "session_id": session_id,
-            "message": "Training started in background",
-            "files_count": len(files),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        reset_current_email(email_token)
-
-
 @router.post("/multi-model/create")
 async def create_multi_model(
+    request: Request,
     model_name: str = Form(...),
     system_prompt: str = Form(...),
-    user_email: str = Form(...),
     files: List[UploadFile] = File(default=[]),
     file_types: str = Form(...),
     temperature: float = Form(0.0),
     workflow: str = Form(None),
     output_format: str = Form(None),
 ):
+    current = await resolve_user_flexible(request)
+    user_email = user_email_from(current)
     email_token = set_current_email(user_email)
     try:
         has_files = bool(files)
@@ -509,7 +413,11 @@ async def create_multi_model(
 
 
 @router.get("/multi-model/progress")
-async def get_training_progress(session_id: str, user_email: str):
+async def get_training_progress(
+    session_id: str,
+    current: CurrentUser = Depends(resolve_user),
+):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=session_id)
         if not session: raise HTTPException(status_code=404, detail="Session not found")
@@ -675,7 +583,10 @@ Example format:
 
 
 @router.post("/multi-model/generate_background")
-async def generate_background(request: GenerateBackgroundRequest):
+async def generate_background(
+    request: GenerateBackgroundRequest,
+    current: CurrentUser = Depends(resolve_user),
+):
     try:
         result = await _generate_agent_config(request.model_name, request.system_prompt)
         if result['status'] == 'error': 
@@ -696,7 +607,6 @@ async def generate_background(request: GenerateBackgroundRequest):
 
 class UpdateMultiModelConfigRequest(BaseModel):
     session_id: str
-    user_email: str
     model_name: Optional[str] = None
     system_prompt: Optional[str] = None
     temperature: Optional[float] = None
@@ -705,16 +615,26 @@ class UpdateMultiModelConfigRequest(BaseModel):
 
 
 @router.post("/multi-model/update-config")
-async def update_multi_model_config(request: UpdateMultiModelConfigRequest):
+async def update_multi_model_config(
+    request: UpdateMultiModelConfigRequest,
+    current: CurrentUser = Depends(resolve_user),
+):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=request.session_id)
         if not session: raise HTTPException(status_code=404, detail="Session not found")
-        if session["user_email"] != request.user_email: raise HTTPException(status_code=403, detail="Unauthorized")
+        if session["user_email"] != user_email:
+            raise HTTPException(status_code=403, detail="Unauthorized")
 
         updated = await run_in_threadpool(
             db.update_multi_model_session_config,
-            request.session_id, request.user_email, request.model_name, request.system_prompt,
-            request.temperature, request.workflow, request.output_format,
+            request.session_id,
+            user_email,
+            request.model_name,
+            request.system_prompt,
+            request.temperature,
+            request.workflow,
+            request.output_format,
         )
         if not updated: raise HTTPException(status_code=400, detail="No changes applied")
         return {"status": "success", "session": db.get_multi_model_session(session_id=request.session_id)}
@@ -737,17 +657,28 @@ async def query_multi_model_websocket(websocket: WebSocket):
     email_token = None
     try:
         data = await websocket.receive_json()
+        current, data = await authenticate_websocket(websocket, first_message=data)
+        user_email = user_email_from(current)
         model_name = data.get("model_name", "")
-        user_email = data.get("user_email", "")
         query = data.get("query", "")
         messages_list = data.get("messages", [])
-        
-        if not query or not model_name or not user_email:
+
+        if not query or not model_name:
             await _send_websocket_message(websocket, "error", {"message": "Missing params"})
             await websocket.close()
             return
         
         email_token = set_current_email(user_email)
+
+        if not os.getenv("OPENAI_API_KEY"):
+            await _send_websocket_message(
+                websocket,
+                "error",
+                {"message": "OpenAI API key is not configured. Set OPENAI_API_KEY in .env and restart the server."},
+            )
+            await websocket.close()
+            return
+
         session = db.get_multi_model_session(user_email=user_email, model_name=model_name)
         if not session:
             await _send_websocket_message(websocket, "error", {"message": "Model not found"})
@@ -761,7 +692,7 @@ async def query_multi_model_websocket(websocket: WebSocket):
             session_id=session_id,
             system_prompt=session['system_prompt'],
             db_connection=db,
-            chroma_client=chroma_client,
+            chroma_client=get_chroma_client(),
             temperature=session.get('temperature', 0.0),
             workflow=session.get('workflow'),
             output_format=session.get('output_format')
@@ -793,58 +724,16 @@ async def query_multi_model_websocket(websocket: WebSocket):
         if email_token: reset_current_email(email_token)
 
 
-@router.post("/multi-model/query")
-async def query_multi_model(
-    model_name: str = Form(...),
-    user_email: str = Form(...),
-    query: str = Form(...),
-    messages: Optional[str] = Form(None)
-):
-    email_token = set_current_email(user_email)
-    try:
-        session = db.get_multi_model_session(user_email=user_email, model_name=model_name)
-        if not session: raise HTTPException(status_code=404, detail="Model not found")
-        
-        agent_system = MultiModelAgentSystem(
-            session_id=session['session_id'],
-            system_prompt=session['system_prompt'],
-            db_connection=db,
-            chroma_client=chroma_client,
-            temperature=session.get('temperature', 0.0),
-            workflow=session.get('workflow'),
-            output_format=session.get('output_format')
-        )
-        
-        messages_list = []
-        if messages:
-            try: messages_list = json.loads(messages)
-            except: pass
-                
-        result = await agent_system.query_async(query, messages=messages_list)
-        
-        return {
-            'answer': result.get('answer', ''),
-            'multi_model_metadata': {
-                'sources': result.get('sources', []),
-                'reasoning': result.get('reasoning', ''),
-                'agents_used': result.get('agents_used', []),
-                'model_name': model_name,
-                'session_id': session['session_id']
-            }
-        }
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-    finally: reset_current_email(email_token)
-
-
 @router.get("/multi-model/list")
-async def list_multi_models(user_email: str):
+async def list_multi_models(current: CurrentUser = Depends(resolve_user)):
     try:
-        models = db.get_user_multi_models(user_email)
+        models = db.get_user_multi_models(user_email_from(current))
         return {'status': 'success', 'models': models}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/multi-model/files")
-async def get_model_files(session_id: str, user_email: str):
+async def get_model_files(session_id: str, current: CurrentUser = Depends(resolve_user)):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=session_id)
         if not session or session['user_email'] != user_email: raise HTTPException(status_code=403, detail="Unauthorized")
@@ -853,7 +742,8 @@ async def get_model_files(session_id: str, user_email: str):
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/multi-model/delete")
-async def delete_multi_model(session_id: str, user_email: str):
+async def delete_multi_model(session_id: str, current: CurrentUser = Depends(resolve_user)):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=session_id)
         if not session or session['user_email'] != user_email: raise HTTPException(status_code=403, detail="Unauthorized")
@@ -861,7 +751,7 @@ async def delete_multi_model(session_id: str, user_email: str):
         files = db.get_multi_model_files(session_id)
         for f in files:
             if f.get('vector_collection_id'):
-                try: chroma_client.delete_collection(f['vector_collection_id'])
+                try: get_chroma_client().delete_collection(f['vector_collection_id'])
                 except: pass
             if f.get('db_table_name'):
                 try: db.delete_table(f['db_table_name'])
@@ -876,7 +766,12 @@ async def delete_multi_model(session_id: str, user_email: str):
 
 # Restored Utility Endpoints
 @router.get("/multi-model/file-preview")
-async def get_file_preview(session_id: str, file_name: str, user_email: str):
+async def get_file_preview(
+    session_id: str,
+    file_name: str,
+    current: CurrentUser = Depends(resolve_user),
+):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=session_id)
         if not session or session['user_email'] != user_email: raise HTTPException(status_code=403, detail="Unauthorized")
@@ -924,31 +819,44 @@ async def get_file_preview(session_id: str, file_name: str, user_email: str):
 
 class PublishMultiModelRequest(BaseModel):
     session_id: str
-    user_email: str
     published: bool = True
 
 @router.post("/multi-model/publish")
-async def publish_multi_model(request: Request, body: PublishMultiModelRequest):
+async def publish_multi_model(body: PublishMultiModelRequest, current: CurrentUser = Depends(resolve_user)):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=body.session_id)
         if not session: raise HTTPException(status_code=404, detail="Session not found")
-        if session["user_email"] != body.user_email: raise HTTPException(status_code=403, detail="Unauthorized")
+        if session["user_email"] != user_email: raise HTTPException(status_code=403, detail="Unauthorized")
         
         public_id = session.get("public_id")
         if body.published and not public_id: public_id = uuid.uuid4().hex[:12]
         
-        db.set_multi_model_published(body.session_id, body.user_email, body.published, public_id if body.published else None)
+        db.set_multi_model_published(body.session_id, user_email, body.published, public_id if body.published else None)
         return {"status": "success", "session": db.get_multi_model_session(session_id=body.session_id)}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/multi-model/share-info")
-async def get_share_info(request: Request, session_id: str, user_email: str):
+async def get_share_info(session_id: str, request: Request, current: CurrentUser = Depends(resolve_user)):
+    user_email = user_email_from(current)
     try:
         session = db.get_multi_model_session(session_id=session_id)
-        if not session or session['user_email'] != user_email: raise HTTPException(status_code=403, detail="Unauthorized")
-        if not session.get("published"): return {"status": "success", "published": False}
-        return {"status": "success", "published": True, "share_url": f"{str(request.base_url).rstrip('/')}/chatbot/{session.get('public_id')}"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+        if not session or session['user_email'] != user_email:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        if not session.get("published"):
+            return {"status": "success", "published": False}
+        base = str(request.base_url).rstrip('/')
+        public_id = session.get('public_id')
+        return {
+            "status": "success",
+            "published": True,
+            "share_url": f"{base}/chatbot/{public_id}",
+            "public_id": public_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class PublicQueryRequest(BaseModel):
     query: str
@@ -973,7 +881,7 @@ async def public_chatbot_query(public_id: str, body: PublicQueryRequest):
             session_id=session['session_id'],
             system_prompt=session['system_prompt'],
             db_connection=db,
-            chroma_client=chroma_client,
+            chroma_client=get_chroma_client(),
             temperature=session.get('temperature', 0.0),
             workflow=session.get('workflow'),
             output_format=session.get('output_format')

@@ -6,16 +6,13 @@ Supports: OpenAI, Anthropic (Claude), and Google (Gemini)
 """
 import os
 from typing import Dict, Optional
-from database import PostgresDatabase
+from db import PostgresDatabase
 
 # Default LLM configuration (aligned with app defaults and Settings UI)
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Provider-specific environment variables
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# Provider-specific environment variables (read at runtime via get_default_api_key)
 
 # Provider models mapping with all latest models (Updated January 2026)
 PROVIDER_MODELS = {
@@ -175,11 +172,11 @@ PROVIDER_MODELS = {
 def get_default_api_key(provider: str) -> Optional[str]:
     """Get default API key for a provider from environment variables."""
     if provider == "openai":
-        return DEFAULT_API_KEY
+        return os.getenv("OPENAI_API_KEY")
     elif provider == "anthropic":
-        return ANTHROPIC_API_KEY
+        return os.getenv("ANTHROPIC_API_KEY")
     elif provider == "google":
-        return GOOGLE_API_KEY
+        return os.getenv("GOOGLE_API_KEY")
     return None
 
 
@@ -198,7 +195,7 @@ def get_llm_config(user_email: Optional[str] = None) -> Dict[str, str]:
     """
     config = {
         "provider": DEFAULT_PROVIDER,
-        "api_key": DEFAULT_API_KEY,
+        "api_key": get_default_api_key(DEFAULT_PROVIDER),
         "model": DEFAULT_MODEL
     }
     
