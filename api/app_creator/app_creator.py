@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -21,12 +21,23 @@ import shutil
 import tempfile
 
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from api.auth.request_auth import resolve_user, CurrentUser, user_email_from
+from db.app_builder import get_app_builder_db
 from api.app_creator.cra_npm_patch import patch_package_json_for_cra_ajv
 from api.app_creator.e2b_sandbox_build import build_frontend_in_e2b, e2b_available
 # Legacy: find_free_port, process_registry no longer used (single-backend mode)
 
 
 router = APIRouter(prefix="/api/app-builder", tags=["App Builder"])
+
+_app_builder_db = get_app_builder_db()
+
+
+def _assert_project_access(project_name: str, current: CurrentUser) -> None:
+    user_email = user_email_from(current)
+    app = _app_builder_db.get_app_by_project_name(project_name)
+    if app and app.get("user_email") and app.get("user_email") != user_email:
+        raise HTTPException(status_code=403, detail="You do not have access to this project")
 
 PROJECTS_DIR = get_projects_dir()
 AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -486,13 +497,19 @@ def _build_frontend(
 
 
 @router.get("/projects/{project_name}/tree")
-async def get_project_tree(project_name: str):
+async def get_project_tree(project_name: str, current: CurrentUser = Depends(resolve_user)):
+    _assert_project_access(project_name, current)
     tree = _build_tree(project_name)
     return JSONResponse(content={"project_name": project_name, "tree": tree})
 
 
 @router.get("/projects/{project_name}/file")
-async def get_project_file(project_name: str, path: str = Query(..., description="Relative path within project")):
+async def get_project_file(
+    project_name: str,
+    path: str = Query(..., description="Relative path within project"),
+    current: CurrentUser = Depends(resolve_user),
+):
+    _assert_project_access(project_name, current)
     full_path = _safe_join_project(project_name, path)
     if not os.path.exists(full_path) or not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -502,7 +519,12 @@ async def get_project_file(project_name: str, path: str = Query(..., description
 
 
 @router.put("/projects/{project_name}/file")
-async def update_project_file(project_name: str, request: UpdateFileRequest):
+async def update_project_file(
+    project_name: str,
+    request: UpdateFileRequest,
+    current: CurrentUser = Depends(resolve_user),
+):
+    _assert_project_access(project_name, current)
     full_path = _safe_join_project(project_name, request.path)
     dir_name = os.path.dirname(full_path)
     if not os.path.exists(dir_name):
@@ -513,7 +535,8 @@ async def update_project_file(project_name: str, request: UpdateFileRequest):
 
 
 @router.get("/projects/{project_name}/download")
-async def download_project(project_name: str):
+async def download_project(project_name: str, current: CurrentUser = Depends(resolve_user)):
+    _assert_project_access(project_name, current)
     """
     Zips the project directory and returns it as a downloadable file.
     """
@@ -565,8 +588,14 @@ def _resolve_frontend_dir(project_root: str, frontend_sub: str):
 
 
 @router.post("/projects/{project_name}/run")
-async def run_project(project_name: str, request: RunRequest, http_request: Request):
+async def run_project(
+    project_name: str,
+    request: RunRequest,
+    http_request: Request,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Build frontend and serve via main backend. No subprocess spawn."""
+    _assert_project_access(project_name, current)
 
     async def event_generator():
         try:

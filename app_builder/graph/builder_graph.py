@@ -26,6 +26,9 @@ class BuilderState(TypedDict):
     user_requirement: UserRequirement
     project_name: str
     template_name: str
+    saved_prd: str
+    saved_uiux: str
+    prebuilt_architecture: Dict[str, Any]
     structured_requirement: Dict[str, Any]
     architecture: Dict[str, Any]
     api_contract: Dict[str, Any]
@@ -37,6 +40,27 @@ class BuilderState(TypedDict):
 async def run_structuring_step(state: BuilderState):
     logger.info("[structuring] START")
     try:
+        project_name = state.get("project_name") or "app"
+        saved_prd = (state.get("saved_prd") or "").strip()
+        saved_uiux = (state.get("saved_uiux") or "").strip()
+        req = state.get("user_requirement")
+        desc = (req.description if hasattr(req, "description") else str(req)) if req else ""
+
+        if saved_prd:
+            structured = {
+                "project_name": project_name,
+                "description": desc,
+                "prd": saved_prd,
+                "uiux": saved_uiux,
+                "features": [],
+            }
+            logger.info("[structuring] DONE (from saved PRD/UIUX)")
+            return {
+                "structured_requirement": structured,
+                "project_name": project_name,
+                "template_name": structured.get("template_name"),
+            }
+
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0)
         req = state.get("user_requirement")
@@ -59,6 +83,11 @@ async def run_architecture_step(state: BuilderState):
     logger.info("[architecture] START")
     try:
         if state.get("error"): return {}
+        prebuilt = state.get("prebuilt_architecture") or {}
+        if isinstance(prebuilt, dict) and len(prebuilt) > 0:
+            logger.info("[architecture] DONE (using saved architecture from plan)")
+            return {"architecture": prebuilt}
+
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0.7)
         structured = state.get("structured_requirement")

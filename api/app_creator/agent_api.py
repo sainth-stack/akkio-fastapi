@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 import json
 import asyncio
 import os
+import sys
 
 from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.plan import ProjectPlan
@@ -324,6 +325,9 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         requirement = request_data.get("requirement")
         project_name = request_data.get("project_name")
         app_id = request_data.get("app_id")
+        prd = request_data.get("prd", "") or ""
+        uiux = request_data.get("uiux", "") or ""
+        prebuilt_architecture = request_data.get("architecture") or {}
 
         if not requirement or not project_name:
             await websocket.send_text(json.dumps({
@@ -341,6 +345,9 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         initial_state = {
             "user_requirement": UserRequirement(description=requirement),
             "project_name": project_name,
+            "saved_prd": prd,
+            "saved_uiux": uiux,
+            "prebuilt_architecture": prebuilt_architecture if isinstance(prebuilt_architecture, dict) else {},
             "structured_requirement": {},
             "architecture": {},
             "api_contract": {},
@@ -526,6 +533,8 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
     try:
         data = await websocket.receive_text()
         request_data = json.loads(data)
+        current, request_data = await authenticate_websocket(websocket, first_message=request_data)
+        user_email = user_email_from(current)
 
         user_request = request_data.get("user_request")
         project_name = request_data.get("project_name")
@@ -556,6 +565,13 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             if not app_record:
                 app_record = db.get_app_by_project_name(project_name)
             if app_record:
+                owner = app_record.get("user_email")
+                if owner and owner != user_email:
+                    await websocket.send_text(json.dumps({
+                        "event": "error",
+                        "message": "Unauthorized access to this app"
+                    }))
+                    return
                 prd_text = app_record.get("prd") or ""
                 original_requirement = app_record.get("prompt") or ""
                 architecture = app_record.get("architecture") or {}

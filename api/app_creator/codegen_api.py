@@ -4,6 +4,7 @@ Code Generation API - Handles dedicated code generation WebSocket
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Dict
 import json
+import sys
 
 from api.app_creator.agent_api import execute_code_generator_agent
 from app_builder.agents.validation_agent import validate_and_fix_code
