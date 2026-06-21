@@ -18,12 +18,9 @@ logger = logging.getLogger("akkio")
 
 from db import PostgresDatabase
 from db.init_db import init_schemas, shutdown_db
+from api.cors_config import build_cors_middleware_kwargs
 
-_env = os.getenv("ENV", "development").lower()
-_default_origins = os.getenv("CORS_ORIGINS", "http://localhost:3002" if _env != "production" else "")
-if not _default_origins and _env == "production":
-    raise RuntimeError("CORS_ORIGINS must be set when ENV=production")
-CORS_ORIGINS = [o.strip() for o in _default_origins.split(",") if o.strip()]
+db = PostgresDatabase()
 
 
 @asynccontextmanager
@@ -39,16 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Akkio", version="2", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
-db = PostgresDatabase()
+app.add_middleware(CORSMiddleware, **build_cors_middleware_kwargs())
 
 from api.akkio.main import akkio_router
 
