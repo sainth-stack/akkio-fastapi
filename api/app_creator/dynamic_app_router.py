@@ -9,9 +9,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from api.auth.dependencies import CurrentUser
+from api.auth.request_auth import resolve_user
+from api.app_creator.project_access import assert_project_access
 
 from app_builder.services.project_config import get_project_config
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
@@ -260,8 +264,13 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 
 
 @router.get("/{project_id}/{collection}")
-async def list_collection(project_id: str, collection: str):
+async def list_collection(
+    project_id: str,
+    collection: str,
+    current: CurrentUser = Depends(resolve_user),
+):
     """List all items in collection."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -280,8 +289,14 @@ async def list_collection(project_id: str, collection: str):
 
 
 @router.get("/{project_id}/{collection}/{item_id}")
-async def get_item(project_id: str, collection: str, item_id: int):
+async def get_item(
+    project_id: str,
+    collection: str,
+    item_id: int,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Get one item by id."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -302,8 +317,14 @@ async def get_item(project_id: str, collection: str, item_id: int):
 
 
 @router.post("/{project_id}/{collection}")
-async def create_item(project_id: str, collection: str, request: Request):
+async def create_item(
+    project_id: str,
+    collection: str,
+    request: Request,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Create item in collection, or dispatch to custom endpoint (generate-ideas, translate, etc.)."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -350,8 +371,15 @@ async def create_item(project_id: str, collection: str, request: Request):
 
 
 @router.put("/{project_id}/{collection}/{item_id}")
-async def update_item(project_id: str, collection: str, item_id: int, request: Request):
+async def update_item(
+    project_id: str,
+    collection: str,
+    item_id: int,
+    request: Request,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Update item by id."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -384,8 +412,14 @@ async def update_item(project_id: str, collection: str, item_id: int, request: R
 
 
 @router.delete("/{project_id}/{collection}/{item_id}")
-async def delete_item(project_id: str, collection: str, item_id: int):
+async def delete_item(
+    project_id: str,
+    collection: str,
+    item_id: int,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Delete item by id."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -412,8 +446,13 @@ class LLMRequest(BaseModel):
 
 
 @router.post("/{project_id}/llm")
-async def llm_proxy(project_id: str, request: LLMRequest):
+async def llm_proxy(
+    project_id: str,
+    request: LLMRequest,
+    current: CurrentUser = Depends(resolve_user),
+):
     """Proxy LLM calls with project-specific system prompt."""
+    assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")

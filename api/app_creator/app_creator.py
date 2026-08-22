@@ -13,20 +13,24 @@ if not logger.handlers:
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
 import json
-import re
 import shlex
 import time
 import subprocess
 import shutil
 import tempfile
+import asyncio
 
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from app_builder.schemas.files import GeneratedFiles
+from app_builder.services.file_writer import file_writer
 from api.auth.request_auth import resolve_user, CurrentUser, user_email_from
+from api.app_creator.project_access import assert_project_access
 from db.app_builder import get_app_builder_db
-from api.app_creator.cra_npm_patch import patch_package_json_for_cra_ajv
+from api.app_creator.cra_npm_patch import CRA_BUILD_ENV, prepare_frontend_dir_on_disk
+from api.app_creator.build_verify_service import verify_build_and_fix
 from api.app_creator.e2b_sandbox_build import build_frontend_in_e2b, e2b_available
-# Legacy: find_free_port, process_registry no longer used (single-backend mode)
-
+from api.app_creator.pipeline_helpers import npm_build_timeout, npm_install_timeout, public_base_url
+from api.app_creator.static_app_router import _resolve_static_dir
 
 router = APIRouter(prefix="/api/app-builder", tags=["App Builder"])
 
@@ -34,246 +38,14 @@ _app_builder_db = get_app_builder_db()
 
 
 def _assert_project_access(project_name: str, current: CurrentUser) -> None:
-    user_email = user_email_from(current)
-    app = _app_builder_db.get_app_by_project_name(project_name)
-    if app and app.get("user_email") and app.get("user_email") != user_email:
-        raise HTTPException(status_code=403, detail="You do not have access to this project")
+    assert_project_access(project_name, current)
+
 
 PROJECTS_DIR = get_projects_dir()
-AKKIO_FASTAPI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LEGACY_PROJECTS_DIR = os.path.join(AKKIO_FASTAPI_DIR, "app_builder", ".runtime", "projects")
-
-# Legacy: FIXED_BACKEND_PORT, FIXED_FRONTEND_PORT, kill_process_on_port removed (single-backend mode)
 
 
 def _project_root(project_name: str) -> str:
     return resolve_project_root(project_name)
-
-
-def _fix_backend_python_relative_imports(backend_dir: str) -> None:
-    """Fix relative imports in all backend .py files so uvicorn main:app works (no parent package)."""
-    if not os.path.isdir(backend_dir):
-        return
-    for name in os.listdir(backend_dir):
-        if not name.endswith(".py"):
-            continue
-        path = os.path.join(backend_dir, name)
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            if "from . import " not in content and "from ." not in content:
-                continue
-            content = re.sub(r"\bfrom\s+\.\s+import\s+", "import ", content)
-            content = re.sub(r"\bfrom\s+\.(\w+)\s+import\s+", r"from \1 import ", content)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception:
-            pass
-
-
-def _try_create_missing_backend_module_stub(backend_dir: str, log_content: str) -> bool:
-    """
-    If logs show ModuleNotFoundError: No module named 'XXX', and backend has no XXX.py/XXX/,
-    create backend/XXX.py with stub classes by parsing main.py for 'from XXX import A, B'.
-    Returns True if a stub was created so caller can retry backend start.
-    """
-    match = re.search(r"ModuleNotFoundError:\s*No module named ['\"]([a-zA-Z_][a-zA-Z0-9_]*)['\"]", log_content)
-    if not match:
-        return False
-    mod_name = match.group(1)
-    mod_py = os.path.join(backend_dir, f"{mod_name}.py")
-    mod_dir = os.path.join(backend_dir, mod_name)
-    if os.path.isfile(mod_py) or os.path.isdir(mod_dir):
-        return False
-    main_py = os.path.join(backend_dir, "main.py")
-    if not os.path.isfile(main_py):
-        return False
-    try:
-        with open(main_py, "r", encoding="utf-8") as f:
-            main_content = f.read()
-        # Find "from MOD import X, Y" or "from MOD import X"
-        imp_match = re.search(
-            rf"\bfrom\s+{re.escape(mod_name)}\s+import\s+([^\n]+)",
-            main_content,
-        )
-        if not imp_match:
-            return False
-        symbols_str = imp_match.group(1).strip()
-        symbols = [s.strip().split(" as ")[0] for s in symbols_str.split(",") if s.strip()]
-        if not symbols:
-            return False
-        stub_lines = ["# Auto-generated stub so backend can start. Implement as needed.", ""]
-        for sym in symbols:
-            if sym.isidentifier():
-                stub_lines.append(f"class {sym}:")
-                stub_lines.append("    pass")
-                stub_lines.append("")
-        with open(mod_py, "w", encoding="utf-8") as f:
-            f.write("\n".join(stub_lines))
-        return True
-    except Exception:
-        return False
-
-
-def _try_patch_backend_response_model(backend_dir: str, log_content: str) -> bool:
-    """
-    If logs show FastAPIError about response_model (ORM model used instead of Pydantic schema),
-    patch main.py: use schemas.X, or add response_model=None when ORM is defined in main (no schemas).
-    Returns True if a patch was applied so caller can retry backend start.
-    """
-    if "Invalid args for response field" not in log_content or "valid Pydantic field type" not in log_content:
-        return False
-    match = re.search(r"<class ['\"](\w+)\.(\w+)['\"]>", log_content)
-    main_py = os.path.join(backend_dir, "main.py")
-    if not os.path.isfile(main_py):
-        return False
-    try:
-        with open(main_py, "r", encoding="utf-8") as f:
-            content = f.read()
-        changed = False
-        # response_model=models.X -> response_model=schemas.X
-        new_content = re.sub(
-            r"\bresponse_model=models\.(\w+)",
-            r"response_model=schemas.\1",
-            content,
-        )
-        if new_content != content:
-            content = new_content
-            changed = True
-        if match:
-            cls_name = match.group(2)
-            # response_model=Todo -> response_model=schemas.Todo
-            new_content = re.sub(
-                rf"\bresponse_model={re.escape(cls_name)}\b",
-                f"response_model=schemas.{cls_name}",
-                content,
-            )
-            if new_content != content:
-                content = new_content
-                changed = True
-            # Return type annotations: -> Todo, -> List[Todo], etc.
-            new_content = re.sub(
-                rf"\b->\s*{re.escape(cls_name)}\b",
-                f"-> schemas.{cls_name}",
-                content,
-            )
-            if new_content != content:
-                content = new_content
-                changed = True
-            new_content = re.sub(
-                rf"List\[{re.escape(cls_name)}\]",
-                f"List[schemas.{cls_name}]",
-                content,
-            )
-            if new_content != content:
-                content = new_content
-                changed = True
-            new_content = re.sub(
-                rf"Optional\[{re.escape(cls_name)}\]",
-                f"Optional[schemas.{cls_name}]",
-                content,
-            )
-            if new_content != content:
-                content = new_content
-                changed = True
-        # Fallback: ORM defined in main.py (no schemas) – add response_model=None to route decorators
-        if not changed:
-            def add_response_model_none(m):
-                line = m.group(0)
-                if "response_model" in line:
-                    return line
-                return line[:-1] + ", response_model=None)"
-            new_content = re.sub(
-                r"@app\.(get|post|put|delete|patch)\([^)]+\)",
-                add_response_model_none,
-                content,
-            )
-            if new_content != content:
-                content = new_content
-                changed = True
-        if changed:
-            with open(main_py, "w", encoding="utf-8") as f:
-                f.write(content)
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _is_mongodb_backend(backend_dir: str) -> bool:
-    for name in ("database.py", "db.py", "config.py"):
-        path = os.path.join(backend_dir, name)
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    if "MongoClient" in f.read() or "pymongo" in f.read():
-                        return True
-            except Exception:
-                pass
-    return False
-
-
-def _ensure_backend_tables_created(backend_dir: str) -> None:
-    if not os.path.isdir(backend_dir) or _is_mongodb_backend(backend_dir):
-        return
-    venv_python = os.path.join(backend_dir, "venv", "bin", "python")
-    python_cmd = venv_python if os.path.isfile(venv_python) else "python3"
-    for script in [
-        "import sys; sys.path.insert(0, %r); import database; "
-        "import models; database.Base.metadata.create_all(bind=database.engine)",
-        "import sys; sys.path.insert(0, %r); import database; "
-        "import models; models.Base.metadata.create_all(bind=database.engine)",
-    ]:
-        try:
-            r = subprocess.run(
-                [python_cmd, "-c", script % backend_dir],
-                cwd=backend_dir,
-                capture_output=True,
-                timeout=10,
-            )
-            if r.returncode == 0:
-                break
-        except Exception:
-            pass
-
-
-def _try_patch_backend_database_to_sqlite(backend_dir: str, log_content: str) -> bool:
-    if "5432" not in log_content and "Connection refused" not in log_content:
-        return False
-    if "psycopg2" not in log_content and "postgresql" not in log_content.lower():
-        return False
-    for name in ("database.py", "db.py", "config.py"):
-        path = os.path.join(backend_dir, name)
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            if "postgresql" not in content.lower():
-                continue
-            new_content = re.sub(
-                r"getenv\s*\(\s*[\"']DATABASE_URL[\"']\s*,\s*[\"']postgresql[^\"']*[\"']\s*\)",
-                "getenv(\"DATABASE_URL\", \"sqlite:///./app.db\")",
-                content,
-                flags=re.IGNORECASE,
-            )
-            if new_content == content:
-                new_content = re.sub(
-                    r"[\"']postgresql://[^\"']*[\"']",
-                    "\"sqlite:///./app.db\"",
-                    content,
-                    count=1,
-                )
-            if new_content != content:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                return True
-        except Exception:
-            pass
-    return False
-
 
 
 def _safe_join_project(project_name: str, relative_path: str) -> str:
@@ -383,9 +155,13 @@ def _capture_npm_error(r: subprocess.CompletedProcess, prefix: str, cwd: Optiona
     """Build error message from npm subprocess result. Handles empty output (e.g. PATH or permission issues)."""
     raw = (r.stderr or b"") + (r.stdout or b"")
     try:
-        err = raw.decode("utf-8", errors="replace").strip()[:500]
+        err = raw.decode("utf-8", errors="replace").strip()
     except Exception:
-        err = raw[:500].decode("latin-1", errors="replace").strip()
+        err = raw.decode("latin-1", errors="replace").strip()
+    # Keep full npm output for build failures (stored in DB / streamed to UI)
+    max_len = 8000
+    if len(err) > max_len:
+        err = err[:max_len] + f"\n... (truncated, {len(raw)} bytes total)"
     if not err:
         err = (
             f"Exit code {r.returncode}. No output captured. "
@@ -441,8 +217,9 @@ def _build_frontend(
     if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
         return None, "No frontend found"
 
-    if patch_package_json_for_cra_ajv(frontend_dir):
-        logger.info("[build] Patched package.json (npm overrides for CRA / react-scripts + ajv)")
+    patched = prepare_frontend_dir_on_disk(frontend_dir)
+    if patched:
+        logger.info("[build] Applied CRA/craco patch — clean npm install required")
 
     use_e2b, forced_err = _resolve_e2b_build(use_sandbox)
     if forced_err:
@@ -462,18 +239,20 @@ def _build_frontend(
                 ["npm", "install", "--legacy-peer-deps"],
                 cwd=frontend_dir,
                 capture_output=True,
-                timeout=120,
+                timeout=npm_install_timeout(),
             )
             if r.returncode != 0:
                 return None, _capture_npm_error(r, "npm install failed", cwd=frontend_dir)
         # PUBLIC_URL ensures CRA/Vite build asset paths match /app/{project_id} base path
         build_env = os.environ.copy()
         build_env["PUBLIC_URL"] = f"/app/{project_name}"
+        for key, val in CRA_BUILD_ENV.items():
+            build_env.setdefault(key, val)
         r = subprocess.run(
             ["npm", "run", "build"],
             cwd=frontend_dir,
             capture_output=True,
-            timeout=180,
+            timeout=npm_build_timeout(),
             env=build_env,
         )
         if r.returncode != 0:
@@ -587,6 +366,63 @@ def _resolve_frontend_dir(project_root: str, frontend_sub: str):
     return frontend_dir
 
 
+def _sync_project_disk_from_db(project_name: str, current: CurrentUser) -> int:
+    """Hydrate disk from Postgres generated_code_json. Returns file count written."""
+    user_email = user_email_from(current)
+    uid = current.id if current.id else None
+    app = _app_builder_db.get_app_by_project_name(project_name, user_id=uid, user_email=user_email)
+    if not app:
+        return 0
+    files = app.get("generated_code_json") or {}
+    if not isinstance(files, dict) or not files:
+        return 0
+    try:
+        from app_builder.services.code_post_process import post_process_generated_files
+        files = post_process_generated_files(
+            files,
+            app.get("architecture") or {},
+            uiux=app.get("generated_uiux") or "",
+        )
+    except Exception as exc:
+        logger.warning("[sync-from-db] post_process failed: %s", exc)
+    file_writer(project_name, GeneratedFiles(files=files))
+    project_root = _project_root(project_name)
+    frontend_dir = _resolve_frontend_dir(project_root, "frontend")
+    if frontend_dir:
+        prepare_frontend_dir_on_disk(frontend_dir)
+    return len(files)
+
+
+def _resolve_static_dir_from_disk(project_name: str) -> Optional[str]:
+    project_root = _project_root(project_name)
+    frontend_dir = _resolve_frontend_dir(project_root, "frontend")
+    if not frontend_dir:
+        frontend_dir = os.path.join(project_root, "frontend")
+    for sub in ("build", "dist", os.path.join("client", "build"), os.path.join("client", "dist")):
+        path = os.path.join(frontend_dir, sub)
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def _project_files_from_app(app_row: Optional[dict]) -> dict:
+    files = (app_row or {}).get("generated_code_json") or {}
+    return dict(files) if isinstance(files, dict) else {}
+
+
+@router.post("/projects/{project_name}/sync-from-db")
+async def sync_project_from_db(
+    project_name: str,
+    current: CurrentUser = Depends(resolve_user),
+):
+    """Write generated_code_json from Postgres to disk (fixes DB/disk desync)."""
+    _assert_project_access(project_name, current)
+    count = _sync_project_disk_from_db(project_name, current)
+    if count == 0:
+        raise HTTPException(status_code=404, detail="No generated code found in database for this project")
+    return {"status": "ok", "project_name": project_name, "files_count": count}
+
+
 @router.post("/projects/{project_name}/run")
 async def run_project(
     project_name: str,
@@ -596,47 +432,188 @@ async def run_project(
 ):
     """Build frontend and serve via main backend. No subprocess spawn."""
     _assert_project_access(project_name, current)
+    user_email = user_email_from(current)
+    uid = current.id if current.id else None
+    app_row = _app_builder_db.get_app_by_project_name(project_name, user_id=uid, user_email=user_email)
+    app_id = app_row.get("id") if app_row else None
 
     async def event_generator():
+        build_log_lines: list[str] = []
         try:
             logger.info("[run] START | project=%s (single-backend mode)", project_name)
-            yield json.dumps({"event": "status", "message": f"Building and serving {project_name}..."}) + "\n"
+            msg = f"Building and serving {project_name}..."
+            build_log_lines.append(msg)
+            yield json.dumps({"event": "status", "message": msg}) + "\n"
+
+            if app_id:
+                _app_builder_db.update_app_builder_app(
+                    app_id=app_id,
+                    user_email=user_email,
+                    user_id=uid,
+                    build_status="BUILDING",
+                    build_error=None,
+                    build_log="\n".join(build_log_lines),
+                )
+
+            synced = _sync_project_disk_from_db(project_name, current)
+            if synced:
+                sync_msg = f"Synced {synced} files from database to disk before build."
+                build_log_lines.append(sync_msg)
+                yield json.dumps({"event": "status", "message": sync_msg}) + "\n"
 
             project_root = _project_root(project_name)
             if not os.path.exists(project_root):
                 logger.error("[run] project not found: %s", project_root)
-                yield json.dumps({"event": "error", "message": "Project not found"}) + "\n"
+                err = "Project not found on disk (no generated code in database to sync)."
+                build_log_lines.append(err)
+                if app_id:
+                    _app_builder_db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        build_status="BUILD_FAILED",
+                        build_error=err,
+                        build_log="\n".join(build_log_lines),
+                    )
+                yield json.dumps({"event": "error", "message": err}) + "\n"
                 return
 
+            static_dir = None
+            err = None
             if request.skip_build:
-                yield json.dumps({"event": "status", "message": "Skipping build (frontend already deployed)."}) + "\n"
-                static_dir = None  # main backend may still serve from existing mount or S3
+                sync_msg = "Skipping build (frontend already deployed)."
+                build_log_lines.append(sync_msg)
+                yield json.dumps({"event": "status", "message": sync_msg}) + "\n"
+                static_dir = _resolve_static_dir(project_name)
             else:
                 use_e2b, e2b_err = _resolve_e2b_build(request.use_sandbox)
                 if e2b_err:
+                    build_log_lines.append(e2b_err)
+                    if app_id:
+                        _app_builder_db.update_app_builder_app(
+                            app_id=app_id,
+                            user_email=user_email,
+                            user_id=uid,
+                            build_status="BUILD_FAILED",
+                            build_error=e2b_err,
+                            build_log="\n".join(build_log_lines),
+                        )
                     yield json.dumps({"event": "error", "message": e2b_err}) + "\n"
                     return
                 if use_e2b:
-                    yield json.dumps(
-                        {
-                            "event": "status",
-                            "message": "Building frontend in E2B cloud sandbox (npm install + build)...",
-                        }
-                    ) + "\n"
+                    status_msg = "Building frontend in E2B cloud sandbox (npm install + build)..."
                 else:
-                    yield json.dumps({"event": "status", "message": "Building frontend..."}) + "\n"
+                    status_msg = "Building frontend..."
+                build_log_lines.append(status_msg)
+                yield json.dumps({"event": "status", "message": status_msg}) + "\n"
 
-                static_dir, err = _build_frontend(
-                    project_name,
-                    install=request.install,
-                    use_sandbox=request.use_sandbox,
+                build_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _build_frontend,
+                        project_name,
+                        request.install,
+                        request.use_sandbox,
+                    )
                 )
+                while not build_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(build_task), timeout=12.0)
+                    except asyncio.TimeoutError:
+                        heartbeat = "Still building (npm install / npm run build in progress)..."
+                        build_log_lines.append(heartbeat)
+                        yield json.dumps({"event": "status", "message": heartbeat}) + "\n"
+
+                static_dir, err = build_task.result()
+
+                auto_fix = os.environ.get("RUN_BUILD_AUTO_FIX", "true").lower() not in ("0", "false", "no")
+                if err and auto_fix and not use_e2b:
+                    fix_msg = "Build failed — applying CRA patch and AI auto-fix (up to 3 attempts)..."
+                    build_log_lines.append(fix_msg)
+                    yield json.dumps({"event": "status", "message": fix_msg}) + "\n"
+
+                    files = _project_files_from_app(app_row)
+                    event_queue: asyncio.Queue = asyncio.Queue()
+
+                    async def on_fix_event(payload: dict):
+                        await event_queue.put(payload)
+
+                    verify_task = asyncio.create_task(
+                        verify_build_and_fix(
+                            project_name,
+                            files,
+                            user_email,
+                            on_event=on_fix_event,
+                            max_attempts=int(os.environ.get("RUN_BUILD_FIX_ATTEMPTS", "3")),
+                        )
+                    )
+
+                    while not verify_task.done():
+                        try:
+                            payload = await asyncio.wait_for(event_queue.get(), timeout=12.0)
+                            msg = payload.get("message", "")
+                            if msg:
+                                build_log_lines.append(msg)
+                                yield json.dumps({"event": "status", "message": msg}) + "\n"
+                        except asyncio.TimeoutError:
+                            hb = "Still fixing / rebuilding..."
+                            yield json.dumps({"event": "status", "message": hb}) + "\n"
+
+                    _files, build_ok, build_log = await verify_task
+                    if build_log:
+                        build_log_lines.append(build_log[-4000:])
+
+                    if build_ok:
+                        static_dir = _resolve_static_dir_from_disk(project_name)
+                        err = None if static_dir else "Build succeeded but output folder not found"
+                        if app_id and _files:
+                            try:
+                                _app_builder_db.update_app_builder_app(
+                                    app_id=app_id,
+                                    user_email=user_email,
+                                    user_id=uid,
+                                    generated_code_json=_files,
+                                )
+                            except Exception as save_exc:
+                                logger.warning("[run] Could not save auto-fixed files: %s", save_exc)
+                    elif not err:
+                        err = (build_log or "Build failed after auto-fix attempts")[-800:]
+
                 if err:
+                    build_log_lines.append(err)
+                    if app_id:
+                        _app_builder_db.update_app_builder_app(
+                            app_id=app_id,
+                            user_email=user_email,
+                            user_id=uid,
+                            build_status="BUILD_FAILED",
+                            build_error=err,
+                            build_log="\n".join(build_log_lines),
+                        )
                     yield json.dumps({"event": "error", "message": err}) + "\n"
                     return
+                build_log_lines.append("Build complete. Serving from main backend.")
                 yield json.dumps({"event": "status", "message": "Build complete. Serving from main backend."}) + "\n"
 
-            base = str(http_request.base_url).rstrip("/")
+            resolved = static_dir or _resolve_static_dir(project_name)
+            if not resolved or not os.path.isdir(resolved):
+                err = (
+                    "Build output not found on disk. Expected frontend/dist, frontend/build, "
+                    "frontend/client/dist, or frontend/client/build."
+                )
+                build_log_lines.append(err)
+                if app_id:
+                    _app_builder_db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        build_status="BUILD_FAILED",
+                        build_error=err,
+                        build_log="\n".join(build_log_lines),
+                    )
+                yield json.dumps({"event": "error", "message": err}) + "\n"
+                return
+
+            base = public_base_url(str(http_request.base_url).rstrip("/"))
             frontend_url = f"{base}/app/{project_name}"
             backend_url = f"{base}/api/apps/{project_name}"
 
@@ -649,15 +626,45 @@ async def run_project(
                 "started_at": time.time(),
             }
             PROJECT_RUN_STATE[project_name] = state
+
+            if app_id:
+                _app_builder_db.update_app_builder_app(
+                    app_id=app_id,
+                    user_email=user_email,
+                    user_id=uid,
+                    build_status="BUILD_SUCCESS",
+                    build_error=None,
+                    build_log="\n".join(build_log_lines),
+                    preview_url=frontend_url,
+                )
+
             logger.info("[run] DONE | project=%s | frontend=%s | backend=%s", project_name, frontend_url, backend_url)
-            yield json.dumps({"event": "frontend_url", "frontend_url": frontend_url, "message": "Open this URL to view your app"}) + "\n"
+            yield json.dumps({
+                "event": "frontend_url",
+                "frontend_url": frontend_url,
+                "message": "Open this URL to view your app",
+            }) + "\n"
             yield json.dumps({"event": "ready", "data": state, "message": "Application is running!"}) + "\n"
 
         except Exception as e:
             logger.exception("[run] FAILED: %s", e)
             import traceback
             tb = traceback.format_exc()
-            yield json.dumps({"event": "error", "message": f"{str(e)}\n\nTraceback:\n{tb}"}) + "\n"
+            err_msg = f"{str(e)}\n\nTraceback:\n{tb}"
+            build_log_lines.append(err_msg)
+            if app_id:
+                try:
+                    _app_builder_db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        build_status="BUILD_FAILED",
+                        build_error=str(e),
+                        build_log="\n".join(build_log_lines),
+                    )
+                except Exception:
+                    pass
+            yield json.dumps({"event": "error", "message": err_msg}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 

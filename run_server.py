@@ -20,13 +20,21 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     _runtime_root = os.path.abspath(get_runtime_root())
     os.makedirs(_runtime_root, exist_ok=True)
-    _candidates = [
-        _runtime_root,
-        os.path.join(_script_dir, "app_builder", ".runtime"),
-        os.path.join(os.path.expanduser("~"), ".akkio", "app_builder", "runtime"),
+    # uvicorn only accepts relative glob patterns (absolute paths crash on Python 3.9).
+    _reload_excludes = [
         "app_builder/runtime",
+        "app_builder/runtime/*",
+        "app_builder/.runtime",
+        "app_builder/.runtime/*",
     ]
-    _reload_excludes = list({d for d in _candidates if os.path.isdir(d)})
+
+    print(
+        "\n*** Akkio dev server (reload excludes generated app runtime) ***\n"
+        f"    runtime: {_runtime_root}\n"
+        f"    reload excludes: {_reload_excludes}\n"
+        "    Tip: use this script instead of `uvicorn main:app --reload`.\n",
+        file=sys.stderr,
+    )
 
     uvicorn.run(
         "main:app",

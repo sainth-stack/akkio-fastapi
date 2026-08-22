@@ -7,8 +7,8 @@ Usage (from akkio-fastapi directory):
 
 Environment:
   PGHOST, PGUSER, PGPASSWORD, PGDATABASE  — Postgres connection
-  SEED_ADMIN_EMAIL    (default: admin@example.com)
-  SEED_ADMIN_PASSWORD (default: Admin@12345)
+  SEED_ADMIN_EMAIL    (default: admin@gmail.com)
+  SEED_ADMIN_PASSWORD (default: Admin@123)
   SEED_ADMIN_NAME     (default: Akkio Admin)
 """
 from __future__ import annotations
@@ -58,19 +58,29 @@ def main() -> None:
         admin_role = auth_store.create_role(name="Admin", permissions=DEFAULT_PERMISSIONS)
         print(f"Created Admin role: id={admin_role['id']}")
 
-    email = os.getenv("SEED_ADMIN_EMAIL", "admin@example.com")
-    password = os.getenv("SEED_ADMIN_PASSWORD", "Admin@12345")
+    email = os.getenv("SEED_ADMIN_EMAIL", "admin@gmail.com")
+    password = os.getenv("SEED_ADMIN_PASSWORD", "Admin@123")
     name = os.getenv("SEED_ADMIN_NAME", "Akkio Admin")
+    password_hash = hash_password(password)
 
     existing = auth_store.get_user_by_email(email, app="akkio")
     if existing:
-        print(f"Admin user already exists: id={existing['id']} email={existing['email']}")
+        auth_store.update_user(
+            existing["id"],
+            {
+                "password_hash": password_hash,
+                "name": name,
+                "role_ids": [admin_role["id"]],
+            },
+        )
+        print(f"Updated admin user: id={existing['id']} email={existing['email']}")
+        print(f"Login with email={email} password={password}")
         return
 
     user = auth_store.create_user(
         name=name,
         email=email,
-        password_hash=hash_password(password),
+        password_hash=password_hash,
         username=email.split("@")[0],
         app="akkio",
         organization_id=org["id"],

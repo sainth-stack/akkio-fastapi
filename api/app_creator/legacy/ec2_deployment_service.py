@@ -1,5 +1,7 @@
 """
-Deployment Service - Handles deploying generated apps to EC2 instance
+DEPRECATED — EC2 SSH deployment (legacy, not used by Hostinger POC).
+
+See hostinger_deploy_service.py for local deploy on the same VPS.
 """
 import os
 import subprocess

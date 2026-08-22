@@ -7,6 +7,7 @@ from typing import Optional
 from api.app_creator.github_service import GitHubService
 from api.auth.dependencies import CurrentUser
 from api.auth.request_auth import resolve_user
+from api.app_creator.project_access import assert_project_access
 
 router = APIRouter(prefix="/api/github", tags=["GitHub"])
 
@@ -40,9 +41,10 @@ def get_project_path(project_name: str) -> str:
 @router.post("/push")
 async def push_to_github(
     request: GitHubPushRequest,
-    _: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user),
 ):
     try:
+        assert_project_access(request.project_name, current)
         project_path = get_project_path(request.project_name)
 
         if request.create_repo and not request.repo_name:

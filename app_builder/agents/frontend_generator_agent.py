@@ -62,8 +62,10 @@ CRITICAL RULES:
 
     context = {
         "structured_requirement": structured_requirement,
+        "prd": structured_requirement.get("prd", ""),
+        "uiux": structured_requirement.get("uiux", ""),
         "blueprint": blueprint,
-        "api_contract": api_contract
+        "api_contract": api_contract,
     }
     
     user_prompt = f"Context: {json.dumps(context, indent=2)}"

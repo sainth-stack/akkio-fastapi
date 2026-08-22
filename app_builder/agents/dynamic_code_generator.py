@@ -20,21 +20,24 @@ _CRA_PACKAGE_JSON = {
         "react-scripts": "5.0.1",
     },
     "scripts": {
-        "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
-        "build": "NODE_OPTIONS=--openssl-legacy-provider react-scripts build",
+        "start": "NODE_OPTIONS=--openssl-legacy-provider craco start",
+        "build": "NODE_OPTIONS=--openssl-legacy-provider craco build",
     },
     "devDependencies": {
+        "@craco/craco": "7.1.0",
+        "ajv": "6.12.6",
+        "ajv-keywords": "3.5.2",
         "tailwindcss": "latest",
         "postcss": "latest",
-        "autoprefixer": "latest"
+        "autoprefixer": "latest",
     },
     "eslintConfig": {"extends": ["react-app"]},
     "browserslist": {
         "production": [">0.2%", "not dead", "not op_mini all"],
         "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"],
     },
-    # Node 20 + npm: nested webpack deps can pull wrong ajv; force ajv v8 for schema-utils / ajv-keywords
-    "overrides": {"ajv": "^8.12.0"},
+    # CRA 5: ajv v6 + craco skips fork-ts-checker-webpack-plugin
+    "overrides": {"ajv": "6.12.6", "ajv-keywords": "3.5.2"},
 }
 
 
@@ -217,29 +220,9 @@ def _detect_todo_app(requirement: str) -> bool:
 
 
 def _ensure_node_compat(files: Dict[str, str]) -> None:
-    """
-    Ensure frontend works with Node 20+.
-    - Add NODE_OPTIONS=--openssl-legacy-provider to react-scripts start/build
-    """
-    pkg_path = "frontend/package.json"
-    if pkg_path in files:
-        try:
-            pkg = json.loads(files[pkg_path])
-            pkg.setdefault("engines", {"node": ">=20"})
-            scripts = pkg.get("scripts") or {}
-            # Fix Node 20+ OpenSSL compatibility for react-scripts
-            for key in ("start", "build"):
-                if key in scripts and "react-scripts" in str(scripts[key]) and "NODE_OPTIONS" not in str(scripts[key]):
-                    scripts[key] = f"NODE_OPTIONS=--openssl-legacy-provider {scripts[key]}"
-            pkg["scripts"] = scripts
-            deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
-            if "react-scripts" in deps:
-                ov = dict(pkg.get("overrides") or {})
-                ov.setdefault("ajv", "^8.12.0")
-                pkg["overrides"] = ov
-            files[pkg_path] = json.dumps(pkg, indent=2)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    """Ensure frontend works with Node 20+ (delegates to shared CRA/craco patch)."""
+    from api.app_creator.cra_npm_patch import apply_cra_build_patch_in_files
+    apply_cra_build_patch_in_files(files)
 
 
 # Core backend packages for FastAPI + SQLite (no version numbers, no external DB)
@@ -736,27 +719,31 @@ def _validate_and_fix_backend_imports(files: Dict[str, str]) -> None:
                 files["backend/services/__init__.py"] = "\n".join(exports) + "\n"
 
 
-def _ensure_complete_styles_css(files: Dict[str, str]) -> None:
+def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
     """
     Ensure styles.css has all required classes. If generated CSS is too minimal,
-    replace with the comprehensive default template.
+    replace with the comprehensive default template (unless UI/UX spec drove custom CSS).
     """
     css_path = "frontend/src/styles.css"
     if css_path not in files:
         files[css_path] = _DEFAULT_STYLES_CSS
         return
-    
+
     css_content = files[css_path]
     required_classes = [".app", ".btn", ".input", ".form-row", ".list-item"]
     missing = [cls for cls in required_classes if cls not in css_content]
-    
-    # If missing critical classes or CSS is too short (less than 80 lines), use default
-    line_count = len(css_content.strip().split('\n'))
-    if missing or line_count < 80:
-        files[css_path] = _DEFAULT_STYLES_CSS
 
-    # Special case: If it looks like a todo app (has todo classes in JSX), ensure premium todo CSS is present
-    has_todo_markup = any("todo-" in content for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx")))
+    line_count = len(css_content.strip().split("\n"))
+    has_uiux_theme = bool((uiux or "").strip()) and (
+        ":root" in css_content or "--primary" in css_content or line_count >= 40
+    )
+    if not has_uiux_theme and (missing or line_count < 80):
+        files[css_path] = _DEFAULT_STYLES_CSS
+        css_content = files[css_path]
+
+    has_todo_markup = any(
+        "todo-" in content for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx"))
+    )
     if has_todo_markup and ".todo-card" not in css_content:
         files[css_path] += _TODO_APP_PREMIUM_CSS
 
@@ -783,20 +770,26 @@ async def generate_code_from_plan(
     Yields:
         Dictionary events with file generation progress
     """
-    # Check for template - use template code modules when available
+    # Template fast-path only when user has NOT completed planning (no PRD/architecture)
     try:
         from app_builder.services.template_service import detect_template, get_template_code_files
-        template_name = detect_template(requirement)
+        from app_builder.services.code_post_process import should_use_template, post_process_generated_files
+
+        use_template = should_use_template(requirement, prd, architecture)
+        template_name = detect_template(requirement) if use_template else None
         if template_name:
             template_files = get_template_code_files(template_name)
             if template_files:
                 yield {"event": "generation_start", "message": f"Using template: {template_name}"}
                 from app_builder.agents.code_update_agent import tailor_template_to_requirement
-                tailored = await tailor_template_to_requirement(template_files, requirement, template_name)
+
+                context = f"{requirement}\n\nPRD:\n{prd[:4000]}" if prd else requirement
+                if uiux:
+                    context += f"\n\nUI/UX:\n{uiux[:2000]}"
+                tailored = await tailor_template_to_requirement(template_files, context, template_name)
+                post_process_generated_files(tailored, architecture, template_name, uiux=uiux)
                 for path, content in tailored.items():
                     yield {"event": "file_generated", "file": path, "content": content}
-                _normalize_frontend_package_json_to_cra(tailored)
-                _ensure_complete_styles_css(tailored)
                 yield {"event": "generation_complete", "data": tailored}
                 return
     except ImportError:
@@ -856,10 +849,10 @@ async def generate_code_from_plan(
 4. **Design Fidelity**: Follow UI/UX colors and fonts in styles.css.
 
 **STRICT FILE GENERATION RULES:**
-5. **Dependencies**: Minimal. React: `react`, `react-dom`, `react-scripts`. Add `tailwindcss`, `postcss`, `autoprefixer` for styling.
+5. **Dependencies**: Minimal. React: `react`, `react-dom`, `react-scripts`. Do NOT add tailwindcss/postcss to package.json.
 6. **package.json scripts**: MUST use `NODE_OPTIONS=--openssl-legacy-provider` for Node 20+ compatibility:
    "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start"
-7. **Tailwind CSS**: MANDATORY. Always generate `tailwind.config.js` and `postcss.config.js`. Use Tailwind utility classes in JSX.
+7. **Styling**: Use `frontend/src/styles.css` with CSS variables (:root) for colors from UI/UX. Optional: Tailwind Play CDN in index.html only — do NOT use @tailwind in CSS files.
 8. **frontend/src/index.js**: MUST import `./styles.css` before App.
 9. **Backend**: Use absolute imports. SQLite + SQLAlchemy. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
 
@@ -966,8 +959,8 @@ from fastapi import FastAPI
 ## REQUIREMENT:
 {requirement}
 
-## PRD (Key Points):
-{prd[:3000]}
+## PRD (Full):
+{prd if prd else "See requirement above"}
 
 ## Implementation Steps:
 {plan_summary}
@@ -1126,36 +1119,9 @@ Start generating strictly using the "FILE: <path>" format.
             "message": f"Generated {file_path_to_yield}"
         }
 
-    # Prefer CRA (react-scripts) over Vite: if generated frontend has Vite or @dnd-kit, replace with minimal runnable CRA
-    _normalize_frontend_package_json_to_cra(files_generated)
-    # Ensure Node 20+ compat
-    _ensure_node_compat(files_generated)
-    # Fix "X.map is not a function" - add (var || []) fallback for all .map() in JSX
-    _fix_frontend_map_safety(files_generated)
-    # Fix "cannot import todo_router from routes" - inline routes into main.py
-    _fix_backend_routes_import(files_generated)
-    # Ensure Vite + React projects have @vitejs/plugin-react in package.json (only if we didn't replace with CRA)
-    _ensure_vite_react_plugin_in_package_json(files_generated)
-    # Normalize backend requirements: no version numbers, core packages present
-    _normalize_backend_requirements(files_generated)
-    # Ensure database.py uses SQLite by default (no external credentials - runs out of the box)
-    _ensure_sqlite_database_default(files_generated)
-    # Fix all backend .py relative imports so uvicorn main:app works (no parent package).
-    _fix_backend_python_relative_imports(files_generated)
-    # Fix SQLAlchemy UUID import (sqlite dialect has Uuid, not UUID - use types.Uuid)
-    _fix_sqlalchemy_uuid_imports(files_generated)
-    # Fix Pydantic v2, JSONB->JSON for SQLite compatibility
-    _fix_backend_pydantic_and_common(files_generated)
-    # Ensure database tables are created on startup (prevents "no such table" error)
-    _ensure_database_tables_created(files_generated)
-    # Ensure CORS allows all origins for generated backend
-    _ensure_cors_in_backend(files_generated)
-    # Prevent 404 on /undefined/tasks/ - ensure API URL is never undefined
-    _fix_frontend_backend_url_undefined(files_generated)
-    # Fix backend import errors (services/ directory without __init__.py)
-    _validate_and_fix_backend_imports(files_generated)
-    # Ensure styles.css is complete with all required classes
-    _ensure_complete_styles_css(files_generated)
+    from app_builder.services.code_post_process import post_process_generated_files
+
+    post_process_generated_files(files_generated, architecture, uiux=uiux)
 
     yield {
         "event": "generation_complete",

@@ -13,13 +13,15 @@ from app_builder.schemas.requirements import UserRequirement
 from app_builder.schemas.plan import ProjectPlan
 from app_builder.agents.requirement_agent import requirement_agent
 from app_builder.agents.architecture_agent import architecture_agent
-from app_builder.agents.code_generator_agent import code_generator_agent
 from app_builder.agents.dynamic_code_generator import generate_code_from_plan
 from app_builder.services.file_writer import file_writer, write_project_file
+from app_builder.schemas.files import GeneratedFiles
 from llm_helper import get_llm_for_user
 from db.app_builder import get_app_builder_db
 from api.auth.ws_auth import authenticate_websocket
 from api.auth.request_auth import user_email_from
+from api.app_creator.pipeline_helpers import touch_job
+from api.app_creator.project_access import assert_project_access, assert_app_id_access
 
 router = APIRouter(prefix="/api/agents", tags=["Agents"])
 
@@ -240,31 +242,20 @@ async def execute_code_generator_agent(
                 # Clean up filename
                 filename = event["file"]
                 content = event["content"]
-                
-                # Write to disk immediately
-                try:
-                    write_project_file(project_name, filename, content)
-                except Exception as e:
-                    print(f"Error writing file {filename}: {e}", file=sys.stderr)
 
-                # Send progress to UI
+                # Keep in memory only — writing to disk during streaming triggers
+                # uvicorn --reload and kills the codegen WebSocket.
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "code_generator_agent",
                     "message": f"Generated {filename}"
                 }))
-                
-                # Update local dict for final stat
+
                 files_dict[filename] = content
-            
+
             elif event["event"] == "generation_complete":
-                # Ensure we have the full list (possibly normalized: Vite plugin, backend .py imports)
                 files_dict = event["data"]
-                # Re-write post-processed files so normalized content is on disk
-                for path, content in files_dict.items():
-                    if path == "frontend/package.json" or (path.startswith("backend/") and path.endswith(".py")):
-                        write_project_file(project_name, path, content)
-                
+
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "code_generator_agent",
@@ -336,10 +327,40 @@ async def execute_agents(websocket: WebSocket, session_id: str):
             }))
             return
 
+        try:
+            assert_project_access(project_name, current)
+        except HTTPException as exc:
+            await websocket.send_text(json.dumps({"event": "error", "message": exc.detail}))
+            return
+
+        if app_id:
+            try:
+                assert_app_id_access(app_id, project_name, current)
+            except HTTPException as exc:
+                await websocket.send_text(json.dumps({"event": "error", "message": exc.detail}))
+                return
+
         await websocket.send_text(json.dumps({
             "event": "execution_start",
             "message": "Starting new agent execution pipeline..."
         }))
+
+        uid = current.id if current.id else None
+        if app_id and user_email:
+            db.update_app_builder_app(
+                app_id=app_id,
+                user_email=user_email,
+                user_id=uid,
+                pipeline_status="CODEGEN_RUNNING",
+                pipeline_error=None,
+            )
+        touch_job(
+            session_id,
+            app_id=app_id,
+            job_type="agents",
+            status="running",
+            step="structuring_agent",
+        )
 
         # Initialize State for LangGraph
         initial_state = {
@@ -368,9 +389,9 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         }
 
         final_state = initial_state
-        agents_state = {}  # accumulate for DB save (fallback if frontend save fails)
+        agents_state = {}
+        pipeline_failed = False
         
-        # Proactively send start for the first node
         await websocket.send_text(json.dumps({
             "event": "agent_start",
             "agent": "structuring_agent",
@@ -379,11 +400,14 @@ async def execute_agents(websocket: WebSocket, session_id: str):
 
         # Stream from LangGraph
         async for output in app_builder_graph.astream(initial_state):
+            if pipeline_failed:
+                break
             for node_name, result in output.items():
                 agent_id = node_to_agent.get(node_name, node_name)
                 
-                # Check for errors in state
                 if result and result.get("error"):
+                    pipeline_failed = True
+                    final_state["error"] = result["error"]
                     await websocket.send_text(json.dumps({
                         "event": "agent_error",
                         "agent": agent_id,
@@ -391,7 +415,7 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                         "project_name": project_name
                     }))
                     agents_state[agent_id] = {"status": "error", "error": result["error"]}
-                    continue
+                    break
 
                 # Update project_name if structuring_step returned one
                 if result and result.get("project_name"):
@@ -443,6 +467,14 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                     "progress": [{"type": "complete", "text": f"Completed {agent_id}", "timestamp": None}],
                     "completed_at": None
                 }
+
+                touch_job(
+                    session_id,
+                    app_id=app_id,
+                    job_type="agents",
+                    status="running",
+                    step=agent_id,
+                )
                 
                 # Proactively send start for the NEXT node in flow
                 next_agent_map = {
@@ -472,18 +504,60 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                 # Cumulative state update
                 final_state.update(result)
 
+        if pipeline_failed or final_state.get("error"):
+            err = final_state.get("error") or "Pipeline failed"
+            if app_id and user_email:
+                try:
+                    db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        pipeline_status="CODEGEN_FAILED",
+                        pipeline_error=str(err),
+                        agents_state=agents_state,
+                    )
+                except Exception:
+                    pass
+            touch_job(
+                session_id,
+                app_id=app_id,
+                job_type="agents",
+                status="failed",
+                error=str(err),
+                finished=True,
+            )
+            await websocket.send_text(json.dumps({
+                "event": "error",
+                "message": err,
+                "project_name": project_name,
+            }))
+            return
+
         # Final persistence to Postgres (builder_apps)
         try:
             if not final_state.get("error"):
+                structured_prd = final_state.get("structured_requirement")
+                arch = final_state.get("architecture")
+                api_contract_val = final_state.get("api_contract")
+                db_schema_val = final_state.get("db_schema")
+                generated_files = final_state.get("generated_files", {})
+
+                def _text_field(val):
+                    if val is None:
+                        return None
+                    if isinstance(val, str):
+                        return val
+                    return json.dumps(val)
+
                 db.create_or_update_codegen_session(
                     session_id=session_id,
                     project_name=project_name,
                     requirement=requirement,
-                    prd=json.dumps(final_state.get("structured_requirement")), # New structured PRD
-                    architecture=json.dumps(final_state.get("architecture")),
-                    api_contract=json.dumps(final_state.get("api_contract")),
-                    db_schema=json.dumps(final_state.get("db_schema")),
-                    generated_files=json.dumps(final_state.get("generated_files", {})),
+                    prd=_text_field(structured_prd),
+                    architecture=arch if isinstance(arch, (dict, list)) else None,
+                    api_contract=_text_field(api_contract_val),
+                    db_schema=_text_field(db_schema_val),
+                    generated_files=generated_files if isinstance(generated_files, dict) else None,
                     app_id=app_id
                 )
                 
@@ -491,15 +565,47 @@ async def execute_agents(websocket: WebSocket, session_id: str):
                     db.update_app_builder_app(
                         app_id=app_id,
                         user_email=user_email,
+                        user_id=uid,
                         project_name=project_name,
-                        architecture=final_state.get("architecture"),
-                        generated_code_json=final_state.get("generated_files"),
-                        prd=json.dumps(final_state.get("structured_requirement")),
-                        agents_state=agents_state
+                        architecture=arch if isinstance(arch, dict) else None,
+                        generated_code_json=generated_files if isinstance(generated_files, dict) else None,
+                        prd=_text_field(structured_prd),
+                        agents_state=agents_state,
+                        pipeline_status="CODEGEN_COMPLETE",
+                        pipeline_error=None,
                     )
                     print(f"[agent_api] Saved final app state (incl. agents_state) to Postgres for app {app_id}")
+                touch_job(
+                    session_id,
+                    app_id=app_id,
+                    job_type="agents",
+                    status="complete",
+                    step="validation_agent",
+                    finished=True,
+                )
         except Exception as db_err:
             print(f"[agent_api] Final DB save failed: {db_err}", file=sys.stderr)
+
+        generated = final_state.get("generated_files") or {}
+        if not generated:
+            err = final_state.get("error") or "Code generation produced no files"
+            if app_id and user_email:
+                try:
+                    db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        pipeline_status="CODEGEN_FAILED",
+                        pipeline_error=str(err),
+                    )
+                except Exception:
+                    pass
+            await websocket.send_text(json.dumps({
+                "event": "error",
+                "message": str(err),
+                "project_name": project_name,
+            }))
+            return
 
         await websocket.send_text(json.dumps({
             "event": "all_complete",
@@ -547,6 +653,14 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             }))
             return
 
+        try:
+            assert_project_access(project_name, current)
+            if app_id:
+                assert_app_id_access(app_id, project_name, current)
+        except HTTPException as exc:
+            await websocket.send_text(json.dumps({"event": "error", "message": exc.detail}))
+            return
+
         project_root = resolve_project_root(project_name)
         if not os.path.exists(project_root):
              await websocket.send_text(json.dumps({
@@ -561,17 +675,14 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
         app_record = None
         try:
             if app_id:
-                app_record = db.get_app_builder_app(app_id)
+                app_record = db.get_app_builder_app(app_id, user_email=user_email, user_id=current.id or None)
             if not app_record:
-                app_record = db.get_app_by_project_name(project_name)
+                app_record = db.get_app_by_project_name(
+                    project_name,
+                    user_id=current.id or None,
+                    user_email=user_email,
+                )
             if app_record:
-                owner = app_record.get("user_email")
-                if owner and owner != user_email:
-                    await websocket.send_text(json.dumps({
-                        "event": "error",
-                        "message": "Unauthorized access to this app"
-                    }))
-                    return
                 prd_text = app_record.get("prd") or ""
                 original_requirement = app_record.get("prompt") or ""
                 architecture = app_record.get("architecture") or {}

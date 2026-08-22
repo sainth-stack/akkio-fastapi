@@ -34,9 +34,11 @@ Output ONLY a JSON mapping: {"backend/main.py": "...", "backend/models.py": "...
 
     context = {
         "structured_requirement": structured_requirement,
+        "prd": structured_requirement.get("prd", ""),
+        "uiux": structured_requirement.get("uiux", ""),
         "blueprint": blueprint,
         "api_contract": api_contract,
-        "db_schema": db_schema
+        "db_schema": db_schema,
     }
     user_prompt = f"Context: {json.dumps(context, indent=2)}"
 

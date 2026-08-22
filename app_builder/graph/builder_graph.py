@@ -43,28 +43,43 @@ async def run_structuring_step(state: BuilderState):
         project_name = state.get("project_name") or "app"
         saved_prd = (state.get("saved_prd") or "").strip()
         saved_uiux = (state.get("saved_uiux") or "").strip()
+        prebuilt = state.get("prebuilt_architecture") or {}
         req = state.get("user_requirement")
         desc = (req.description if hasattr(req, "description") else str(req)) if req else ""
-
-        if saved_prd:
-            structured = {
-                "project_name": project_name,
-                "description": desc,
-                "prd": saved_prd,
-                "uiux": saved_uiux,
-                "features": [],
-            }
-            logger.info("[structuring] DONE (from saved PRD/UIUX)")
-            return {
-                "structured_requirement": structured,
-                "project_name": project_name,
-                "template_name": structured.get("template_name"),
-            }
 
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0)
-        req = state.get("user_requirement")
-        desc = (req.description if hasattr(req, "description") else str(req)) if req else ""
+
+        if saved_prd:
+            combined = UserRequirement(
+                description=f"{desc}\n\nPRD:\n{saved_prd}" + (f"\n\nUI/UX:\n{saved_uiux}" if saved_uiux else "")
+            )
+            structured = await requirement_structuring_agent(combined, llm=llm)
+            structured["prd"] = saved_prd
+            structured["uiux"] = saved_uiux
+            structured["description"] = desc
+            if isinstance(prebuilt, dict) and prebuilt.get("database_schema", {}).get("tables"):
+                tables = prebuilt["database_schema"]["tables"]
+                entities = []
+                for t in tables:
+                    name = t.get("name") or t.get("table_name") or "Entity"
+                    fields = t.get("columns") or t.get("fields") or []
+                    entities.append(
+                        {
+                            "name": name if name[0].isupper() else name.title().replace("_", ""),
+                            "table_name": t.get("table_name") or str(name).lower() + "s",
+                            "fields": fields,
+                        }
+                    )
+                if entities:
+                    structured["entities"] = entities
+            logger.info("[structuring] DONE (from saved PRD/UIUX + entity extraction)")
+            return {
+                "structured_requirement": structured,
+                "project_name": structured.get("project_name") or project_name,
+                "template_name": structured.get("template_name"),
+            }
+
         logger.info("[structuring] requirement=%r", desc[:100] + "..." if len(desc) > 100 else desc)
         structured = await requirement_structuring_agent(req, llm=llm)
         proj = structured.get("project_name", "app")
@@ -90,10 +105,13 @@ async def run_architecture_step(state: BuilderState):
 
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0.7)
-        structured = state.get("structured_requirement")
-        requirement_text = str(structured)
+        structured = state.get("structured_requirement") or {}
+        req_obj = state.get("user_requirement")
+        desc = (req_obj.description if hasattr(req_obj, "description") else str(req_obj)) if req_obj else ""
+        prd_text = structured.get("prd") or desc
+        uiux_text = structured.get("uiux") or state.get("saved_uiux") or ""
         arch_dict = {}
-        async for event in stream_architecture_generation(requirement_text, requirement_text, [], llm):
+        async for event in stream_architecture_generation(desc, prd_text, [], llm, uiux_text):
             if event["event"] == "architecture_complete":
                 arch_dict = event["data"]
         logger.info("[architecture] DONE")
@@ -121,10 +139,16 @@ async def run_schema_step(state: BuilderState):
     logger.info("[schema] START")
     try:
         if state.get("error"): return {}
+        arch = state.get("architecture") or {}
+        tables = (arch.get("database_schema") or {}).get("tables") or []
+        if tables:
+            import json as _json
+
+            logger.info("[schema] DONE (from architecture.database_schema)")
+            return {"db_schema": {"schema": _json.dumps(tables)}}
         from llm_helper import get_llm_for_user
         llm = get_llm_for_user(user_email=None, temperature=0)
         structured = state.get("structured_requirement")
-        arch = state.get("architecture")
         schema = await database_schema_agent(structured, llm=llm)
         logger.info("[schema] DONE")
         return {"db_schema": {"schema": schema}}
@@ -138,14 +162,19 @@ async def run_coding_step(state: BuilderState):
         if state.get("error"): return {}
         project_name = state.get("project_name", "app")
         template_name = state.get("template_name")
-        if not template_name:
+        saved_prd = (state.get("saved_prd") or "").strip()
+        prebuilt = state.get("prebuilt_architecture") or {}
+        if not template_name and not saved_prd and not (isinstance(prebuilt, dict) and prebuilt):
             req = state.get("user_requirement")
             requirement_text = (req.description if hasattr(req, "description") else str(req)) if req else ""
             try:
                 from ..services.template_service import detect_template
-                template_name = detect_template(requirement_text)
-                if template_name:
-                    logger.info("[coding] template detected from fallback: %s", template_name)
+                from ..services.code_post_process import should_use_template
+
+                if should_use_template(requirement_text, saved_prd, prebuilt if isinstance(prebuilt, dict) else {}):
+                    template_name = detect_template(requirement_text)
+                    if template_name:
+                        logger.info("[coding] template detected from fallback: %s", template_name)
             except Exception as e:
                 logger.debug("[coding] template detect fallback failed: %s", e)
                 template_name = None
@@ -158,8 +187,14 @@ async def run_coding_step(state: BuilderState):
                 if template_files:
                     logger.info("[coding] USING TEMPLATE=%s | files=%d", template_name, len(template_files))
                     req = state.get("user_requirement")
+                    structured = state.get("structured_requirement") or {}
                     requirement_text = (req.description if hasattr(req, "description") else str(req)) if req else ""
-                    tailored = await tailor_template_to_requirement(template_files, requirement_text, template_name)
+                    context = requirement_text
+                    if structured.get("prd"):
+                        context += f"\n\nPRD:\n{structured.get('prd', '')[:4000]}"
+                    if structured.get("uiux"):
+                        context += f"\n\nUI/UX:\n{structured.get('uiux', '')[:2000]}"
+                    tailored = await tailor_template_to_requirement(template_files, context, template_name)
                     polished = polish_template_output(tailored, template_name)
                     file_writer(project_name, GeneratedFiles(files=polished))
                     logger.info("[coding] DONE (template) | project=%s | files_written=%d", project_name, len(polished))
@@ -201,6 +236,10 @@ async def run_validation_step(state: BuilderState):
             files = polish_template_output(files, template_name)
             logger.info("[validation] polished template=%s", template_name)
         fixed_files = validate_and_fix_code(files, arch, template_name=template_name)
+        from ..services.code_post_process import post_process_generated_files
+
+        uiux = (state.get("structured_requirement") or {}).get("uiux") or state.get("saved_uiux") or ""
+        post_process_generated_files(fixed_files, arch, template_name=template_name, uiux=uiux)
         logger.info("[validation] persisting %d fixed files to project=%s", len(fixed_files), project_name)
         file_writer(project_name, GeneratedFiles(files=fixed_files))
         # Persist project config for single-backend dynamic CRUD/LLM

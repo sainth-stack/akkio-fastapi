@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 from api.auth.request_auth import resolve_user
 from api.auth.dependencies import CurrentUser
+from api.app_creator.project_access import assert_project_access
 from llm_helper import get_llm_for_user
 from app_builder.agents.test_generator_agent import generate_tests
 from app_builder.services.file_reader import read_project_files
@@ -23,11 +24,12 @@ class RunTestsRequest(BaseModel):
 @router.post("/generate")
 async def trigger_generate_tests(
     req: GenerateTestsRequest,
-    _: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user),
 ):
     """
     Generates test scripts for the given project.
     """
+    assert_project_access(req.project_name, current)
     projects_dir = get_projects_dir()
     project_path = os.path.join(projects_dir, req.project_name)
     
@@ -51,10 +53,11 @@ async def trigger_generate_tests(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/list/{project_name}")
-async def list_tests(project_name: str, _: CurrentUser = Depends(resolve_user)):
+async def list_tests(project_name: str, current: CurrentUser = Depends(resolve_user)):
     """
     Lists all test files in the project.
     """
+    assert_project_access(project_name, current)
     projects_dir = get_projects_dir()
     project_path = os.path.join(projects_dir, project_name, "backend", "tests")
     
@@ -69,10 +72,11 @@ async def list_tests(project_name: str, _: CurrentUser = Depends(resolve_user)):
     return {"tests": tests}
 
 @router.post("/run")
-async def run_tests(req: RunTestsRequest, _: CurrentUser = Depends(resolve_user)):
+async def run_tests(req: RunTestsRequest, current: CurrentUser = Depends(resolve_user)):
     """
     Runs pytest for the project and returns the output.
     """
+    assert_project_access(req.project_name, current)
     projects_dir = get_projects_dir()
     project_backend_path = os.path.join(projects_dir, req.project_name, "backend")
     

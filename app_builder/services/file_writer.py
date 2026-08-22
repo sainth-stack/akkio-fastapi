@@ -1,7 +1,7 @@
 import logging
 import os
 from ..schemas.files import GeneratedFiles
-from .runtime_paths import get_projects_dir
+from .runtime_paths import get_projects_dir, resolve_project_root
 
 logger = logging.getLogger("app_builder")
 
@@ -17,7 +17,7 @@ def file_writer(project_name: str, generated_files: GeneratedFiles):
     """
     Writes generated files to disk.
     """
-    base_path = os.path.join(get_projects_dir(), project_name)
+    base_path = resolve_project_root(project_name)
     files = {k: v for k, v in generated_files.files.items() if not _should_skip_path(k)}
     if not os.path.exists(base_path):
         os.makedirs(base_path, exist_ok=True)
@@ -51,7 +51,7 @@ def write_project_file(project_name: str, relative_path: str, content: str) -> b
     if _should_skip_path(relative_path):
         logger.debug("[file_writer] skipping venv/site-packages path: %s", relative_path)
         return False
-    base_path = os.path.join(get_projects_dir(), project_name)
+    base_path = resolve_project_root(project_name)
     if not os.path.exists(base_path):
         os.makedirs(base_path, exist_ok=True)
     write_single_file_to_disk(base_path, relative_path, content)

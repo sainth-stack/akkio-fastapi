@@ -5,13 +5,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-load_dotenv(override=True)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("akkio")
@@ -102,12 +103,12 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     _runtime_root = os.path.abspath(get_runtime_root())
     os.makedirs(_runtime_root, exist_ok=True)
-    _candidates = [
-        _runtime_root,
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "app_builder", ".runtime")),
-        os.path.join(os.path.expanduser("~"), ".akkio", "app_builder", "runtime"),
+    _reload_excludes = [
+        "app_builder/runtime",
+        "app_builder/runtime/*",
+        "app_builder/.runtime",
+        "app_builder/.runtime/*",
     ]
-    _reload_excludes = [d for d in _candidates if os.path.isdir(d)]
     uvicorn.run(
         "main:app",
         host=host,

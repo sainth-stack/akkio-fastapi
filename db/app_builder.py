@@ -51,15 +51,53 @@ CREATE TABLE IF NOT EXISTS app_builder_deployments (
     backend_port INTEGER,
     deployment_status VARCHAR(50) DEFAULT 'pending',
     error_message TEXT,
+    deploy_log TEXT,
     deployed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS builder_app_jobs (
+    id SERIAL PRIMARY KEY,
+    app_id INTEGER REFERENCES builder_apps(id) ON DELETE CASCADE,
+    session_id VARCHAR(255) NOT NULL,
+    job_type VARCHAR(64) NOT NULL DEFAULT 'codegen',
+    status VARCHAR(64) NOT NULL DEFAULT 'queued',
+    step VARCHAR(128),
+    logs TEXT,
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_builder_apps_user_id ON builder_apps (user_id);
 CREATE INDEX IF NOT EXISTS idx_builder_apps_project_name ON builder_apps (project_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_builder_apps_user_project ON builder_apps (user_id, project_name);
 CREATE INDEX IF NOT EXISTS idx_codegen_sessions_session_id ON app_builder_codegen_sessions (session_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_app_id ON app_builder_deployments (app_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_project_name ON app_builder_deployments (project_name);
+CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_app_id ON builder_app_jobs (app_id);
+CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_session_id ON builder_app_jobs (session_id);
+"""
+
+_MIGRATION_DDL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_builder_apps_user_project ON builder_apps (user_id, project_name);
+CREATE TABLE IF NOT EXISTS builder_app_jobs (
+    id SERIAL PRIMARY KEY,
+    app_id INTEGER REFERENCES builder_apps(id) ON DELETE CASCADE,
+    session_id VARCHAR(255) NOT NULL,
+    job_type VARCHAR(64) NOT NULL DEFAULT 'codegen',
+    status VARCHAR(64) NOT NULL DEFAULT 'queued',
+    step VARCHAR(128),
+    logs TEXT,
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_app_id ON builder_app_jobs (app_id);
+CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_session_id ON builder_app_jobs (session_id);
+ALTER TABLE app_builder_deployments ADD COLUMN IF NOT EXISTS deploy_log TEXT;
 """
 
 _METADATA_FIELDS = (
@@ -74,6 +112,13 @@ _METADATA_FIELDS = (
     "generated_code_json",
     "generated_files",
     "user_email",
+    "pipeline_status",
+    "pipeline_error",
+    "build_status",
+    "build_log",
+    "build_error",
+    "preview_url",
+    "live_url",
 )
 
 
@@ -117,6 +162,7 @@ class AppBuilderStore(PostgresPool):
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(_BUILDER_DDL)
+                cursor.execute(_MIGRATION_DDL)
         self.__class__._schema_ready = True
 
     def _resolve_user_id(self, user_email: str) -> int:
@@ -197,25 +243,46 @@ class AppBuilderStore(PostgresPool):
                 )
                 return [_app_row_to_dict(dict(r), user_email) for r in cursor.fetchall()]
 
-    def get_app_by_project_name(self, project_name: str) -> dict | None:
+    def get_app_by_project_name(
+        self,
+        project_name: str,
+        user_id: int | None = None,
+        user_email: str | None = None,
+    ) -> dict | None:
         self.init_schema()
         if not project_name or not project_name.strip():
             return None
+        uid = user_id
+        if uid is None and user_email:
+            try:
+                uid = self._resolve_user_id(user_email)
+            except ValueError:
+                return None
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, user_id, name, project_name, metadata, created_at, updated_at
-                    FROM builder_apps WHERE project_name = %s
-                    ORDER BY updated_at DESC LIMIT 1
-                    """,
-                    (project_name.strip(),),
-                )
+                if uid is not None:
+                    cursor.execute(
+                        """
+                        SELECT id, user_id, name, project_name, metadata, created_at, updated_at
+                        FROM builder_apps WHERE project_name = %s AND user_id = %s
+                        LIMIT 1
+                        """,
+                        (project_name.strip(), uid),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, user_id, name, project_name, metadata, created_at, updated_at
+                        FROM builder_apps WHERE project_name = %s
+                        ORDER BY updated_at DESC LIMIT 1
+                        """,
+                        (project_name.strip(),),
+                    )
                 row = cursor.fetchone()
                 if not row:
                     return None
                 row = dict(row)
-                email = self._user_email_for_id(row["user_id"])
+                email = user_email or self._user_email_for_id(row["user_id"])
                 return _app_row_to_dict(row, email)
 
     def get_app_builder_app(
@@ -276,6 +343,13 @@ class AppBuilderStore(PostgresPool):
         agents_state: dict | None = None,
         generated_code_json: dict | None = None,
         generated_files: dict | None = None,
+        pipeline_status: str | None = None,
+        pipeline_error: str | None = None,
+        build_status: str | None = None,
+        build_log: str | None = None,
+        build_error: str | None = None,
+        preview_url: str | None = None,
+        live_url: str | None = None,
         user_id: int | None = None,
     ) -> int:
         self.init_schema()
@@ -297,6 +371,13 @@ class AppBuilderStore(PostgresPool):
             "agents_state": agents_state,
             "generated_code_json": generated_code_json,
             "generated_files": generated_files,
+            "pipeline_status": pipeline_status,
+            "pipeline_error": pipeline_error,
+            "build_status": build_status,
+            "build_log": build_log,
+            "build_error": build_error,
+            "preview_url": preview_url,
+            "live_url": live_url,
         }
         key_map = {"app_name": "name"}
         name_val = app_name
@@ -329,11 +410,16 @@ class AppBuilderStore(PostgresPool):
     def delete_app_builder_app(self, app_id, user_email: str, user_id: int | None = None) -> int:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
+        aid = int(app_id)
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
+                    "DELETE FROM app_builder_deployments WHERE app_id = %s",
+                    (aid,),
+                )
+                cursor.execute(
                     "DELETE FROM builder_apps WHERE id = %s AND user_id = %s",
-                    (int(app_id), uid),
+                    (aid, uid),
                 )
                 return cursor.rowcount
 
@@ -347,6 +433,7 @@ class AppBuilderStore(PostgresPool):
         backend_port: int | None = None,
         deployment_status: str = "pending",
         error_message: str | None = None,
+        deploy_log: str | None = None,
     ) -> dict | None:
         self.init_schema()
         app_id_int = None
@@ -361,12 +448,12 @@ class AppBuilderStore(PostgresPool):
                     """
                     INSERT INTO app_builder_deployments (
                         app_id, project_name, frontend_url, backend_url,
-                        frontend_port, backend_port, deployment_status, error_message
+                        frontend_port, backend_port, deployment_status, error_message, deploy_log
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, app_id, project_name, frontend_url, backend_url,
                               frontend_port, backend_port, deployment_status, error_message,
-                              deployed_at, updated_at
+                              deploy_log, deployed_at, updated_at
                     """,
                     (
                         app_id_int,
@@ -377,6 +464,7 @@ class AppBuilderStore(PostgresPool):
                         backend_port,
                         deployment_status,
                         error_message,
+                        deploy_log,
                     ),
                 )
                 row = dict(cursor.fetchone())
@@ -394,6 +482,7 @@ class AppBuilderStore(PostgresPool):
         backend_url: str | None = None,
         deployment_status: str | None = None,
         error_message: str | None = None,
+        deploy_log: str | None = None,
     ) -> int:
         self.init_schema()
         try:
@@ -407,6 +496,7 @@ class AppBuilderStore(PostgresPool):
             ("backend_url", backend_url),
             ("deployment_status", deployment_status),
             ("error_message", error_message),
+            ("deploy_log", deploy_log),
         ):
             if val is not None:
                 fields.append(f"{col} = %s")
@@ -443,7 +533,7 @@ class AppBuilderStore(PostgresPool):
                     """
                     SELECT id, app_id, project_name, frontend_url, backend_url,
                            frontend_port, backend_port, deployment_status, error_message,
-                           deployed_at, updated_at
+                           deploy_log, deployed_at, updated_at
                     FROM app_builder_deployments
                     WHERE app_id = %s ORDER BY deployed_at DESC LIMIT 1
                     """,
@@ -460,7 +550,7 @@ class AppBuilderStore(PostgresPool):
                     """
                     SELECT id, app_id, project_name, frontend_url, backend_url,
                            frontend_port, backend_port, deployment_status, error_message,
-                           deployed_at, updated_at
+                           deploy_log, deployed_at, updated_at
                     FROM app_builder_deployments
                     WHERE project_name = %s ORDER BY deployed_at DESC LIMIT 1
                     """,
@@ -481,7 +571,7 @@ class AppBuilderStore(PostgresPool):
                     """
                     SELECT id, app_id, project_name, frontend_url, backend_url,
                            frontend_port, backend_port, deployment_status, error_message,
-                           deployed_at, updated_at
+                           deploy_log, deployed_at, updated_at
                     FROM app_builder_deployments WHERE id = %s
                     """,
                     (did,),
@@ -571,6 +661,128 @@ class AppBuilderStore(PostgresPool):
                     ),
                 )
                 return 1
+
+    def create_or_update_job(
+        self,
+        session_id: str,
+        job_type: str = "codegen",
+        app_id: int | str | None = None,
+        status: str = "queued",
+        step: str | None = None,
+        logs: str | None = None,
+        error: str | None = None,
+        finished: bool = False,
+    ) -> int:
+        self.init_schema()
+        app_id_int = None
+        if app_id is not None:
+            try:
+                app_id_int = int(app_id)
+            except (TypeError, ValueError):
+                app_id_int = None
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM builder_app_jobs WHERE session_id = %s",
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    cursor.execute(
+                        f"""
+                        UPDATE builder_app_jobs SET
+                            app_id = COALESCE(%s, app_id),
+                            job_type = COALESCE(%s, job_type),
+                            status = COALESCE(%s, status),
+                            step = COALESCE(%s, step),
+                            logs = COALESCE(%s, logs),
+                            error = COALESCE(%s, error),
+                            finished_at = CASE WHEN %s THEN NOW() ELSE finished_at END,
+                            updated_at = NOW()
+                        WHERE session_id = %s
+                        """,
+                        (
+                            app_id_int,
+                            job_type,
+                            status,
+                            step,
+                            logs,
+                            error,
+                            finished,
+                            session_id,
+                        ),
+                    )
+                    return cursor.rowcount
+                cursor.execute(
+                    """
+                    INSERT INTO builder_app_jobs (
+                        app_id, session_id, job_type, status, step, logs, error, finished_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
+                    """,
+                    (
+                        app_id_int,
+                        session_id,
+                        job_type,
+                        status,
+                        step,
+                        logs,
+                        error,
+                        finished,
+                    ),
+                )
+                return 1
+
+    def get_job_by_session_id(self, session_id: str) -> dict | None:
+        self.init_schema()
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, app_id, session_id, job_type, status, step, logs, error,
+                           started_at, finished_at, updated_at
+                    FROM builder_app_jobs WHERE session_id = %s
+                    """,
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return self._job_row_to_dict(dict(row))
+
+    def get_active_job_for_app(self, app_id) -> dict | None:
+        """Latest in-progress job for an app (finished_at IS NULL)."""
+        self.init_schema()
+        try:
+            aid = int(app_id)
+        except (TypeError, ValueError):
+            return None
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, app_id, session_id, job_type, status, step, logs, error,
+                           started_at, finished_at, updated_at
+                    FROM builder_app_jobs
+                    WHERE app_id = %s AND finished_at IS NULL
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (aid,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return self._job_row_to_dict(dict(row))
+
+    def _job_row_to_dict(self, row: dict) -> dict:
+        out = dict(row)
+        out["id"] = str(out["id"])
+        if out.get("app_id") is not None:
+            out["app_id"] = str(out["app_id"])
+        for k in ("started_at", "finished_at", "updated_at"):
+            out[k] = _serialize_ts(out.get(k))
+        return out
 
     def get_codegen_session(self, session_id: str) -> dict | None:
         self.init_schema()

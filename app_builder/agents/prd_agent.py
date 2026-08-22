@@ -6,6 +6,23 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
+def _chunk_text(content) -> str:
+    """Normalize LangChain chunk content to a plain string."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text") or block.get("content") or "")
+        return "".join(parts)
+    return str(content)
+
+
 async def stream_prd_generation(requirement: str, llm, skip_plan: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streams PRD generation using LLM.
@@ -72,13 +89,22 @@ Follow the exact structure (1. Product Overview, 2. Business Requirements with F
     full_prd = ""
     async for chunk in llm.astream(messages):
         if hasattr(chunk, 'content'):
-            content = chunk.content
+            content = _chunk_text(chunk.content)
+            if not content:
+                continue
             full_prd += content
             yield {
                 "event": "prd_chunk",
                 "data": content
             }
     
+    if not full_prd.strip():
+        yield {
+            "event": "error",
+            "message": "PRD generation returned empty content. Check your LLM API key and model settings.",
+        }
+        return
+
     # Parse the plan from the PRD
     yield {
         "event": "prd_complete",
@@ -122,7 +148,7 @@ Start now with STEP 1:"""
     
     async for chunk in llm.astream(plan_messages):
         if hasattr(chunk, 'content'):
-            plan_buffer += chunk.content
+            plan_buffer += _chunk_text(chunk.content)
             
             # Look for complete STEP: {...} patterns
             while "STEP:" in plan_buffer:

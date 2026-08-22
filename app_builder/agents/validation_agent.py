@@ -335,9 +335,35 @@ def validate_and_fix_code(
         if template_name == "language-translator":
             custom = {"translate": "llm_translate"}
         if custom:
-            _validate_custom_endpoint_api(files, template_name, custom)
-    
+            if template_name == "ideas-generator":
+                _validate_ideas_generator_api(files)
+            elif template_name == "language-translator":
+                _validate_language_translator_api(files)
+
+    try:
+        from api.app_creator.cra_npm_patch import ensure_cra_build_env_file, patch_package_json_in_files
+        patch_package_json_in_files(files)
+        ensure_cra_build_env_file(files)
+    except Exception as exc:
+        logger.warning("[validation] CRA npm patch skipped: %s", exc)
+
     return files
+
+
+def _validate_language_translator_api(files: Dict[str, str]) -> None:
+    """Validate language-translator frontend calls POST .../translate with text fields."""
+    for path in ["frontend/src/App.js", "frontend/App.js"]:
+        if path not in files:
+            continue
+        content = files[path]
+        issues = []
+        if "/translate" not in content:
+            issues.append("missing /translate in fetch URL")
+        if "text" not in content.lower() and "input" not in content.lower():
+            issues.append("request should include user text to translate")
+        if issues:
+            logger.warning("[validation] language-translator API issues in %s: %s", path, issues)
+        break
 
 
 def _validate_ideas_generator_api(files: Dict[str, str]) -> None:

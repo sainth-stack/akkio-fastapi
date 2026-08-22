@@ -19,7 +19,7 @@ import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from api.app_creator.cra_npm_patch import patch_package_json_for_cra_ajv
+from api.app_creator.cra_npm_patch import prepare_frontend_dir_on_disk
 
 logger = logging.getLogger("app_builder")
 
@@ -255,8 +255,8 @@ def build_frontend_in_e2b(
     tarball = None
     sandbox_holder: List[Any] = [None]
     try:
-        if patch_package_json_for_cra_ajv(frontend_dir):
-            logger.info("[e2b_build] Patched package.json (npm overrides for CRA / react-scripts + ajv)")
+        if prepare_frontend_dir_on_disk(frontend_dir):
+            logger.info("[e2b_build] Patched frontend for CRA (ajv overrides + .env)")
         tarball = _make_frontend_tarball(frontend_dir)
         sandbox_timeout_sec = int(os.environ.get("E2B_SANDBOX_TIMEOUT_SEC", "3600"))
         request_timeout_val = int(os.environ.get("E2B_REQUEST_TIMEOUT_SEC", "0"))

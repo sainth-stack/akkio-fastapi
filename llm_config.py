@@ -1,12 +1,26 @@
 """
 LLM Configuration Utility
 Provides a common function to get LLM configuration (API key, model, and provider)
-Uses user-specific settings from database if available, otherwise falls back to defaults
+Server API keys always come from akkio-fastapi/.env (not shell env or DB overrides).
+User DB settings may override provider/model only.
 Supports: OpenAI, Anthropic (Claude), and Google (Gemini)
 """
 import os
+from pathlib import Path
 from typing import Dict, Optional
+
+from dotenv import dotenv_values, load_dotenv
+
 from db import PostgresDatabase
+
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(_ENV_PATH, override=True)
+
+_PROVIDER_ENV_KEYS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+}
 
 # Default LLM configuration (aligned with app defaults and Settings UI)
 DEFAULT_PROVIDER = "openai"
@@ -169,27 +183,37 @@ PROVIDER_MODELS = {
     }
 }
 
+def _read_env_file() -> dict:
+    """Read akkio-fastapi/.env directly so shell OPENAI_API_KEY cannot override it."""
+    if not _ENV_PATH.is_file():
+        return {}
+    values = dotenv_values(_ENV_PATH) or {}
+    return {k: v for k, v in values.items() if v is not None}
+
+
 def get_default_api_key(provider: str) -> Optional[str]:
-    """Get default API key for a provider from environment variables."""
-    if provider == "openai":
-        return os.getenv("OPENAI_API_KEY")
-    elif provider == "anthropic":
-        return os.getenv("ANTHROPIC_API_KEY")
-    elif provider == "google":
-        return os.getenv("GOOGLE_API_KEY")
-    return None
+    """Get API key for a provider from akkio-fastapi/.env first, then process env."""
+    env_name = _PROVIDER_ENV_KEYS.get(provider)
+    if not env_name:
+        return None
+    file_env = _read_env_file()
+    key = (file_env.get(env_name) or "").strip()
+    if key:
+        return key
+    return (os.getenv(env_name) or "").strip() or None
 
 
 def get_llm_config(user_email: Optional[str] = None) -> Dict[str, str]:
     """
     Get LLM configuration for a user.
-    
-    If user_email is provided and user has custom settings in database, use those.
-    Otherwise, use default API key, model, and provider from environment.
-    
+
+    API keys always come from ``akkio-fastapi/.env`` (never from ``llm_settings`` or shell env).
+
+    Model/provider: user ``llm_settings`` override defaults when present.
+
     Args:
         user_email: User email to look up custom settings
-        
+
     Returns:
         Dictionary with 'provider', 'api_key', and 'model' keys
     """
@@ -198,39 +222,30 @@ def get_llm_config(user_email: Optional[str] = None) -> Dict[str, str]:
         "api_key": get_default_api_key(DEFAULT_PROVIDER),
         "model": DEFAULT_MODEL
     }
-    
+
     if not user_email:
         return config
-    
+
     try:
         db = PostgresDatabase()
         db.ensure_connection()
-        
-        # Get user-specific settings from database
+
         user_settings = db.get_llm_settings(user_email)
-        
+
         if user_settings:
-            # Get provider (default to openai if not set)
             provider = user_settings.get("provider") or "openai"
             config["provider"] = provider
-            
-            # Use user's custom API key if available, otherwise use default for provider
-            if user_settings.get("api_key"):
-                config["api_key"] = user_settings["api_key"]
-            else:
-                config["api_key"] = get_default_api_key(provider)
-            
-            # Use user's custom model if available, otherwise use default for provider
+            config["api_key"] = get_default_api_key(provider)
+
             if user_settings.get("model_name"):
                 config["model"] = user_settings["model_name"]
             else:
                 config["model"] = PROVIDER_MODELS.get(provider, {}).get("default", DEFAULT_MODEL)
-        
+
         db.close()
     except Exception as e:
         print(f"Error fetching LLM config for user {user_email}: {e}")
-        # Fall back to defaults on error
-    
+
     return config
 
 
