@@ -63,6 +63,12 @@ def run_frontend_build(project_name: str, install: bool = True) -> Tuple[Optiona
     if not frontend_dir:
         return None, "No frontend/package.json found", ""
 
+    from api.app_creator.vite_build import is_vite_frontend, prepare_vite_frontend_dir, run_vite_build
+
+    if is_vite_frontend(frontend_dir):
+        prepare_vite_frontend_dir(frontend_dir)
+        return run_vite_build(frontend_dir, project_name, install=install)
+
     patched = prepare_frontend_dir_on_disk(frontend_dir)
     if patched:
         node_modules = os.path.join(frontend_dir, "node_modules")
@@ -193,8 +199,12 @@ Rules:
     for path, content in (data.get("files") or {}).items():
         if isinstance(content, str) and content.strip():
             updated[path] = content
-    patch_package_json_in_files(updated)
-    ensure_cra_build_env_file(updated)
+    from app_builder.services.code_post_process import _is_vite_project
+    if not _is_vite_project(updated):
+        patch_package_json_in_files(updated)
+        ensure_cra_build_env_file(updated)
+    else:
+        updated.pop("frontend/craco.config.js", None)
     return updated
 
 
@@ -214,8 +224,13 @@ async def verify_build_and_fix(
         if on_event:
             await on_event(payload)
 
-    patch_package_json_in_files(files)
-    ensure_cra_build_env_file(files)
+    from app_builder.services.code_post_process import _is_vite_project
+    if not _is_vite_project(files):
+        patch_package_json_in_files(files)
+        ensure_cra_build_env_file(files)
+    else:
+        files.pop("frontend/craco.config.js", None)
+
     file_writer(project_name, GeneratedFiles(files=files))
 
     last_log = ""

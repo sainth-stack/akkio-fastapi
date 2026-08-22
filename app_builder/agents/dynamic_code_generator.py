@@ -219,8 +219,18 @@ def _detect_todo_app(requirement: str) -> bool:
     return any(kw in req_lower for kw in keywords)
 
 
+def _is_vite_files(files: Dict[str, str]) -> bool:
+    pkg = files.get("frontend/package.json", "")
+    if "vite" in pkg.lower():
+        return True
+    return "frontend/vite.config.js" in files or "frontend/vite.config.ts" in files
+
+
 def _ensure_node_compat(files: Dict[str, str]) -> None:
-    """Ensure frontend works with Node 20+ (delegates to shared CRA/craco patch)."""
+    """Ensure frontend works with Node 20+ (CRA/craco patch only — skip Vite)."""
+    if _is_vite_files(files):
+        files.pop("frontend/craco.config.js", None)
+        return
     from api.app_creator.cra_npm_patch import apply_cra_build_patch_in_files
     apply_cra_build_patch_in_files(files)
 
@@ -724,9 +734,11 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
     Ensure styles.css has all required classes. If generated CSS is too minimal,
     replace with the comprehensive default template (unless UI/UX spec drove custom CSS).
     """
-    css_path = "frontend/src/styles.css"
+    css_path = "frontend/src/styles/app.css"
     if css_path not in files:
-        files[css_path] = _DEFAULT_STYLES_CSS
+        css_path = "frontend/src/styles.css"
+    if css_path not in files:
+        files["frontend/src/styles/app.css"] = _DEFAULT_STYLES_CSS
         return
 
     css_content = files[css_path]
@@ -770,30 +782,19 @@ async def generate_code_from_plan(
     Yields:
         Dictionary events with file generation progress
     """
-    # Template fast-path only when user has NOT completed planning (no PRD/architecture)
-    try:
-        from app_builder.services.template_service import detect_template, get_template_code_files
-        from app_builder.services.code_post_process import should_use_template, post_process_generated_files
+    from app_builder.services.scaffold_service import (
+        extract_api_contract,
+        get_base_scaffold_files,
+        is_allowlisted_path,
+    )
 
-        use_template = should_use_template(requirement, prd, architecture)
-        template_name = detect_template(requirement) if use_template else None
-        if template_name:
-            template_files = get_template_code_files(template_name)
-            if template_files:
-                yield {"event": "generation_start", "message": f"Using template: {template_name}"}
-                from app_builder.agents.code_update_agent import tailor_template_to_requirement
+    base_files = get_base_scaffold_files()
+    contract = extract_api_contract(architecture)
+    contract_json = json.dumps(contract, indent=2)
 
-                context = f"{requirement}\n\nPRD:\n{prd[:4000]}" if prd else requirement
-                if uiux:
-                    context += f"\n\nUI/UX:\n{uiux[:2000]}"
-                tailored = await tailor_template_to_requirement(template_files, context, template_name)
-                post_process_generated_files(tailored, architecture, template_name, uiux=uiux)
-                for path, content in tailored.items():
-                    yield {"event": "file_generated", "file": path, "content": content}
-                yield {"event": "generation_complete", "data": tailored}
-                return
-    except ImportError:
-        pass
+    if not base_files:
+        yield {"event": "agent_error", "message": "Base Vite+FastAPI scaffold not found on disk"}
+        return
 
     # Extract key information from plan
     plan_summary = "\n".join([
@@ -831,127 +832,44 @@ async def generate_code_from_plan(
     # Format architecture summary for context
     arch_summary = json.dumps(architecture, indent=2)
     
-    # Construct the system prompt
-    system_prompt = f"""You are an expert full-stack developer. You must generate a complete, working application based on the requirements, architecture, and UI/UX design.
+    system_prompt = f"""You are an expert full-stack developer customizing a **frozen Vite + React + FastAPI base scaffold**.
 
-**UI/UX DESIGN IS THE PRIMARY DRIVER – CODE MUST FOLLOW THE UI/UX SPECIFICATION:**
-- All layouts, colors, typography, and component styling MUST be derived from the UI/UX Design Specification below.
-- If a UI/UX spec is provided: extract Primary, Secondary, Background, Text colors and apply them in `src/styles.css` using CSS variables.
-- Build professional interfaces: generous whitespace, subtle shadows, clean typography (Inter font), hover states.
+**DO NOT GENERATE** these frozen files (already provided): package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt.
 
-**PRODUCTION READY CODE – GENERATE HIGH-QUALITY APPLICATIONS:**
-1. **Visual Excellence**:
-   - Use Tailwind CSS for ALL styling.
-   - Font: Inter (add Google Fonts link in index.html).
-   - Whitespace: padding 1-2rem, gap 0.75rem. Avoid cramped UIs.
-2. **Interactive**: Add :hover states in styles.css. Use transition for smooth interactions.
-3. **No Placeholders**: Write the FULL code. No `# implementation here`.
-4. **Design Fidelity**: Follow UI/UX colors and fonts in styles.css.
+**ONLY GENERATE** these files (use FILE: path format):
+- frontend/src/App.jsx — full UI implementing PRD features
+- frontend/src/styles/app.css — complete styles from UI/UX (CSS variables in :root)
+- backend/models.py — SQLAlchemy models for architecture tables
+- backend/schemas.py — Pydantic v2 schemas (model_config = ConfigDict(from_attributes=True))
+- backend/routes.py — FastAPI router with CRUD for the entity
 
-**STRICT FILE GENERATION RULES:**
-5. **Dependencies**: Minimal. React: `react`, `react-dom`, `react-scripts`. Do NOT add tailwindcss/postcss to package.json.
-6. **package.json scripts**: MUST use `NODE_OPTIONS=--openssl-legacy-provider` for Node 20+ compatibility:
-   "start": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start"
-7. **Styling**: Use `frontend/src/styles.css` with CSS variables (:root) for colors from UI/UX. Optional: Tailwind Play CDN in index.html only — do NOT use @tailwind in CSS files.
-8. **frontend/src/index.js**: MUST import `./styles.css` before App.
-9. **Backend**: Use absolute imports. SQLite + SQLAlchemy. MUST add CORS: `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])` so frontend can call API from any origin.
+**API CONTRACT (must match exactly):**
+{contract_json}
 
-**UI/UX Design Specification:**
-{uiux if uiux else "Standard modern UI/UX design (CLEAN, MODERN, USER-FRIENDLY)."}
+**MVP SCOPE (implement in this pass only):**
+- Single-screen CRUD for the primary entity (`{contract.get("table_name", "items")}`)
+- Task list: add, toggle complete, delete, filter tabs (all/active/completed)
+- Skip for now: auth, sharing, offline sync, drag-and-drop, import/export, reminders
 
-{f'''**PREMIUM TODO APP INSTRUCTIONS**:
-- This is a TODO/TASK app. USE the premium CSS classes: .todo-card, .todo-item, .todo-checkbox, .todo-text, .todo-badge.
-- Layout: Header with title, Input area at top inside a .todo-card, Filter tabs (All, Active, Completed), List of .todo-item below.
-- Interactions: Checkbox click toggles .checked class, .todo-text gets .completed class. Show priority with .todo-badge-high/medium/low.
-''' if _detect_todo_app(requirement) else ""}
+**UI/UX DESIGN (use plain CSS — translate colors/spacing to CSS variables in :root):**
+{uiux[:4000] if uiux else "Clean modern UI with Inter font, generous spacing, subtle shadows."}
 
-**CRITICAL STYLE INSTRUCTIONS:**
-1. **Tailwind CSS MANDATORY**:
-   - You MUST generate `tailwind.config.js` and `postcss.config.js`.
-   - In `frontend/src/index.css`, include:
-     @tailwind base;
-     @tailwind components;
-     @tailwind utilities;
-   - Add Inter font: <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" /> in index.html.
-   - **REQUIRED CSS classes** (all must be present): .app, .app-container, .app-title, .app-subtitle, .btn, .btn-primary, .input, .form-row, .list, .list-item
-   - Each class MUST have: proper padding/margins, borders, border-radius, hover states with transitions, focus states for inputs
-   - Minimum 100 lines of CSS - use comprehensive styling, never generate minimal CSS
-   - Use CSS classes in JSX with className.
+**RULES:**
+1. Import API client: `import {{ apiFetch }} from './api/client.js';`
+2. Use apiFetch for ALL backend calls: `apiFetch('{contract.get("api_prefix", "/items")}')` etc.
+3. localStorage fallback: load on mount, save on change, try API in background with try/catch.
+4. Array safety: `(items || []).map(...)`, initialize with useState([]).
+5. styles/app.css: minimum 80 lines, CSS variables for UI/UX colors, include .app, .card, .btn, .input, .list, .list-item, .filters.
+6. App.jsx MUST be a complete working UI — never a stub or placeholder.
+7. routes.py, models.py, schemas.py MUST be complete — never empty files.
+8. routes.py: APIRouter prefix must be `{contract.get("api_prefix", "/items")}`.
+9. Use plain CSS only (no Tailwind, no extra npm packages).
+10. Pydantic v2, SQLite, SQLAlchemy. No external DB.
 
-2. **UI/UX COMPLIANCE**:
-   - Extract Primary, Secondary, Background colors from UI/UX spec and put in :root in styles.css.
-   - Layout: If UI/UX says "Sidebar + Top Nav" -> build layout components. Use flexbox/grid in styles.css.
-
-3. **ROBUSTNESS**:
-   - Ensure the app is "npm install" ready. All deps used in code must be in `package.json`.
-
-4. **FRONTEND MUST WORK END-TO-END EVEN IF BACKEND IS DOWN — USE LOCALSTORAGE**:
-   - Frontend MUST be a FULLY FUNCTIONAL app even when backend never starts. Use localStorage as the data layer.
-   - **On component mount**: Load data from localStorage FIRST (`JSON.parse(localStorage.getItem('appName_items')) || []`), THEN try API fetch.
-   - **On every state change (add/edit/delete)**: Save to localStorage immediately: `localStorage.setItem('appName_items', JSON.stringify(updatedItems))`.
-   - **API calls are OPTIONAL enhancements**: Wrap ALL fetch() calls in try/catch. On success, sync localStorage. On failure, silently continue with localStorage data.
-   - **CRUD operations must work 100% with localStorage alone**:
-     * CREATE: Push new item (with `id: Date.now()`) to state + localStorage. Try API in background.
-     * READ: Load from localStorage. Try API, merge if available.
-     * UPDATE: Update state + localStorage. Try API in background.
-     * DELETE: Remove from state + localStorage. Try API in background.
-   - **Pattern to use in EVERY component that manages data**:
-     Initialize state from localStorage: const [items, setItems] = useState(() => JSON.parse(localStorage.getItem(STORAGE_KEY)) || []);
-     Sync to localStorage on change: useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items]);
-     Optional API fetch on mount: useEffect(() => fetch(url).then(r => r.json()).then(d => Array.isArray(d) && setItems(d)).catch(() => {{}}), []);
-   - API base URL: Use dynamic URL for local + deployment: `const backendUrl = (process.env.REACT_APP_BACKEND_URL || process.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? (window.__BACKEND_URL__ || window.location.protocol + '//' + window.location.hostname + ':5001') : 'http://localhost:5001')).trim();`
-   - NEVER leave backendUrl undefined. Guard API calls: if (!backendUrl) return;
-
-5. **FRONTEND ARRAY SAFETY - PREVENT "X.map is not a function"**:
-   - ALWAYS use safe patterns for .map(): use (items || []).map(...) or items?.map(...) - NEVER bare variable.map().
-   - Initialize list state with useState([]) - never useState() or useState(undefined).
-   - When setting from API: setItems(Array.isArray(data) ? data : []). Never setItems(data) directly.
-   - In JSX: use {{(todos || []).map(...)}} or {{items?.map(...) ?? null}} - add fallback for every .map() on arrays/objects.
-
-
-**CRITICAL - APP MUST RUN END-TO-END WITH ZERO MANUAL FIXES:**
-- Use SQLite + SQLAlchemy. No external database. DATABASE_URL defaults to sqlite:///./app.db
-- **Backend**: SQLAlchemy engine, SessionLocal, Base. models.Base.metadata.create_all() on startup.
-- **Pydantic v2**: model_config = ConfigDict(from_attributes=True), .model_dump()
-- **Backend structure**:
-  - `backend/models.py`: SQLAlchemy model classes (Column, Integer, String, etc).
-  - `backend/schemas.py`: Pydantic BaseModel classes.
-  - `backend/database.py`: create_engine, SessionLocal, Base, get_db() generator.
-  - `backend/main.py`: FastAPI app, Depends(get_db), create_all on startup.
-- requirements.txt: fastapi, uvicorn, sqlalchemy, pydantic. No version numbers.
-
-**Target Architecture:**
-- Backend Framework: {backend_framework}
-- Frontend Framework: {frontend_framework}
-- Database: SQLite (SQLAlchemy) – runs out of the box.
-
-**Expected Backend Files:**
-{json.dumps(backend_files, indent=2)}
-
-**Expected Frontend Files:**
-{json.dumps(frontend_files, indent=2)}
-
-**Output Format:**
-- Use the `FILE: <path>` format for every file.
-- Followed by the code block.
-
-**Example:**
-FILE: backend/main.py
-```python
-from fastapi import FastAPI
-...
-```
-
-**Architecture Context:**
+**Architecture:**
 {arch_summary}
 
-**Dependencies:**
-- **backend/requirements.txt**: fastapi, uvicorn, sqlalchemy, pydantic. No version numbers.
-- **backend/database.py**: SQLAlchemy create_engine, SessionLocal, Base. SQLite by default.
-- **backend/models.py**: SQLAlchemy declarative models with Column, Integer, String, etc.
-- **Frontend**: Minimal deps only: react, react-dom, react-scripts. Node 20+. Add "engines": {{"node": ">=20"}} to package.json. Use Tailwind CSS. Scripts MUST include NODE_OPTIONS=--openssl-legacy-provider.
-- **Frontend State**: Use ONLY React useState and useEffect for state management. Do NOT use Zustand, Redux, MobX, or any external state library. Keep all state in App.js or pass via props. Use localStorage for persistence.
-- In README.md: `pip install -r requirements.txt` and `npm install`.
+**Output:** FILE: <path> then code block for EACH allowlisted file only.
 """
 
     user_prompt = f"""Generate complete application code for this SPECIFIC requirement:
@@ -972,13 +890,13 @@ DATABASE TABLES TO IMPLEMENT:
 {json.dumps(tables, indent=2) if tables else 'Use entities from requirement'}
 
 IMPORTANT:
+- Generate COMPLETE, production-ready code for every file — no stubs, no placeholders, no empty files.
+- MVP only: primary entity CRUD screen (see system prompt). Do not implement auth/sharing/offline in this pass.
 - Generate code for the ACTUAL requirement.
-- STRICTLY follow the file paths in "project_structure" – generate only those files; do not add extra components or files.
-- If the architecture says "NestJS", generate "NestJS" code. If it says "FastAPI", generate "FastAPI" code.
 - Ensure all imports match the file structure.
-- Prefer a single App file with all UI when the requirement is simple; create separate components only when required.
+- Prefer a single App.jsx with all UI for MVP.
 
-Start generating strictly using the "FILE: <path>" format.
+Start generating strictly using the "FILE: <path>" format. Output ALL 5 files: App.jsx, app.css, models.py, schemas.py, routes.py.
 """
 
     messages = [
@@ -988,7 +906,7 @@ Start generating strictly using the "FILE: <path>" format.
     
     yield {
         "event": "generation_start",
-        "message": "Starting code generation based on PRD and plan..."
+        "message": "Customizing Vite + FastAPI base scaffold from PRD and UI/UX..."
     }
     
     # Stream the code generation
@@ -1119,12 +1037,19 @@ Start generating strictly using the "FILE: <path>" format.
             "message": f"Generated {file_path_to_yield}"
         }
 
-    from app_builder.services.code_post_process import post_process_generated_files
+    from app_builder.services.code_post_process import post_process_generated_files, ensure_valid_codegen_output
 
-    post_process_generated_files(files_generated, architecture, uiux=uiux)
+    files_generated = post_process_generated_files(files_generated, architecture, uiux=uiux)
+    files_generated, validation_errors = ensure_valid_codegen_output(files_generated, architecture, uiux=uiux)
+    if validation_errors:
+        yield {
+            "event": "agent_error",
+            "message": f"Codegen validation failed: {'; '.join(validation_errors[:5])}",
+        }
+        return
 
     yield {
         "event": "generation_complete",
         "data": files_generated,
-        "message": f"Generated {len(files_generated)} files"
+        "message": f"Generated {len(files_generated)} files (Vite + FastAPI base)"
     }

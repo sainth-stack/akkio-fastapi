@@ -559,6 +559,43 @@ class AppBuilderStore(PostgresPool):
                 row = cursor.fetchone()
                 return self._deployment_row(dict(row)) if row else None
 
+    def upsert_local_deployment(
+        self,
+        *,
+        app_id=None,
+        project_name: str,
+        frontend_url: str,
+        backend_url: str | None = None,
+        deploy_log: str | None = None,
+    ) -> dict:
+        """Create or update a RUNNING deployment for local preview after Run App succeeds."""
+        existing = None
+        if app_id is not None:
+            existing = self.get_deployment_by_app_id(app_id)
+        if not existing:
+            existing = self.get_deployment_by_project_name(project_name)
+
+        log_line = deploy_log or "Registered local preview after successful build"
+        if existing:
+            self.update_deployment(
+                existing["id"],
+                frontend_url=frontend_url,
+                backend_url=backend_url,
+                deployment_status="RUNNING",
+                error_message=None,
+                deploy_log=log_line,
+            )
+            return self.get_deployment_by_id(existing["id"]) or existing
+
+        return self.create_deployment(
+            app_id=app_id,
+            project_name=project_name,
+            frontend_url=frontend_url,
+            backend_url=backend_url,
+            deployment_status="RUNNING",
+            deploy_log=log_line,
+        )
+
     def get_deployment_by_id(self, deployment_id) -> dict | None:
         self.init_schema()
         try:

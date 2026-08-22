@@ -159,16 +159,26 @@ def patch_package_json_for_cra_ajv(frontend_dir: str) -> bool:
     return apply_cra_build_patch_on_disk(frontend_dir)
 
 
+def _is_vite_package(pkg: Dict[str, Any]) -> bool:
+    deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    scripts = pkg.get("scripts") or {}
+    return "vite" in deps or "vite" in str(scripts).lower()
+
+
 def apply_cra_build_patch_in_files(files: Dict[str, str]) -> None:
-    """Patch in-memory generated files before writing to disk."""
+    """Patch in-memory generated files before writing to disk. Skips Vite projects."""
     key = "frontend/package.json"
-    if key in files:
-        try:
-            pkg = json.loads(files[key])
-            if apply_cra_build_patch_to_package(pkg):
-                files[key] = json.dumps(pkg, indent=2)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    if key not in files:
+        return
+    try:
+        pkg = json.loads(files[key])
+    except (json.JSONDecodeError, TypeError):
+        return
+    if _is_vite_package(pkg) or not _is_cra_package(pkg):
+        files.pop("frontend/craco.config.js", None)
+        return
+    if apply_cra_build_patch_to_package(pkg):
+        files[key] = json.dumps(pkg, indent=2)
     files["frontend/craco.config.js"] = CRACO_CONFIG_JS
     ensure_cra_build_env_file(files)
 

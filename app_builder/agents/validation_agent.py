@@ -342,8 +342,12 @@ def validate_and_fix_code(
 
     try:
         from api.app_creator.cra_npm_patch import ensure_cra_build_env_file, patch_package_json_in_files
-        patch_package_json_in_files(files)
-        ensure_cra_build_env_file(files)
+        from app_builder.services.code_post_process import _is_vite_project
+        if not _is_vite_project(files):
+            patch_package_json_in_files(files)
+            ensure_cra_build_env_file(files)
+        else:
+            files.pop("frontend/craco.config.js", None)
     except Exception as exc:
         logger.warning("[validation] CRA npm patch skipped: %s", exc)
 

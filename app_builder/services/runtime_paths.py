@@ -14,15 +14,26 @@ def get_projects_dir() -> str:
     return os.path.join(get_runtime_root(), "projects")
 
 
-def resolve_project_root(project_name: str) -> str:
+def _legacy_project_bases() -> list:
     _pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    bases = [
-        os.path.join(_pkg, "runtime", "projects"),  # legacy in-repo (pre-~/.akkio default)
+    return [
+        os.path.join(_pkg, "runtime", "projects"),
         os.path.join(_pkg, ".runtime", "projects"),
-        get_projects_dir(),
     ]
-    for base in bases:
+
+
+def resolve_project_root(project_name: str) -> str:
+    """Prefer ~/.akkio runtime; fall back to legacy in-repo paths for reads."""
+    preferred = os.path.join(get_projects_dir(), project_name)
+    if os.path.exists(preferred):
+        return preferred
+    for base in _legacy_project_bases():
         path = os.path.join(base, project_name)
         if os.path.exists(path):
             return path
+    return preferred
+
+
+def project_write_root(project_name: str) -> str:
+    """Always write new/updated generated files under the preferred runtime dir."""
     return os.path.join(get_projects_dir(), project_name)

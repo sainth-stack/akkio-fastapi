@@ -162,6 +162,8 @@ def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
     live_url = deployment.get("frontend_url")
     if app and app.get("live_url"):
         live_url = app.get("live_url")
+    elif app and app.get("preview_url") and not live_url:
+        live_url = app.get("preview_url")
     return {
         "deployment_id": deployment["id"],
         "app_id": deployment.get("app_id"),
@@ -169,6 +171,7 @@ def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
         "frontend_url": deployment.get("frontend_url"),
         "backend_url": deployment.get("backend_url"),
         "live_url": live_url,
+        "preview_url": app.get("preview_url") if app else deployment.get("frontend_url"),
         "frontend_port": deployment.get("frontend_port"),
         "backend_port": deployment.get("backend_port"),
         "deployment_status": deployment["deployment_status"],
@@ -177,7 +180,40 @@ def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
         "deployed_at": deployment.get("deployed_at"),
         "updated_at": deployment.get("updated_at"),
         "build_status": app.get("build_status") if app else None,
+        "mode": deployment.get("mode", "deployed"),
     }
+
+
+def register_local_preview(
+    *,
+    app_id,
+    project_name: str,
+    frontend_url: str,
+    backend_url: str | None = None,
+    user_email: str | None = None,
+    user_id: int | None = None,
+) -> dict | None:
+    """After Run App succeeds, register preview URL so Deploy tab shows Live."""
+    try:
+        deployment = db.upsert_local_deployment(
+            app_id=app_id,
+            project_name=project_name,
+            frontend_url=frontend_url,
+            backend_url=backend_url,
+            deploy_log="Local preview registered after Run App (BUILD_SUCCESS)",
+        )
+        if app_id and user_email:
+            db.update_app_builder_app(
+                app_id=app_id,
+                user_email=user_email,
+                user_id=user_id,
+                preview_url=frontend_url,
+                live_url=frontend_url,
+            )
+        return deployment
+    except Exception as exc:
+        print(f"[deployment] register_local_preview failed: {exc}")
+        return None
 
 
 @router.post("/deploy")
@@ -257,12 +293,31 @@ async def get_deployment_status(
             raise HTTPException(status_code=400, detail="Either app_id or project_name is required")
 
         if not deployment:
+            build_status = app.get("build_status") if app else None
+            preview_url = app.get("preview_url") if app else None
+            if build_status == "BUILD_SUCCESS" and preview_url:
+                return {
+                    "app_id": app_id,
+                    "project_name": project_name,
+                    "deployment_status": "LOCAL_PREVIEW",
+                    "message": "App is running locally. Use the preview URL below or click Deploy to register.",
+                    "build_status": build_status,
+                    "preview_url": preview_url,
+                    "frontend_url": preview_url,
+                    "live_url": preview_url,
+                    "backend_url": f"{preview_url.split('/app/')[0]}/api/apps/{project_name}" if preview_url and project_name else None,
+                    "mode": "local",
+                }
             return {
                 "app_id": app_id,
                 "project_name": project_name,
                 "deployment_status": "not_deployed",
-                "message": "No deployment found",
-                "build_status": app.get("build_status") if app else None,
+                "message": (
+                    "No deployment yet. Run the app in the Build tab first, then deploy."
+                    if build_status != "BUILD_SUCCESS"
+                    else "Build succeeded — click Deploy to register your live URL."
+                ),
+                "build_status": build_status,
             }
 
         return _deployment_payload(deployment, app)

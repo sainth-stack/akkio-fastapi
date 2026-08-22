@@ -103,16 +103,20 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     _runtime_root = os.path.abspath(get_runtime_root())
     os.makedirs(_runtime_root, exist_ok=True)
-    _reload_excludes = [
-        "app_builder/runtime",
-        "app_builder/runtime/*",
-        "app_builder/.runtime",
-        "app_builder/.runtime/*",
+    _reload_dirs = [
+        os.path.join(os.path.dirname(__file__), "api"),
+        os.path.join(os.path.dirname(__file__), "db"),
+        os.path.join(os.path.dirname(__file__), "app_builder", "agents"),
+        os.path.join(os.path.dirname(__file__), "app_builder", "services"),
+        os.path.join(os.path.dirname(__file__), "app_builder", "graph"),
+        os.path.join(os.path.dirname(__file__), "app_builder", "schemas"),
     ]
+    _reload_dirs = [d for d in _reload_dirs if os.path.isdir(d)]
     uvicorn.run(
         "main:app",
         host=host,
         port=port,
         reload=True,
-        reload_excludes=_reload_excludes,
+        reload_dirs=_reload_dirs,
+        reload_includes=["*.py"],
     )

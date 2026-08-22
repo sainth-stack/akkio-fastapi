@@ -13,7 +13,8 @@ from app_builder.agents.validation_agent import validate_and_fix_code
 from app_builder.services.file_writer import file_writer
 from app_builder.services.project_config import build_project_config, persist_project_config
 from app_builder.services.db_init import ensure_project_db_initialized
-from app_builder.services.code_post_process import should_use_template, post_process_generated_files
+from app_builder.services.code_post_process import should_use_template, post_process_generated_files, ensure_valid_codegen_output
+from app_builder.services.scaffold_service import normalize_architecture_for_codegen
 from app_builder.services.template_service import detect_template
 from app_builder.schemas.files import GeneratedFiles
 from db.app_builder import get_app_builder_db
@@ -49,7 +50,7 @@ def _persist_project_runtime(project_name: str, files: dict, architecture: dict,
 
     template_name = None
     if should_use_template(requirement, prd, architecture):
-        template_name = detect_template(requirement or "")
+        template_name = "base-vite-fastapi"
     tables = (architecture or {}).get("database_schema", {}).get("tables") or []
     entities = []
     for t in tables:
@@ -153,6 +154,10 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                         plan = app_from_db.get("plan", [])
                     if not architecture and app_from_db.get("architecture"):
                         architecture = app_from_db.get("architecture") or {}
+                    architecture = normalize_architecture_for_codegen(
+                        architecture or {},
+                        api_contract=app_from_db.get("api_contract"),
+                    )
             except Exception as e:
                 print(f"[codegen_api] DB fallback for PRD/UIUX: {e}", file=sys.stderr)
 
@@ -162,6 +167,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "message": "Missing requirement, architecture, or project_name"
             }))
             return
+
+        architecture = normalize_architecture_for_codegen(architecture)
 
         if app_id and user_email:
             db.update_app_builder_app(
@@ -229,11 +236,14 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             step="validation_agent",
         )
 
-        template_name = detect_template(requirement) if should_use_template(requirement, prd, architecture) else None
+        template_name = "base-vite-fastapi"
 
         try:
             files = validate_and_fix_code(files, architecture, template_name=template_name)
             files = post_process_generated_files(files, architecture, template_name=template_name, uiux=uiux)
+            files, validation_errors = ensure_valid_codegen_output(files, architecture, uiux=uiux)
+            if validation_errors:
+                raise ValueError("; ".join(validation_errors[:5]))
             file_writer(project_name, GeneratedFiles(files=files))
             _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
             await websocket.send_text(json.dumps({
@@ -337,6 +347,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "message": "Build verify skipped (CODEGEN_VERIFY_BUILD=false).",
             }))
 
+        store_err = None
         try:
             db.create_or_update_codegen_session(
                 session_id=session_id,
@@ -348,8 +359,12 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 generated_code_json=files,
                 app_id=app_id,
             )
+        except Exception as exc:
+            store_err = str(exc)
+            print(f"[codegen_api] codegen session store failed: {store_err}", file=sys.stderr)
 
-            if app_id and user_email:
+        if app_id and user_email:
+            try:
                 db.update_app_builder_app(
                     app_id=app_id,
                     user_email=user_email,
@@ -357,16 +372,22 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     generated_code_json=files,
                     pipeline_status="CODEGEN_COMPLETE",
                     pipeline_error=None,
+                    build_status="BUILD_SUCCESS",
                 )
-            touch_job(
-                session_id,
-                app_id=app_id,
-                job_type="codegen",
-                status="complete",
-                step="validation_agent",
-                finished=True,
-            )
-        except Exception as store_err:
+            except Exception as exc:
+                store_err = store_err or str(exc)
+                print(f"[codegen_api] app update failed: {exc}", file=sys.stderr)
+
+        touch_job(
+            session_id,
+            app_id=app_id,
+            job_type="codegen",
+            status="complete",
+            step="codegen_complete",
+            finished=True,
+        )
+
+        if store_err:
             await websocket.send_text(json.dumps({
                 "event": "warning",
                 "message": f"Code generation completed but DB store failed: {store_err}"

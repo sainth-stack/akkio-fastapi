@@ -217,6 +217,16 @@ def _build_frontend(
     if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
         return None, "No frontend found"
 
+    from api.app_creator.vite_build import is_vite_frontend, prepare_vite_frontend_dir, run_vite_build
+
+    if is_vite_frontend(frontend_dir):
+        logger.info("[build] Vite frontend — npm install + vite build")
+        prepare_vite_frontend_dir(frontend_dir)
+        static_dir, err, _log = run_vite_build(frontend_dir, project_name, install=install)
+        if err:
+            return None, err
+        return static_dir, None
+
     patched = prepare_frontend_dir_on_disk(frontend_dir)
     if patched:
         logger.info("[build] Applied CRA/craco patch — clean npm install required")
@@ -636,7 +646,20 @@ async def run_project(
                     build_error=None,
                     build_log="\n".join(build_log_lines),
                     preview_url=frontend_url,
+                    live_url=frontend_url,
                 )
+                try:
+                    from api.app_creator.deployment_api import register_local_preview
+                    register_local_preview(
+                        app_id=app_id,
+                        project_name=project_name,
+                        frontend_url=frontend_url,
+                        backend_url=backend_url,
+                        user_email=user_email,
+                        user_id=uid,
+                    )
+                except Exception as reg_exc:
+                    logger.warning("[run] local preview registration failed: %s", reg_exc)
 
             logger.info("[run] DONE | project=%s | frontend=%s | backend=%s", project_name, frontend_url, backend_url)
             yield json.dumps({
