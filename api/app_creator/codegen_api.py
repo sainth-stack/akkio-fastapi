@@ -240,8 +240,16 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         try:
             files = validate_and_fix_code(files, architecture, template_name=template_name)
-            files = post_process_generated_files(files, architecture, template_name=template_name, uiux=uiux)
-            files, validation_errors = ensure_valid_codegen_output(files, architecture, uiux=uiux)
+            from app_builder.services.app_spec_service import build_app_spec
+            app_spec = build_app_spec(requirement, architecture, prd, uiux)
+            files = post_process_generated_files(
+                files, architecture, template_name=template_name, uiux=uiux,
+                requirement=requirement, prd=prd, app_spec=app_spec,
+            )
+            files, validation_errors = ensure_valid_codegen_output(
+                files, architecture, uiux=uiux,
+                requirement=requirement, prd=prd, app_spec=app_spec,
+            )
             if validation_errors:
                 raise ValueError("; ".join(validation_errors[:5]))
             file_writer(project_name, GeneratedFiles(files=files))

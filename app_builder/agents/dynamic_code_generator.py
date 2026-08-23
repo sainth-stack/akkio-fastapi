@@ -756,8 +756,38 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
     has_todo_markup = any(
         "todo-" in content for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx"))
     )
-    if has_todo_markup and ".todo-card" not in css_content:
+    if has_todo_markup and ".todo-card" not in css_content and _detect_todo_app(""):
         files[css_path] += _TODO_APP_PREMIUM_CSS
+
+
+def _parse_file_blocks(full_response: str) -> Dict[str, str]:
+    """Parse FILE: path blocks from LLM response."""
+    files: Dict[str, str] = {}
+    all_lines = full_response.split("\n")
+    markers: list[tuple[int, str]] = []
+    for i, line in enumerate(all_lines):
+        if line.strip().startswith("FILE:"):
+            markers.append((i, line.replace("FILE:", "").strip()))
+
+    for idx, (start_line, fpath) in enumerate(markers):
+        if fpath.endswith("/") or fpath.endswith("\\"):
+            continue
+        end_line = markers[idx + 1][0] if idx + 1 < len(markers) else len(all_lines)
+        file_lines = all_lines[start_line + 1 : end_line]
+        file_content = "\n".join(file_lines).strip()
+        if "```" in file_content:
+            parts = file_content.split("```")
+            if len(parts) >= 2:
+                code = parts[1]
+                if code.strip() and "\n" in code:
+                    code = "\n".join(code.split("\n")[1:])
+                file_content = code.strip()
+            else:
+                file_content = file_content.replace("```", "").strip()
+        file_content = file_content.replace("```", "").strip()
+        if file_content:
+            files[fpath] = file_content
+    return files
 
 
 async def generate_code_from_plan(
@@ -768,279 +798,106 @@ async def generate_code_from_plan(
     llm,
     uiux: str = ""
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """
-    Generates actual code based on PRD and implementation plan using LLM.
-    When a matching template exists in app_builder/templates, uses template code modules instead.
-    
-    Args:
-        requirement: Original user requirement
-        prd: Complete PRD document
-        plan: Implementation plan with steps
-        architecture: Architecture decisions
-        llm: Initialized LLM instance
-        
-    Yields:
-        Dictionary events with file generation progress
-    """
-    from app_builder.services.scaffold_service import (
-        extract_api_contract,
-        get_base_scaffold_files,
-        is_allowlisted_path,
-    )
+    """Generate domain code from App Spec into the generic Vite+FastAPI shell."""
+    import os
+    from app_builder.services.app_spec_service import build_app_spec, build_codegen_system_prompt
+    from app_builder.services.scaffold_service import get_base_scaffold_files
+    from app_builder.services.code_post_process import post_process_generated_files, ensure_valid_codegen_output
+    from langchain_core.messages import AIMessage
 
-    base_files = get_base_scaffold_files()
-    contract = extract_api_contract(architecture)
-    contract_json = json.dumps(contract, indent=2)
-
-    if not base_files:
-        yield {"event": "agent_error", "message": "Base Vite+FastAPI scaffold not found on disk"}
+    if not get_base_scaffold_files():
+        yield {"event": "agent_error", "message": "Generic base scaffold not found on disk"}
         return
 
-    # Extract key information from plan
+    app_spec = build_app_spec(requirement, architecture, prd, uiux)
+    app_kind = app_spec.get("app_kind", "custom")
+
     plan_summary = "\n".join([
         f"{i+1}. {step.get('title', step) if isinstance(step, dict) else step}"
-        for i, step in enumerate(plan[:20])  # Increased context
+        for i, step in enumerate(plan[:15])
     ])
-    
-    # Extract database schema
-    db_schema = architecture.get('database_schema', {})
-    tables = db_schema.get('tables', [])
-    
-    # Parse architecture details
-    project_structure = architecture.get("project_structure", {})
-    raw_backend_files = project_structure.get("backend", [])
-    raw_frontend_files = project_structure.get("frontend", [])
-    
-    # Ensure all files have the correct directory prefix
-    backend_files = []
-    for f in raw_backend_files:
-        if f.startswith("backend/"):
-            backend_files.append(f)
-        else:
-            backend_files.append(f"backend/{f}")
-            
-    frontend_files = []
-    for f in raw_frontend_files:
-        if f.startswith("frontend/"):
-            frontend_files.append(f)
-        else:
-            frontend_files.append(f"frontend/{f}")
-    
-    backend_framework = architecture.get('backend_structure', {}).get('framework', 'Unknown')
-    frontend_framework = architecture.get('frontend_structure', {}).get('framework', 'Unknown')
-    
-    # Format architecture summary for context
-    arch_summary = json.dumps(architecture, indent=2)
-    
-    system_prompt = f"""You are an expert full-stack developer customizing a **frozen Vite + React + FastAPI base scaffold**.
 
-**DO NOT GENERATE** these frozen files (already provided): package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt.
+    system_prompt = build_codegen_system_prompt(app_spec, uiux, architecture)
+    user_prompt = f"""Generate the complete application for:
 
-**ONLY GENERATE** these files (use FILE: path format):
-- frontend/src/App.jsx — full UI implementing PRD features
-- frontend/src/styles/app.css — complete styles from UI/UX (CSS variables in :root)
-- backend/models.py — SQLAlchemy models for architecture tables
-- backend/schemas.py — Pydantic v2 schemas (model_config = ConfigDict(from_attributes=True))
-- backend/routes.py — FastAPI router with CRUD for the entity
-
-**API CONTRACT (must match exactly):**
-{contract_json}
-
-**MVP SCOPE (implement in this pass only):**
-- Single-screen CRUD for the primary entity (`{contract.get("table_name", "items")}`)
-- Task list: add, toggle complete, delete, filter tabs (all/active/completed)
-- Skip for now: auth, sharing, offline sync, drag-and-drop, import/export, reminders
-
-**UI/UX DESIGN (use plain CSS — translate colors/spacing to CSS variables in :root):**
-{uiux[:4000] if uiux else "Clean modern UI with Inter font, generous spacing, subtle shadows."}
-
-**RULES:**
-1. Import API client: `import {{ apiFetch }} from './api/client.js';`
-2. Use apiFetch for ALL backend calls: `apiFetch('{contract.get("api_prefix", "/items")}')` etc.
-3. localStorage fallback: load on mount, save on change, try API in background with try/catch.
-4. Array safety: `(items || []).map(...)`, initialize with useState([]).
-5. styles/app.css: minimum 80 lines, CSS variables for UI/UX colors, include .app, .card, .btn, .input, .list, .list-item, .filters.
-6. App.jsx MUST be a complete working UI — never a stub or placeholder.
-7. routes.py, models.py, schemas.py MUST be complete — never empty files.
-8. routes.py: APIRouter prefix must be `{contract.get("api_prefix", "/items")}`.
-9. Use plain CSS only (no Tailwind, no extra npm packages).
-10. Pydantic v2, SQLite, SQLAlchemy. No external DB.
-
-**Architecture:**
-{arch_summary}
-
-**Output:** FILE: <path> then code block for EACH allowlisted file only.
-"""
-
-    user_prompt = f"""Generate complete application code for this SPECIFIC requirement:
-
-## REQUIREMENT:
+## REQUIREMENT
 {requirement}
 
-## PRD (Full):
-{prd if prd else "See requirement above"}
+## PRD
+{prd[:8000] if prd else requirement}
 
-## Implementation Steps:
+## PLAN
 {plan_summary}
 
-## Architecture & Database Schema:
-{arch_summary}
+## MVP TABLES
+{", ".join(app_spec.get("mvp_tables", []))}
 
-DATABASE TABLES TO IMPLEMENT:
-{json.dumps(tables, indent=2) if tables else 'Use entities from requirement'}
-
-IMPORTANT:
-- Generate COMPLETE, production-ready code for every file — no stubs, no placeholders, no empty files.
-- MVP only: primary entity CRUD screen (see system prompt). Do not implement auth/sharing/offline in this pass.
-- Generate code for the ACTUAL requirement.
-- Ensure all imports match the file structure.
-- Prefer a single App.jsx with all UI for MVP.
-
-Start generating strictly using the "FILE: <path>" format. Output ALL 5 files: App.jsx, app.css, models.py, schemas.py, routes.py.
+Output every allowlisted file using FILE: <path> format. No stubs. Match app_kind={app_kind}.
 """
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ]
-    
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    max_attempts = int(os.environ.get("CODEGEN_LLM_ATTEMPTS", "2"))
+
     yield {
         "event": "generation_start",
-        "message": "Customizing Vite + FastAPI base scaffold from PRD and UI/UX..."
+        "message": f"Generating {app_kind} app from App Spec (generic base + LLM)...",
     }
-    
-    # Stream the code generation
-    full_response = ""
-    file_starts = []  # List of (start_index, file_path)
-    files_yielded = 0
-    files_generated = {}  # Initialize to fix NameError
 
-    
-    chunk_count = 0
-    
-    async for chunk in llm.astream(messages):
-        if hasattr(chunk, 'content'):
-            content = chunk.content
-            if not content:
-                continue
-                
-            # append content
-            prev_len = len(full_response)
-            full_response += content
-            chunk_count += 1
-            
-            # Progress update removed to prevent continuous messaging
+    files_generated: Dict[str, str] = {}
+    validation_errors: list[str] = []
+    full_response_acc = ""
 
-            # Search for "FILE:" markers in the newly added content 
-            # (including a bit of overlap context to catch split markers)
-            search_start = max(0, prev_len - 10)
-            
-            # Simple check: Does the new content contain "FILE:"? 
-            # We scan the full_response from search_start to find new markers
-            import re
-            # Regex to find "FILE: <path>" at start of line or string
-            # We use a simple find loop for robustness
-            
-            lines = full_response[search_start:].split('\n')
-            
-            # This is slightly inefficient but safe: check if we found a new FILE: line
-            # We track known file starts to avoid duplicates
-            
-            # Better approach: Scan full_response for all markers, compare with known ones
-            # For performance, we can just scan the tail, but "FILE:" is rare enough.
-            
-            # Let's iterate lines in full text for simplicity and correctness over micro-optimization
-            all_lines = full_response.split('\n')
-            current_file_starts = []
-            
-            for i, line in enumerate(all_lines):
-                if line.strip().startswith("FILE:"):
-                    path = line.replace("FILE:", "").strip()
-                    current_file_starts.append((i, path))
-            
-            # Check if we have a NEW completed file
-            # A file is completed if we have a marker AFTER it
-            if len(current_file_starts) > files_yielded + 1:
-                # We have at least one completed file that hasn't been yielded
-                # The file at files_yielded is now complete because files_yielded+1 exists
-                
-                # Extract content for the file at 'files_yielded'
-                start_line_idx, file_path_to_yield = current_file_starts[files_yielded]
-                end_line_idx, _ = current_file_starts[files_yielded + 1]
-                
-                # Content is lines between start and end
-                file_lines = all_lines[start_line_idx+1 : end_line_idx]
-                file_content = "\n".join(file_lines).strip()
-                
-                # Clean up markdown code blocks
-                if "```" in file_content:
-                    parts = file_content.split("```")
-                    if len(parts) >= 2:
-                        code = parts[1]
-                        if code.strip() and "\n" in code: # typical ```python\n code...
-                             code = "\n".join(code.split("\n")[1:])
-                        file_content = code.strip()
-                    else:
-                        file_content = file_content.replace("```", "").strip()
-                
-                files_yielded += 1
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            yield {
+                "event": "agent_progress",
+                "message": f"Retrying codegen (attempt {attempt}/{max_attempts}) after validation errors...",
+            }
 
-                # Skip yielding directories
-                if file_path_to_yield.endswith("/") or file_path_to_yield.endswith("\\"):
-                    continue
+        acc = ""
+        async for chunk in llm.astream(messages):
+            if hasattr(chunk, "content") and chunk.content:
+                acc += chunk.content
+        full_response_acc = acc
+        files_generated = _parse_file_blocks(acc)
 
-                files_generated[file_path_to_yield] = file_content
-                yield {
-                    "event": "file_generated",
-                    "file": file_path_to_yield,
-                    "content": file_content,
-                    "message": f"Generated {file_path_to_yield}"
-                }
-                 
+        for path, content in files_generated.items():
+            yield {
+                "event": "file_generated",
+                "file": path,
+                "content": content,
+                "message": f"Generated {path}",
+            }
 
-    # Handled yielded files above loop. 
-    # Now verify remaining file (the last one)
-    all_lines = full_response.split('\n')
-    current_file_starts = []
-    for i, line in enumerate(all_lines):
-        if line.strip().startswith("FILE:"):
-            path = line.replace("FILE:", "").strip()
-            current_file_starts.append((i, path))
-            
-    if len(current_file_starts) > files_yielded:
-        # Yield the last file
-        start_line_idx, file_path_to_yield = current_file_starts[files_yielded]
-        # Content is distinct from start to end of string
-        file_lines = all_lines[start_line_idx+1:]
-        file_content = "\n".join(file_lines).strip()
-        
-        # Clean up markdown
-        if "```" in file_content:
-            parts = file_content.split("```")
-            if len(parts) >= 2:
-                code = parts[1]
-                if code.strip() and "\n" in code:
-                     code = "\n".join(code.split("\n")[1:])
-                file_content = code.strip()
-            # Handle case where closing ``` is missing (end of stream)
-            elif len(parts) == 1 and parts[0].strip():
-                 # Maybe header ``` is there but no footer
-                 pass 
-        
-        file_content = file_content.replace("```", "").strip() # fallback cleanup
-        
-        files_generated[file_path_to_yield] = file_content
-        yield {
-            "event": "file_generated",
-            "file": file_path_to_yield,
-            "content": file_content,
-            "message": f"Generated {file_path_to_yield}"
-        }
+        files_generated = post_process_generated_files(
+            files_generated,
+            architecture,
+            uiux=uiux,
+            requirement=requirement,
+            prd=prd,
+            app_spec=app_spec,
+        )
+        files_generated, validation_errors = ensure_valid_codegen_output(
+            files_generated,
+            architecture,
+            uiux=uiux,
+            requirement=requirement,
+            prd=prd,
+            app_spec=app_spec,
+        )
+        if not validation_errors:
+            break
 
-    from app_builder.services.code_post_process import post_process_generated_files, ensure_valid_codegen_output
+        if attempt < max_attempts:
+            fix_prompt = (
+                "Previous generation FAILED validation:\n"
+                + "\n".join(f"- {e}" for e in validation_errors[:8])
+                + f"\n\nRegenerate ALL allowlisted files. App kind is {app_kind}. "
+                "Do not return the generic shell."
+            )
+            messages.append(AIMessage(content=full_response_acc[:3000]))
+            messages.append(HumanMessage(content=fix_prompt))
 
-    files_generated = post_process_generated_files(files_generated, architecture, uiux=uiux)
-    files_generated, validation_errors = ensure_valid_codegen_output(files_generated, architecture, uiux=uiux)
     if validation_errors:
         yield {
             "event": "agent_error",
@@ -1051,5 +908,5 @@ Start generating strictly using the "FILE: <path>" format. Output ALL 5 files: A
     yield {
         "event": "generation_complete",
         "data": files_generated,
-        "message": f"Generated {len(files_generated)} files (Vite + FastAPI base)"
+        "message": f"Generated {len(files_generated)} files ({app_kind} app)",
     }

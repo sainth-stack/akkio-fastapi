@@ -1,8 +1,15 @@
-"""Tests for single base-vite-fastapi scaffold."""
+"""Tests for generic base-vite-fastapi scaffold and App Spec."""
 import os
 import subprocess
 import tempfile
 
+from app_builder.services.app_spec_service import (
+    build_app_spec,
+    build_codegen_system_prompt,
+    detect_app_kind,
+    singularize,
+    validate_against_app_spec,
+)
 from app_builder.services.scaffold_service import (
     BASE_TEMPLATE_NAME,
     detect_template,
@@ -10,84 +17,87 @@ from app_builder.services.scaffold_service import (
     get_template_code_files,
     load_template,
     merge_llm_into_base,
-    extract_api_contract,
-    validate_generated_contract,
 )
 from app_builder.services.code_post_process import post_process_generated_files, should_use_template
 
 
 def test_always_use_base_template():
-    assert should_use_template("todo", "prd text", {"tables": []}) is True
+    assert should_use_template("quiz", "prd text", {"tables": []}) is True
     assert detect_template("anything") == BASE_TEMPLATE_NAME
 
 
-def test_base_scaffold_has_vite_files():
+def test_generic_base_has_no_domain_crud():
     files = get_base_scaffold_files()
-    assert "frontend/vite.config.js" in files
-    assert "frontend/package.json" in files
-    assert "vite" in files["frontend/package.json"].lower()
-    assert "frontend/src/App.jsx" in files
-    assert "frontend/src/api/client.js" in files
-    assert len(files) >= 12
+    app = files["frontend/src/App.jsx"]
+    assert "apiFetch" not in app
+    assert "shell-notice" in app or "generic" in app.lower()
+    assert "completed" not in app or "filter" not in app
+    assert files["backend/routes.py"].strip().endswith("router = APIRouter()") or "APIRouter()" in files["backend/routes.py"]
+    assert "class Item" not in files.get("backend/models.py", "")
 
 
-def test_merge_preserves_frozen_files():
-    base = get_base_scaffold_files()
-    llm = {
-        "frontend/package.json": '{"name":"hacked"}',
-        "frontend/src/App.jsx": "export default function App(){return <div>Hi</div>}",
-    }
-    merged = merge_llm_into_base(base, llm)
-    assert "hacked" not in merged["frontend/package.json"]
-    # Stub App without apiFetch is rejected — base App.jsx kept
-    assert "apiFetch" in merged["frontend/src/App.jsx"]
+def test_detect_app_kind():
+    assert detect_app_kind("create a quiz app", "") == "quiz"
+    assert detect_app_kind("create todo list", "") == "crud"
+    assert detect_app_kind("build travel planner", "") == "crud"
 
 
-def test_merge_rejects_empty_backend():
-    base = get_base_scaffold_files()
-    llm = {
-        "backend/routes.py": "",
-        "backend/models.py": "   ",
-        "frontend/src/App.jsx": base["frontend/src/App.jsx"],
-    }
-    merged = merge_llm_into_base(base, llm)
-    assert merged["backend/routes.py"].strip()
-    assert "APIRouter" in merged["backend/routes.py"]
+def test_singularize():
+    assert singularize("quizzes") == "quiz"
+    assert singularize("tasks") == "task"
+    assert singularize("categories") == "category"
 
 
-def test_extract_api_contract_prefers_tasks():
+def test_app_spec_quiz():
     arch = {
         "database_schema": {
             "tables": [
                 {"name": "users", "columns": [{"name": "id"}]},
-                {"name": "tasks", "columns": [{"name": "id"}, {"name": "title"}]},
+                {"name": "quizzes", "columns": [{"name": "id"}, {"name": "title"}]},
+                {"name": "questions", "columns": [{"name": "id"}]},
+                {"name": "options", "columns": [{"name": "id"}]},
             ]
         }
     }
-    contract = extract_api_contract(arch)
-    assert contract["table_name"] == "tasks"
-    assert contract["api_prefix"] == "/tasks"
+    spec = build_app_spec("create mcq quiz app", arch)
+    assert spec["app_kind"] == "quiz"
+    assert spec["primary_table"] == "quizzes"
+    assert spec["api_prefix"] == "/quizzes"
+    assert "questions" in spec["mvp_tables"]
 
 
-def test_adapt_scaffold_to_tasks():
-    from app_builder.services.scaffold_service import adapt_scaffold_to_contract
+def test_merge_rejects_shell_app():
     base = get_base_scaffold_files()
-    contract = {"api_prefix": "/tasks", "table_name": "tasks", "entity": "task"}
-    adapted = adapt_scaffold_to_contract(base, contract)
-    assert "/tasks" in adapted["frontend/src/App.jsx"]
-    assert 'prefix="/tasks"' in adapted["backend/routes.py"] or '"/tasks"' in adapted["backend/routes.py"]
+    llm = {"frontend/src/App.jsx": base["frontend/src/App.jsx"]}
+    merged = merge_llm_into_base(base, llm, app_spec=build_app_spec("quiz", {}))
+    assert "shell-notice" in merged["frontend/src/App.jsx"]
 
 
-def test_post_process_includes_full_scaffold():
-    llm_only = {"frontend/src/App.jsx": "export default function App(){return <div>x</div>}"}
-    out = post_process_generated_files(llm_only, architecture={}, uiux="")
+def test_post_process_includes_scaffold():
+    out = post_process_generated_files({}, architecture={}, requirement="quiz app")
     assert "frontend/vite.config.js" in out
     assert "backend/main.py" in out
 
 
-def test_vite_build_from_scaffold():
+def test_validate_rejects_generic_shell():
     files = get_base_scaffold_files()
-    processed = post_process_generated_files(dict(files), architecture={}, uiux="")
+    spec = build_app_spec("create quiz app", {
+        "database_schema": {"tables": [{"name": "quizzes", "columns": []}]}
+    })
+    errors = validate_against_app_spec(files, spec)
+    assert any("shell" in e.lower() or "quiz" in e.lower() for e in errors)
+
+
+def test_codegen_prompt_mentions_quiz():
+    spec = build_app_spec("quiz app", {"database_schema": {"tables": [{"name": "quizzes"}]}})
+    prompt = build_codegen_system_prompt(spec, "", {})
+    assert "quiz" in prompt.lower()
+    assert "task list" not in prompt.lower()
+
+
+def test_vite_build_from_generic_scaffold():
+    files = get_base_scaffold_files()
+    processed = post_process_generated_files(dict(files), architecture={}, requirement="test")
     with tempfile.TemporaryDirectory() as tmp:
         for rel, content in processed.items():
             full = os.path.join(tmp, rel)
@@ -105,4 +115,4 @@ def test_vite_build_from_scaffold():
 
 def test_template_code_files_alias():
     assert get_template_code_files() is not None
-    assert load_template()["name"] == "base-vite-fastapi"
+    assert load_template()["kind"] == "generic"

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, Optional
+import logging
+from typing import Any, Dict, Optional, Tuple
 
 from app_builder.agents import dynamic_code_generator as dcg
+from app_builder.services.app_spec_service import (
+    build_app_spec,
+    get_codegen_allowlist,
+    validate_against_app_spec,
+)
 from app_builder.services.scaffold_service import (
-    adapt_scaffold_to_contract,
-    extract_api_contract,
     get_base_scaffold_files,
     is_frozen_path,
     merge_llm_into_base,
-    validate_generated_contract,
 )
+
+logger = logging.getLogger("app_builder")
 
 
 def _is_vite_project(files: Dict[str, str]) -> bool:
@@ -28,15 +32,16 @@ def post_process_generated_files(
     architecture: Dict[str, Any] | None = None,
     template_name: Optional[str] = None,
     uiux: str = "",
+    requirement: str = "",
+    prd: str = "",
+    app_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    """Apply normalization/fixups. Vite projects skip CRA conversion."""
-    if not files:
-        return files
-
+    """Apply normalization/fixups. Merges LLM output into generic base shell."""
+    spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
+    allowlist = get_codegen_allowlist(spec)
     base = get_base_scaffold_files()
-    files = merge_llm_into_base(base, files)
-    contract = extract_api_contract(architecture)
-    files = adapt_scaffold_to_contract(files, contract)
+    files = dict(files or {})
+    files = merge_llm_into_base(base, files, allowlist=allowlist, app_spec=spec)
 
     if not _is_vite_project(files):
         dcg._normalize_frontend_package_json_to_cra(files)
@@ -57,13 +62,10 @@ def post_process_generated_files(
     dcg._validate_and_fix_backend_imports(files)
     dcg._ensure_complete_styles_css(files, uiux=uiux)
 
-    # Strip LLM overrides of frozen scaffold files
     for path in list(files.keys()):
-        if is_frozen_path(path):
-            if path in base:
-                files[path] = base[path]
+        if is_frozen_path(path) and path in base:
+            files[path] = base[path]
 
-    # Remove CRA-only artifacts from Vite projects
     if _is_vite_project(files):
         for junk in (
             "frontend/craco.config.js",
@@ -76,38 +78,34 @@ def post_process_generated_files(
 
 
 def should_use_template(requirement: str, prd: str, architecture: dict | None) -> bool:
-    """Always use the single Vite+FastAPI base scaffold."""
     return True
 
 
 def validate_codegen_output(
     files: Dict[str, str],
     architecture: Dict[str, Any] | None = None,
+    requirement: str = "",
+    prd: str = "",
+    app_spec: Optional[Dict[str, Any]] = None,
 ) -> list[str]:
-    contract = extract_api_contract(architecture)
-    return validate_generated_contract(files, contract)
+    spec = app_spec or build_app_spec(requirement, architecture, prd)
+    return validate_against_app_spec(files, spec)
 
 
 def ensure_valid_codegen_output(
     files: Dict[str, str],
     architecture: Dict[str, Any] | None = None,
     uiux: str = "",
-) -> tuple[Dict[str, str], list[str]]:
+    requirement: str = "",
+    prd: str = "",
+    app_spec: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], list[str]]:
     """
-    Validate generated files. On failure, fall back to base scaffold adapted to contract.
-    Returns (files, errors) — errors empty when output is valid.
+    Validate generated files against App Spec.
+    No silent fallback to wrong app type — returns errors for retry/fail.
     """
-    errors = validate_codegen_output(files, architecture)
-    if not errors:
-        return files, []
-
-    contract = extract_api_contract(architecture)
-    logger = __import__("logging").getLogger("app_builder")
-    logger.warning("[codegen] validation failed (%s) — using base scaffold fallback", "; ".join(errors[:3]))
-
-    fallback = adapt_scaffold_to_contract(dict(get_base_scaffold_files()), contract)
-    fallback = post_process_generated_files(fallback, architecture, uiux=uiux)
-    fallback_errors = validate_codegen_output(fallback, architecture)
-    if fallback_errors:
-        return files, errors + fallback_errors
-    return fallback, []
+    spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
+    errors = validate_against_app_spec(files, spec)
+    if errors:
+        logger.warning("[codegen] validation failed: %s", "; ".join(errors[:5]))
+    return files, errors

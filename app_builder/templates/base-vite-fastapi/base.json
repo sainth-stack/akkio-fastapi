@@ -1,10 +1,9 @@
 {
   "name": "base-vite-fastapi",
-  "description": "Single verified React (Vite) + FastAPI scaffold for all generated apps",
+  "description": "Generic React (Vite) + FastAPI infrastructure shell — no domain UI",
+  "kind": "generic",
   "stack": {
     "frontend": "vite-react",
     "backend": "fastapi-sqlite"
-  },
-  "default_entity": "items",
-  "api_prefix": "/items"
+  }
 }
