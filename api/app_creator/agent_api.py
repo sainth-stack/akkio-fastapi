@@ -223,6 +223,7 @@ async def execute_code_generator_agent(
         
         # Generate code using LLM
         files_dict = {}
+        codegen_error = None
         async for event in generate_code_from_plan(requirement, prd, plan, architecture, llm, uiux):
             if event["event"] == "generation_start":
                 await websocket.send_text(json.dumps({
@@ -239,40 +240,46 @@ async def execute_code_generator_agent(
                 }))
             
             elif event["event"] == "file_generated":
-                # Clean up filename
                 filename = event["file"]
                 content = event["content"]
-
-                # Keep in memory only — writing to disk during streaming triggers
-                # uvicorn --reload and kills the codegen WebSocket.
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "code_generator_agent",
                     "message": f"Generated {filename}"
                 }))
-
                 files_dict[filename] = content
 
             elif event["event"] == "generation_complete":
                 files_dict = event["data"]
-
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "code_generator_agent",
                     "message": f"Generation complete. {len(files_dict)} files generated."
                 }))
-        
-        # Files are already written during the stream.
-        # We process the final dictionary just to be sure we return it correct.
-        
+
+            elif event["event"] == "agent_error":
+                codegen_error = event.get("message") or event.get("error") or "Code generation failed"
+                await websocket.send_text(json.dumps({
+                    "event": "agent_error",
+                    "agent": "code_generator_agent",
+                    "message": codegen_error,
+                }))
+
+        if codegen_error and not files_dict:
+            raise RuntimeError(codegen_error)
+
+        if not files_dict:
+            raise RuntimeError("Code generation produced no files")
+
+        count = len(files_dict)
         await websocket.send_text(json.dumps({
             "event": "agent_complete",
             "agent": "code_generator_agent",
             "data": {
                 "files": list(files_dict.keys()),
-                "count": len(files_dict)
+                "count": count
             },
-            "message": f"Generated {len(files_dict)} files successfully"
+            "message": f"Generated {count} files successfully"
         }))
         
         return files_dict

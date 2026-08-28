@@ -411,6 +411,18 @@ async def update_item(
         conn.close()
 
 
+@router.patch("/{project_id}/{collection}/{item_id}")
+async def patch_item(
+    project_id: str,
+    collection: str,
+    item_id: int,
+    request: Request,
+    current: CurrentUser = Depends(resolve_user),
+):
+    """Partial update (alias for PUT — generated apps may use PATCH)."""
+    return await update_item(project_id, collection, item_id, request, current)
+
+
 @router.delete("/{project_id}/{collection}/{item_id}")
 async def delete_item(
     project_id: str,

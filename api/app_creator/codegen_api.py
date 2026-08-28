@@ -13,6 +13,7 @@ from app_builder.agents.validation_agent import validate_and_fix_code
 from app_builder.services.file_writer import file_writer
 from app_builder.services.project_config import build_project_config, persist_project_config
 from app_builder.services.db_init import ensure_project_db_initialized
+from app_builder.services.functionality_validator import enrich_project_config
 from app_builder.services.code_post_process import should_use_template, post_process_generated_files, ensure_valid_codegen_output
 from app_builder.services.scaffold_service import normalize_architecture_for_codegen
 from app_builder.services.template_service import detect_template
@@ -80,6 +81,9 @@ def _persist_project_runtime(project_name: str, files: dict, architecture: dict,
         db_schema={"schema": schema_payload},
         template_name=template_name,
     )
+    from app_builder.services.app_spec_service import build_app_spec
+    app_spec = build_app_spec(requirement, architecture, prd, uiux)
+    config = enrich_project_config(config, architecture or {}, app_spec)
     persist_project_config(project_name, config)
     ensure_project_db_initialized(project_name, config)
 
@@ -252,6 +256,67 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             )
             if validation_errors:
                 raise ValueError("; ".join(validation_errors[:5]))
+
+            await websocket.send_text(json.dumps({
+                "event": "agent_start",
+                "agent": "functionality_validator_agent",
+                "message": "Checking API calls and runtime CRUD functionality...",
+            }))
+            touch_job(
+                session_id,
+                app_id=app_id,
+                job_type="codegen",
+                status="running",
+                step="functionality_validator_agent",
+            )
+
+            from app_builder.services.functionality_validator import run_functionality_pipeline
+            from app_builder.services.project_config import get_project_config
+
+            _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+            config = get_project_config(project_name) or {}
+            files, func_ok, func_msgs, func_err = run_functionality_pipeline(
+                files, project_name, architecture, app_spec=app_spec, config=config,
+            )
+            for msg in func_msgs:
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "functionality_validator_agent",
+                    "message": msg,
+                }))
+            if not func_ok:
+                from app_builder.services.app_generators import apply_deterministic_fallback
+                logger_msg = f"Functionality check failed ({func_err}) — applying CRUD fallback"
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "functionality_validator_agent",
+                    "message": logger_msg,
+                }))
+                files = apply_deterministic_fallback(files, app_spec, uiux=uiux, prd=prd)
+                files = post_process_generated_files(
+                    files, architecture, template_name=template_name, uiux=uiux,
+                    requirement=requirement, prd=prd, app_spec=app_spec,
+                )
+                files, validation_errors = ensure_valid_codegen_output(
+                    files, architecture, uiux=uiux,
+                    requirement=requirement, prd=prd, app_spec=app_spec,
+                )
+                if validation_errors:
+                    raise ValueError(f"Functionality fallback failed: {'; '.join(validation_errors[:5])}")
+                _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+                config = get_project_config(project_name) or {}
+                files, func_ok, func_msgs, func_err = run_functionality_pipeline(
+                    files, project_name, architecture, app_spec=app_spec, config=config,
+                )
+                if not func_ok:
+                    raise ValueError(f"Runtime CRUD verification failed: {func_err}")
+
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "functionality_validator_agent",
+                "message": "Functionality verified — API calls and CRUD smoke test passed.",
+            }))
+
             file_writer(project_name, GeneratedFiles(files=files))
             _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
             await websocket.send_text(json.dumps({

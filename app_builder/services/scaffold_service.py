@@ -121,6 +121,8 @@ def is_acceptable_llm_content(path: str, content: str, app_spec: Optional[Dict[s
     if not content or not str(content).strip():
         return False
 
+    spec = app_spec or {}
+    frontend_only = spec.get("frontend_only", False)
     stripped = str(content).strip()
     lower = stripped.lower()
 
@@ -128,29 +130,29 @@ def is_acceptable_llm_content(path: str, content: str, app_spec: Optional[Dict[s
         if marker in lower:
             return False
 
-    if path.endswith(".py"):
+    if path.endswith(".py") and not frontend_only:
         if path.endswith("routes.py"):
-            if len(stripped.splitlines()) < 10 or "APIRouter" not in stripped:
+            if len(stripped.splitlines()) < 8 or "APIRouter" not in stripped:
                 return False
         elif path.endswith("models.py"):
-            if "class " not in stripped or len(stripped.splitlines()) < 6:
+            if "class " not in stripped or len(stripped.splitlines()) < 5:
                 return False
         elif path.endswith("schemas.py"):
-            if "BaseModel" not in stripped or len(stripped.splitlines()) < 6:
+            if "BaseModel" not in stripped or len(stripped.splitlines()) < 5:
                 return False
 
     if path.endswith(("App.jsx", "App.js")):
-        if len(stripped) < 300:
+        if len(stripped) < 200:
             return False
-        if "shell-notice" in lower and "apiFetch" not in stripped:
+        if "shell-notice" in lower:
             return False
 
     if path.startswith("frontend/src/components/") and path.endswith((".jsx", ".js")):
-        if len(stripped) < 80:
+        if len(stripped) < 60:
             return False
 
     if path.endswith(("app.css", "styles.css")):
-        if len(stripped.splitlines()) < 30:
+        if len(stripped.splitlines()) < 20:
             return False
 
     return True

@@ -763,30 +763,43 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
 def _parse_file_blocks(full_response: str) -> Dict[str, str]:
     """Parse FILE: path blocks from LLM response."""
     files: Dict[str, str] = {}
-    all_lines = full_response.split("\n")
-    markers: list[tuple[int, str]] = []
-    for i, line in enumerate(all_lines):
-        if line.strip().startswith("FILE:"):
-            markers.append((i, line.replace("FILE:", "").strip()))
+    if not full_response or not full_response.strip():
+        return files
 
-    for idx, (start_line, fpath) in enumerate(markers):
+    pattern = re.compile(
+        r"^#{0,3}\s*FILE:\s*(.+?)\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(full_response))
+    if not matches:
+        return files
+
+    for idx, match in enumerate(matches):
+        fpath = match.group(1).strip().strip("`").strip()
         if fpath.endswith("/") or fpath.endswith("\\"):
             continue
-        end_line = markers[idx + 1][0] if idx + 1 < len(markers) else len(all_lines)
-        file_lines = all_lines[start_line + 1 : end_line]
-        file_content = "\n".join(file_lines).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(full_response)
+        file_content = full_response[start:end].strip()
         if "```" in file_content:
             parts = file_content.split("```")
             if len(parts) >= 2:
                 code = parts[1]
                 if code.strip() and "\n" in code:
-                    code = "\n".join(code.split("\n")[1:])
+                    first_line = code.split("\n", 1)[0].strip()
+                    if first_line and not first_line.startswith(("/", ".", "import", "from", "export", "class", "def", "const", "function", "/*", "<")):
+                        code = code.split("\n", 1)[1] if "\n" in code else code
                 file_content = code.strip()
             else:
                 file_content = file_content.replace("```", "").strip()
         file_content = file_content.replace("```", "").strip()
         if file_content:
-            files[fpath] = file_content
+            if not fpath.startswith("frontend/") and not fpath.startswith("backend/"):
+                if fpath.endswith((".jsx", ".js", ".css")):
+                    fpath = f"frontend/src/{fpath.split('/')[-1]}"
+                elif fpath.endswith(".py"):
+                    fpath = f"backend/{fpath.split('/')[-1]}"
+            files[fpath.replace("\\", "/")] = file_content
     return files
 
 
@@ -886,6 +899,11 @@ Output every allowlisted file using FILE: <path> format. No stubs. Match app_kin
             app_spec=app_spec,
         )
         if not validation_errors:
+            if attempt > 1 or not _parse_file_blocks(full_response_acc):
+                yield {
+                    "event": "agent_progress",
+                    "message": "Applied built-in app generator (LLM output supplemented).",
+                }
             break
 
         if attempt < max_attempts:
@@ -899,11 +917,34 @@ Output every allowlisted file using FILE: <path> format. No stubs. Match app_kin
             messages.append(HumanMessage(content=fix_prompt))
 
     if validation_errors:
+        import logging
+        from app_builder.services.app_spec_service import validate_against_app_spec
+        from app_builder.services.app_generators import apply_deterministic_fallback
+
+        logging.getLogger("app_builder").warning(
+            "[codegen] validation failed after %s attempts — forcing deterministic fallback",
+            max_attempts,
+        )
+        files_generated = apply_deterministic_fallback(files_generated, app_spec, uiux=uiux, prd=prd)
+        files_generated = post_process_generated_files(
+            files_generated,
+            architecture,
+            uiux=uiux,
+            requirement=requirement,
+            prd=prd,
+            app_spec=app_spec,
+        )
+        validation_errors = validate_against_app_spec(files_generated, app_spec)
+        if validation_errors:
+            yield {
+                "event": "agent_error",
+                "message": f"Codegen validation failed: {'; '.join(validation_errors[:5])}",
+            }
+            return
         yield {
-            "event": "agent_error",
-            "message": f"Codegen validation failed: {'; '.join(validation_errors[:5])}",
+            "event": "agent_progress",
+            "message": "Applied built-in app generator after LLM retries exhausted.",
         }
-        return
 
     yield {
         "event": "generation_complete",

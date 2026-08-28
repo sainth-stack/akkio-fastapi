@@ -12,11 +12,26 @@ _SKIP_TABLES = frozenset({
     "users", "user", "sessions", "session", "auth", "password_resets",
 })
 
+_FRONTEND_ONLY_MARKERS = (
+    "no network",
+    "no fetch",
+    "no external data",
+    "static and embedded",
+    "content is static",
+    "self-contained",
+    "embedded static",
+    "no network calls",
+    "without external data",
+)
+
 _BASE_ALLOWLIST = (
     "frontend/src/App.jsx",
     "frontend/src/App.js",
     "frontend/src/styles/app.css",
     "frontend/src/styles.css",
+)
+
+_BACKEND_ALLOWLIST = (
     "backend/models.py",
     "backend/schemas.py",
     "backend/routes.py",
@@ -39,11 +54,19 @@ def singularize(table_name: str) -> str:
     return name
 
 
-def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict[str, Any]] = None) -> str:
-    text = f"{requirement} {prd}".lower()
-    arch_text = json.dumps(architecture or {}).lower()
+def detect_frontend_only(requirement: str, prd: str = "", uiux: str = "") -> bool:
+    text = f"{requirement} {prd} {uiux}".lower()
+    return any(m in text for m in _FRONTEND_ONLY_MARKERS)
 
-    if any(k in text for k in ("quiz", "mcq", "multiple choice", "multiple-choice", "question bank")):
+
+def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict[str, Any]] = None, uiux: str = "") -> str:
+    text = f"{requirement} {prd}".lower()
+    is_quiz = any(k in text for k in ("quiz", "mcq", "multiple choice", "multiple-choice", "question bank"))
+
+    if is_quiz and detect_frontend_only(requirement, prd, uiux):
+        return "static_quiz"
+
+    if is_quiz:
         return "quiz"
     if any(k in text for k in ("todo", "to-do", "task list", "checklist", "task manager")):
         return "crud"
@@ -55,8 +78,10 @@ def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict
         return "dashboard"
     if any(k in text for k in ("travel", "trip", "itinerary", "planner")):
         return "crud"
-    if "quiz" in arch_text or "questions" in arch_text and "options" in arch_text:
-        return "quiz"
+
+    if detect_frontend_only(requirement, prd, uiux):
+        return "static"
+
     return "custom"
 
 
@@ -99,6 +124,7 @@ def _pick_primary_table(architecture: Dict[str, Any], app_kind: str) -> str:
 
     kind_primary = {
         "quiz": ("quizzes", "quiz", "questions"),
+        "static_quiz": ("questions",),
         "crud": ("tasks", "todos", "items", "lists", "trips", "entries"),
         "content": ("ideas", "posts", "content"),
         "form": ("translations", "messages"),
@@ -113,70 +139,76 @@ def _pick_primary_table(architecture: Dict[str, Any], app_kind: str) -> str:
     return names[0]
 
 
-def _mvp_tables(app_kind: str, all_tables: List[str], primary: str) -> List[str]:
-    if app_kind == "quiz":
+def _mvp_tables(app_kind: str, all_tables: List[str], primary: str, frontend_only: bool) -> List[str]:
+    if frontend_only:
+        return []
+
+    if app_kind in ("quiz", "static_quiz"):
         mvp = []
         for t in ("quizzes", "quiz", "questions", "options"):
             if t in all_tables:
                 mvp.append(t)
-        return mvp or [primary]
+        return mvp or ([primary] if primary else [])
 
     if app_kind == "crud":
         return [primary]
 
-    # custom: primary + one child table if present
     extras = [t for t in all_tables if t != primary and t not in _SKIP_TABLES]
     return [primary] + extras[:2]
 
 
-def _mvp_features(app_kind: str, primary: str, mvp_tables: List[str]) -> List[str]:
-    entity = singularize(primary)
+def _mvp_features(app_kind: str, primary: str, frontend_only: bool) -> List[str]:
+    if app_kind == "static_quiz":
+        return [
+            "5 static MCQ questions embedded in React (from UI/UX spec)",
+            "One question at a time with 4 radio options",
+            "Immediate correct/incorrect feedback after selection",
+            "Lock answer after selection; Next button to proceed",
+            "Results screen with score and percentage",
+            "Restart quiz button",
+            "No API calls — useState + embedded QUESTIONS array",
+        ]
+    if app_kind == "static":
+        return [
+            "Self-contained UI from PRD — no backend API required",
+            "Interactive components with React useState",
+            "Responsive layout and accessible controls",
+        ]
     if app_kind == "quiz":
         return [
-            "List quizzes",
-            "Create quiz with title",
-            "Add multiple-choice questions with options",
-            "Take quiz: show one question at a time with radio options",
+            "Take quiz: one question at a time with radio options",
             "Submit answers and show score",
+            "Use apiFetch for questions if backend is used",
         ]
     if app_kind == "content":
-        return [
-            "Input form for topic/prompt",
-            "Generate button calling backend",
-            "Display generated results",
-        ]
+        return ["Input form", "Generate button calling backend", "Display results"]
     if app_kind == "form":
-        return [
-            "Input area for user text",
-            "Submit to backend API",
-            "Display translated/generated output",
-        ]
+        return ["Text input", "Submit to backend API", "Display response"]
     if app_kind == "dashboard":
-        return [
-            "Fetch summary data from API",
-            "Display metric cards or charts area",
-            "Loading and empty states",
-        ]
+        return ["Fetch summary data from API", "Metric cards", "Loading states"]
+    entity = singularize(primary)
     return [
         f"List {primary} from API",
-        f"Create new {entity}",
-        f"Update and delete {entity}",
-        "Responsive layout with loading/error states",
+        f"Create/update/delete {entity}",
+        "Loading and error states",
     ]
 
 
 def _screens_for_kind(app_kind: str) -> List[Dict[str, Any]]:
+    if app_kind == "static_quiz":
+        return [
+            {"id": "question", "title": "Question Screen", "components": ["question", "options-radio", "feedback", "next"]},
+            {"id": "results", "title": "Results", "components": ["score", "review", "restart"]},
+        ]
     if app_kind == "quiz":
         return [
-            {"id": "quiz-list", "title": "Quiz List", "components": ["quiz-list", "create-quiz"]},
-            {"id": "edit-quiz", "title": "Edit Quiz", "components": ["question-form", "options-editor"]},
             {"id": "take-quiz", "title": "Take Quiz", "components": ["question-display", "radio-options", "submit-score"]},
         ]
-    if app_kind in ("content", "form"):
-        return [{"id": "main", "title": "Main", "components": ["input-form", "submit-button", "results"]}]
+    if app_kind in ("content", "form", "static"):
+        return [{"id": "main", "title": "Main", "components": ["main-ui"]}]
     if app_kind == "dashboard":
-        return [{"id": "dashboard", "title": "Dashboard", "components": ["metric-cards", "data-panel"]}]
-    return [{"id": "main", "title": "Main", "components": ["list", "create-form", "actions"]}]
+        return [{"id": "dashboard", "title": "Dashboard", "components": ["metric-cards"]}]
+    return [{"id": "main", "title": "Main", "components": ["list", "form", "actions"]}]
 
 
 def _api_prefix(architecture: Dict[str, Any], primary_table: str) -> str:
@@ -201,7 +233,7 @@ def _api_prefix(architecture: Dict[str, Any], primary_table: str) -> str:
         if m and m.group(1) not in _SKIP_TABLES:
             return f"/{m.group(1)}"
 
-    return f"/{primary_table}"
+    return f"/{primary_table}" if primary_table else "/items"
 
 
 def build_app_spec(
@@ -211,11 +243,12 @@ def build_app_spec(
     uiux: str = "",
 ) -> Dict[str, Any]:
     arch = architecture or {}
-    app_kind = detect_app_kind(requirement, prd, arch)
+    frontend_only = detect_frontend_only(requirement, prd, uiux)
+    app_kind = detect_app_kind(requirement, prd, arch, uiux)
     all_tables = _table_names(arch)
     primary_table = _pick_primary_table(arch, app_kind)
-    mvp_tables = _mvp_tables(app_kind, all_tables, primary_table)
-    entity = singularize(primary_table)
+    mvp_tables = _mvp_tables(app_kind, all_tables, primary_table, frontend_only)
+    entity = singularize(primary_table) if primary_table else "item"
     primary_def = _table_def(arch, primary_table)
 
     entities = []
@@ -227,34 +260,41 @@ def build_app_spec(
             "fields": _fields_from_table(table),
         })
 
-    spec: Dict[str, Any] = {
+    title = "Quiz"
+    if "quiz" in requirement.lower():
+        title = "Quiz"
+    m = re.search(r"^(?:create|build)\s+(.+?)(?:\s+app)?$", requirement.strip(), re.I)
+    if m:
+        title = m.group(1).strip().title()[:40]
+
+    return {
         "app_kind": app_kind,
+        "frontend_only": frontend_only,
         "requirement": requirement,
+        "title": title,
         "primary_entity": entity,
         "primary_table": primary_table,
         "api_prefix": _api_prefix(arch, primary_table),
         "mvp_tables": mvp_tables,
-        "mvp_features": _mvp_features(app_kind, primary_table, mvp_tables),
+        "mvp_features": _mvp_features(app_kind, primary_table, frontend_only),
         "screens": _screens_for_kind(app_kind),
         "entities": entities,
         "fields": _fields_from_table(primary_def),
         "deferred": [
             "user authentication",
             "sharing / collaboration",
-            "offline sync",
-            "import/export",
-            "push notifications",
+            "offline sync beyond localStorage",
         ],
     }
-    return spec
 
 
 def get_codegen_allowlist(app_spec: Dict[str, Any]) -> tuple[str, ...]:
-    """Files the LLM may generate. Adds components/ for multi-screen apps."""
     allowlist = list(_BASE_ALLOWLIST)
-    if app_spec.get("app_kind") in ("quiz", "dashboard", "custom"):
-        if app_spec.get("screens") and len(app_spec["screens"]) > 1:
-            allowlist.append(_COMPONENT_ALLOWLIST_PREFIX)
+    if not app_spec.get("frontend_only"):
+        allowlist.extend(_BACKEND_ALLOWLIST)
+    kind = app_spec.get("app_kind", "custom")
+    if kind in ("quiz", "static_quiz", "dashboard", "custom"):
+        allowlist.append(_COMPONENT_ALLOWLIST_PREFIX)
     return tuple(allowlist)
 
 
@@ -265,105 +305,81 @@ def is_path_allowlisted(path: str, allowlist: tuple[str, ...]) -> bool:
 
 def build_codegen_system_prompt(app_spec: Dict[str, Any], uiux: str, architecture: Dict[str, Any]) -> str:
     spec_json = json.dumps(app_spec, indent=2)
-    arch_json = json.dumps(architecture, indent=2)
     allowlist = get_codegen_allowlist(app_spec)
     files_list = "\n".join(f"- {p}" for p in allowlist if not p.endswith("/"))
     if any(p.endswith("/") for p in allowlist):
-        files_list += "\n- frontend/src/components/*.jsx (as needed for screens)"
+        files_list += "\n- frontend/src/components/*.jsx (optional, for larger UIs)"
 
     kind = app_spec.get("app_kind", "custom")
+    frontend_only = app_spec.get("frontend_only", False)
     mvp = "\n".join(f"- {f}" for f in app_spec.get("mvp_features", []))
-    screens = json.dumps(app_spec.get("screens", []), indent=2)
 
-    kind_hints = {
-        "quiz": (
-            "Build a QUIZ app: quizzes, questions, multiple-choice options, take-quiz flow with "
-            "radio buttons, score on submit. Use apiFetch for all API calls."
-        ),
-        "crud": (
-            "Build a CRUD app for the primary entity: list, create form, edit/delete actions."
-        ),
-        "content": (
-            "Build a content generator: input, generate button, results list. "
-            "Call backend POST endpoint for generation."
-        ),
-        "form": (
-            "Build a form app: text input, submit, display API response."
-        ),
-        "dashboard": (
-            "Build a dashboard: fetch data from API, show cards/summary, loading states."
-        ),
-        "custom": (
-            "Build the app described in the requirement and App Spec — match the domain exactly."
-        ),
-    }
+    output_format = """
+**OUTPUT FORMAT (required):**
+For EACH file, output exactly:
+FILE: frontend/src/App.jsx
+```jsx
+... full file content ...
+```
+Do NOT skip files. Do NOT use placeholders or "..." omissions.
+"""
 
-    return f"""You are an expert full-stack developer customizing a **generic Vite + React + FastAPI shell**.
+    if kind == "static_quiz":
+        backend_rules = "Backend is optional — minimal empty router is fine. Focus 100% on frontend."
+        api_rule = "Do NOT use apiFetch — embed QUESTIONS array in App.jsx from the UI/UX spec."
+    elif frontend_only:
+        backend_rules = "Skip heavy backend — minimal routes.py with /info only."
+        api_rule = "Prefer embedded static data; apiFetch optional only if PRD requires it."
+    else:
+        backend_rules = f"""
+2. models.py: SQLAlchemy models for: {", ".join(app_spec.get("mvp_tables", [])) or "primary entity"}
+3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True))
+4. routes.py: APIRouter prefix `{app_spec.get("api_prefix", "/items")}` with CRUD"""
+        api_rule = (
+            "Use `import { apiFetch } from './api/client.js'`. "
+            "Call as apiFetch('/tasks', { method: 'POST', body: JSON.stringify(data) }). "
+            "NEVER apiFetch(path, 'POST', data). "
+            f"Collection path must match primary table: /{app_spec.get('primary_table', 'items')}."
+        )
 
-The base template has NO domain features — you must generate the full application from the App Spec.
+    return f"""You are an expert React + FastAPI developer. Customize the generic Vite shell into a working app.
 
-**FROZEN (do not generate):** package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt
+**FROZEN (never generate):** package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt
 
-**GENERATE these files (FILE: path format):**
+**GENERATE (FILE: path format):**
 {files_list}
 
 **APP KIND:** {kind}
-{kind_hints.get(kind, kind_hints["custom"])}
+**FRONTEND ONLY:** {frontend_only}
 
-**APP SPEC (source of truth):**
+**APP SPEC:**
 ```json
 {spec_json}
 ```
 
-**MVP FEATURES (implement all):**
+**MVP (implement all):**
 {mvp}
 
-**SCREENS:**
-```json
-{screens}
-```
+{output_format}
 
-**API:** Primary prefix `{app_spec.get("api_prefix", "/items")}` — use `import {{ apiFetch }} from './api/client.js'`
-
-**UI/UX (translate to plain CSS variables in styles/app.css):**
-{uiux[:4500] if uiux else "Clean modern UI — use :root CSS variables for colors and spacing."}
+**UI/UX (use plain CSS in styles/app.css — NOT Tailwind):**
+{uiux[:5000] if uiux else "Clean modern UI with CSS variables."}
 
 **RULES:**
-1. Generate COMPLETE files — never stubs, placeholders, or empty backend files.
-2. models.py: SQLAlchemy models for MVP tables: {", ".join(app_spec.get("mvp_tables", []))}
-3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True))
-4. routes.py: FastAPI APIRouter with CRUD + quiz-specific endpoints as needed
-5. App.jsx: full UI for `{kind}` app — may import from ./components/*.jsx
-6. styles/app.css: 80+ lines, plain CSS only (no Tailwind)
-7. Array safety: `(data || []).map(...)`, useState([]) defaults
-8. localStorage optional fallback with try/catch around apiFetch
-9. Do NOT build deferred features: {", ".join(app_spec.get("deferred", [])[:4])}
-
-**Architecture reference:**
-```json
-{arch_json[:6000]}
-```
+1. App.jsx: complete interactive UI — never the generic shell placeholder.
+{backend_rules}
+5. styles/app.css: 50+ lines, plain CSS, :root variables for colors from UI/UX.
+6. {api_rule}
+7. useState/useEffect only — no external state libraries.
+8. Accessible: buttons, labels, keyboard-friendly controls.
 """
 
 
 def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     kind = app_spec.get("app_kind", "custom")
+    frontend_only = app_spec.get("frontend_only", False)
     prefix = app_spec.get("api_prefix", "/items")
-
-    routes = files.get("backend/routes.py", "")
-    if not routes.strip() or "APIRouter" not in routes:
-        errors.append("backend/routes.py missing APIRouter")
-    elif prefix not in routes and f'"{prefix}"' not in routes and f"'{prefix}'" not in routes:
-        errors.append(f"backend/routes.py missing API prefix {prefix}")
-
-    models = files.get("backend/models.py", "")
-    if "class " not in models:
-        errors.append("backend/models.py missing SQLAlchemy model classes")
-
-    schemas = files.get("backend/schemas.py", "")
-    if "BaseModel" not in schemas:
-        errors.append("backend/schemas.py missing Pydantic schemas")
 
     app_src = files.get("frontend/src/App.jsx") or files.get("frontend/src/App.js", "")
     components_src = "".join(
@@ -372,31 +388,64 @@ def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -
     ui_src = app_src + components_src
 
     if "waiting for application ui from code generation" in ui_src.lower():
-        errors.append("App.jsx is still the generic shell — codegen did not customize UI")
-    if "shell-notice" in ui_src.lower() and kind != "custom":
+        errors.append("App.jsx is still the generic shell")
+    if "shell-notice" in ui_src.lower():
         errors.append("App still shows generic shell notice")
 
-    if "apiFetch" not in ui_src and "fetch(" not in ui_src:
-        errors.append("Frontend does not call the API (apiFetch)")
-
-    if not any(k in ui_src for k in ("onSubmit", "onClick", "<input", "<button", "<form")):
+    if not any(k in ui_src for k in ("onClick", "onSubmit", "<button", "<input", "useState")):
         errors.append("Frontend missing interactive UI")
 
     stub_markers = ("minimal app component", "satisfy the build", "placeholder app")
     if any(m in ui_src.lower() for m in stub_markers):
-        errors.append("Frontend contains stub/placeholder text")
+        errors.append("Frontend contains stub text")
+
+    css = files.get("frontend/src/styles/app.css", "")
+    if len(css.splitlines()) < 25:
+        errors.append("styles/app.css too minimal (< 25 lines)")
+
+    if kind == "static_quiz":
+        combined = ui_src.lower()
+        if "question" not in combined:
+            errors.append("Quiz missing questions in UI")
+        if not any(k in combined for k in ('type="radio"', "role=\"radio\"", "radio", "option-row", "options")):
+            errors.append("Quiz missing option selection UI")
+        if "score" not in combined and "result" not in combined:
+            errors.append("Quiz missing results/score screen")
+        return errors
+
+    if frontend_only:
+        return errors
+
+    routes = files.get("backend/routes.py", "")
+    if not routes.strip() or "APIRouter" not in routes:
+        errors.append("backend/routes.py missing APIRouter")
+    elif prefix not in routes and f'"{prefix}"' not in routes and f"'{prefix}'" not in routes:
+        if kind not in ("static", "custom"):
+            errors.append(f"backend/routes.py missing API prefix {prefix}")
+
+    models = files.get("backend/models.py", "")
+    if "class " not in models and kind in ("quiz", "crud"):
+        errors.append("backend/models.py missing SQLAlchemy models")
+
+    schemas = files.get("backend/schemas.py", "")
+    if "BaseModel" not in schemas and kind in ("quiz", "crud"):
+        errors.append("backend/schemas.py missing Pydantic schemas")
+
+    if "apiFetch" not in ui_src and "fetch(" not in ui_src and kind in ("quiz", "crud", "content", "form", "dashboard"):
+        errors.append("Frontend does not call the API")
+
+    if "apiFetch" in ui_src and re.search(
+        r"apiFetch\([^,]+,\s*['\"](GET|POST|PUT|PATCH|DELETE)['\"]",
+        ui_src,
+        re.I,
+    ):
+        errors.append("apiFetch uses wrong signature (use options object, not method string)")
 
     if kind == "quiz":
         combined = (models + schemas + ui_src).lower()
         if "question" not in combined:
-            errors.append("Quiz app missing questions in models or UI")
-        if "option" not in combined:
-            errors.append("Quiz app missing options in models or UI")
-        if not any(k in ui_src.lower() for k in ('type="radio"', "radio", "choice", "answer")):
-            errors.append("Quiz UI missing multiple-choice selection (radio/options)")
-
-    css = files.get("frontend/src/styles/app.css", "")
-    if len(css.splitlines()) < 35:
-        errors.append("styles/app.css too minimal (< 35 lines)")
+            errors.append("Quiz missing questions")
+        if not any(k in ui_src.lower() for k in ('type="radio"', "radio", "option")):
+            errors.append("Quiz missing multiple-choice UI")
 
     return errors

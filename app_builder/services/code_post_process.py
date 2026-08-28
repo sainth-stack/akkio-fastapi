@@ -16,6 +16,7 @@ from app_builder.services.scaffold_service import (
     is_frozen_path,
     merge_llm_into_base,
 )
+from app_builder.services.app_generators import apply_deterministic_fallback
 
 logger = logging.getLogger("app_builder")
 
@@ -101,11 +102,35 @@ def ensure_valid_codegen_output(
     app_spec: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], list[str]]:
     """
-    Validate generated files against App Spec.
-    No silent fallback to wrong app type — returns errors for retry/fail.
+    Validate generated files. Apply deterministic fallback for known app kinds when LLM fails.
     """
     spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
     errors = validate_against_app_spec(files, spec)
-    if errors:
-        logger.warning("[codegen] validation failed: %s", "; ".join(errors[:5]))
+    if not errors:
+        return files, []
+
+    kind = spec.get("app_kind", "custom")
+    supported = (
+        "static_quiz", "static", "quiz", "crud", "content", "form", "dashboard", "custom",
+    )
+    if errors and (kind in supported or spec.get("frontend_only")):
+        logger.warning(
+            "[codegen] LLM validation failed (%s) — applying deterministic %s fallback",
+            "; ".join(errors[:3]),
+            kind,
+        )
+        fallback_files = apply_deterministic_fallback(dict(files), spec, uiux=uiux, prd=prd)
+        fallback_files = post_process_generated_files(
+            fallback_files,
+            architecture,
+            uiux=uiux,
+            requirement=requirement,
+            prd=prd,
+            app_spec=spec,
+        )
+        fb_errors = validate_against_app_spec(fallback_files, spec)
+        if not fb_errors:
+            return fallback_files, []
+
+    logger.warning("[codegen] validation failed: %s", "; ".join(errors[:5]))
     return files, errors

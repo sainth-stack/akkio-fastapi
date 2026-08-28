@@ -296,6 +296,19 @@ def _normalize_js_format(content: str) -> str:
     return result + "\n" if result else ""
 
 
+def _fix_api_fetch_calls(files: Dict[str, str]) -> None:
+    """Fix apiFetch(path, 'METHOD', body) — common LLM mistake that breaks CRUD."""
+    from app_builder.services.functionality_validator import fix_api_fetch_signature
+
+    for path in list(files.keys()):
+        if not path.startswith("frontend/") or not path.endswith((".js", ".jsx", ".ts", ".tsx")):
+            continue
+        fixed, n = fix_api_fetch_signature(files[path])
+        if n:
+            logger.info("[validation] fixed %s apiFetch call(s) in %s", n, path)
+            files[path] = fixed
+
+
 def validate_and_fix_code(
     files: Dict[str, str],
     architecture: Dict[str, Any],
@@ -325,6 +338,9 @@ def validate_and_fix_code(
     
     # 6. Frontend fetch() safety - wrap in try/catch to prevent crash when backend is down
     _fix_frontend_fetch_safety(files)
+
+    # 6b. Fix wrong apiFetch(path, 'METHOD', body) signature (breaks all CRUD)
+    _fix_api_fetch_calls(files)
     
     # 7. Fix Zustand import (default -> named export for v4+)
     _fix_zustand_import(files)
