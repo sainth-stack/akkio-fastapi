@@ -136,54 +136,361 @@ export default function App() {{
 # Shared CSS
 # ---------------------------------------------------------------------------
 
-def generate_app_css(primary: str = "#4f46e5") -> str:
-    return f"""/* Generated app styles */
+
+def _primary_hover(primary: str) -> str:
+    """Simple darker hover — hex only."""
+    primary = (primary or "#4f46e5").strip()
+    if not primary.startswith("#") or len(primary) < 7:
+        return "#4338ca"
+    try:
+        r, g, b = int(primary[1:3], 16), int(primary[3:5], 16), int(primary[5:7], 16)
+        return f"#{max(0, r - 20):02x}{max(0, g - 20):02x}{max(0, b - 20):02x}"
+    except ValueError:
+        return "#4338ca"
+
+
+def build_saas_app_css(tokens: Dict[str, Any] | None = None, primary: str = "#4f46e5") -> str:
+    """
+    Production SaaS stylesheet — design tokens + layout primitives + JSX fallbacks.
+    Used for every generated app so colors/backgrounds always apply.
+    """
+    colors = (tokens or {}).get("colors") if isinstance(tokens, dict) else {}
+    if not isinstance(colors, dict):
+        colors = tokens if isinstance(tokens, dict) else {}
+
+    primary = str(colors.get("primary") or primary)
+    bg = str(colors.get("background") or colors.get("bg") or "#f8fafc")
+    surface = str(colors.get("surface") or "#ffffff")
+    text = str(colors.get("text") or "#0f172a")
+    muted = str(colors.get("muted") or "#64748b")
+    border = str(colors.get("border") or "#e2e8f0")
+    danger = str(colors.get("danger") or "#ef4444")
+    hover = _primary_hover(primary)
+    font = "Inter, system-ui, -apple-system, sans-serif"
+    if isinstance(tokens, dict) and isinstance(tokens.get("typography"), dict):
+        font = tokens["typography"].get("fontFamily") or font
+    max_w = "48rem"
+    if isinstance(tokens, dict) and isinstance(tokens.get("layout"), dict):
+        max_w = tokens["layout"].get("maxContentWidth") or max_w
+
+    return f"""/* Akkio SaaS design system — auto-generated */
 :root {{
   --color-primary: {primary};
-  --color-primary-hover: #4338ca;
-  --color-bg: #f8fafc;
-  --color-surface: #ffffff;
-  --color-text: #0f172a;
-  --color-text-muted: #64748b;
-  --color-border: #e2e8f0;
+  --color-primary-hover: {hover};
+  --color-bg: {bg};
+  --color-background: {bg};
+  --color-surface: {surface};
+  --color-text: {text};
+  --color-text-muted: {muted};
+  --color-muted: {muted};
+  --color-border: {border};
+  --color-danger: {danger};
+  --font-sans: {font};
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.08);
+  --max-content-width: {max_w};
 }}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--color-bg); color: var(--color-text); }}
-.app {{ min-height: 100vh; padding: 2rem 1rem; }}
-.app-container {{ max-width: 48rem; margin: 0 auto; }}
-.app-header {{ margin-bottom: 1.5rem; text-align: center; }}
-.app-title {{ font-size: 1.875rem; font-weight: 700; margin: 0 0 0.5rem; }}
-.app-subtitle {{ color: var(--color-text-muted); margin: 0; }}
-.card {{ background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; box-shadow: var(--shadow-sm); margin-bottom: 1rem; }}
-.form-row {{ display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }}
-.input, .textarea {{ flex: 1; min-width: 200px; padding: 0.625rem 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }}
-.textarea {{ min-height: 100px; resize: vertical; }}
-.input:focus, .textarea:focus {{ outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgb(79 70 229 / 0.15); }}
-.btn {{ display: inline-flex; align-items: center; justify-content: center; padding: 0.625rem 1.25rem; border-radius: var(--radius-md); font-weight: 600; font: inherit; cursor: pointer; border: none; transition: background 0.2s; }}
-.btn-primary {{ background: var(--color-primary); color: #fff; }}
-.btn-primary:hover:not(:disabled) {{ background: var(--color-primary-hover); }}
-.btn-primary:disabled {{ opacity: 0.5; cursor: not-allowed; }}
-.btn-ghost {{ background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted); }}
-.list {{ list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }}
-.list-item {{ display: flex; align-items: center; gap: 0.75rem; padding: 0.875rem 1rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); }}
-.list-item.done span {{ text-decoration: line-through; color: var(--color-text-muted); }}
-.filters {{ display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }}
-.filters .btn-ghost.active {{ background: var(--color-primary); color: #fff; border-color: var(--color-primary); }}
-.empty {{ text-align: center; color: var(--color-text-muted); padding: 2rem; }}
-.error-banner {{ background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 1rem; }}
+
+* {{ box-sizing: border-box; -webkit-font-smoothing: antialiased; }}
+
+html, body {{
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.5;
+}}
+
+#root {{ min-height: 100vh; }}
+
+.app {{
+  min-height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-text);
+}}
+
+.app-container {{
+  max-width: var(--max-content-width);
+  margin: 0 auto;
+  padding: 2rem 1.25rem;
+}}
+
+.app-header {{
+  margin-bottom: 2rem;
+  text-align: center;
+}}
+
+.app-title {{
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin: 0 0 0.5rem;
+  color: var(--color-text);
+}}
+
+.app-subtitle {{
+  color: var(--color-text-muted);
+  font-size: 1.05rem;
+  margin: 0;
+}}
+
+.navbar {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+}}
+
+.navbar h1 {{
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--color-text);
+}}
+
+.sidebar {{
+  width: 220px;
+  min-height: 200px;
+  padding: 1rem;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+}}
+
+.main-content {{
+  flex: 1;
+  padding: 1.5rem;
+  max-width: var(--max-content-width);
+  margin: 0 auto;
+  width: 100%;
+}}
+
+.card {{
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 1.5rem;
+}}
+
+.form-row, .task-form, .todo-form {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  align-items: center;
+}}
+
+.input, .textarea,
+.task-form input, .todo-form input,
+.form-row input, .card input,
+.app input[type="text"], .app input[type="email"],
+.app input[type="password"], .app input[type="search"],
+.app input[type="date"], .app input[type="number"],
+.app input:not([type]), .app select, .app textarea {{
+  flex: 1;
+  min-width: 140px;
+  padding: 0.625rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font: inherit;
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}}
+
+.textarea {{ min-height: 100px; resize: vertical; width: 100%; }}
+
+.input:focus, .textarea:focus,
+.task-form input:focus, .form-row input:focus,
+.app input:focus, .app select:focus, .app textarea:focus {{
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}}
+
+.btn,
+.task-form button, .todo-form button,
+.card button, .task-card button, .todo-card button,
+.app button {{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+}}
+
+.btn-primary,
+.task-form button:first-of-type,
+.app button:first-of-type {{
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}}
+
+.btn-primary:hover:not(:disabled),
+.task-form button:first-of-type:hover,
+.app button:first-of-type:hover {{
+  background: var(--color-primary-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}}
+
+.btn-primary:disabled {{ opacity: 0.55; cursor: not-allowed; }}
+
+.btn-ghost {{
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}}
+
+.btn-ghost:hover {{ border-color: var(--color-primary); color: var(--color-primary); }}
+
+.list, .task-list, .todo-list {{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}}
+
+.list-item, .task-card, .todo-card {{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}}
+
+.task-card, .todo-card {{
+  flex-direction: column;
+  align-items: stretch;
+}}
+
+.task-card:hover, .todo-card:hover, .list-item:hover {{
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+  box-shadow: var(--shadow-md);
+}}
+
+.task-card h2, .todo-card h2 {{
+  margin: 0 0 0.35rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+}}
+
+.task-card p, .todo-card p {{
+  margin: 0 0 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}}
+
+.list-item.done span, .task-card.completed h2, .todo-card.completed h2,
+.completed.task-card h2 {{
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}}
+
+.task-card.completed, .todo-card.completed, .completed {{
+  opacity: 0.85;
+  background: color-mix(in srgb, var(--color-bg) 70%, var(--color-surface));
+}}
+
+.filters {{
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}}
+
+.filters .btn-ghost.active {{
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}}
+
+.empty {{
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: 2.5rem 1rem;
+}}
+
+.error-banner {{
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}}
+
 .options {{ display: flex; flex-direction: column; gap: 0.5rem; margin: 1rem 0; }}
-.option-row {{ text-align: left; padding: 0.75rem 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: #fff; cursor: pointer; font: inherit; width: 100%; }}
-.option-row:hover:not(:disabled) {{ border-color: var(--color-primary); background: #eef2ff; }}
-.feedback {{ padding: 0.75rem; border-radius: var(--radius-md); background: #ecfdf5; color: #047857; margin-bottom: 1rem; }}
-.question-text {{ font-size: 1.125rem; font-weight: 600; margin: 0 0 1rem; }}
-.metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }}
-.metric-card {{ padding: 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); text-align: center; }}
-.metric-value {{ font-size: 1.5rem; font-weight: 700; color: var(--color-primary); }}
-.results-box {{ background: #f1f5f9; border-radius: var(--radius-md); padding: 1rem; margin-top: 1rem; white-space: pre-wrap; }}
+
+.option-row {{
+  text-align: left;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  font: inherit;
+  width: 100%;
+}}
+
+.option-row:hover:not(:disabled) {{
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+}}
+
+.metrics {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}}
+
+.metric-card {{
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  text-align: center;
+  background: var(--color-surface);
+}}
+
+.metric-value {{
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-primary);
+}}
+
+@media (max-width: 640px) {{
+  .app-container, .main-content {{ padding: 1rem; }}
+  .form-row, .task-form {{ flex-direction: column; align-items: stretch; }}
+  .sidebar {{ width: 100%; border-right: none; border-bottom: 1px solid var(--color-border); }}
+}}
 """
+
+
+def generate_app_css(primary: str = "#4f46e5") -> str:
+    """Backward-compatible wrapper — returns full SaaS stylesheet."""
+    return build_saas_app_css({"colors": {"primary": primary}}, primary=primary)
 
 
 # ---------------------------------------------------------------------------

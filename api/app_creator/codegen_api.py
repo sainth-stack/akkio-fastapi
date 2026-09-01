@@ -260,6 +260,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             files, validation_errors = ensure_valid_codegen_output(
                 files, architecture, uiux=uiux,
                 requirement=requirement, prd=prd, app_spec=app_spec,
+                design_tokens=design_tokens,
             )
             if validation_errors:
                 raise ValueError("; ".join(validation_errors[:5]))
@@ -303,10 +304,12 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 files = post_process_generated_files(
                     files, architecture, template_name=template_name, uiux=uiux,
                     requirement=requirement, prd=prd, app_spec=app_spec,
+                    design_tokens=design_tokens,
                 )
                 files, validation_errors = ensure_valid_codegen_output(
                     files, architecture, uiux=uiux,
                     requirement=requirement, prd=prd, app_spec=app_spec,
+                    design_tokens=design_tokens,
                 )
                 if validation_errors:
                     raise ValueError(f"Functionality fallback failed: {'; '.join(validation_errors[:5])}")

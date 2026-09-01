@@ -362,16 +362,26 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
 
 {output_format}
 
-**UI/UX (use plain CSS in styles/app.css — NOT Tailwind):**
-{uiux[:5000] if uiux else "Clean modern UI with CSS variables."}
+**UI/UX (colors & layout — plain CSS in styles/app.css, NOT Tailwind):**
+{uiux[:5000] if uiux else "Clean modern SaaS UI with soft gray background (#f8fafc), white cards, primary accent."}
+
+**CSS CLASS CONTRACT (App.jsx MUST use these — styles are auto-themed):**
+- Shell: `<div className="app"><div className="app-container">`
+- Header: `className="app-header"`, `className="app-title"`, `className="app-subtitle"`
+- Content blocks: `className="card"`
+- Forms: `className="form-row"` with `className="input"` on inputs and `className="btn btn-primary"` on submit buttons
+- Lists: `<ul className="list">` with `<li className="list-item">` per row
+- Do NOT use unstyled bare `<input>`/`<button>` without these classes
+- Optional todo/task layout classes (task-form, task-card) also work if needed
 
 **RULES:**
-1. App.jsx: complete interactive UI — never the generic shell placeholder.
+1. App.jsx: complete interactive SaaS-quality UI — never the generic shell placeholder.
 {backend_rules}
-5. styles/app.css: 50+ lines, plain CSS, :root variables for colors from UI/UX.
+5. styles/app.css: optional — platform injects themed CSS from Design System; if you generate it, use :root variables matching UI/UX colors.
 6. {api_rule}
 7. useState/useEffect only — no external state libraries.
-8. Accessible: buttons, labels, keyboard-friendly controls.
+8. Accessible: buttons, labels, aria-labels, keyboard-friendly controls.
+9. Visual quality: centered layout, card shadows, proper spacing, colored primary buttons, muted subtitle text.
 """
 
 
@@ -400,8 +410,19 @@ def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -
         errors.append("Frontend contains stub text")
 
     css = files.get("frontend/src/styles/app.css", "")
-    if len(css.splitlines()) < 25:
+    if len(css.splitlines()) < 25 and "Akkio SaaS design system" not in css:
         errors.append("styles/app.css too minimal (< 25 lines)")
+
+    app_lower = app_src.lower()
+    standard_classes = (
+        "app-container", "app-header", "app-title", "card", "form-row",
+        "btn-primary", "list-item", "task-form", "task-card",
+    )
+    if app_src and not any(cls in app_src for cls in standard_classes):
+        errors.append("App.jsx missing standard CSS classes (use app-container, card, form-row, btn btn-primary, list-item)")
+    if app_src and "<button" in app_lower and "btn" not in app_src and "button" in app_lower:
+        if not any(x in app_src for x in ("task-form", "form-row", "card")):
+            errors.append("Buttons should use className=\"btn btn-primary\" or live inside .form-row/.card")
 
     if kind == "static_quiz":
         combined = ui_src.lower()

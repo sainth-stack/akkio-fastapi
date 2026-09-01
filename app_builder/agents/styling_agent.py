@@ -8,17 +8,11 @@ from typing import Any, AsyncGenerator, Dict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app_builder.services.app_generators import generate_app_css
+from app_builder.services.design_system_css import build_css_from_payload, extract_primary_hex
 
 
 def _extract_primary_hex(uiux: str) -> str:
-    if not uiux:
-        return "#4f46e5"
-    match = re.search(r"Primary:\s*(#[0-9A-Fa-f]{3,8})", uiux, re.IGNORECASE)
-    if match:
-        return match.group(1)
-    match = re.search(r"(#[0-9A-Fa-f]{6})", uiux)
-    return match.group(1) if match else "#4f46e5"
+    return extract_primary_hex(uiux)
 
 
 def _parse_style_response(full_response: str, uiux: str) -> Dict[str, Any]:
@@ -37,7 +31,7 @@ def _parse_style_response(full_response: str, uiux: str) -> Dict[str, Any]:
         "typography": {"fontFamily": "Inter, system-ui, sans-serif"},
         "layout": {"shell": "topbar+content", "maxContentWidth": "80rem"},
     }
-    app_css = generate_app_css(primary)
+    app_css = build_css_from_payload({"design_tokens": tokens}, uiux=uiux)
     summary_md = full_response.strip()
 
     json_match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", full_response)
@@ -56,7 +50,7 @@ def _parse_style_response(full_response: str, uiux: str) -> Dict[str, Any]:
             pass
 
     if len(app_css.strip().split("\n")) < 40:
-        app_css = generate_app_css(tokens.get("colors", {}).get("primary", primary))
+        app_css = build_css_from_payload({"design_tokens": tokens}, uiux=uiux)
 
     return {
         "design_tokens": tokens,
@@ -97,8 +91,8 @@ Required JSON shape:
 }
 ```
 
-CSS must include: .app, .card, .btn, .btn-primary, .input, .form-row, .list-item, responsive @media rules.
-Match colors from the UI/UX palette exactly."""
+CSS must include: .app, .app-container, .app-header, .card, .btn, .btn-primary, .input, .form-row, .list-item, body background, :root color variables, responsive @media rules.
+Match colors from the UI/UX palette exactly. The platform injects the final app.css — focus on accurate design_tokens colors."""
 
     user_prompt = f"""Requirement:
 {requirement}

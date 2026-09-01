@@ -16,7 +16,8 @@ from app_builder.services.scaffold_service import (
     is_frozen_path,
     merge_llm_into_base,
 )
-from app_builder.services.app_generators import apply_deterministic_fallback, generate_app_css
+from app_builder.services.app_generators import apply_deterministic_fallback
+from app_builder.services.design_system_css import build_css_from_payload
 
 logger = logging.getLogger("app_builder")
 
@@ -28,21 +29,15 @@ def _is_vite_project(files: Dict[str, str]) -> bool:
     return "frontend/vite.config.js" in files or "frontend/vite.config.ts" in files
 
 
-def apply_design_tokens(files: Dict[str, str], design_tokens: Dict[str, Any] | None) -> None:
-    """Inject styling-agent CSS into generated project files."""
-    if not design_tokens or not isinstance(design_tokens, dict):
-        return
-    token_data = design_tokens.get("design_tokens") if isinstance(design_tokens.get("design_tokens"), dict) else design_tokens
-    css = design_tokens.get("app_css")
-    if not css or len(str(css).strip()) < 40:
-        primary = (token_data.get("colors") or {}).get("primary", "#4f46e5")
-        css = generate_app_css(str(primary))
-    for css_path in ("frontend/src/styles/app.css", "frontend/src/styles.css"):
-        if css_path in files or css_path.endswith("app.css"):
-            files[css_path if css_path in files else "frontend/src/styles/app.css"] = css
-            break
-    else:
-        files["frontend/src/styles/app.css"] = css
+def apply_design_tokens(
+    files: Dict[str, str],
+    design_tokens: Dict[str, Any] | None = None,
+    uiux: str = "",
+) -> None:
+    """Inject complete SaaS CSS from design tokens (always overwrites LLM app.css)."""
+    css = build_css_from_payload(design_tokens, uiux=uiux)
+    files["frontend/src/styles/app.css"] = css
+    logger.info("[css] applied SaaS design system (%d lines)", len(css.splitlines()))
 
 
 def post_process_generated_files(
@@ -79,7 +74,7 @@ def post_process_generated_files(
     dcg._ensure_cors_in_backend(files)
     dcg._fix_frontend_backend_url_undefined(files)
     dcg._validate_and_fix_backend_imports(files)
-    apply_design_tokens(files, design_tokens)
+    apply_design_tokens(files, design_tokens, uiux=uiux)
     dcg._ensure_complete_styles_css(files, uiux=uiux)
 
     for path in list(files.keys()):
@@ -119,6 +114,7 @@ def ensure_valid_codegen_output(
     requirement: str = "",
     prd: str = "",
     app_spec: Optional[Dict[str, Any]] = None,
+    design_tokens: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], list[str]]:
     """
     Validate generated files. Apply deterministic fallback for known app kinds when LLM fails.
@@ -146,6 +142,7 @@ def ensure_valid_codegen_output(
             requirement=requirement,
             prd=prd,
             app_spec=spec,
+            design_tokens=design_tokens,
         )
         fb_errors = validate_against_app_spec(fallback_files, spec)
         if not fb_errors:

@@ -1,10 +1,13 @@
 """
 Dynamic Code Generator Agent - Generates code based on PRD and implementation plan using LLM
 """
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, List
 import json
+import logging
 import re
 from langchain_core.messages import HumanMessage, SystemMessage
+
+logger = logging.getLogger("app_builder")
 
 VITE_REACT_PLUGIN = "@vitejs/plugin-react"
 
@@ -210,6 +213,198 @@ _TODO_APP_PREMIUM_CSS = """
 .todo-badge-medium { background: #fef3c7; color: #d97706; }
 .todo-badge-low { background: #dcfce7; color: #16a34a; }
 """
+
+# Layout rules for class names codegen often emits but styling-agent CSS omits.
+_LAYOUT_CLASS_CSS: Dict[str, str] = {
+    "navbar": """
+.navbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.5rem; background: var(--color-surface, #fff);
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.06);
+}
+.navbar h1 { margin: 0; font-size: 1.5rem; font-weight: 700; color: var(--color-text, #0f172a); }
+""",
+    "sidebar": """
+.sidebar {
+  width: 220px; min-height: 200px; padding: 1rem;
+  background: var(--color-bg, #f8fafc);
+  border-right: 1px solid var(--color-border, #e2e8f0);
+}
+""",
+    "main-content": """
+.main-content {
+  flex: 1; padding: 1.5rem; max-width: 960px; margin: 0 auto; width: 100%;
+}
+""",
+    "task-form": """
+.task-form, .todo-form {
+  display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.5rem;
+  padding: 1.25rem; background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e2e8f0); border-radius: var(--radius-lg, 0.75rem);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.05));
+}
+.task-form input, .todo-form input {
+  flex: 1; min-width: 160px; padding: 0.625rem 1rem;
+  border: 1px solid var(--color-border, #e2e8f0); border-radius: var(--radius-md, 0.5rem); font: inherit;
+}
+.task-form input:focus, .todo-form input:focus {
+  outline: none; border-color: var(--color-primary, #6366f1);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.15);
+}
+.task-form button, .todo-form button {
+  padding: 0.625rem 1.25rem; border-radius: var(--radius-md, 0.5rem);
+  background: var(--color-primary, #6366f1); color: #fff; border: none;
+  font-weight: 600; cursor: pointer; font: inherit;
+}
+.task-form button:hover, .todo-form button:hover { filter: brightness(1.05); }
+""",
+    "todo-form": "",  # covered by task-form block
+    "task-list": """
+.task-list, .todo-list { display: flex; flex-direction: column; gap: 0.75rem; }
+""",
+    "todo-list": "",
+    "task-card": """
+.task-card, .todo-card {
+  padding: 1rem 1.25rem; background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e2e8f0); border-radius: var(--radius-lg, 0.75rem);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.05));
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.task-card:hover, .todo-card:hover {
+  border-color: var(--color-primary, #6366f1);
+  box-shadow: var(--shadow-md, 0 4px 6px rgb(0 0 0 / 0.08));
+}
+.task-card h2, .todo-card h2 { margin: 0 0 0.5rem; font-size: 1.125rem; font-weight: 600; }
+.task-card p, .todo-card p { margin: 0 0 0.75rem; color: var(--color-text-muted, #64748b); font-size: 0.875rem; }
+.task-card button, .todo-card button {
+  margin-right: 0.5rem; margin-top: 0.25rem; padding: 0.375rem 0.875rem;
+  border-radius: var(--radius-md, 0.5rem); border: 1px solid var(--color-border, #e2e8f0);
+  background: #fff; cursor: pointer; font-size: 0.875rem; font: inherit;
+}
+.task-card button:first-of-type, .todo-card button:first-of-type {
+  background: var(--color-primary, #6366f1); color: #fff; border-color: transparent;
+}
+.task-card.completed, .todo-card.completed, .completed.task-card, .completed.todo-card {
+  opacity: 0.8; background: var(--color-bg, #f8fafc);
+}
+.task-card.completed h2, .completed.task-card h2, .todo-card.completed h2 {
+  text-decoration: line-through; color: var(--color-text-muted, #64748b);
+}
+""",
+    "todo-card": "",
+    "completed": "",  # modifier — covered by task-card block
+    "app-container": """
+.app-container { max-width: 48rem; margin: 0 auto; padding: 1rem; }
+""",
+    "app-header": """
+.app-header { margin-bottom: 1.5rem; text-align: center; }
+.app-title { font-size: 1.875rem; font-weight: 700; margin: 0 0 0.5rem; }
+.app-subtitle { color: var(--color-text-muted, #64748b); margin: 0; }
+""",
+    "app-title": "",
+    "app-subtitle": "",
+    "error-banner": """
+.error-banner {
+  background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;
+  border-radius: var(--radius-md, 0.5rem); padding: 0.75rem; margin-bottom: 1rem;
+}
+""",
+    "filters": """
+.filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.filters .btn-ghost.active { background: var(--color-primary, #6366f1); color: #fff; border-color: var(--color-primary, #6366f1); }
+""",
+    "btn-ghost": """
+.btn-ghost {
+  background: transparent; border: 1px solid var(--color-border, #e2e8f0);
+  color: var(--color-text-muted, #64748b);
+}
+""",
+}
+
+_BODY_RESET_CSS = """
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--font-family, var(--font-sans, Inter, system-ui, sans-serif));
+  background: var(--color-background, var(--color-bg, #f8fafc));
+  color: var(--color-text, #0f172a);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+#root { min-height: 100vh; }
+.app { min-height: 100vh; }
+"""
+
+
+def _extract_jsx_class_names(files: Dict[str, str]) -> set:
+    """Collect CSS class names referenced in frontend JSX/JS."""
+    names: set = set()
+    for path, content in files.items():
+        if "frontend/" not in path or not path.endswith((".jsx", ".js", ".tsx", ".ts")):
+            continue
+        for match in re.finditer(r'className\s*=\s*(["\'])([^"\']+)\1', content):
+            for token in re.split(r"\s+", match.group(2).strip()):
+                token = token.strip()
+                if token and not token.startswith("${"):
+                    names.add(token)
+        for match in re.finditer(r"className\s*=\s*\{[`'\"]([^`'\"$]+)", content):
+            for token in re.split(r"\s+", match.group(1).strip()):
+                token = token.strip()
+                if token:
+                    names.add(token)
+    return names
+
+
+def _css_defines_class(css_content: str, class_name: str) -> bool:
+    if not class_name:
+        return True
+    return bool(re.search(rf"\.{re.escape(class_name)}\b", css_content))
+
+
+def _ensure_jsx_css_alignment(files: Dict[str, str]) -> None:
+    """
+    Append layout CSS for class names used in JSX but missing from app.css.
+    Fixes the common case where styling-agent CSS uses .btn/.input but codegen uses .task-card/.navbar.
+    """
+    css_path = "frontend/src/styles/app.css"
+    if css_path not in files:
+        css_path = "frontend/src/styles.css"
+    if css_path not in files:
+        return
+
+    jsx_classes = _extract_jsx_class_names(files)
+    if not jsx_classes:
+        return
+
+    css_content = files[css_path]
+    missing = [c for c in sorted(jsx_classes) if not _css_defines_class(css_content, c)]
+    if not missing:
+        return
+
+    chunks: List[str] = []
+    if "body {" not in css_content and "body{" not in css_content.replace(" ", ""):
+        chunks.append(_BODY_RESET_CSS.strip())
+
+    seen_blocks: set = set()
+    for class_name in missing:
+        block = _LAYOUT_CLASS_CSS.get(class_name, "")
+        if block and block not in seen_blocks:
+            chunks.append(block.strip())
+            seen_blocks.add(block)
+
+    # Generic element styling inside known containers when inputs/buttons lack classes
+    if any(c in jsx_classes for c in ("task-form", "todo-form", "task-card", "navbar", "main-content")):
+        generic = _LAYOUT_CLASS_CSS.get("task-form", "") + _LAYOUT_CLASS_CSS.get("task-card", "")
+        if generic and generic not in seen_blocks:
+            chunks.append(generic.strip())
+            seen_blocks.add(generic)
+
+    if not chunks:
+        return
+
+    files[css_path] = css_content.rstrip() + "\n\n/* JSX class sync */\n" + "\n".join(chunks) + "\n"
+    logger.info("[css] appended layout rules for JSX classes: %s", ", ".join(missing[:12]))
 
 
 def _detect_todo_app(requirement: str) -> bool:
@@ -742,6 +937,10 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
         return
 
     css_content = files[css_path]
+    if "Akkio SaaS design system" in css_content or len(css_content.strip().split("\n")) >= 120:
+        _ensure_jsx_css_alignment(files)
+        return
+
     required_classes = [".app", ".btn", ".input", ".form-row", ".list-item"]
     missing = [cls for cls in required_classes if cls not in css_content]
 
@@ -754,10 +953,14 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
         css_content = files[css_path]
 
     has_todo_markup = any(
-        "todo-" in content for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx"))
+        "todo-" in content or "task-" in content
+        for path, content in files.items() if path.endswith((".js", ".jsx", ".tsx"))
     )
-    if has_todo_markup and ".todo-card" not in css_content and _detect_todo_app(""):
+    if has_todo_markup and ".todo-card" not in css_content and ".task-card" not in css_content:
         files[css_path] += _TODO_APP_PREMIUM_CSS
+        css_content = files[css_path]
+
+    _ensure_jsx_css_alignment(files)
 
 
 def _parse_file_blocks(full_response: str) -> Dict[str, str]:
