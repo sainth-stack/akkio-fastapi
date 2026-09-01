@@ -24,12 +24,7 @@ STEP_COMPLETE_EVENT = {
     "plan": "plan_complete",
 }
 
-ALLOWED_MODELS = [
-    {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai"},
-    {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "provider": "openai"},
-    {"id": "gpt-4.1", "label": "GPT-4.1", "provider": "openai"},
-    {"id": "gpt-4.1-mini", "label": "GPT-4.1 Mini", "provider": "openai"},
-]
+ALLOWED_MODELS = []  # re-exported from model_catalog — see list_available_models
 
 
 def update_pipeline(

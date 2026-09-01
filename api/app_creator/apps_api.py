@@ -75,11 +75,17 @@ class UpdateAppRequest(BaseModel):
 
 @router.get("/models")
 async def list_available_models(current: CurrentUser = Depends(resolve_user)):
-    from api.app_creator.pipeline_helpers import ALLOWED_MODELS
+    from api.app_creator.model_catalog import APP_BUILDER_MODELS, TIER_LABELS, normalize_model_choice
     from llm_config import get_llm_config
 
-    default = get_llm_config(user_email_from(current)).get("model")
-    return {"status": "success", "models": ALLOWED_MODELS, "default_model": default}
+    config = get_llm_config(user_email_from(current))
+    default = normalize_model_choice(config.get("model"))
+    return {
+        "status": "success",
+        "models": APP_BUILDER_MODELS,
+        "tiers": TIER_LABELS,
+        "default_model": default,
+    }
 
 
 @router.get("/apps")

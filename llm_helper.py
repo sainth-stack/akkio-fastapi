@@ -14,9 +14,11 @@ def get_llm_for_user(
     provider: Optional[str] = None,
     **kwargs,
 ):
+    from api.app_creator.model_catalog import normalize_model_choice
+
     config = get_llm_config(user_email)
     provider = provider or config["provider"]
-    model = model_name or config["model"]
+    model = normalize_model_choice(model_name or config["model"])
     api_key = config["api_key"]
 
     if not api_key:
