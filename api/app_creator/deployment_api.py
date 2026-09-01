@@ -4,6 +4,7 @@ Deployment API — local Hostinger deploy on the same VPS (Postgres-backed).
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -22,6 +23,7 @@ from db.app_builder import get_app_builder_db
 
 router = APIRouter(prefix="/api/deployment", tags=["Deployment"])
 
+logger = logging.getLogger("app_builder")
 db = get_app_builder_db()
 
 
@@ -218,7 +220,14 @@ async def deploy_app(
         app, project_name = _resolve_app_and_project(
             request.app_id, request.project_name, current
         )
-        app_id = (app or {}).get("id") or request.app_id
+        app_id = (app or {}).get("id") if app else None
+        if not app_id and request.app_id:
+            # Do not pass stale client app_id when the app row is missing server-side
+            logger.warning(
+                "[deployment] request app_id=%s not resolved — using project_name=%s only",
+                request.app_id,
+                project_name,
+            )
 
         _assert_build_ready(app, request.rebuild)
 

@@ -6,12 +6,15 @@ Replaces legacy MongoDB app_builder_db — Postgres-only app store.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from psycopg2.extras import RealDictCursor, Json
 
 from db.postgres import PostgresPool
+
+logger = logging.getLogger("app_builder")
 
 _BUILDER_DDL = """
 CREATE TABLE IF NOT EXISTS builder_apps (
@@ -98,6 +101,45 @@ CREATE TABLE IF NOT EXISTS builder_app_jobs (
 CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_app_id ON builder_app_jobs (app_id);
 CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_session_id ON builder_app_jobs (session_id);
 ALTER TABLE app_builder_deployments ADD COLUMN IF NOT EXISTS deploy_log TEXT;
+
+-- Fix legacy FK that pointed at app_builder_apps instead of builder_apps
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+        WHERE tc.table_name = 'app_builder_deployments'
+          AND tc.constraint_type = 'FOREIGN KEY'
+          AND tc.constraint_name = 'app_builder_deployments_app_id_fkey'
+          AND ccu.table_name IS DISTINCT FROM 'builder_apps'
+    ) THEN
+        ALTER TABLE app_builder_deployments
+            DROP CONSTRAINT app_builder_deployments_app_id_fkey;
+    END IF;
+EXCEPTION
+    WHEN undefined_object THEN NULL;
+    WHEN undefined_table THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON c.conrelid = t.oid
+        WHERE t.relname = 'app_builder_deployments'
+          AND c.conname = 'app_builder_deployments_app_id_fkey'
+    ) THEN
+        ALTER TABLE app_builder_deployments
+            ADD CONSTRAINT app_builder_deployments_app_id_fkey
+            FOREIGN KEY (app_id) REFERENCES builder_apps(id) ON DELETE SET NULL;
+    END IF;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN undefined_table THEN NULL;
+END $$;
 """
 
 _METADATA_FIELDS = (
@@ -158,6 +200,7 @@ def _app_row_to_dict(row: dict, user_email: str | None = None) -> dict:
 
 class AppBuilderStore(PostgresPool):
     _schema_ready = False
+    _deployment_fk_migrated = False
 
     def init_schema(self) -> None:
         if self.__class__._schema_ready:
@@ -167,6 +210,71 @@ class AppBuilderStore(PostgresPool):
                 cursor.execute(_BUILDER_DDL)
                 cursor.execute(_MIGRATION_DDL)
         self.__class__._schema_ready = True
+
+    def _ensure_deployment_fk(self) -> None:
+        """Run FK repair on live servers that initialized schema before the migration existed."""
+        if self.__class__._deployment_fk_migrated:
+            return
+        self.init_schema()
+        fk_fix = """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.table_name = 'app_builder_deployments'
+                  AND tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.constraint_name = 'app_builder_deployments_app_id_fkey'
+                  AND ccu.table_name IS DISTINCT FROM 'builder_apps'
+            ) THEN
+                ALTER TABLE app_builder_deployments
+                    DROP CONSTRAINT app_builder_deployments_app_id_fkey;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$;
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'app_builder_deployments'
+                  AND c.conname = 'app_builder_deployments_app_id_fkey'
+            ) THEN
+                ALTER TABLE app_builder_deployments
+                    ADD CONSTRAINT app_builder_deployments_app_id_fkey
+                    FOREIGN KEY (app_id) REFERENCES builder_apps(id) ON DELETE SET NULL;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$;
+        """
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(fk_fix)
+        self.__class__._deployment_fk_migrated = True
+
+    def _builder_app_exists(self, app_id: int) -> bool:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM builder_apps WHERE id = %s LIMIT 1", (app_id,))
+                return cursor.fetchone() is not None
+
+    def _resolve_deployment_app_id(self, app_id) -> int | None:
+        """Return app_id only if it exists in builder_apps (avoids orphan FK inserts)."""
+        if app_id is None:
+            return None
+        try:
+            app_id_int = int(app_id)
+        except (TypeError, ValueError):
+            return None
+        if self._builder_app_exists(app_id_int):
+            return app_id_int
+        logger.warning(
+            "[deployment] app_id=%s not found in builder_apps — deployment will use project_name only",
+            app_id_int,
+        )
+        return None
 
     def _resolve_user_id(self, user_email: str) -> int:
         with self.get_connection() as conn:
@@ -439,12 +547,8 @@ class AppBuilderStore(PostgresPool):
         deploy_log: str | None = None,
     ) -> dict | None:
         self.init_schema()
-        app_id_int = None
-        if app_id is not None:
-            try:
-                app_id_int = int(app_id)
-            except (TypeError, ValueError):
-                app_id_int = None
+        self._ensure_deployment_fk()
+        app_id_int = self._resolve_deployment_app_id(app_id)
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
