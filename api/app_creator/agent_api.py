@@ -187,8 +187,8 @@ async def execute_code_generator_agent(
     architecture, 
     project_name: str,
     uiux: str = "",
-    user_email: str | None = None,
-    model_name: str | None = None,
+    user_email: Optional[str] = None,
+    model_name: Optional[str] = None,
 ):
     """Execute dynamic code generation agent using LLM"""
     try:
