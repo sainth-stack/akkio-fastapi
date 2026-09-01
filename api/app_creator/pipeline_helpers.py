@@ -11,6 +11,7 @@ db = get_app_builder_db()
 STEP_PIPELINE = {
     "prd": ("PRD_RUNNING", "PRD_COMPLETE", "PRD_FAILED"),
     "uiux": ("UIUX_RUNNING", "UIUX_COMPLETE", "UIUX_FAILED"),
+    "style": ("STYLE_RUNNING", "STYLE_COMPLETE", "STYLE_FAILED"),
     "architecture": ("ARCHITECTURE_RUNNING", "ARCHITECTURE_COMPLETE", "ARCHITECTURE_FAILED"),
     "plan": ("PLAN_RUNNING", "PLAN_COMPLETE", "PLAN_FAILED"),
 }
@@ -18,9 +19,17 @@ STEP_PIPELINE = {
 STEP_COMPLETE_EVENT = {
     "prd": "prd_complete",
     "uiux": "uiux_complete",
+    "style": "style_complete",
     "architecture": "architecture_complete",
     "plan": "plan_complete",
 }
+
+ALLOWED_MODELS = [
+    {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai"},
+    {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "provider": "openai"},
+    {"id": "gpt-4.1", "label": "GPT-4.1", "provider": "openai"},
+    {"id": "gpt-4.1-mini", "label": "GPT-4.1 Mini", "provider": "openai"},
+]
 
 
 def update_pipeline(

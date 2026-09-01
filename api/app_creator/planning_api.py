@@ -11,6 +11,7 @@ from app_builder.agents.streaming_planner_agent import stream_plan_generation
 from app_builder.agents.prd_agent import stream_prd_generation
 from app_builder.agents.uiux_agent import stream_uiux_generation
 from app_builder.agents.architecture_agent import stream_architecture_generation
+from app_builder.agents.styling_agent import stream_styling_generation
 from llm_helper import get_llm_for_user
 from api.auth.dependencies import CurrentUser
 from api.auth.request_auth import resolve_user, user_email_from
@@ -33,6 +34,7 @@ class GenRequest(BaseModel):
     plan: Optional[List[Any]] = None
     app_id: Optional[str] = None
     session_id: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 def _planning_stream(
@@ -107,7 +109,7 @@ async def generate_plan_step(request: GenRequest, current: CurrentUser = Depends
     uid = current.id or None
 
     async def stream_fn():
-        llm = get_llm_for_user(email, temperature=0.5, streaming=True)
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.5, streaming=True)
         async for event in stream_plan_generation(
             request.requirement,
             request.prd or "",
@@ -129,7 +131,7 @@ async def generate_prd_step(request: GenRequest, current: CurrentUser = Depends(
     uid = current.id or None
 
     async def stream_fn():
-        llm = get_llm_for_user(email, temperature=0.7, streaming=True)
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.7, streaming=True)
         async for event in stream_prd_generation(request.requirement, llm, skip_plan=True):
             yield event
 
@@ -145,12 +147,33 @@ async def generate_uiux_step(request: GenRequest, current: CurrentUser = Depends
     uid = current.id or None
 
     async def stream_fn():
-        llm = get_llm_for_user(email, temperature=0.7, streaming=True)
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.7, streaming=True)
         async for event in stream_uiux_generation(request.requirement, request.prd or "", llm):
             yield event
 
     return StreamingResponse(
         _planning_stream("uiux", request, email, uid, stream_fn, "Starting UI/UX..."),
+        media_type="application/x-ndjson",
+    )
+
+
+@router.post("/style")
+async def generate_style_step(request: GenRequest, current: CurrentUser = Depends(resolve_user)):
+    email = user_email_from(current)
+    uid = current.id or None
+
+    async def stream_fn():
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.4, streaming=True)
+        async for event in stream_styling_generation(
+            request.requirement,
+            request.prd or "",
+            request.uiux or "",
+            llm,
+        ):
+            yield event
+
+    return StreamingResponse(
+        _planning_stream("style", request, email, uid, stream_fn, "Starting Design System..."),
         media_type="application/x-ndjson",
     )
 
@@ -161,7 +184,7 @@ async def generate_arch_step(request: GenRequest, current: CurrentUser = Depends
     uid = current.id or None
 
     async def stream_fn():
-        llm = get_llm_for_user(email, temperature=0.3, streaming=True)
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.3, streaming=True)
         async for event in stream_architecture_generation(
             request.requirement,
             request.prd or "",

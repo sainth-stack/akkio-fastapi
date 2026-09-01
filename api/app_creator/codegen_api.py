@@ -113,6 +113,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         project_name = request_data.get("project_name")
         uiux = request_data.get("uiux", "") or ""
         app_id = request_data.get("app_id")
+        model_name = request_data.get("model_name")
+        design_tokens = request_data.get("design_tokens")
 
         if not project_name:
             await websocket.send_text(json.dumps({
@@ -158,6 +160,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                         plan = app_from_db.get("plan", [])
                     if not architecture and app_from_db.get("architecture"):
                         architecture = app_from_db.get("architecture") or {}
+                    if not design_tokens and app_from_db.get("design_tokens"):
+                        design_tokens = app_from_db.get("design_tokens")
                     architecture = normalize_architecture_for_codegen(
                         architecture or {},
                         api_contract=app_from_db.get("api_contract"),
@@ -202,7 +206,9 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             plan,
             architecture,
             project_name,
-            uiux
+            uiux,
+            user_email=user_email,
+            model_name=model_name,
         )
 
         if not files:
@@ -249,6 +255,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             files = post_process_generated_files(
                 files, architecture, template_name=template_name, uiux=uiux,
                 requirement=requirement, prd=prd, app_spec=app_spec,
+                design_tokens=design_tokens,
             )
             files, validation_errors = ensure_valid_codegen_output(
                 files, architecture, uiux=uiux,

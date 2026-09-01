@@ -119,6 +119,9 @@ _METADATA_FIELDS = (
     "build_error",
     "preview_url",
     "live_url",
+    "design_tokens",
+    "design_system_md",
+    "llm_model",
 )
 
 
@@ -581,7 +584,7 @@ class AppBuilderStore(PostgresPool):
                 existing["id"],
                 frontend_url=frontend_url,
                 backend_url=backend_url,
-                deployment_status="RUNNING",
+                deployment_status="LOCAL_PREVIEW",
                 error_message=None,
                 deploy_log=log_line,
             )
@@ -592,7 +595,7 @@ class AppBuilderStore(PostgresPool):
             project_name=project_name,
             frontend_url=frontend_url,
             backend_url=backend_url,
-            deployment_status="RUNNING",
+            deployment_status="LOCAL_PREVIEW",
             deploy_log=log_line,
         )
 
@@ -615,6 +618,28 @@ class AppBuilderStore(PostgresPool):
                 )
                 row = cursor.fetchone()
                 return self._deployment_row(dict(row)) if row else None
+
+    def list_deployments_by_app_id(self, app_id, limit: int = 20) -> list:
+        self.init_schema()
+        try:
+            aid = int(app_id)
+        except (TypeError, ValueError):
+            return []
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, app_id, project_name, frontend_url, backend_url,
+                           frontend_port, backend_port, deployment_status, error_message,
+                           deploy_log, deployed_at, updated_at
+                    FROM app_builder_deployments
+                    WHERE app_id = %s
+                    ORDER BY deployed_at DESC
+                    LIMIT %s
+                    """,
+                    (aid, limit),
+                )
+                return [self._deployment_row(dict(r)) for r in cursor.fetchall()]
 
     def create_or_update_codegen_session(
         self,

@@ -16,7 +16,7 @@ from app_builder.services.scaffold_service import (
     is_frozen_path,
     merge_llm_into_base,
 )
-from app_builder.services.app_generators import apply_deterministic_fallback
+from app_builder.services.app_generators import apply_deterministic_fallback, generate_app_css
 
 logger = logging.getLogger("app_builder")
 
@@ -28,6 +28,23 @@ def _is_vite_project(files: Dict[str, str]) -> bool:
     return "frontend/vite.config.js" in files or "frontend/vite.config.ts" in files
 
 
+def apply_design_tokens(files: Dict[str, str], design_tokens: Dict[str, Any] | None) -> None:
+    """Inject styling-agent CSS into generated project files."""
+    if not design_tokens or not isinstance(design_tokens, dict):
+        return
+    token_data = design_tokens.get("design_tokens") if isinstance(design_tokens.get("design_tokens"), dict) else design_tokens
+    css = design_tokens.get("app_css")
+    if not css or len(str(css).strip()) < 40:
+        primary = (token_data.get("colors") or {}).get("primary", "#4f46e5")
+        css = generate_app_css(str(primary))
+    for css_path in ("frontend/src/styles/app.css", "frontend/src/styles.css"):
+        if css_path in files or css_path.endswith("app.css"):
+            files[css_path if css_path in files else "frontend/src/styles/app.css"] = css
+            break
+    else:
+        files["frontend/src/styles/app.css"] = css
+
+
 def post_process_generated_files(
     files: Dict[str, str],
     architecture: Dict[str, Any] | None = None,
@@ -36,6 +53,7 @@ def post_process_generated_files(
     requirement: str = "",
     prd: str = "",
     app_spec: Optional[Dict[str, Any]] = None,
+    design_tokens: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """Apply normalization/fixups. Merges LLM output into generic base shell."""
     spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
@@ -61,6 +79,7 @@ def post_process_generated_files(
     dcg._ensure_cors_in_backend(files)
     dcg._fix_frontend_backend_url_undefined(files)
     dcg._validate_and_fix_backend_imports(files)
+    apply_design_tokens(files, design_tokens)
     dcg._ensure_complete_styles_css(files, uiux=uiux)
 
     for path in list(files.keys()):

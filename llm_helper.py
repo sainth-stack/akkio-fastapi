@@ -8,10 +8,15 @@ from typing import Optional
 from llm_config import get_llm_config
 
 
-def get_llm_for_user(user_email: Optional[str] = None, **kwargs):
+def get_llm_for_user(
+    user_email: Optional[str] = None,
+    model_name: Optional[str] = None,
+    provider: Optional[str] = None,
+    **kwargs,
+):
     config = get_llm_config(user_email)
-    provider = config["provider"]
-    model = config["model"]
+    provider = provider or config["provider"]
+    model = model_name or config["model"]
     api_key = config["api_key"]
 
     if not api_key:

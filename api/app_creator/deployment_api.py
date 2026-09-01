@@ -74,6 +74,7 @@ def _assert_not_in_progress(deployment: dict | None) -> None:
 
 
 async def perform_deployment(
+    deployment_id: str,
     app_id: Optional[Union[int, str]],
     project_name: str,
     user_email: str,
@@ -81,29 +82,18 @@ async def perform_deployment(
     rebuild: bool = False,
     run_tests: Optional[bool] = None,
 ):
-    deployment_id = None
     log_lines: list[str] = []
 
     def on_status(status: str, line: str, error: str | None = None) -> None:
         log_lines.append(line)
-        if deployment_id:
-            db.update_deployment(
-                deployment_id=deployment_id,
-                deployment_status=status,
-                error_message=error if status == TERMINAL_FAILURE else None,
-                deploy_log="\n".join(log_lines),
-            )
+        db.update_deployment(
+            deployment_id=deployment_id,
+            deployment_status=status,
+            error_message=error if status == TERMINAL_FAILURE else None,
+            deploy_log="\n".join(log_lines),
+        )
 
     try:
-        deployment = db.create_deployment(
-            app_id=app_id,
-            project_name=project_name,
-            deployment_status="QUEUED",
-            deploy_log="Deploy queued",
-        )
-        deployment_id = deployment["id"]
-        log_lines.append("Deploy queued")
-
         service = HostingerDeployService(db=db)
         result = await asyncio.to_thread(
             service.deploy,
@@ -137,14 +127,13 @@ async def perform_deployment(
     except Exception as e:
         msg = str(e)
         print(f"Deployment error: {msg}")
-        if deployment_id:
-            log_lines.append(msg)
-            db.update_deployment(
-                deployment_id=deployment_id,
-                deployment_status=TERMINAL_FAILURE,
-                error_message=msg,
-                deploy_log="\n".join(log_lines),
-            )
+        log_lines.append(msg)
+        db.update_deployment(
+            deployment_id=deployment_id,
+            deployment_status=TERMINAL_FAILURE,
+            error_message=msg,
+            deploy_log="\n".join(log_lines),
+        )
         if app_id:
             try:
                 db.update_app_builder_app(
@@ -240,8 +229,17 @@ async def deploy_app(
             existing = db.get_deployment_by_project_name(project_name)
         _assert_not_in_progress(existing)
 
+        deployment = db.create_deployment(
+            app_id=app_id,
+            project_name=project_name,
+            deployment_status="QUEUED",
+            deploy_log="Deploy queued",
+        )
+        deployment_id = deployment["id"]
+
         background_tasks.add_task(
             perform_deployment,
+            deployment_id,
             app_id,
             project_name,
             email,
@@ -253,6 +251,7 @@ async def deploy_app(
         return {
             "status": "started",
             "message": "Deployment started. Poll status for progress.",
+            "deployment_id": deployment_id,
             "app_id": app_id,
             "project_name": project_name,
             "deployment_status": "QUEUED",
@@ -264,10 +263,31 @@ async def deploy_app(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/history")
+async def get_deployment_history(
+    app_id: str = Query(..., description="App ID"),
+    limit: int = Query(20, ge=1, le=100),
+    current: CurrentUser = Depends(resolve_user),
+):
+    email = user_email_from(current)
+    uid = current.id or None
+    app = db.get_app_builder_app(app_id, user_email=email, user_id=uid)
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    assert_project_access(app["project_name"], current)
+    deployments = db.list_deployments_by_app_id(app_id, limit=limit)
+    return {
+        "status": "success",
+        "app_id": app_id,
+        "deployments": [_deployment_payload(d, app) for d in deployments],
+    }
+
+
 @router.get("/status")
 async def get_deployment_status(
     app_id: Optional[str] = Query(None, description="App ID"),
     project_name: Optional[str] = Query(None, description="Project name"),
+    deployment_id: Optional[str] = Query(None, description="Specific deployment run"),
     current: CurrentUser = Depends(resolve_user),
 ):
     try:
@@ -275,6 +295,16 @@ async def get_deployment_status(
         uid = current.id or None
         deployment = None
         app = None
+
+        if deployment_id:
+            deployment = db.get_deployment_by_id(deployment_id)
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            project_name = deployment.get("project_name")
+            assert_project_access(project_name, current)
+            if deployment.get("app_id"):
+                app = db.get_app_builder_app(deployment["app_id"], user_email=email, user_id=uid)
+            return _deployment_payload(deployment, app)
 
         if app_id:
             app = db.get_app_builder_app(app_id, user_email=email, user_id=uid)

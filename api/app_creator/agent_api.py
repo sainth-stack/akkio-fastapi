@@ -186,7 +186,9 @@ async def execute_code_generator_agent(
     plan: list,
     architecture, 
     project_name: str,
-    uiux: str = ""
+    uiux: str = "",
+    user_email: str | None = None,
+    model_name: str | None = None,
 ):
     """Execute dynamic code generation agent using LLM"""
     try:
@@ -216,8 +218,9 @@ async def execute_code_generator_agent(
         
         # Initialize LLM for code generation
         llm = get_llm_for_user(
-            user_email=None,  # Use default
-            temperature=0.3,  # Lower temperature for more consistent code
+            user_email=user_email,
+            model_name=model_name,
+            temperature=0.3,
             streaming=True
         )
         

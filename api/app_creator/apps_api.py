@@ -68,6 +68,18 @@ class UpdateAppRequest(BaseModel):
     build_error: Optional[str] = None
     preview_url: Optional[str] = None
     live_url: Optional[str] = None
+    design_tokens: Optional[dict] = None
+    design_system_md: Optional[str] = None
+    llm_model: Optional[str] = None
+
+
+@router.get("/models")
+async def list_available_models(current: CurrentUser = Depends(resolve_user)):
+    from api.app_creator.pipeline_helpers import ALLOWED_MODELS
+    from llm_config import get_llm_config
+
+    default = get_llm_config(user_email_from(current)).get("model")
+    return {"status": "success", "models": ALLOWED_MODELS, "default_model": default}
 
 
 @router.get("/apps")
