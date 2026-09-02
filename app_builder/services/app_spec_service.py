@@ -365,23 +365,40 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
 **UI/UX (colors & layout — plain CSS in styles/app.css, NOT Tailwind):**
 {uiux[:5000] if uiux else "Clean modern SaaS UI with soft gray background (#f8fafc), white cards, primary accent."}
 
-**CSS CLASS CONTRACT (App.jsx MUST use these — styles are auto-themed):**
-- Shell: `<div className="app"><div className="app-container">`
-- Header: `className="app-header"`, `className="app-title"`, `className="app-subtitle"`
-- Content blocks: `className="card"`
-- Forms: `className="form-row"` with `className="input"` on inputs and `className="btn btn-primary"` on submit buttons
-- Lists: `<ul className="list">` with `<li className="list-item">` per row
-- Do NOT use unstyled bare `<input>`/`<button>` without these classes
-- Optional todo/task layout classes (task-form, task-card) also work if needed
+**PREMIUM UI STRUCTURE (App.jsx — follow exactly):**
+```jsx
+export default function App() {{
+  return (
+    <div className="app">
+      <div className="app-container">
+        <header className="app-header">
+          <h1 className="app-title">App Name</h1>
+          <p className="app-subtitle">Short description</p>
+        </header>
+        <div className="card">
+          <form className="form-row" onSubmit={{handler}}>
+            <input className="input" placeholder="..." aria-label="..." />
+            <button type="submit" className="btn btn-primary">Add</button>
+          </form>
+          <ul className="list">
+            <li className="list-item">...</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}}
+```
+Platform injects premium CSS — you MUST use these class names. Never bare unstyled inputs/buttons.
 
 **RULES:**
-1. App.jsx: complete interactive SaaS-quality UI — never the generic shell placeholder.
+1. App.jsx: premium SaaS UI with app-container, app-header, card, form-row, input, btn btn-primary, list, list-item.
 {backend_rules}
-5. styles/app.css: optional — platform injects themed CSS from Design System; if you generate it, use :root variables matching UI/UX colors.
+5. styles/app.css: do NOT generate — platform injects premium themed CSS automatically.
 6. {api_rule}
 7. useState/useEffect only — no external state libraries.
-8. Accessible: buttons, labels, aria-labels, keyboard-friendly controls.
-9. Visual quality: centered layout, card shadows, proper spacing, colored primary buttons, muted subtitle text.
+8. Accessible: aria-labels on inputs, keyboard-friendly controls.
+9. Never use inline styles for layout/colors — use the CSS class contract above.
 """
 
 
@@ -410,19 +427,20 @@ def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -
         errors.append("Frontend contains stub text")
 
     css = files.get("frontend/src/styles/app.css", "")
-    if len(css.splitlines()) < 25 and "Akkio SaaS design system" not in css:
+    if len(css.splitlines()) < 25 and "Akkio Premium SaaS" not in css and "Akkio SaaS" not in css:
         errors.append("styles/app.css too minimal (< 25 lines)")
 
     app_lower = app_src.lower()
-    standard_classes = (
-        "app-container", "app-header", "app-title", "card", "form-row",
-        "btn-primary", "list-item", "task-form", "task-card",
-    )
-    if app_src and not any(cls in app_src for cls in standard_classes):
-        errors.append("App.jsx missing standard CSS classes (use app-container, card, form-row, btn btn-primary, list-item)")
-    if app_src and "<button" in app_lower and "btn" not in app_src and "button" in app_lower:
-        if not any(x in app_src for x in ("task-form", "form-row", "card")):
-            errors.append("Buttons should use className=\"btn btn-primary\" or live inside .form-row/.card")
+    premium_markers = ("app-container", "app-header", "app-title", "card", "form-row", "btn-primary", "list-item")
+    if app_src and sum(1 for m in premium_markers if m in app_src) < 3:
+        errors.append(
+            "App.jsx missing premium layout classes (need app-container, app-header, card, form-row, btn btn-primary, list-item)"
+        )
+    if app_src and '<input' in app_lower and 'className="input"' not in app_src and "className='input'" not in app_src:
+        if 'className={`input' not in app_src:
+            errors.append('Inputs must use className="input"')
+    if app_src and '<button' in app_lower and 'btn' not in app_src:
+        errors.append('Buttons must use className="btn btn-primary" or btn-ghost')
 
     if kind == "static_quiz":
         combined = ui_src.lower()

@@ -149,35 +149,45 @@ def _primary_hover(primary: str) -> str:
         return "#4338ca"
 
 
+def _soften_page_bg(bg: str) -> str:
+    """Pure white page backgrounds look flat — use a soft slate canvas."""
+    normalized = (bg or "").strip().upper().replace(" ", "")
+    if normalized in ("#FFFFFF", "#FFF", "WHITE", "#FEFEFE"):
+        return "#f1f5f9"
+    return bg
+
+
 def build_saas_app_css(tokens: Dict[str, Any] | None = None, primary: str = "#4f46e5") -> str:
     """
-    Production SaaS stylesheet — design tokens + layout primitives + JSX fallbacks.
-    Used for every generated app so colors/backgrounds always apply.
+    Premium SaaS stylesheet — injected for every generated app.
+    Works with standard classes AND bare form-row/header markup from LLM output.
     """
     colors = (tokens or {}).get("colors") if isinstance(tokens, dict) else {}
     if not isinstance(colors, dict):
         colors = tokens if isinstance(tokens, dict) else {}
 
     primary = str(colors.get("primary") or primary)
-    bg = str(colors.get("background") or colors.get("bg") or "#f8fafc")
+    bg = _soften_page_bg(str(colors.get("background") or colors.get("bg") or "#f1f5f9"))
     surface = str(colors.get("surface") or "#ffffff")
     text = str(colors.get("text") or "#0f172a")
     muted = str(colors.get("muted") or "#64748b")
     border = str(colors.get("border") or "#e2e8f0")
     danger = str(colors.get("danger") or "#ef4444")
     hover = _primary_hover(primary)
-    font = "Inter, system-ui, -apple-system, sans-serif"
+    font = "'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
     if isinstance(tokens, dict) and isinstance(tokens.get("typography"), dict):
         font = tokens["typography"].get("fontFamily") or font
-    max_w = "48rem"
+    max_w = "56rem"
     if isinstance(tokens, dict) and isinstance(tokens.get("layout"), dict):
         max_w = tokens["layout"].get("maxContentWidth") or max_w
 
-    return f"""/* Akkio SaaS design system — auto-generated */
+    return f"""/* Akkio Premium SaaS design system */
 :root {{
   --color-primary: {primary};
   --color-primary-hover: {hover};
+  --color-primary-soft: color-mix(in srgb, {primary} 12%, #ffffff);
   --color-bg: {bg};
+  --color-bg-start: color-mix(in srgb, {primary} 6%, {bg});
   --color-background: {bg};
   --color-surface: {surface};
   --color-text: {text};
@@ -186,80 +196,287 @@ def build_saas_app_css(tokens: Dict[str, Any] | None = None, primary: str = "#4f
   --color-border: {border};
   --color-danger: {danger};
   --font-sans: {font};
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.08);
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05);
+  --shadow-md: 0 4px 12px rgb(15 23 42 / 0.08), 0 2px 4px rgb(15 23 42 / 0.04);
+  --shadow-lg: 0 12px 32px rgb(15 23 42 / 0.1), 0 4px 12px rgb(15 23 42 / 0.06);
+  --shadow-xl: 0 20px 48px rgb(15 23 42 / 0.12);
   --max-content-width: {max_w};
 }}
 
-* {{ box-sizing: border-box; -webkit-font-smoothing: antialiased; }}
+*, *::before, *::after {{ box-sizing: border-box; -webkit-font-smoothing: antialiased; }}
 
 html, body {{
   margin: 0;
   padding: 0;
   min-height: 100%;
   font-family: var(--font-sans);
-  background: var(--color-bg);
   color: var(--color-text);
-  line-height: 1.5;
+  line-height: 1.55;
+  background: var(--color-bg);
 }}
 
 #root {{ min-height: 100vh; }}
 
+/* ─── Page shell ─────────────────────────────────────────────────────── */
 .app {{
   min-height: 100vh;
-  background: var(--color-bg);
+  background:
+    radial-gradient(ellipse 90% 60% at 50% -10%, color-mix(in srgb, var(--color-primary) 14%, transparent), transparent 55%),
+    linear-gradient(180deg, var(--color-bg-start) 0%, var(--color-bg) 35%, var(--color-bg) 100%);
   color: var(--color-text);
 }}
 
 .app-container {{
   max-width: var(--max-content-width);
   margin: 0 auto;
-  padding: 2rem 1.25rem;
+  padding: 0 1.25rem 3rem;
 }}
 
-.app-header {{
-  margin-bottom: 2rem;
+/* ─── Hero header ────────────────────────────────────────────────────── */
+.app-header, .app > header, header.navbar {{
   text-align: center;
+  padding: 2.75rem 1rem 1.75rem;
+  margin-bottom: 0.25rem;
 }}
 
-.app-title {{
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  margin: 0 0 0.5rem;
+.app-title, .app-header h1, .app > header h1, .navbar h1, .app > h1:first-child {{
+  font-size: clamp(1.875rem, 4vw, 2.625rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+  margin: 0 0 0.625rem;
+  color: var(--color-text);
+  background: linear-gradient(135deg, var(--color-text) 20%, color-mix(in srgb, var(--color-primary) 55%, var(--color-text)) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}}
+
+.app-subtitle, .app-header p, .app > header p {{
+  font-size: 1.0625rem;
+  color: var(--color-text-muted);
+  margin: 0 auto;
+  max-width: 36rem;
+  line-height: 1.6;
+}}
+
+/* ─── Elevated panels (card + auto-wrap bare forms) ────────────────────── */
+.card,
+.app-container > .form-row,
+.app-container > form,
+.app > .form-row,
+.app > form:not(.card form),
+.app .task-form,
+.app .todo-form,
+.main-content > .form-row,
+.main-content > .card {{
+  background: var(--color-surface);
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, var(--color-primary) 12%);
+  border-radius: var(--radius-xl);
+  padding: 1.75rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(8px);
+}}
+
+.card .form-row, .card form.form-row {{
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin-bottom: 1.25rem;
+  backdrop-filter: none;
+}}
+
+/* ─── Forms & inputs ─────────────────────────────────────────────────── */
+.form-row, .task-form, .todo-form {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.875rem;
+  align-items: stretch;
+}}
+
+.input, .textarea,
+.form-row input, .form-row select, .form-row textarea,
+.task-form input, .todo-form input,
+.card input, .card select, .card textarea,
+.app input[type="text"], .app input[type="email"],
+.app input[type="password"], .app input[type="search"],
+.app input[type="date"], .app input[type="datetime-local"],
+.app input[type="number"], .app input:not([type]),
+.app select, .app textarea {{
+  flex: 1;
+  min-width: 150px;
+  min-height: 44px;
+  padding: 0.6875rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: 0.9375rem;
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg) 8%);
+  color: var(--color-text);
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+}}
+
+.textarea {{ min-height: 120px; resize: vertical; width: 100%; }}
+
+.input:focus, .textarea:focus,
+.form-row input:focus, .card input:focus,
+.app input:focus, .app select:focus, .app textarea:focus {{
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}}
+
+.input::placeholder, .app input::placeholder {{ color: #94a3b8; }}
+
+/* ─── Buttons ────────────────────────────────────────────────────────── */
+.btn,
+.app button,
+.form-row button, .card button,
+.task-form button, .task-card button {{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 44px;
+  padding: 0.6875rem 1.375rem;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s, background 0.15s;
+}}
+
+.btn-primary,
+button[type="submit"],
+.form-row button[type="submit"],
+.card button.btn-primary,
+.app button.btn-primary,
+.app .form-row button:last-child:not(.btn-ghost),
+.task-form button:first-of-type {{
+  background: linear-gradient(135deg, var(--color-primary) 0%, color-mix(in srgb, var(--color-primary) 75%, #1e1b4b) 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 35%, transparent), var(--shadow-sm);
+}}
+
+.btn-primary:hover:not(:disabled),
+button[type="submit"]:hover:not(:disabled),
+.form-row button[type="submit"]:hover:not(:disabled),
+.app button:hover:not(:disabled):not(.btn-ghost) {{
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--color-primary) 32%, transparent);
+}}
+
+.btn-primary:active:not(:disabled),
+.app button:active:not(:disabled) {{
+  transform: translateY(0);
+}}
+
+.btn-primary:disabled, .btn:disabled, .app button:disabled {{
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}}
+
+.btn-ghost {{
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}}
+
+.btn-ghost:hover:not(:disabled) {{
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}}
+
+.btn-danger {{
+  background: linear-gradient(135deg, var(--color-danger), #b91c1c);
+  color: #fff;
+}}
+
+/* ─── Lists & data rows ──────────────────────────────────────────────── */
+.list, .task-list, .todo-list {{
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}}
+
+.list-item, .task-card, .todo-card {{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1rem 1.25rem;
+  background: color-mix(in srgb, var(--color-surface) 96%, var(--color-bg) 4%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+}}
+
+.list-item:hover, .task-card:hover, .todo-card:hover {{
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}}
+
+.task-card, .todo-card {{ flex-direction: column; align-items: stretch; }}
+
+.task-card h2, .todo-card h2, .list-item strong {{
+  margin: 0 0 0.35rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
   color: var(--color-text);
 }}
 
-.app-subtitle {{
+.task-card p, .todo-card p {{
+  margin: 0 0 0.75rem;
   color: var(--color-text-muted);
-  font-size: 1.05rem;
-  margin: 0;
+  font-size: 0.875rem;
 }}
 
+.list-item.done span, .completed h2, .task-card.completed h2 {{
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}}
+
+.task-card.completed, .todo-card.completed, .completed {{
+  opacity: 0.88;
+  background: color-mix(in srgb, var(--color-bg) 50%, var(--color-surface));
+}}
+
+/* ─── Layout helpers ─────────────────────────────────────────────────── */
 .navbar {{
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 1rem 1.5rem;
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
   border-bottom: 1px solid var(--color-border);
   box-shadow: var(--shadow-sm);
-}}
-
-.navbar h1 {{
-  margin: 0;
-  font-size: 1.375rem;
-  font-weight: 700;
-  color: var(--color-text);
+  backdrop-filter: blur(12px);
+  text-align: left;
 }}
 
 .sidebar {{
-  width: 220px;
+  width: 240px;
   min-height: 200px;
-  padding: 1rem;
-  background: var(--color-bg);
+  padding: 1.25rem;
+  background: color-mix(in srgb, var(--color-surface) 90%, var(--color-bg));
   border-right: 1px solid var(--color-border);
 }}
 
@@ -269,148 +486,6 @@ html, body {{
   max-width: var(--max-content-width);
   margin: 0 auto;
   width: 100%;
-}}
-
-.card {{
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 1.5rem;
-  box-shadow: var(--shadow-md);
-  margin-bottom: 1.5rem;
-}}
-
-.form-row, .task-form, .todo-form {{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
-  align-items: center;
-}}
-
-.input, .textarea,
-.task-form input, .todo-form input,
-.form-row input, .card input,
-.app input[type="text"], .app input[type="email"],
-.app input[type="password"], .app input[type="search"],
-.app input[type="date"], .app input[type="number"],
-.app input:not([type]), .app select, .app textarea {{
-  flex: 1;
-  min-width: 140px;
-  padding: 0.625rem 1rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font: inherit;
-  background: var(--color-surface);
-  color: var(--color-text);
-  transition: border-color 0.15s, box-shadow 0.15s;
-}}
-
-.textarea {{ min-height: 100px; resize: vertical; width: 100%; }}
-
-.input:focus, .textarea:focus,
-.task-form input:focus, .form-row input:focus,
-.app input:focus, .app select:focus, .app textarea:focus {{
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
-}}
-
-.btn,
-.task-form button, .todo-form button,
-.card button, .task-card button, .todo-card button,
-.app button {{
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.625rem 1.25rem;
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  font: inherit;
-  cursor: pointer;
-  border: none;
-  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
-}}
-
-.btn-primary,
-.task-form button:first-of-type,
-.app button:first-of-type {{
-  background: var(--color-primary);
-  color: #fff;
-  box-shadow: var(--shadow-sm);
-}}
-
-.btn-primary:hover:not(:disabled),
-.task-form button:first-of-type:hover,
-.app button:first-of-type:hover {{
-  background: var(--color-primary-hover);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
-}}
-
-.btn-primary:disabled {{ opacity: 0.55; cursor: not-allowed; }}
-
-.btn-ghost {{
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-text-muted);
-}}
-
-.btn-ghost:hover {{ border-color: var(--color-primary); color: var(--color-primary); }}
-
-.list, .task-list, .todo-list {{
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}}
-
-.list-item, .task-card, .todo-card {{
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s, box-shadow 0.15s;
-}}
-
-.task-card, .todo-card {{
-  flex-direction: column;
-  align-items: stretch;
-}}
-
-.task-card:hover, .todo-card:hover, .list-item:hover {{
-  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
-  box-shadow: var(--shadow-md);
-}}
-
-.task-card h2, .todo-card h2 {{
-  margin: 0 0 0.35rem;
-  font-size: 1.125rem;
-  font-weight: 600;
-}}
-
-.task-card p, .todo-card p {{
-  margin: 0 0 0.75rem;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-}}
-
-.list-item.done span, .task-card.completed h2, .todo-card.completed h2,
-.completed.task-card h2 {{
-  text-decoration: line-through;
-  color: var(--color-text-muted);
-}}
-
-.task-card.completed, .todo-card.completed, .completed {{
-  opacity: 0.85;
-  background: color-mix(in srgb, var(--color-bg) 70%, var(--color-surface));
 }}
 
 .filters {{
@@ -430,59 +505,92 @@ html, body {{
   text-align: center;
   color: var(--color-text-muted);
   padding: 2.5rem 1rem;
+  font-size: 0.9375rem;
 }}
 
 .error-banner {{
-  background: #fef2f2;
+  background: linear-gradient(135deg, #fef2f2, #fff1f2);
   color: #991b1b;
   border: 1px solid #fecaca;
   border-radius: var(--radius-md);
-  padding: 0.75rem 1rem;
+  padding: 0.875rem 1.125rem;
+  margin-bottom: 1rem;
+  font-size: 0.9375rem;
+}}
+
+.success-banner {{
+  background: linear-gradient(135deg, #ecfdf5, #f0fdf4);
+  color: #166534;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius-md);
+  padding: 0.875rem 1.125rem;
   margin-bottom: 1rem;
 }}
 
-.options {{ display: flex; flex-direction: column; gap: 0.5rem; margin: 1rem 0; }}
+.options {{ display: flex; flex-direction: column; gap: 0.625rem; margin: 1rem 0; }}
 
 .option-row {{
   text-align: left;
-  padding: 0.875rem 1rem;
+  padding: 1rem 1.125rem;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
   cursor: pointer;
   font: inherit;
   width: 100%;
+  transition: all 0.18s;
 }}
 
 .option-row:hover:not(:disabled) {{
   border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+  background: var(--color-primary-soft);
+  box-shadow: var(--shadow-sm);
 }}
 
 .metrics {{
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1rem;
   margin-bottom: 1.5rem;
 }}
 
 .metric-card {{
-  padding: 1rem;
+  padding: 1.25rem;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   text-align: center;
   background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
 }}
 
 .metric-value {{
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1.625rem;
+  font-weight: 800;
   color: var(--color-primary);
+  letter-spacing: -0.02em;
 }}
 
-@media (max-width: 640px) {{
-  .app-container, .main-content {{ padding: 1rem; }}
-  .form-row, .task-form {{ flex-direction: column; align-items: stretch; }}
+.question-text {{ font-size: 1.125rem; font-weight: 600; margin: 0 0 1rem; }}
+
+/* Center content when LLM omits app-container wrapper */
+.app:not(:has(.app-container)) > .app-header,
+.app:not(:has(.app-container)) > header,
+.app:not(:has(.app-container)) > .form-row,
+.app:not(:has(.app-container)) > form,
+.app:not(:has(.app-container)) > .card,
+.app:not(:has(.app-container)) > .list,
+.app:not(:has(.app-container)) > ul {{
+  max-width: var(--max-content-width);
+  margin-left: auto;
+  margin-right: auto;
+  width: calc(100% - 2.5rem);
+}}
+
+@media (max-width: 768px) {{
+  .app-container {{ padding: 0 1rem 2rem; }}
+  .app-header {{ padding: 2rem 0.5rem 1.25rem; }}
+  .form-row, .task-form, .card {{ padding: 1.25rem; }}
+  .form-row, .task-form {{ flex-direction: column; }}
   .sidebar {{ width: 100%; border-right: none; border-bottom: 1px solid var(--color-border); }}
 }}
 """

@@ -937,7 +937,7 @@ def _ensure_complete_styles_css(files: Dict[str, str], uiux: str = "") -> None:
         return
 
     css_content = files[css_path]
-    if "Akkio SaaS design system" in css_content or len(css_content.strip().split("\n")) >= 120:
+    if "Akkio Premium SaaS" in css_content or "Akkio SaaS design system" in css_content or len(css_content.strip().split("\n")) >= 120:
         _ensure_jsx_css_alignment(files)
         return
 
