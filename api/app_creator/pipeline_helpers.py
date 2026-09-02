@@ -78,10 +78,15 @@ def touch_job(
         pass
 
 
-def public_base_url(fallback: str = "http://localhost:8000") -> str:
+def public_base_url(fallback: str = "http://localhost:8000", request_base: str | None = None) -> str:
     import os
 
-    return (os.environ.get("PUBLIC_BASE_URL") or fallback).rstrip("/")
+    env = (os.environ.get("PUBLIC_BASE_URL") or "").strip()
+    if env:
+        return env.rstrip("/")
+    if request_base:
+        return request_base.rstrip("/")
+    return fallback.rstrip("/")
 
 
 def npm_install_timeout() -> int:

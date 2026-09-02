@@ -94,8 +94,9 @@ class HostingerDeployService:
         except Exception as e:
             return False, str(e)
 
-    def _health_check(self, project_name: str) -> tuple[bool, str]:
-        url = f"{public_base_url()}/app/{project_name}"
+    def _health_check(self, project_name: str, public_base: str | None = None) -> tuple[bool, str]:
+        base = public_base or public_base_url()
+        url = f"{base.rstrip('/')}/app/{project_name}"
         try:
             import urllib.request
 
@@ -119,8 +120,10 @@ class HostingerDeployService:
         rebuild: bool = False,
         run_tests: Optional[bool] = None,
         on_status: Optional[StatusCallback] = None,
+        public_base: str | None = None,
     ) -> dict:
         logs: list[str] = []
+        base = (public_base or public_base_url()).rstrip("/")
 
         def emit(status: str, line: str, error: Optional[str] = None) -> None:
             self._append_log(logs, line)
@@ -218,8 +221,8 @@ class HostingerDeployService:
         else:
             emit("TESTING", "Tests skipped (DEPLOY_RUN_TESTS not enabled)")
 
-        live_url = f"{public_base_url()}/app/{project_name}"
-        backend_url = f"{public_base_url()}/api/apps/{project_name}"
+        live_url = f"{base}/app/{project_name}"
+        backend_url = f"{base}/api/apps/{project_name}"
         emit("DEPLOYING", f"Registering live URL: {live_url}")
 
         if not static_dir:
@@ -229,7 +232,7 @@ class HostingerDeployService:
             emit(TERMINAL_FAILURE, msg, msg)
             return {"status": "error", "message": msg, "logs": "\n".join(logs)}
 
-        ok, health_msg = self._health_check(project_name)
+        ok, health_msg = self._health_check(project_name, public_base=base)
         emit("DEPLOYING", health_msg)
         if not ok:
             emit(TERMINAL_FAILURE, health_msg, health_msg)

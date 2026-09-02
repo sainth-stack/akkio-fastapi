@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Optional, Union
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from api.app_creator.hostinger_deploy_service import (
@@ -16,6 +16,7 @@ from api.app_creator.hostinger_deploy_service import (
     TERMINAL_FAILURE,
     TERMINAL_SUCCESS,
 )
+from api.app_creator.pipeline_helpers import public_base_url
 from api.auth.dependencies import CurrentUser
 from api.auth.request_auth import resolve_user, user_email_from
 from api.app_creator.project_access import assert_project_access
@@ -83,6 +84,7 @@ async def perform_deployment(
     user_id: int | None,
     rebuild: bool = False,
     run_tests: Optional[bool] = None,
+    public_base: str | None = None,
 ):
     log_lines: list[str] = []
 
@@ -107,6 +109,7 @@ async def perform_deployment(
             rebuild=rebuild,
             run_tests=run_tests,
             on_status=on_status,
+            public_base=public_base,
         )
 
         if result.get("status") == "success":
@@ -211,11 +214,15 @@ def register_local_preview(
 async def deploy_app(
     request: DeployRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     current: CurrentUser = Depends(resolve_user),
 ):
     try:
         email = user_email_from(current)
         uid = current.id or None
+        deploy_public_base = public_base_url(
+            request_base=str(http_request.base_url).rstrip("/")
+        )
 
         app, project_name = _resolve_app_and_project(
             request.app_id, request.project_name, current
@@ -255,6 +262,7 @@ async def deploy_app(
             uid,
             request.rebuild,
             request.run_tests,
+            deploy_public_base,
         )
 
         return {
@@ -371,6 +379,7 @@ async def get_deployment_status(
 async def redeploy_app(
     request: DeployRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     current: CurrentUser = Depends(resolve_user),
 ):
     """Redeploy with rebuild=true by default."""
@@ -380,4 +389,4 @@ async def redeploy_app(
         rebuild=True,
         run_tests=request.run_tests,
     )
-    return await deploy_app(redeploy_request, background_tasks, current)
+    return await deploy_app(redeploy_request, background_tasks, http_request, current)
