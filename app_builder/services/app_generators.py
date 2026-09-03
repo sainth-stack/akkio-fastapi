@@ -59,12 +59,16 @@ _DEFAULT_QUESTIONS = [
 ]
 
 
-def generate_static_quiz_app_jsx(uiux: str = "", prd: str = "", title: str = "Quiz") -> str:
+def generate_questions_json(uiux: str = "", prd: str = "") -> str:
     questions = _parse_static_questions(uiux, prd) or _DEFAULT_QUESTIONS
-    q_json = json.dumps(questions, indent=2)
-    return f'''import {{ useState }} from 'react';
+    return json.dumps({"questions": questions}, indent=2)
 
-const QUESTIONS = {q_json};
+
+def generate_static_quiz_app_jsx(uiux: str = "", prd: str = "", title: str = "Quiz") -> str:
+    return f'''import {{ useState }} from 'react';
+import questionsData from './data/questions.json';
+
+const QUESTIONS = questionsData.questions || [];
 
 export default function App() {{
   const [index, setIndex] = useState(0);
@@ -572,6 +576,92 @@ button[type="submit"]:hover:not(:disabled),
 
 .question-text {{ font-size: 1.125rem; font-weight: 600; margin: 0 0 1rem; }}
 
+/* ─── LLM results / markdown prose ───────────────────────────────────── */
+.form-col {{
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}}
+
+.form-actions {{
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}}
+
+.error-text {{
+  color: var(--color-danger);
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 25%, transparent);
+}}
+
+.results-box, .results-prose {{
+  margin-top: 1.5rem;
+  padding: 1.5rem 1.75rem;
+  background: linear-gradient(180deg, var(--color-surface) 0%, color-mix(in srgb, var(--color-surface) 96%, var(--color-primary) 4%) 100%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, var(--color-primary) 15%);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  line-height: 1.75;
+  color: var(--color-text);
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+  text-align: left;
+}}
+
+.results-prose h2 {{
+  font-size: 1.375rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem;
+  color: var(--color-text);
+  letter-spacing: -0.02em;
+}}
+
+.results-prose h3 {{
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--color-primary);
+}}
+
+.results-prose h4 {{
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  color: var(--color-text);
+}}
+
+.results-prose p {{
+  margin: 0 0 0.875rem;
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+}}
+
+.results-prose ul {{
+  margin: 0.5rem 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--color-text-muted);
+}}
+
+.results-prose li {{
+  margin-bottom: 0.375rem;
+  font-size: 0.9375rem;
+}}
+
+.results-prose strong {{
+  color: var(--color-text);
+  font-weight: 600;
+}}
+
+.results-ideas {{
+  margin-top: 1.5rem;
+}}
+
 /* Center content when LLM omits app-container wrapper */
 .app:not(:has(.app-container)) > .app-header,
 .app:not(:has(.app-container)) > header,
@@ -839,48 +929,178 @@ export default function App() {{
 
 
 # ---------------------------------------------------------------------------
-# Content / form / dashboard
+# LLM / content / form / dashboard
 # ---------------------------------------------------------------------------
 
-def generate_content_app_jsx(spec: Dict[str, Any], title: str = "Generator") -> str:
+def generate_llm_app_jsx(spec: Dict[str, Any], title: str = "AI App") -> str:
+    """LLM app UI — calls platform proxy at POST /generate (OpenAI via Akkio backend)."""
+    gen_type = spec.get("gen_type") or "general"
+    input_mode = spec.get("llm_input_mode") or ("textarea" if gen_type in ("summarize", "translate") else "input")
+    is_textarea = input_mode == "textarea"
+    placeholder = {
+        "summarize": "Paste text to summarize...",
+        "translate": "Enter text to translate...",
+        "travel": "Destination or travel interests (e.g. 5 days in Tokyo)...",
+        "linkedin_post": "Topic for your LinkedIn post...",
+        "ideas": "Enter a topic to brainstorm ideas...",
+    }.get(gen_type, "Enter your prompt...")
+    btn_label = {
+        "summarize": "Summarize",
+        "translate": "Translate",
+        "travel": "Plan Trip",
+        "linkedin_post": "Generate Post",
+        "ideas": "Generate Ideas",
+    }.get(gen_type, "Generate")
+    subtitle = {
+        "summarize": "AI-powered text summarization",
+        "translate": "AI translation powered by OpenAI",
+        "travel": "AI travel planner — get itinerary ideas",
+        "linkedin_post": "Generate professional LinkedIn posts",
+        "ideas": "Brainstorm creative ideas instantly",
+    }.get(gen_type, "Powered by AI")
+
+    input_block = (
+        f'''<textarea className="textarea" rows={{6}} placeholder="{placeholder}" value={{input}} onChange={{(e) => setInput(e.target.value)}} aria-label="User input" />'''
+        if is_textarea else
+        f'''<input className="input" placeholder="{placeholder}" value={{input}} onChange={{(e) => setInput(e.target.value)}} aria-label="User input" />'''
+    )
+    form_class = "form-col" if is_textarea else "form-row"
+
     return f'''import {{ useState }} from 'react';
 import {{ apiFetch }} from './api/client.js';
 
+const GEN_TYPE = '{gen_type}';
+
+function escapeHtml(s) {{
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}}
+
+function inlineFormat(s) {{
+  return escapeHtml(s).replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+}}
+
+/** Lightweight markdown → HTML for travel plans, summaries, posts */
+function formatMarkdown(text) {{
+  if (!text) return '';
+  const lines = String(text).split('\\n');
+  let html = '';
+  let inList = false;
+  for (const line of lines) {{
+    const t = line.trim();
+    if (!t) {{
+      if (inList) {{ html += '</ul>'; inList = false; }}
+      continue;
+    }}
+    if (t.startsWith('#### ')) {{
+      if (inList) {{ html += '</ul>'; inList = false; }}
+      html += `<h4>${{inlineFormat(t.slice(5))}}</h4>`;
+    }} else if (t.startsWith('### ')) {{
+      if (inList) {{ html += '</ul>'; inList = false; }}
+      html += `<h3>${{inlineFormat(t.slice(4))}}</h3>`;
+    }} else if (t.startsWith('## ')) {{
+      if (inList) {{ html += '</ul>'; inList = false; }}
+      html += `<h2>${{inlineFormat(t.slice(3))}}</h2>`;
+    }} else if (t.startsWith('- ')) {{
+      if (!inList) {{ html += '<ul>'; inList = true; }}
+      html += `<li>${{inlineFormat(t.slice(2))}}</li>`;
+    }} else {{
+      if (inList) {{ html += '</ul>'; inList = false; }}
+      html += `<p>${{inlineFormat(t)}}</p>`;
+    }}
+  }}
+  if (inList) html += '</ul>';
+  return html;
+}}
+
 export default function App() {{
-  const [topic, setTopic] = useState('');
+  const [input, setInput] = useState('');
   const [results, setResults] = useState([]);
+  const [summary, setSummary] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const generate = async (e) => {{
     e.preventDefault();
-    const text = topic.trim();
+    const text = input.trim();
     if (!text) return;
     setLoading(true);
+    setError('');
+    setResults([]);
+    setSummary('');
     try {{
-      const data = await apiFetch(`${{API}}/generate`, {{ method: 'POST', body: JSON.stringify({{ topic: text }}) }});
-      const items = data?.content || data?.results || data?.ideas || [];
-      setResults(Array.isArray(items) ? items : [String(items)]);
-    }} catch {{
-      setResults([`Idea for "${{text}}": Explore creative approaches and unique angles on this topic.`]);
-    }} finally {{ setLoading(false); }}
+      const data = await apiFetch('/generate', {{
+        method: 'POST',
+        body: JSON.stringify({{ topic: text, text, gen_type: GEN_TYPE, count: 5 }}),
+      }});
+      const items = data?.content || [];
+      const raw = data?.raw_text || '';
+      const fullText = raw || (Array.isArray(items) ? items.join('\\n\\n') : String(items || ''));
+
+      // Short numbered ideas → list; long-form (travel, summarize, posts) → prose
+      const useList = GEN_TYPE === 'ideas'
+        && Array.isArray(items)
+        && items.length > 1
+        && items.every((i) => typeof i === 'string' && i.length < 280);
+
+      if (useList) {{
+        setResults(items);
+      }} else {{
+        setSummary(fullText);
+      }}
+    }} catch (err) {{
+      setError(err?.message || 'Generation failed. Try again.');
+    }} finally {{
+      setLoading(false);
+    }}
   }};
+
+  const clearAll = () => {{ setInput(''); setResults([]); setSummary(''); setError(''); }};
 
   return (
     <div className="app"><div className="app-container">
-      <header className="app-header"><h1 className="app-title">{title}</h1></header>
+      <header className="app-header">
+        <h1 className="app-title">{title}</h1>
+        <p className="app-subtitle">{subtitle}</p>
+      </header>
       <div className="card">
-        <form className="form-row" onSubmit={{generate}}>
-          <input className="input" placeholder="Enter topic..." value={{topic}} onChange={{(e) => setTopic(e.target.value)}} />
-          <button type="submit" className="btn btn-primary" disabled={{loading || !topic.trim()}}>{{loading ? 'Generating...' : 'Generate'}}</button>
+        <form className="{form_class}" onSubmit={{generate}}>
+          {input_block}
+          <div className="form-actions">
+            <button type="submit" className="btn btn-primary" disabled={{loading || !input.trim()}}>
+              {{loading ? 'Working...' : '{btn_label}'}}
+            </button>
+            {{(summary || results.length > 0) && (
+              <button type="button" className="btn btn-ghost" onClick={{clearAll}}>Clear</button>
+            )}}
+          </div>
         </form>
+        {{error && <p className="error-text">{{error}}</p>}}
+        {{summary && (
+          <div
+            className="results-box results-prose"
+            dangerouslySetInnerHTML={{{{ __html: formatMarkdown(summary) }}}}
+          />
+        )}}
         {{results.length > 0 && (
-          <ul className="list">{{results.map((r, i) => <li key={{i}} className="list-item">{{typeof r === 'string' ? r : JSON.stringify(r)}}</li>)}}</ul>
+          <ul className="list results-ideas">
+            {{results.map((r, i) => (
+              <li key={{i}} className="list-item">{{typeof r === 'string' ? r : JSON.stringify(r)}}</li>
+            ))}}
+          </ul>
         )}}
       </div>
     </div></div>
   );
 }}
 '''
+
+
+def generate_content_app_jsx(spec: Dict[str, Any], title: str = "Generator") -> str:
+    return generate_llm_app_jsx(spec, title=title)
 
 
 def generate_form_app_jsx(spec: Dict[str, Any], title: str = "Form App") -> str:
@@ -1054,11 +1274,18 @@ def _stack_for_kind(spec: Dict[str, Any], uiux: str, prd: str) -> Dict[str, str]
     files: Dict[str, str] = {"frontend/src/styles/app.css": css}
 
     if kind == "static_quiz":
+        files["frontend/src/data/questions.json"] = generate_questions_json(uiux, prd)
         files["frontend/src/App.jsx"] = generate_static_quiz_app_jsx(uiux, prd, title=title)
         files.update(generate_minimal_backend_stubs())
         return files
 
-    if kind in ("static",) or (spec.get("frontend_only") and kind != "static_quiz"):
+    if kind == "llm":
+        files["frontend/src/App.jsx"] = generate_llm_app_jsx(spec, title)
+        files.update(generate_minimal_backend_stubs())
+        return files
+
+    if kind in ("static",) or (spec.get("frontend_only") and kind not in ("static_quiz", "llm")):
+        files["frontend/src/data/questions.json"] = generate_questions_json(uiux, prd)
         files["frontend/src/App.jsx"] = generate_static_quiz_app_jsx(uiux, prd, title=title)
         files.update(generate_minimal_backend_stubs())
         return files
@@ -1070,12 +1297,13 @@ def _stack_for_kind(spec: Dict[str, Any], uiux: str, prd: str) -> Dict[str, str]
 
     if kind == "content":
         files["frontend/src/App.jsx"] = generate_content_app_jsx(spec, title)
-        files.update(generate_service_backend(spec))
+        files.update(generate_minimal_backend_stubs())
         return files
 
     if kind == "form":
-        files["frontend/src/App.jsx"] = generate_form_app_jsx(spec, title)
-        files.update(generate_service_backend(spec))
+        llm_spec = {**spec, "gen_type": spec.get("gen_type") or "translate", "llm_input_mode": "textarea"}
+        files["frontend/src/App.jsx"] = generate_llm_app_jsx(llm_spec, title)
+        files.update(generate_minimal_backend_stubs())
         return files
 
     if kind == "dashboard":

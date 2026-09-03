@@ -46,18 +46,33 @@ def test_crud_todo_fallback():
     assert "class Task" in files.get("backend/models.py", "")
 
 
-def test_content_generator_fallback():
+def test_llm_generator_fallback():
     spec = build_app_spec(
         "linkedin post idea generator",
         {"database_schema": {"tables": [{"name": "ideas"}]}},
         "Generate ideas from a topic",
     )
-    assert spec["app_kind"] == "content"
+    assert spec["app_kind"] == "llm"
+    assert spec.get("gen_type") in ("linkedin_post", "ideas")
     files = apply_deterministic_fallback({}, spec)
     files = _finalize(files, spec, requirement="idea generator")
     errors = validate_against_app_spec(files, spec)
     assert errors == [], errors
-    assert "/generate" in files.get("backend/routes.py", "")
+    assert "apiFetch('/generate'" in files.get("frontend/src/App.jsx", "")
+
+
+def test_llm_summarize_fallback():
+    spec = build_app_spec(
+        "Build a text summarization app",
+        {},
+        "Summarize long text",
+    )
+    assert spec["app_kind"] == "llm"
+    assert spec.get("gen_type") == "summarize"
+    files = apply_deterministic_fallback({}, spec)
+    jsx = files.get("frontend/src/App.jsx", "")
+    assert "summarize" in jsx
+    assert "textarea" in jsx
 
 
 def test_form_translator_fallback():
@@ -66,7 +81,8 @@ def test_form_translator_fallback():
         {"database_schema": {"tables": [{"name": "translations"}]}},
         "Translate text",
     )
-    assert spec["app_kind"] == "form"
+    assert spec["app_kind"] == "llm"
+    assert spec.get("gen_type") == "translate"
     files = apply_deterministic_fallback({}, spec)
     files = _finalize(files, spec, requirement="translator")
     errors = validate_against_app_spec(files, spec)
@@ -86,12 +102,14 @@ def test_dashboard_fallback():
     assert errors == [], errors
 
 
-def test_empty_llm_crud_gets_fallback_via_ensure_valid():
+def test_travel_planner_llm_fallback():
     spec = build_app_spec(
         "travel trip planner",
         {"database_schema": {"tables": [{"name": "trips", "columns": [{"name": "title"}]}]}},
         "Plan trips",
     )
+    assert spec["app_kind"] == "llm"
+    assert spec.get("gen_type") == "travel"
     base = post_process_generated_files({}, {}, requirement="travel", app_spec=spec)
     out, errs = ensure_valid_codegen_output({}, {}, requirement="travel", app_spec=spec)
     assert not errs, errs
@@ -100,8 +118,9 @@ def test_empty_llm_crud_gets_fallback_via_ensure_valid():
 
 if __name__ == "__main__":
     test_crud_todo_fallback()
-    test_content_generator_fallback()
+    test_llm_generator_fallback()
+    test_llm_summarize_fallback()
     test_form_translator_fallback()
     test_dashboard_fallback()
-    test_empty_llm_crud_gets_fallback_via_ensure_valid()
+    test_travel_planner_llm_fallback()
     print("ALL OK")

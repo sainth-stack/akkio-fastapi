@@ -1,5 +1,5 @@
 import json
-from typing import AsyncGenerator, Dict, Any
+from typing import AsyncGenerator, Dict, Any, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from ..schemas.architecture import ArchitectureDecision
 from ..schemas.plan import ProjectPlan
@@ -10,7 +10,8 @@ async def stream_architecture_generation(
     prd: str,
     plan: list,
     llm,
-    uiux: str = ""
+    uiux: str = "",
+    design_tokens: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Dynamically generates architecture decisions using LLM based on requirement, PRD, and plan.
@@ -42,16 +43,20 @@ async def stream_architecture_generation(
 **UI/UX Design Specification:**
 {uiux if uiux else "Standard modern UI/UX design."}
 
+**Design System Tokens (if available):**
+{json.dumps(design_tokens, indent=2) if design_tokens else "Use UI/UX color palette — platform injects plain CSS (app-container, card, btn, input classes)."}
+
 You must analyze the requirements and output a JSON architecture decision in this EXACT format:
 
 ```json
 {{
   "frontend_structure": {{
     "framework": "React",
-    "template": "Create React App (No Zustand)",
-    "state_management": "Plain React (useState, useEffect) with LocalStorage",
-    "ui_library": "Tailwind CSS",
-    "key_components": ["<list main components>"]
+    "template": "Vite + React",
+    "state_management": "Plain React (useState, useEffect) with LocalStorage fallback",
+    "ui_library": "Plain CSS (platform-injected styles/app.css — classes: app-container, card, btn, input)",
+    "key_components": ["<list main components>"],
+    "static_data": ["frontend/src/data/*.json — seed JSON for demo/static content when PRD needs sample data"]
   }},
   "backend_structure": {{
     "framework": "FastAPI",

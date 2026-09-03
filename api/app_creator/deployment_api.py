@@ -152,20 +152,57 @@ async def perform_deployment(
                 pass
 
 
+def _canonical_app_url(project_name: str | None) -> str | None:
+    if not project_name:
+        return None
+    return f"{public_base_url().rstrip('/')}/app/{project_name}"
+
+
+def _canonical_backend_url(project_name: str | None) -> str | None:
+    if not project_name:
+        return None
+    return f"{public_base_url().rstrip('/')}/api/apps/{project_name}"
+
+
+def _prefer_public_url(stored: str | None, canonical: str | None) -> str | None:
+    """Use canonical public URL when DB still has localhost but PUBLIC_BASE_URL is configured."""
+    import os
+
+    if not canonical:
+        return stored
+    if not stored:
+        return canonical
+    if "localhost" in stored or "127.0.0.1" in stored:
+        if (os.environ.get("PUBLIC_BASE_URL") or "").strip():
+            return canonical
+    return stored
+
+
 def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
-    live_url = deployment.get("frontend_url")
-    if app and app.get("live_url"):
-        live_url = app.get("live_url")
-    elif app and app.get("preview_url") and not live_url:
-        live_url = app.get("preview_url")
+    project_name = deployment.get("project_name") or (app or {}).get("project_name")
+    canonical_front = _canonical_app_url(project_name)
+    canonical_back = _canonical_backend_url(project_name)
+
+    frontend_url = _prefer_public_url(deployment.get("frontend_url"), canonical_front)
+    backend_url = _prefer_public_url(deployment.get("backend_url"), canonical_back)
+    live_url = _prefer_public_url(
+        deployment.get("frontend_url")
+        or (app or {}).get("live_url")
+        or (app or {}).get("preview_url"),
+        canonical_front,
+    )
+    preview_url = _prefer_public_url(
+        (app or {}).get("preview_url") if app else deployment.get("frontend_url"),
+        canonical_front,
+    )
     return {
         "deployment_id": deployment["id"],
         "app_id": deployment.get("app_id"),
-        "project_name": deployment["project_name"],
-        "frontend_url": deployment.get("frontend_url"),
-        "backend_url": deployment.get("backend_url"),
+        "project_name": project_name or deployment.get("project_name"),
+        "frontend_url": frontend_url,
+        "backend_url": backend_url,
         "live_url": live_url,
-        "preview_url": app.get("preview_url") if app else deployment.get("frontend_url"),
+        "preview_url": preview_url,
         "frontend_port": deployment.get("frontend_port"),
         "backend_port": deployment.get("backend_port"),
         "deployment_status": deployment["deployment_status"],
@@ -175,6 +212,7 @@ def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
         "updated_at": deployment.get("updated_at"),
         "build_status": app.get("build_status") if app else None,
         "mode": deployment.get("mode", "deployed"),
+        "public_base_url": public_base_url().rstrip("/"),
     }
 
 
@@ -342,18 +380,26 @@ async def get_deployment_status(
         if not deployment:
             build_status = app.get("build_status") if app else None
             preview_url = app.get("preview_url") if app else None
+            canonical_front = _canonical_app_url(project_name)
+            canonical_back = _canonical_backend_url(project_name)
             if build_status == "BUILD_SUCCESS" and preview_url:
+                public_front = _prefer_public_url(preview_url, canonical_front)
+                public_back = _prefer_public_url(
+                    f"{preview_url.split('/app/')[0]}/api/apps/{project_name}" if preview_url and project_name else None,
+                    canonical_back,
+                )
                 return {
                     "app_id": app_id,
                     "project_name": project_name,
                     "deployment_status": "LOCAL_PREVIEW",
-                    "message": "App is running locally. Use the preview URL below or click Deploy to register.",
+                    "message": "Build succeeded. Click Deploy to publish your live URL.",
                     "build_status": build_status,
-                    "preview_url": preview_url,
-                    "frontend_url": preview_url,
-                    "live_url": preview_url,
-                    "backend_url": f"{preview_url.split('/app/')[0]}/api/apps/{project_name}" if preview_url and project_name else None,
+                    "preview_url": public_front,
+                    "frontend_url": public_front,
+                    "live_url": public_front,
+                    "backend_url": public_back,
                     "mode": "local",
+                    "public_base_url": public_base_url().rstrip("/"),
                 }
             return {
                 "app_id": app_id,

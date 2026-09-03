@@ -72,6 +72,9 @@ def _persist_project_runtime(project_name: str, files: dict, architecture: dict,
         "uiux": uiux,
         "entities": entities,
     }
+    from app_builder.services.app_spec_service import build_app_spec, detect_llm_gen_type
+    app_spec = build_app_spec(requirement, architecture, prd, uiux)
+    structured["gen_type"] = app_spec.get("gen_type") or detect_llm_gen_type(requirement, prd)
     schema_payload = _json.dumps(tables) if tables else _json.dumps((architecture or {}).get("database_schema") or {})
     config = build_project_config(
         project_name=project_name,
@@ -81,8 +84,6 @@ def _persist_project_runtime(project_name: str, files: dict, architecture: dict,
         db_schema={"schema": schema_payload},
         template_name=template_name,
     )
-    from app_builder.services.app_spec_service import build_app_spec
-    app_spec = build_app_spec(requirement, architecture, prd, uiux)
     config = enrich_project_config(config, architecture or {}, app_spec)
     persist_project_config(project_name, config)
     ensure_project_db_initialized(project_name, config)

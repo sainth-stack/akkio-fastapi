@@ -27,18 +27,18 @@ Output Format:
 # UI/UX Design
 
 ## Color Palette
-- Primary: [Hex Code] - [Tailwind Name, e.g., indigo-600]
-- Secondary: [Hex Code] - [Tailwind Name]
+- Primary: [Hex Code]
+- Secondary: [Hex Code]
 - Background: [Hex Code]
-- Text: [Hex Code] - [Tailwind Name, e.g., slate-900]
-- Muted/Gray: [Hex Code] - [Tailwind Name, e.g., slate-500]
+- Text: [Hex Code]
+- Muted/Gray: [Hex Code]
 
 ## Typography
 - Headings: [Font Family, e.g., Inter, Plus Jakarta Sans]
 - Body: [Font Family]
 
 ## Layout Structure
-- [Detailed description of the layout shell, e.g., "Collapsible Sidebar on left (w-64), Fixed Top Navbar (h-16), Scrollable Main Content area with max-w-7xl"]
+- [Detailed description of the layout shell, e.g., "Fixed top header, centered main content (max ~960px), card-based sections"]
 
 ## Key Screens
 ### 1. [Screen Name]
@@ -50,11 +50,15 @@ Output Format:
 (Repeat for 3-4 key screens)
 
 ## Components Styling Rules
-- **Buttons**: px-4 py-2 rounded-md font-medium transition-colors.
-- **Cards**: bg-white border border-gray-200 rounded-xl shadow-sm.
-- **Inputs**: border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500.
+- **Buttons**: use class `btn btn-primary` for primary actions, `btn` for secondary.
+- **Cards**: use class `card` on white panels with subtle shadow.
+- **Inputs**: use class `input` with clear focus states.
 
-keep it implementable in React + Tailwind CSS.
+**CSS CLASS CONTRACT (codegen uses plain CSS, NOT Tailwind):**
+- Layout: `app`, `app-container`, `app-header`, `app-title`, `app-subtitle`
+- Forms: `form-row`, `input`, `btn`, `btn-primary`
+- Lists: `list`, `list-item`
+- Provide hex color codes in the Color Palette section — these drive the injected theme.
 """
 
     user_prompt = f"""Create a UI/UX Design for:

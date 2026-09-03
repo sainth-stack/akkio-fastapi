@@ -149,6 +149,26 @@ def enrich_project_config(
         else:
             fields[spec_table] = ["title"]
     out["fields"] = fields
+
+    kind = (app_spec or {}).get("app_kind")
+    gen_type = (app_spec or {}).get("gen_type")
+    if kind in ("llm", "content"):
+        custom = dict(out.get("custom_endpoints") or {})
+        custom.setdefault("generate", "llm_content")
+        custom.setdefault("generate-ideas", "llm_content")
+        out["custom_endpoints"] = custom
+        if gen_type:
+            out["gen_type"] = gen_type
+        if not out.get("llmPrompt"):
+            req = (app_spec or {}).get("requirement") or ""
+            out["llmPrompt"] = f"You are a helpful AI assistant for: {req[:500]}"
+    elif kind == "form":
+        custom = dict(out.get("custom_endpoints") or {})
+        custom.setdefault("translate", "llm_translate")
+        custom.setdefault("generate", "llm_content")
+        out["custom_endpoints"] = custom
+        out["gen_type"] = gen_type or "translate"
+
     return out
 
 

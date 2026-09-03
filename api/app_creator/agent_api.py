@@ -682,6 +682,8 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
         prd_text = ""
         original_requirement = ""
         architecture = {}
+        uiux_text = ""
+        design_tokens = None
         app_record = None
         try:
             if app_id:
@@ -696,6 +698,8 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
                 prd_text = app_record.get("prd") or ""
                 original_requirement = app_record.get("prompt") or ""
                 architecture = app_record.get("architecture") or {}
+                uiux_text = app_record.get("generated_uiux") or ""
+                design_tokens = app_record.get("design_tokens")
         except Exception as db_err:
             print(f"[update-code-ws] DB fetch warning: {db_err}", file=sys.stderr)
 
@@ -706,6 +710,8 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             prd=prd_text,
             original_requirement=original_requirement,
             architecture=architecture,
+            uiux=uiux_text,
+            design_tokens=design_tokens,
             websocket=websocket
         )
 

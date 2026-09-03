@@ -158,9 +158,11 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
 GEN_PROMPTS = {
     "ideas": "You are a creative ideas generator. Given a topic, produce exactly {count} concise, actionable ideas. Return each idea on a new line, numbered 1. 2. 3. etc. No extra text.",
     "linkedin_post": "You are a LinkedIn content expert. Given a topic, write a professional, engaging LinkedIn post. Use a strong hook, short paragraphs (2-3 lines), end with a question or CTA. Include 3-5 relevant hashtags at the end.",
-    "travel": "You are a travel expert. Given a destination or travel interest, produce exactly {count} travel suggestions, tips, or itinerary ideas. Return each on a new line, numbered.",
-    "translate": "You are a translator. Translate the given text. Return only the translation, no explanations.",
-    "general": "You are a helpful assistant. Given a topic or prompt, produce {count} relevant, concise responses. Return each on a new line, numbered.",
+    "travel": "You are an expert travel planner. Given a destination, duration, or travel interest, produce a detailed travel plan with exactly {count} sections: overview, day-by-day itinerary ideas, must-see places, food recommendations, and practical tips. Use clear numbered sections.",
+    "summarize": "You are an expert summarizer. Summarize the following text clearly and concisely. Preserve all key points, names, and conclusions. Use short paragraphs or bullet points. Return only the summary — no preamble or meta commentary.",
+    "summarization": "You are an expert summarizer. Summarize the following text clearly and concisely. Preserve all key points. Return only the summary.",
+    "translate": "You are a professional translator. Translate the given text accurately. Return only the translation, no explanations.",
+    "general": "You are a helpful AI assistant. Given a topic or prompt, produce a thorough, useful response. For list-style requests, return exactly {count} items, each on a new line, numbered.",
 }
 
 
@@ -174,19 +176,25 @@ def _infer_handler_from_path(path: str) -> str:
     return "llm_content"  # default for unknown LLM endpoints
 
 
-async def _handle_llm_content(body: Dict[str, Any]) -> Dict[str, Any]:
+async def _handle_llm_content(body: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Handler for generate-ideas, generate, and similar LLM content endpoints."""
-    topic = (body.get("topic") or body.get("text") or "").strip() or str(body)[:500]
+    config = config or {}
+    topic = (body.get("topic") or body.get("text") or "").strip() or str(body)[:8000]
     count = max(1, min(10, body.get("count") or 5))
-    raw_type = (body.get("gen_type") or "ideas").lower().strip().replace("-", "_").replace(" ", "_")
-    gen_type = raw_type if raw_type in GEN_PROMPTS else "ideas"
+    default_type = (config.get("gen_type") or "general").lower().strip().replace("-", "_").replace(" ", "_")
+    raw_type = (body.get("gen_type") or default_type).lower().strip().replace("-", "_").replace(" ", "_")
+    if raw_type in ("summarization",):
+        raw_type = "summarize"
+    gen_type = raw_type if raw_type in GEN_PROMPTS else default_type if default_type in GEN_PROMPTS else "general"
 
     from llm_helper import get_llm_for_user
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    llm = get_llm_for_user(user_email=None, temperature=0.8 if gen_type == "ideas" else 0.7)
-    prompt_template = GEN_PROMPTS.get(gen_type, GEN_PROMPTS["ideas"])
-    system_content = prompt_template.format(count=count)
+    temp = 0.3 if gen_type in ("summarize", "translate") else (0.8 if gen_type == "ideas" else 0.7)
+    llm = get_llm_for_user(user_email=None, temperature=temp)
+    prompt_template = GEN_PROMPTS.get(gen_type, GEN_PROMPTS["general"])
+    custom_prompt = config.get("llmPrompt") or config.get("llm_prompt")
+    system_content = custom_prompt if custom_prompt and gen_type == "general" else prompt_template.format(count=count)
     messages = [SystemMessage(content=system_content), HumanMessage(content=topic)]
     response = await llm.ainvoke(messages)
     text = (response.content or "").strip()
@@ -196,8 +204,11 @@ async def _handle_llm_content(body: Dict[str, Any]) -> Dict[str, Any]:
         hashtag_line = next((l.strip() for l in lines if l.strip().startswith("#")), None)
         post_lines = [l for l in lines if not l.strip().startswith("#")] if hashtag_line else lines
         content = ["\n".join(post_lines).strip()] if post_lines else [text]
-    elif gen_type == "translate":
-        content = [text] if text else ["No translation."]
+    elif gen_type in ("translate", "summarize", "summarization"):
+        content = [text] if text else ["No output generated."]
+    elif gen_type in ("travel", "general", "linkedin_post"):
+        # Long-form markdown — keep full text; UI renders raw_text
+        content = [text] if text else ["No content generated."]
     else:
         ideas = []
         for line in text.split("\n"):
@@ -245,11 +256,11 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
         raise HTTPException(status_code=404, detail=f"Custom endpoint '{action}' not found")
     try:
         if handler == "llm_content":
-            result = await _handle_llm_content(body)
+            result = await _handle_llm_content(body, config)
         elif handler == "llm_translate":
             result = await _handle_llm_translate(body)
         else:
-            result = await _handle_llm_content(body)  # fallback
+            result = await _handle_llm_content(body, config)  # fallback
         return JSONResponse(content=result)
     except HTTPException:
         raise

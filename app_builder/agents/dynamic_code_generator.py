@@ -320,6 +320,39 @@ _LAYOUT_CLASS_CSS: Dict[str, str] = {
   color: var(--color-text-muted, #64748b);
 }
 """,
+    "form-actions": """
+.form-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
+""",
+    "form-col": """
+.form-col { display: flex; flex-direction: column; gap: 0.75rem; }
+""",
+    "error-text": """
+.error-text {
+  color: #dc2626; font-size: 0.875rem; margin: 0.75rem 0 0;
+  padding: 0.625rem 0.875rem; background: #fef2f2; border-radius: var(--radius-md, 0.5rem);
+  border: 1px solid #fecaca;
+}
+""",
+    "results-box": """
+.results-box, .results-prose {
+  margin-top: 1.5rem; padding: 1.25rem 1.5rem;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: var(--radius-lg, 0.75rem);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.05));
+  line-height: 1.7; color: var(--color-text, #0f172a);
+}
+.results-prose h2 { font-size: 1.375rem; font-weight: 700; margin: 1.25rem 0 0.75rem; }
+.results-prose h3 { font-size: 1.125rem; font-weight: 600; margin: 1rem 0 0.5rem; color: var(--color-primary, #6366f1); }
+.results-prose h4 { font-size: 1rem; font-weight: 600; margin: 0.875rem 0 0.375rem; }
+.results-prose p { margin: 0.5rem 0; color: var(--color-text-muted, #475569); }
+.results-prose ul { margin: 0.5rem 0 0.75rem 1.25rem; padding: 0; }
+.results-prose li { margin: 0.375rem 0; }
+.results-prose strong { color: var(--color-text, #0f172a); font-weight: 600; }
+.results-ideas { margin-top: 1.5rem; }
+""",
+    "results-prose": "",  # covered by results-box block
+    "results-ideas": "",
 }
 
 _BODY_RESET_CSS = """

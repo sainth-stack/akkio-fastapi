@@ -32,6 +32,7 @@ class GenRequest(BaseModel):
     uiux: Optional[str] = None
     architecture: Optional[Dict[str, Any]] = None
     plan: Optional[List[Any]] = None
+    design_tokens: Optional[Dict[str, Any]] = None
     app_id: Optional[str] = None
     session_id: Optional[str] = None
     model_name: Optional[str] = None
@@ -191,6 +192,7 @@ async def generate_arch_step(request: GenRequest, current: CurrentUser = Depends
             [],
             llm,
             request.uiux or "",
+            request.design_tokens,
         ):
             yield event
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Optional, Tuple
 
 from app_builder.agents import dynamic_code_generator as dcg
@@ -16,7 +17,7 @@ from app_builder.services.scaffold_service import (
     is_frozen_path,
     merge_llm_into_base,
 )
-from app_builder.services.app_generators import apply_deterministic_fallback
+from app_builder.services.app_generators import apply_deterministic_fallback, generate_llm_app_jsx
 from app_builder.services.design_system_css import build_css_from_payload
 
 logger = logging.getLogger("app_builder")
@@ -38,6 +39,28 @@ def apply_design_tokens(
     css = build_css_from_payload(design_tokens, uiux=uiux)
     files["frontend/src/styles/app.css"] = css
     logger.info("[css] applied SaaS design system (%d lines)", len(css.splitlines()))
+
+
+def _ensure_llm_app_jsx(files: Dict[str, str], app_spec: Dict[str, Any]) -> None:
+    """Replace broken LLM codegen JSX with the deterministic travel/summary template."""
+    if app_spec.get("app_kind") != "llm":
+        return
+    jsx = files.get("frontend/src/App.jsx") or files.get("frontend/src/App.js", "")
+    if not jsx:
+        return
+    needs_fix = (
+        ".json()" in jsx
+        or (
+            (app_spec.get("gen_type") or "general") in ("travel", "summarize", "general", "linkedin_post", "translate")
+            and "formatMarkdown" not in jsx
+        )
+    )
+    if not needs_fix:
+        return
+    title_match = re.search(r'<h1[^>]*className="app-title"[^>]*>([^<]+)</h1>', jsx)
+    title = title_match.group(1).strip() if title_match else "AI App"
+    files["frontend/src/App.jsx"] = generate_llm_app_jsx(app_spec, title=title)
+    logger.info("[codegen] replaced broken LLM App.jsx with deterministic template (gen_type=%s)", app_spec.get("gen_type"))
 
 
 def post_process_generated_files(
@@ -76,6 +99,9 @@ def post_process_generated_files(
     dcg._validate_and_fix_backend_imports(files)
     apply_design_tokens(files, design_tokens, uiux=uiux)
     dcg._ensure_complete_styles_css(files, uiux=uiux)
+
+    _ensure_llm_app_jsx(files, spec)
+    dcg._ensure_jsx_css_alignment(files)
 
     for path in list(files.keys()):
         if is_frozen_path(path) and path in base:
@@ -126,7 +152,7 @@ def ensure_valid_codegen_output(
 
     kind = spec.get("app_kind", "custom")
     supported = (
-        "static_quiz", "static", "quiz", "crud", "content", "form", "dashboard", "custom",
+        "static_quiz", "static", "quiz", "crud", "content", "form", "llm", "dashboard", "custom",
     )
     if errors and (kind in supported or spec.get("frontend_only")):
         logger.warning(

@@ -78,6 +78,8 @@ async def update_code_from_chat(
     prd: str = "",
     original_requirement: str = "",
     architecture: Dict[str, Any] = None,
+    uiux: str = "",
+    design_tokens: Optional[Dict[str, Any]] = None,
     websocket: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
@@ -226,6 +228,12 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
 
 **Updated Architecture:**
 {json.dumps(updated_architecture, indent=2)[:2000]}{'...' if len(json.dumps(updated_architecture)) > 2000 else ''}
+
+**UI/UX Design (preserve unless user asks to change layout/theme):**
+{uiux[:2000] if uiux else 'Use existing app styling (app-container, card, btn, input classes).'}
+
+**Design System Tokens:**
+{json.dumps(design_tokens, indent=2)[:1200] if design_tokens else 'Derived from UI/UX palette.'}
 """
 
     if original_requirement:

@@ -38,6 +38,17 @@ _BACKEND_ALLOWLIST = (
 )
 
 _COMPONENT_ALLOWLIST_PREFIX = "frontend/src/components/"
+_DATA_ALLOWLIST_PREFIX = "frontend/src/data/"
+
+
+def _needs_static_data(app_spec: Dict[str, Any]) -> bool:
+    kind = app_spec.get("app_kind", "custom")
+    if kind in ("static_quiz", "dashboard", "static"):
+        return True
+    if app_spec.get("frontend_only"):
+        return True
+    req = (app_spec.get("requirement") or "").lower()
+    return any(k in req for k in ("static data", "sample data", "demo data", "seed data", "mock data"))
 
 
 def singularize(table_name: str) -> str:
@@ -59,6 +70,36 @@ def detect_frontend_only(requirement: str, prd: str = "", uiux: str = "") -> boo
     return any(m in text for m in _FRONTEND_ONLY_MARKERS)
 
 
+def detect_llm_gen_type(requirement: str, prd: str = "") -> str:
+    """Map user requirement to platform LLM prompt key (GEN_PROMPTS in dynamic_app_router)."""
+    text = f"{requirement} {prd}".lower()
+    if any(k in text for k in ("summarize", "summary", "summarization", "summarise", "tl;dr")):
+        return "summarize"
+    if any(k in text for k in ("linkedin", "social media post", "social post")):
+        return "linkedin_post"
+    if any(k in text for k in ("travel", "trip", "itinerary", "planner", "vacation", "destination")):
+        return "travel"
+    if any(k in text for k in ("translate", "translation", "translator")):
+        return "translate"
+    if any(k in text for k in ("idea", "brainstorm", "ideas generator")):
+        return "ideas"
+    if any(k in text for k in ("blog post", "article", "writing assistant", "copywriter")):
+        return "general"
+    return "general"
+
+
+def _is_llm_app(text: str) -> bool:
+    llm_markers = (
+        "summarize", "summary", "summarization", "summarise",
+        "openai", "gpt", " llm", "genai", "gen ai", "ai app", "ai-powered",
+        "language model", "chatgpt", "generate text", "text generator",
+        "content generator", "idea generator", "travel planner", "travel app",
+        "writing assistant", "chatbot", "ai assistant", "linkedin post",
+        "blog post generator", "paraphrase", "rewrite",
+    )
+    return any(m in text for m in llm_markers)
+
+
 def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict[str, Any]] = None, uiux: str = "") -> str:
     text = f"{requirement} {prd}".lower()
     is_quiz = any(k in text for k in ("quiz", "mcq", "multiple choice", "multiple-choice", "question bank"))
@@ -70,14 +111,16 @@ def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict
         return "quiz"
     if any(k in text for k in ("todo", "to-do", "task list", "checklist", "task manager")):
         return "crud"
+    if _is_llm_app(text):
+        return "llm"
     if any(k in text for k in ("translator", "translate", "translation")):
-        return "form"
+        return "llm"
     if any(k in text for k in ("idea", "generator", "linkedin", "blog post", "content generator")):
-        return "content"
+        return "llm"
     if any(k in text for k in ("dashboard", "analytics", "metrics", "chart")):
         return "dashboard"
     if any(k in text for k in ("travel", "trip", "itinerary", "planner")):
-        return "crud"
+        return "llm"
 
     if detect_frontend_only(requirement, prd, uiux):
         return "static"
@@ -127,6 +170,7 @@ def _pick_primary_table(architecture: Dict[str, Any], app_kind: str) -> str:
         "static_quiz": ("questions",),
         "crud": ("tasks", "todos", "items", "lists", "trips", "entries"),
         "content": ("ideas", "posts", "content"),
+        "llm": ("generations", "requests", "content"),
         "form": ("translations", "messages"),
     }
     for candidate in kind_primary.get(app_kind, ()):
@@ -182,6 +226,15 @@ def _mvp_features(app_kind: str, primary: str, frontend_only: bool) -> List[str]
         ]
     if app_kind == "content":
         return ["Input form", "Generate button calling backend", "Display results"]
+    if app_kind == "llm":
+        return [
+            "Text or topic input (textarea for long text, input for short prompts)",
+            "Generate/Submit button calling POST /generate via apiFetch",
+            "Loading state while LLM responds",
+            "Display AI output (list or single summary block)",
+            "Clear/reset action",
+            "Do NOT embed OpenAI SDK — platform proxies LLM calls",
+        ]
     if app_kind == "form":
         return ["Text input", "Submit to backend API", "Display response"]
     if app_kind == "dashboard":
@@ -204,7 +257,7 @@ def _screens_for_kind(app_kind: str) -> List[Dict[str, Any]]:
         return [
             {"id": "take-quiz", "title": "Take Quiz", "components": ["question-display", "radio-options", "submit-score"]},
         ]
-    if app_kind in ("content", "form", "static"):
+    if app_kind in ("content", "form", "llm", "static"):
         return [{"id": "main", "title": "Main", "components": ["main-ui"]}]
     if app_kind == "dashboard":
         return [{"id": "dashboard", "title": "Dashboard", "components": ["metric-cards"]}]
@@ -245,6 +298,9 @@ def build_app_spec(
     arch = architecture or {}
     frontend_only = detect_frontend_only(requirement, prd, uiux)
     app_kind = detect_app_kind(requirement, prd, arch, uiux)
+    gen_type = detect_llm_gen_type(requirement, prd)
+    if app_kind == "llm":
+        frontend_only = True
     all_tables = _table_names(arch)
     primary_table = _pick_primary_table(arch, app_kind)
     mvp_tables = _mvp_tables(app_kind, all_tables, primary_table, frontend_only)
@@ -269,6 +325,8 @@ def build_app_spec(
 
     return {
         "app_kind": app_kind,
+        "gen_type": gen_type if app_kind in ("llm", "content", "form") else None,
+        "llm_input_mode": "textarea" if gen_type in ("summarize", "translate") else "input",
         "frontend_only": frontend_only,
         "requirement": requirement,
         "title": title,
@@ -293,8 +351,10 @@ def get_codegen_allowlist(app_spec: Dict[str, Any]) -> tuple[str, ...]:
     if not app_spec.get("frontend_only"):
         allowlist.extend(_BACKEND_ALLOWLIST)
     kind = app_spec.get("app_kind", "custom")
-    if kind in ("quiz", "static_quiz", "dashboard", "custom"):
+    if kind in ("quiz", "static_quiz", "dashboard", "custom", "llm"):
         allowlist.append(_COMPONENT_ALLOWLIST_PREFIX)
+    if _needs_static_data(app_spec):
+        allowlist.append(_DATA_ALLOWLIST_PREFIX)
     return tuple(allowlist)
 
 
@@ -326,10 +386,38 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
 
     if kind == "static_quiz":
         backend_rules = "Backend is optional — minimal empty router is fine. Focus 100% on frontend."
-        api_rule = "Do NOT use apiFetch — embed QUESTIONS array in App.jsx from the UI/UX spec."
+        api_rule = (
+            "Do NOT use apiFetch for quiz content. "
+            "Put questions in `frontend/src/data/questions.json` and import in App.jsx: "
+            "`import QUESTIONS from './data/questions.json'`. "
+            "Include at least 5 realistic questions parsed from the UI/UX spec."
+        )
+    elif kind in ("llm", "content"):
+        gen_type = app_spec.get("gen_type") or "general"
+        input_mode = app_spec.get("llm_input_mode") or "input"
+        backend_rules = (
+            "Backend is minimal — routes.py with /info only. "
+            "Do NOT import openai or embed API keys. Akkio platform proxies all LLM calls."
+        )
+        api_rule = (
+            f"Use apiFetch('/generate', {{ method: 'POST', body: JSON.stringify({{ topic: userText, gen_type: '{gen_type}' }}) }}). "
+            f"apiFetch returns parsed JSON directly — NEVER call .json() on the result. "
+            f"Prefer data.raw_text for travel/summary/post output; render markdown as HTML in a div.results-prose with dangerouslySetInnerHTML. "
+            f"Use {'textarea' if input_mode == 'textarea' else 'input'} for user text. "
+            "Show loading state during request. NEVER call OpenAI directly from frontend or generated backend."
+        )
+    elif kind == "form":
+        backend_rules = "Minimal backend — routes.py with /info only. LLM via platform proxy."
+        api_rule = (
+            "Use apiFetch('/translate', { method: 'POST', body: JSON.stringify({ text: userText, gen_type: 'translate' }) }) "
+            "or apiFetch('/generate', ...) for generic processing. No OpenAI SDK in generated code."
+        )
     elif frontend_only:
         backend_rules = "Skip heavy backend — minimal routes.py with /info only."
-        api_rule = "Prefer embedded static data; apiFetch optional only if PRD requires it."
+        api_rule = (
+            "Prefer static JSON in `frontend/src/data/` (e.g. items.json, content.json) imported in App.jsx. "
+            "Use apiFetch only if PRD explicitly requires live API."
+        )
     else:
         backend_rules = f"""
 2. models.py: SQLAlchemy models for: {", ".join(app_spec.get("mvp_tables", [])) or "primary entity"}
@@ -339,7 +427,8 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
             "Use `import { apiFetch } from './api/client.js'`. "
             "Call as apiFetch('/tasks', { method: 'POST', body: JSON.stringify(data) }). "
             "NEVER apiFetch(path, 'POST', data). "
-            f"Collection path must match primary table: /{app_spec.get('primary_table', 'items')}."
+            f"Collection path must match primary table: /{app_spec.get('primary_table', 'items')}. "
+            "For demo/seed UI content, add JSON under frontend/src/data/ AND wire CRUD APIs — hybrid static + API is OK."
         )
 
     return f"""You are an expert React + FastAPI developer. Customize the generic Vite shell into a working app.
@@ -486,5 +575,15 @@ def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -
             errors.append("Quiz missing questions")
         if not any(k in ui_src.lower() for k in ('type="radio"', "radio", "option")):
             errors.append("Quiz missing multiple-choice UI")
+
+    if kind == "llm":
+        if re.search(r"apiFetch\s*\([^)]+\)\s*;\s*\n\s*(?:const|let|var)\s+\w+\s*=\s*await\s+\w+\.json\s*\(", app_src, re.M):
+            errors.append("apiFetch already returns JSON — do not call .json() on the result")
+        if re.search(r"await\s+\w+\.json\s*\(\s*\)", app_src) and "apiFetch" in app_src:
+            errors.append("apiFetch already returns JSON — do not call .json() on the result")
+        gen_type = app_spec.get("gen_type") or "general"
+        if gen_type in ("travel", "summarize", "general", "linkedin_post", "translate"):
+            if "raw_text" not in app_src and "formatMarkdown" not in app_src:
+                errors.append("LLM long-form output must use raw_text and markdown HTML rendering")
 
     return errors
