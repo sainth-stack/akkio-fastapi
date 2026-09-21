@@ -23,6 +23,7 @@ from api.auth.ws_auth import authenticate_websocket
 from api.auth.request_auth import user_email_from
 from api.app_creator.pipeline_helpers import touch_job
 from api.app_creator.build_verify_service import verify_build_and_fix
+from api.app_creator.backend_verify_service import verify_backend_and_fix
 
 router = APIRouter(prefix="/api/codegen", tags=["Code Generation"])
 
@@ -365,6 +366,67 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         async def _emit_build_event(payload: dict):
             await websocket.send_text(json.dumps(payload))
+
+        verify_backend = os.environ.get("CODEGEN_VERIFY_BACKEND", "true").lower() not in ("0", "false", "no")
+        if verify_backend and "backend/main.py" in files:
+            await websocket.send_text(json.dumps({
+                "event": "agent_start",
+                "agent": "backend_verify_agent",
+                "message": "Verifying backend API (uvicorn + sample endpoints + auto-fix)...",
+            }))
+            touch_job(
+                session_id,
+                app_id=app_id,
+                job_type="codegen",
+                status="running",
+                step="backend_verify",
+            )
+            files, backend_ok, backend_log = await verify_backend_and_fix(
+                project_name,
+                files,
+                user_email,
+                on_event=_emit_build_event,
+                max_attempts=int(os.environ.get("CODEGEN_BACKEND_FIX_ATTEMPTS", "3")),
+            )
+            file_writer(project_name, GeneratedFiles(files=files))
+            if not backend_ok:
+                err = f"Backend verification failed after auto-fix attempts: {(backend_log or '')[-800:]}"
+                if app_id and user_email:
+                    db.update_app_builder_app(
+                        app_id=app_id,
+                        user_email=user_email,
+                        user_id=uid,
+                        pipeline_status="CODEGEN_FAILED",
+                        pipeline_error=err,
+                    )
+                touch_job(
+                    session_id,
+                    app_id=app_id,
+                    job_type="codegen",
+                    status="failed",
+                    step="backend_verify",
+                    error=err,
+                    finished=True,
+                )
+                await websocket.send_text(json.dumps({
+                    "event": "agent_error",
+                    "agent": "backend_verify_agent",
+                    "message": err,
+                }))
+                await websocket.send_text(json.dumps({"event": "error", "message": err}))
+                return
+
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "backend_verify_agent",
+                "message": "Backend verified — uvicorn started and sample API calls succeeded.",
+            }))
+        elif verify_backend:
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "backend_verify_agent",
+                "message": "Backend verify skipped (no backend/main.py).",
+            }))
 
         await websocket.send_text(json.dumps({
             "event": "agent_start",
