@@ -364,8 +364,22 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             await websocket.send_text(json.dumps({"event": "error", "message": err}))
             return
 
+        async def _emit_verify_progress(agent: str, message: str):
+            if not message:
+                return
+            await websocket.send_text(json.dumps({
+                "event": "agent_progress",
+                "agent": agent,
+                "message": message,
+            }))
+
+        async def _emit_backend_event(payload: dict):
+            msg = payload.get("message", "")
+            await _emit_verify_progress("backend_verify_agent", msg)
+
         async def _emit_build_event(payload: dict):
-            await websocket.send_text(json.dumps(payload))
+            msg = payload.get("message", "")
+            await _emit_verify_progress("build_verify_agent", msg)
 
         verify_backend = os.environ.get("CODEGEN_VERIFY_BACKEND", "true").lower() not in ("0", "false", "no")
         if verify_backend and "backend/main.py" in files:
@@ -385,7 +399,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 project_name,
                 files,
                 user_email,
-                on_event=_emit_build_event,
+                on_event=_emit_backend_event,
                 max_attempts=int(os.environ.get("CODEGEN_BACKEND_FIX_ATTEMPTS", "3")),
             )
             file_writer(project_name, GeneratedFiles(files=files))

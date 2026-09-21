@@ -23,6 +23,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+LogCallback = Optional[Callable[[str], None]]
+
+
+def _log_line(logs: list[str], on_log: LogCallback, message: str) -> None:
+    logs.append(message)
+    if on_log:
+        on_log(message)
+
 from app_builder.schemas.files import GeneratedFiles
 from app_builder.services.file_writer import file_writer
 from app_builder.services.runtime_paths import resolve_project_root
@@ -174,20 +182,20 @@ def _backend_deps_available() -> bool:
         return False
 
 
-def _install_backend_deps(backend_dir: str, logs: list[str]) -> Optional[str]:
+def _install_backend_deps(backend_dir: str, logs: list[str], on_log: LogCallback = None) -> Optional[str]:
     if _backend_deps_available():
-        logs.append("[backend] Core deps already available — skipping pip install")
+        _log_line(logs, on_log, "[backend] Core deps already available — skipping pip install")
         return None
 
     req = os.path.join(backend_dir, "requirements.txt")
     if not os.path.isfile(req):
-        logs.append("[backend] No requirements.txt — skipping pip install")
+        _log_line(logs, on_log, "[backend] No requirements.txt — skipping pip install")
         return None
 
     venv_dir = os.path.join(backend_dir, ".verify_venv")
     python = sys.executable
     if not os.path.isdir(venv_dir):
-        logs.append(f"[backend] Creating verify venv at {venv_dir}")
+        _log_line(logs, on_log, f"[backend] Creating verify venv at {venv_dir}")
         try:
             subprocess.run(
                 [python, "-m", "venv", venv_dir],
@@ -204,7 +212,7 @@ def _install_backend_deps(backend_dir: str, logs: list[str]) -> Optional[str]:
     if not os.path.isfile(venv_python):
         venv_python = python
 
-    logs.append(f"[backend] pip install -r requirements.txt ({venv_python})")
+    _log_line(logs, on_log, f"[backend] pip install -r requirements.txt ({venv_python})")
     try:
         result = subprocess.run(
             [venv_python, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
@@ -214,7 +222,9 @@ def _install_backend_deps(backend_dir: str, logs: list[str]) -> Optional[str]:
         )
         out = _capture_output(result, backend_dir)
         if out:
-            logs.append(out[-1500:])
+            for line in out[-1500:].splitlines()[-8:]:
+                if line.strip():
+                    _log_line(logs, on_log, line.strip())
         if result.returncode != 0:
             return f"pip install failed (exit {result.returncode}): {out[-800:]}"
         return None
@@ -224,8 +234,14 @@ def _install_backend_deps(backend_dir: str, logs: list[str]) -> Optional[str]:
         return str(exc)
 
 
-def _wait_for_server(base_url: str, proc: subprocess.Popen, logs: list[str]) -> Optional[str]:
+def _wait_for_server(
+    base_url: str,
+    proc: subprocess.Popen,
+    logs: list[str],
+    on_log: LogCallback = None,
+) -> Optional[str]:
     deadline = time.time() + _STARTUP_TIMEOUT
+    last_heartbeat = 0.0
     while time.time() < deadline:
         if proc.poll() is not None:
             err = (proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else "")
@@ -234,17 +250,26 @@ def _wait_for_server(base_url: str, proc: subprocess.Popen, logs: list[str]) -> 
             return f"uvicorn exited early (code {proc.returncode}): {combined[-2000:]}"
         code, _ = _http_request("GET", f"{base_url}/health")
         if code == 200:
-            logs.append(f"[backend] GET /health → 200")
+            _log_line(logs, on_log, "[backend] GET /health → 200")
             return None
         code, _ = _http_request("GET", f"{base_url}/docs")
         if code == 200:
-            logs.append(f"[backend] GET /docs → 200 (no /health route)")
+            _log_line(logs, on_log, "[backend] GET /docs → 200 (no /health route)")
             return None
+        now = time.time()
+        if now - last_heartbeat >= 2.0:
+            remaining = max(0, int(deadline - now))
+            _log_line(logs, on_log, f"[backend] Waiting for uvicorn to respond... ({remaining}s left)")
+            last_heartbeat = now
         time.sleep(0.4)
     return f"Backend did not respond within {_STARTUP_TIMEOUT}s"
 
 
-def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = None) -> Tuple[bool, str, str]:
+def run_backend_api_smoke(
+    project_name: str,
+    files: Optional[Dict[str, str]] = None,
+    on_log: LogCallback = None,
+) -> Tuple[bool, str, str]:
     """
     Start generated backend with uvicorn and hit /health + sample routes.
     Returns (success, error_message, log_output).
@@ -258,7 +283,8 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
-    pip_err = _install_backend_deps(backend_dir, logs)
+    _log_line(logs, on_log, f"[backend] Preparing smoke test on port {port}")
+    pip_err = _install_backend_deps(backend_dir, logs, on_log)
     if pip_err:
         return False, pip_err, "\n".join(logs)
 
@@ -267,7 +293,7 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
         venv_python = os.path.join(backend_dir, ".verify_venv", "Scripts", "python.exe")
     runner = venv_python if os.path.isfile(venv_python) else sys.executable
 
-    logs.append(f"[backend] uvicorn main:app --port {port}")
+    _log_line(logs, on_log, f"[backend] Starting uvicorn main:app --port {port}")
     proc: Optional[subprocess.Popen] = None
     try:
         proc = subprocess.Popen(
@@ -276,7 +302,7 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        startup_err = _wait_for_server(base_url, proc, logs)
+        startup_err = _wait_for_server(base_url, proc, logs, on_log)
         if startup_err:
             return False, startup_err, "\n".join(logs)
 
@@ -284,6 +310,11 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
         if not endpoints and os.path.isfile(os.path.join(backend_dir, "routes.py")):
             with open(os.path.join(backend_dir, "routes.py"), encoding="utf-8") as fh:
                 endpoints = discover_smoke_endpoints({"backend/routes.py": fh.read()})
+
+        if endpoints:
+            _log_line(logs, on_log, f"[backend] Testing {len(endpoints)} sample API endpoint(s)...")
+        else:
+            _log_line(logs, on_log, "[backend] No CRUD routes found — health check only")
 
         created_id: Optional[int] = None
         for ep in endpoints:
@@ -293,8 +324,10 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
             url = f"{base_url}{path}"
             method = ep["method"]
             body = ep.get("body")
+            label = ep.get("label", method.lower())
+            _log_line(logs, on_log, f"[backend] Calling {method} {path} ({label})...")
             code, raw = _http_request(method, url, body)
-            logs.append(f"[backend] {method} {path} → HTTP {code}")
+            _log_line(logs, on_log, f"[backend] {method} {path} → HTTP {code}")
             if code == 0 or code >= 500:
                 return False, f"{method} {path} failed: HTTP {code} — {raw[:500]}", "\n".join(logs)
             if method == "POST" and 200 <= code < 300:
@@ -310,12 +343,13 @@ def run_backend_api_smoke(project_name: str, files: Optional[Dict[str, str]] = N
             if not coll_path.startswith("/"):
                 coll_path = f"/{coll_path}"
             del_url = f"{base_url}{coll_path.rstrip('/')}/{created_id}"
+            _log_line(logs, on_log, f"[backend] Cleaning up test row DELETE {coll_path}/{created_id}...")
             del_code, _ = _http_request("DELETE", del_url)
-            logs.append(f"[backend] DELETE {coll_path}/{created_id} → HTTP {del_code}")
+            _log_line(logs, on_log, f"[backend] DELETE {coll_path}/{created_id} → HTTP {del_code}")
             if del_code not in (0, 200, 204, 404):
                 return False, f"DELETE cleanup failed: HTTP {del_code}", "\n".join(logs)
 
-        logs.append("[backend] API smoke test passed")
+        _log_line(logs, on_log, "[backend] API smoke test passed ✓")
         return True, "", "\n".join(logs)
     except FileNotFoundError:
         return False, "Python or uvicorn not available", "\n".join(logs)
@@ -405,6 +439,44 @@ Rules:
     return apply_deterministic_backend_fixes(updated)
 
 
+async def _run_smoke_with_live_logs(
+    project_name: str,
+    files: Dict[str, str],
+    on_event: Optional[Callable[[dict], Any]],
+) -> Tuple[bool, str, str]:
+    """Run blocking smoke test in a thread while streaming log lines to the UI."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    log_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def sync_log(message: str) -> None:
+        loop.call_soon_threadsafe(log_queue.put_nowait, message)
+
+    async def emit_log(message: str) -> None:
+        if on_event:
+            await on_event({"event": "backend_log", "message": message})
+
+    async def pump_logs(task: asyncio.Task) -> None:
+        while not task.done() or not log_queue.empty():
+            try:
+                message = await asyncio.wait_for(log_queue.get(), timeout=0.35)
+                await emit_log(message)
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+
+    task = asyncio.create_task(
+        asyncio.to_thread(run_backend_api_smoke, project_name, files, sync_log)
+    )
+    pump = asyncio.create_task(pump_logs(task))
+    try:
+        ok, err, log = await task
+    finally:
+        await pump
+    return ok, err, log
+
+
 async def verify_backend_and_fix(
     project_name: str,
     files: Dict[str, str],
@@ -424,22 +496,20 @@ async def verify_backend_and_fix(
         if on_event:
             await on_event(payload)
 
+    await emit("backend_log", "Applying backend import/route fixes...")
     files = apply_deterministic_backend_fixes(files)
     file_writer(project_name, GeneratedFiles(files=files))
+    await emit("backend_log", "Backend files written to disk")
 
     last_log = ""
     for attempt in range(1, max_attempts + 1):
         await emit(
             "backend_start",
-            f"Starting backend API smoke test (attempt {attempt}/{max_attempts})...",
+            f"Attempt {attempt}/{max_attempts}: install deps → start uvicorn → test sample APIs",
             attempt=attempt,
         )
-        ok, err, log = run_backend_api_smoke(project_name, files)
+        ok, err, log = await _run_smoke_with_live_logs(project_name, files, on_event)
         last_log = log or err or ""
-        if log:
-            for line in log.splitlines()[-25:]:
-                if line.strip():
-                    await emit("backend_log", line.strip())
 
         if ok:
             await emit("backend_success", "Backend API verified — uvicorn + sample endpoints OK.")
@@ -451,20 +521,22 @@ async def verify_backend_and_fix(
 
         await emit(
             "backend_fix_attempt",
-            f"Backend failed — applying fixes (attempt {attempt}/{max_attempts})...",
+            f"Attempt {attempt}/{max_attempts} failed — applying deterministic fixes...",
             attempt=attempt,
         )
         files = apply_deterministic_backend_fixes(files)
         file_writer(project_name, GeneratedFiles(files=files))
-        ok2, _, log2 = run_backend_api_smoke(project_name, files)
+        ok2, _, log2 = await _run_smoke_with_live_logs(project_name, files, on_event)
         if ok2:
             last_log = log2
             await emit("backend_success", "Backend fixed with deterministic patches.")
             return files, True, last_log
 
+        await emit("backend_fix_attempt", "Deterministic fixes insufficient — AI is fixing backend code...")
         try:
             files = await _llm_fix_backend(files, (log2 or err or last_log), user_email)
             file_writer(project_name, GeneratedFiles(files=files))
+            await emit("backend_log", "AI fix applied — retrying smoke test...")
         except Exception as fix_err:
             logger.warning("[backend_verify] LLM fix failed: %s", fix_err)
             await emit("backend_fix_attempt", f"Auto-fix error: {fix_err}")
