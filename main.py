@@ -8,9 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
@@ -36,6 +37,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Akkio", version="2", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Return JSON instead of plain 'Internal Server Error' HTML."""
+    from fastapi import HTTPException
+
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if not isinstance(detail, (str, dict, list)):
+            detail = str(detail)
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+    logger.exception("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "An unexpected server error occurred. Please try again.",
+            "error": str(exc)[:500],
+            "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
 
 app.add_middleware(CORSMiddleware, **build_cors_middleware_kwargs())
 

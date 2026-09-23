@@ -16,16 +16,37 @@ export function getApiBase() {
   return `${protocol}//${hostname}:${apiPort}/api/apps`;
 }
 
+function parseApiError(text, status) {
+  if (!text) return `HTTP ${status}`;
+  try {
+    const data = JSON.parse(text);
+    if (data && typeof data.detail === 'string') return data.detail;
+    if (data && data.detail) return JSON.stringify(data.detail);
+  } catch {
+    /* plain text */
+  }
+  if (text.includes('Internal Server Error')) {
+    return 'Server error — please retry. If this persists, run the app again from Build.';
+  }
+  return text.length > 300 ? text.slice(0, 300) + '…' : text;
+}
+
 export async function apiFetch(path, options = {}) {
   const base = getApiBase();
-  const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  let url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const token = typeof window !== 'undefined' && window.__AKKIO_ACCESS_TOKEN__;
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+    if (!path.startsWith('http') && !url.includes('access_token=')) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url}${sep}access_token=${encodeURIComponent(token)}`;
+    }
+  }
   const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new Error(parseApiError(text, res.status));
   }
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('application/json')) return res.json();

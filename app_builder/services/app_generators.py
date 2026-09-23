@@ -718,7 +718,9 @@ class {entity}(Base):
     title = Column(String(500), nullable=False){model_extra}
 '''
 
-    schemas = f'''from pydantic import BaseModel, ConfigDict
+    schemas = f'''from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
 
 
 class {entity}Base(BaseModel):
@@ -733,10 +735,10 @@ class {entity}Create({entity}Base):
 
 
 class {entity}Update(BaseModel):
-    title: str | None = None
+    title: Optional[str] = None
 '''
     if has_completed:
-        schemas += "    completed: bool | None = None\n"
+        schemas += "    completed: Optional[bool] = None\n"
     schemas += f'''
 
 class {entity}Out({entity}Base):
@@ -1311,6 +1313,13 @@ def _stack_for_kind(spec: Dict[str, Any], uiux: str, prd: str) -> Dict[str, str]
         files.update(generate_service_backend(spec))
         return files
 
+    if kind == "complex":
+        # Complex fallback: a proper multi-page CRUD app with a navigation bar
+        files["frontend/src/App.jsx"] = _generate_complex_fallback_app_jsx(spec, title)
+        files["frontend/src/styles/app.css"] = _generate_complex_fallback_css()
+        files.update(generate_crud_backend(spec))
+        return files
+
     # crud, quiz (API), custom → CRUD stack
     files["frontend/src/App.jsx"] = generate_crud_app_jsx(spec, title)
     files.update(generate_crud_backend(spec))
@@ -1328,6 +1337,229 @@ def apply_deterministic_fallback(
     out = dict(files)
     out.update(generated)
     return out
+
+
+def _generate_complex_fallback_app_jsx(spec: Dict[str, Any], title: str) -> str:
+    primary = spec.get("primary_table", "products")
+    from app_builder.services.app_spec_service import singularize
+    entity = singularize(primary).title()
+    return f"""import {{ useState, useEffect }} from 'react';
+import {{ apiFetch }} from './api/client.js';
+import './styles/app.css';
+
+const SEED = [
+  {{ id: 1, name: 'Sample {entity} 1', description: 'Description here', price: 29.99, status: 'active' }},
+  {{ id: 2, name: 'Sample {entity} 2', description: 'Another item', price: 49.99, status: 'active' }},
+  {{ id: 3, name: 'Sample {entity} 3', description: 'Premium option', price: 99.99, status: 'active' }},
+];
+
+function Navbar({{ page, setPage, cartCount }}) {{
+  return (
+    <nav className="navbar">
+      <div className="navbar-brand" onClick={{() => setPage('home')}} style={{{{cursor:'pointer'}}}}>
+        <span className="navbar-logo">▸</span>
+        <span className="navbar-title">{title}</span>
+      </div>
+      <div className="navbar-links">
+        <button className="nav-link" onClick={{() => setPage('home')}}>Home</button>
+        <button className="nav-link" onClick={{() => setPage('listing')}}>Browse</button>
+        <button className="nav-link" onClick={{() => setPage('cart')}}>
+          Cart {{cartCount > 0 && <span className="cart-badge">{{cartCount}}</span>}}
+        </button>
+      </div>
+    </nav>
+  );
+}}
+
+function HomePage({{ setPage, items }}) {{
+  return (
+    <div className="page home-page">
+      <div className="hero">
+        <h1 className="hero-title">{title}</h1>
+        <p className="hero-subtitle">Browse our curated collection of {primary}</p>
+        <button className="btn btn-primary btn-lg" onClick={{() => setPage('listing')}}>Browse All {entity}s</button>
+      </div>
+      <section className="section">
+        <h2 className="section-title">Featured</h2>
+        <div className="item-grid">
+          {{items.slice(0, 3).map(item => (
+            <div key={{item.id}} className="item-card" onClick={{() => setPage('listing')}}>
+              <div className="item-img-placeholder"></div>
+              <div className="item-info">
+                <h3 className="item-name">{{item.name}}</h3>
+                <p className="item-desc">{{item.description}}</p>
+                <div className="item-footer">
+                  <span className="item-price">${{item.price?.toFixed?.(2) ?? item.price}}</span>
+                  <button className="btn btn-primary btn-sm">View</button>
+                </div>
+              </div>
+            </div>
+          ))}}
+        </div>
+      </section>
+    </div>
+  );
+}}
+
+function ListingPage({{ addToCart, items, loading }}) {{
+  const [search, setSearch] = useState('');
+  const filtered = items.filter(i => i.name?.toLowerCase().includes(search.toLowerCase()));
+  return (
+    <div className="page listing-page">
+      <div className="listing-header">
+        <h2>All {entity}s</h2>
+        <input className="search-input" placeholder="Search..." value={{search}} onChange={{e => setSearch(e.target.value)}} aria-label="Search {primary}" />
+      </div>
+      {{loading && <div className="loading-spinner">Loading...</div>}}
+      {{!loading && filtered.length === 0 && <div className="empty-state"><p>No {primary} found.</p></div>}}
+      <div className="item-grid">
+        {{filtered.map(item => (
+          <div key={{item.id}} className="item-card">
+            <div className="item-img-placeholder"></div>
+            <div className="item-info">
+              <h3 className="item-name">{{item.name}}</h3>
+              <p className="item-desc">{{item.description}}</p>
+              <div className="item-footer">
+                <span className="item-price">${{item.price?.toFixed?.(2) ?? item.price}}</span>
+                <button className="btn btn-primary btn-sm" onClick={{() => addToCart(item)}} aria-label={{`Add ${{item.name}} to cart`}}>Add to Cart</button>
+              </div>
+            </div>
+          </div>
+        ))}}
+      </div>
+    </div>
+  );
+}}
+
+function CartPage({{ cart, removeFromCart }}) {{
+  const total = cart.reduce((s, i) => s + (parseFloat(i.price) || 0), 0);
+  return (
+    <div className="page cart-page">
+      <h2>Your Cart</h2>
+      {{cart.length === 0
+        ? <div className="empty-state"><p>Your cart is empty.</p></div>
+        : <>
+          <ul className="cart-list">
+            {{cart.map((item, idx) => (
+              <li key={{idx}} className="cart-item">
+                <span className="cart-item-name">{{item.name}}</span>
+                <span className="cart-item-price">${{item.price?.toFixed?.(2) ?? item.price}}</span>
+                <button className="btn btn-ghost btn-sm" onClick={{() => removeFromCart(idx)}} aria-label={{`Remove ${{item.name}}`}}>Remove</button>
+              </li>
+            ))}}
+          </ul>
+          <div className="cart-total">Total: <strong>${{total.toFixed(2)}}</strong></div>
+          <button className="btn btn-primary">Checkout</button>
+        </>
+      }}
+    </div>
+  );
+}}
+
+export default function App() {{
+  const [page, setPage] = useState('home');
+  const [items, setItems] = useState(SEED);
+  const [loading, setLoading] = useState(false);
+  const [cart, setCart] = useState([]);
+
+  useEffect(() => {{
+    setLoading(true);
+    apiFetch('/{primary}').then(data => {{
+      if (Array.isArray(data) && data.length > 0) setItems(data);
+    }}).catch(() => {{}}).finally(() => setLoading(false));
+  }}, []);
+
+  const addToCart = item => setCart(c => [...c, item]);
+  const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
+
+  return (
+    <div className="app-complex">
+      <Navbar page={{page}} setPage={{setPage}} cartCount={{cart.length}} />
+      <main className="main-content">
+        {{page === 'home' && <HomePage setPage={{setPage}} items={{items}} />}}
+        {{page === 'listing' && <ListingPage addToCart={{addToCart}} items={{items}} loading={{loading}} />}}
+        {{page === 'cart' && <CartPage cart={{cart}} removeFromCart={{removeFromCart}} />}}
+      </main>
+    </div>
+  );
+}}
+"""
+
+
+def _generate_complex_fallback_css() -> str:
+    return """/* Complex App CSS — Auto-generated fallback */
+:root {
+  --primary: #3b82f6;
+  --primary-dark: #2563eb;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --text: #1e293b;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --danger: #ef4444;
+  --success: #22c55e;
+  --radius: 10px;
+  --shadow: 0 2px 8px rgba(0,0,0,.08);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+.app-complex { display: flex; flex-direction: column; min-height: 100vh; }
+.navbar { display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; height: 60px; background: #1e293b; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+.navbar-brand { display: flex; align-items: center; gap: .5rem; font-weight: 700; font-size: 1.2rem; color: #fff; }
+.navbar-logo { font-size: 1.4rem; color: var(--primary); }
+.navbar-links { display: flex; gap: .5rem; align-items: center; }
+.nav-link { background: none; border: none; color: #cbd5e1; padding: .5rem .9rem; border-radius: 6px; cursor: pointer; font-size: .95rem; transition: background .15s, color .15s; }
+.nav-link:hover { background: rgba(255,255,255,.1); color: #fff; }
+.cart-badge { background: var(--primary); color: #fff; border-radius: 999px; font-size: .7rem; padding: .1rem .4rem; margin-left: .3rem; }
+.main-content { flex: 1; max-width: 1200px; margin: 0 auto; width: 100%; padding: 2rem 1.5rem; }
+.page {}
+.hero { text-align: center; padding: 4rem 1rem 3rem; }
+.hero-title { font-size: 2.5rem; font-weight: 800; margin-bottom: .75rem; }
+.hero-subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 2rem; }
+.section { margin-top: 3rem; }
+.section-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 1.25rem; }
+.listing-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+.listing-header h2 { font-size: 1.5rem; font-weight: 700; }
+.search-input { border: 1px solid var(--border); border-radius: 8px; padding: .6rem 1rem; font-size: .95rem; outline: none; width: 260px; }
+.search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+.item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.5rem; }
+.item-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: transform .15s, box-shadow .15s; cursor: pointer; }
+.item-card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,.12); }
+.item-img-placeholder { height: 160px; background: linear-gradient(135deg, #e0e7ff 0%, #f0fdf4 100%); }
+.item-info { padding: 1rem; }
+.item-name { font-weight: 600; font-size: 1rem; margin-bottom: .3rem; }
+.item-desc { color: var(--muted); font-size: .85rem; margin-bottom: .75rem; }
+.item-footer { display: flex; align-items: center; justify-content: space-between; }
+.item-price { font-weight: 700; font-size: 1.1rem; color: var(--primary); }
+.cart-list { list-style: none; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 1.5rem; }
+.cart-item { display: flex; align-items: center; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); }
+.cart-item:last-child { border-bottom: none; }
+.cart-item-name { flex: 1; font-weight: 500; }
+.cart-item-price { font-weight: 700; color: var(--primary); min-width: 70px; text-align: right; }
+.cart-total { font-size: 1.2rem; margin: 1rem 0; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: background .15s, transform .1s; }
+.btn:active { transform: scale(.97); }
+.btn-primary { background: var(--primary); color: #fff; padding: .65rem 1.4rem; }
+.btn-primary:hover { background: var(--primary-dark); }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: .55rem 1.1rem; }
+.btn-ghost:hover { background: var(--bg); }
+.btn-danger { background: var(--danger); color: #fff; padding: .6rem 1.2rem; }
+.btn-lg { padding: .85rem 2rem; font-size: 1rem; }
+.btn-sm { padding: .45rem .9rem; font-size: .85rem; }
+.loading-spinner { text-align: center; color: var(--muted); padding: 3rem; font-size: 1.1rem; }
+.empty-state { text-align: center; color: var(--muted); padding: 3rem; font-size: 1rem; }
+@media (max-width: 768px) {
+  .navbar { padding: 0 1rem; }
+  .main-content { padding: 1.5rem 1rem; }
+  .hero-title { font-size: 1.8rem; }
+  .item-grid { grid-template-columns: 1fr 1fr; }
+  .listing-header { flex-direction: column; align-items: flex-start; }
+  .search-input { width: 100%; }
+}
+@media (max-width: 480px) {
+  .item-grid { grid-template-columns: 1fr; }
+}
+"""
 
 
 # Backward-compat alias

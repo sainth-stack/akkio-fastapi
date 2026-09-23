@@ -9,6 +9,7 @@ Similar to build_verify_service (frontend npm build loop), this:
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -154,6 +155,27 @@ def discover_smoke_endpoints(files: Dict[str, str]) -> List[dict]:
     return endpoints
 
 
+def _sanitize_llm_file_content(content: str) -> str:
+    """Strip markdown FILE headers / fences the LLM sometimes pastes into file bodies."""
+    lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if re.match(r"^---\s*.+\s*---\s*$", stripped):
+            continue
+        if stripped in ("```python", "```py", "```"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip() + "\n"
+
+
+def _is_valid_python(content: str) -> bool:
+    try:
+        ast.parse(content)
+        return True
+    except SyntaxError:
+        return False
+
+
 def apply_deterministic_backend_fixes(files: Dict[str, str]) -> Dict[str, str]:
     """Re-run backend post-process fixups before retry."""
     from app_builder.agents import dynamic_code_generator as dcg
@@ -288,10 +310,14 @@ def run_backend_api_smoke(
     if pip_err:
         return False, pip_err, "\n".join(logs)
 
-    venv_python = os.path.join(backend_dir, ".verify_venv", "bin", "python")
-    if not os.path.isfile(venv_python):
-        venv_python = os.path.join(backend_dir, ".verify_venv", "Scripts", "python.exe")
-    runner = venv_python if os.path.isfile(venv_python) else sys.executable
+    # Use the same interpreter as Akkio when deps are present (matches production runtime).
+    if _backend_deps_available():
+        runner = sys.executable
+    else:
+        venv_python = os.path.join(backend_dir, ".verify_venv", "bin", "python")
+        if not os.path.isfile(venv_python):
+            venv_python = os.path.join(backend_dir, ".verify_venv", "Scripts", "python.exe")
+        runner = venv_python if os.path.isfile(venv_python) else sys.executable
 
     _log_line(logs, on_log, f"[backend] Starting uvicorn main:app --port {port}")
     proc: Optional[subprocess.Popen] = None
@@ -408,11 +434,12 @@ Rules:
 1. Backend runs as `uvicorn main:app` from the backend/ directory — use absolute imports (from routes import router), NOT relative imports.
 2. main.py must include router from routes.py and call Base.metadata.create_all on startup if using SQLAlchemy.
 3. Use SQLite (sqlite:///./app.db) — no PostgreSQL credentials.
-4. Pydantic v2: use model_config = ConfigDict(from_attributes=True), .model_dump() not .dict().
-5. routes.py should export `router = APIRouter(...)` matching what main.py imports.
-6. Include GET /health returning {{"status": "ok"}}.
-7. Return ONLY changed files as valid JSON: {{"files": {{"backend/path.py": "full file content"}}}}
-8. Return complete file contents — do not truncate."""
+4. Python 3.9: use `from typing import Optional` and `Optional[str]` — NEVER use `str | None` syntax.
+5. Pydantic v2: use model_config = ConfigDict(from_attributes=True), .model_dump() not .dict().
+6. routes.py should export `router = APIRouter(...)` matching what main.py imports.
+7. Include GET /health returning {{"status": "ok"}}.
+8. Return ONLY valid JSON: {{"files": {{"backend/path.py": "full file content"}}}} — file values must be raw Python only (no `--- path ---` headers, no markdown fences).
+9. Return complete file contents — do not truncate."""
 
     llm = get_llm_for_user(user_email, temperature=0.15)
     resp = await llm.ainvoke(prompt)
@@ -434,8 +461,15 @@ Rules:
 
     updated = dict(files)
     for path, content in (data.get("files") or {}).items():
-        if isinstance(content, str) and content.strip():
-            updated[path.replace("\\", "/")] = content
+        if not isinstance(content, str) or not content.strip():
+            continue
+        norm_path = path.replace("\\", "/")
+        cleaned = _sanitize_llm_file_content(content)
+        cleaned = apply_deterministic_backend_fixes({norm_path: cleaned}).get(norm_path, cleaned)
+        if not _is_valid_python(cleaned):
+            logger.warning("[backend_verify] LLM fix rejected invalid Python for %s", norm_path)
+            continue
+        updated[norm_path] = cleaned
     return apply_deterministic_backend_fixes(updated)
 
 

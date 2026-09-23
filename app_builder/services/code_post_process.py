@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 import re
 from typing import Any, Dict, Optional, Tuple
@@ -21,6 +22,21 @@ from app_builder.services.app_generators import apply_deterministic_fallback, ge
 from app_builder.services.design_system_css import build_css_from_payload
 
 logger = logging.getLogger("app_builder")
+
+
+def _validate_backend_python_syntax(files: Dict[str, str]) -> None:
+    """Catch syntax errors before backend verify / deploy (SaaS-quality gate)."""
+    from api.app_creator.backend_verify_service import apply_deterministic_backend_fixes
+
+    apply_deterministic_backend_fixes(files)
+    for path in list(files.keys()):
+        if not (path.startswith("backend/") and path.endswith(".py")):
+            continue
+        try:
+            ast.parse(files[path])
+        except SyntaxError as exc:
+            logger.warning("[codegen] invalid Python in %s: %s — dropping file for re-merge", path, exc)
+            files.pop(path, None)
 
 
 def _is_vite_project(files: Dict[str, str]) -> bool:
@@ -93,6 +109,7 @@ def post_process_generated_files(
     dcg._fix_backend_python_relative_imports(files)
     dcg._fix_sqlalchemy_uuid_imports(files)
     dcg._fix_backend_pydantic_and_common(files)
+    _validate_backend_python_syntax(files)
     dcg._ensure_database_tables_created(files)
     dcg._ensure_cors_in_backend(files)
     dcg._fix_frontend_backend_url_undefined(files)
@@ -151,8 +168,24 @@ def ensure_valid_codegen_output(
         return files, []
 
     kind = spec.get("app_kind", "custom")
+
+    # Complex multi-page apps: only fall back if the LLM generated nothing at all.
+    # If App.jsx has real content (> 30 lines), trust the LLM — don't replace with generic CRUD.
+    if kind == "complex":
+        app_src = files.get("frontend/src/App.jsx") or files.get("frontend/src/App.js", "")
+        has_real_frontend = len(app_src.splitlines()) > 30 and any(
+            k in app_src for k in ("useState", "onClick", "return", "<div", "function")
+        )
+        if has_real_frontend:
+            logger.info(
+                "[codegen] complex app has real frontend (%d lines) — skipping deterministic fallback; errors: %s",
+                len(app_src.splitlines()),
+                "; ".join(errors[:3]),
+            )
+            return files, []
+
     supported = (
-        "static_quiz", "static", "quiz", "crud", "content", "form", "llm", "dashboard", "custom",
+        "static_quiz", "static", "quiz", "crud", "content", "form", "llm", "dashboard", "custom", "complex",
     )
     if errors and (kind in supported or spec.get("frontend_only")):
         logger.warning(

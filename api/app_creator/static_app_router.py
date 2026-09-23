@@ -83,7 +83,8 @@ def _serve_index(static_dir: str, access_token: str | None = None, project_id: s
     index_path = os.path.join(static_dir, "index.html")
     if not os.path.isfile(index_path):
         raise HTTPException(status_code=404, detail="index.html not found")
-    if access_token or project_id:
+    # Always inject API base (and token when present) so preview works like hosted SaaS.
+    if project_id or access_token:
         with open(index_path, "r", encoding="utf-8", errors="replace") as f:
             body = _inject_preview_auth(f.read(), access_token, project_id)
         return HTMLResponse(content=body)

@@ -21,7 +21,9 @@ from app_builder.schemas.files import GeneratedFiles
 from db.app_builder import get_app_builder_db
 from api.auth.ws_auth import authenticate_websocket
 from api.auth.request_auth import user_email_from
-from api.app_creator.pipeline_helpers import touch_job
+from api.app_creator.pipeline_helpers import touch_job, public_base_url
+from app_builder.services.project_config import get_project_config
+from api.app_creator.backend_verify_service import apply_deterministic_backend_fixes
 from api.app_creator.build_verify_service import verify_build_and_fix
 from api.app_creator.backend_verify_service import verify_backend_and_fix
 
@@ -76,13 +78,12 @@ def _persist_project_runtime(project_name: str, files: dict, architecture: dict,
     from app_builder.services.app_spec_service import build_app_spec, detect_llm_gen_type
     app_spec = build_app_spec(requirement, architecture, prd, uiux)
     structured["gen_type"] = app_spec.get("gen_type") or detect_llm_gen_type(requirement, prd)
-    schema_payload = _json.dumps(tables) if tables else _json.dumps((architecture or {}).get("database_schema") or {})
     config = build_project_config(
         project_name=project_name,
         structured_requirement=structured,
         architecture=architecture or {},
         api_contract=(architecture or {}).get("api_contract") or {},
-        db_schema={"schema": schema_payload},
+        db_schema={"schema": ""},
         template_name=template_name,
     )
     config = enrich_project_config(config, architecture or {}, app_spec)
@@ -523,6 +524,21 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             store_err = str(exc)
             print(f"[codegen_api] codegen session store failed: {store_err}", file=sys.stderr)
 
+        base = public_base_url().rstrip("/")
+        frontend_url = f"{base}/app/{project_name}"
+        backend_url = f"{base}/api/apps/{project_name}"
+
+        # SaaS runtime: config + SQLite + final backend normalization on disk
+        try:
+            files = apply_deterministic_backend_fixes(files)
+            file_writer(project_name, GeneratedFiles(files=files))
+            _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+            config = get_project_config(project_name) or {}
+            if config.get("tables"):
+                ensure_project_db_initialized(project_name, config)
+        except Exception as fin_exc:
+            print(f"[codegen_api] finalize runtime failed: {fin_exc}", file=sys.stderr)
+
         if app_id and user_email:
             try:
                 db.update_app_builder_app(
@@ -533,7 +549,23 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     pipeline_status="CODEGEN_COMPLETE",
                     pipeline_error=None,
                     build_status="BUILD_SUCCESS",
+                    build_error=None,
+                    preview_url=frontend_url,
+                    live_url=frontend_url,
                 )
+                try:
+                    from api.app_creator.deployment_api import register_local_preview
+
+                    register_local_preview(
+                        app_id=app_id,
+                        project_name=project_name,
+                        frontend_url=frontend_url,
+                        backend_url=backend_url,
+                        user_email=user_email,
+                        user_id=uid,
+                    )
+                except Exception as reg_exc:
+                    print(f"[codegen_api] preview registration: {reg_exc}", file=sys.stderr)
             except Exception as exc:
                 store_err = store_err or str(exc)
                 print(f"[codegen_api] app update failed: {exc}", file=sys.stderr)
@@ -555,11 +587,14 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         await websocket.send_text(json.dumps({
             "event": "codegen_complete",
-            "message": "Code generation completed",
+            "message": "App ready — backend verified, frontend built. Open Preview to use your SaaS app.",
             "data": {
                 "project_name": project_name,
                 "files_count": len(files),
-                "files": list(files.keys())
+                "files": list(files.keys()),
+                "preview_url": frontend_url,
+                "backend_url": backend_url,
+                "build_status": "BUILD_SUCCESS",
             }
         }))
 

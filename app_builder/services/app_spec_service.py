@@ -100,6 +100,21 @@ def _is_llm_app(text: str) -> bool:
     return any(m in text for m in llm_markers)
 
 
+def _is_complex_app(requirement: str, prd: str = "") -> bool:
+    """Multi-page/e-commerce/marketplace apps need a different code structure."""
+    text = f"{requirement} {prd}".lower()
+    markers = (
+        "e-commerce", "ecommerce", "marketplace", "pharmacy", "shop", "store",
+        "cart", "checkout", "product listing", "product grid", "category filter",
+        "social", "news feed", "blog platform", "crm", "project management",
+        "kanban", "multi-page", "sidebar navigation", "dashboard with",
+        "inventory", "booking", "reservation", "restaurant", "hotel",
+        "real estate", "job board", "learning platform", "lms",
+        "admin panel", "analytics dashboard",
+    )
+    return any(m in text for m in markers)
+
+
 def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict[str, Any]] = None, uiux: str = "") -> str:
     text = f"{requirement} {prd}".lower()
     is_quiz = any(k in text for k in ("quiz", "mcq", "multiple choice", "multiple-choice", "question bank"))
@@ -121,6 +136,8 @@ def detect_app_kind(requirement: str, prd: str = "", architecture: Optional[Dict
         return "dashboard"
     if any(k in text for k in ("travel", "trip", "itinerary", "planner")):
         return "llm"
+    if _is_complex_app(requirement, prd):
+        return "complex"
 
     if detect_frontend_only(requirement, prd, uiux):
         return "static"
@@ -160,9 +177,25 @@ def _fields_from_table(table: Dict[str, Any]) -> List[str]:
     return [n for n in names if n]
 
 
-def _pick_primary_table(architecture: Dict[str, Any], app_kind: str) -> str:
+def _pick_primary_table(architecture: Dict[str, Any], app_kind: str, requirement: str = "") -> str:
     names = _table_names(architecture)
     if not names:
+        # For complex apps try to derive a meaningful table name from the requirement
+        if app_kind == "complex":
+            req_lower = requirement.lower()
+            domain_tables = {
+                "pharmacy": "products", "medicine": "products", "drug": "products",
+                "e-commerce": "products", "ecommerce": "products", "shop": "products",
+                "store": "products", "marketplace": "products",
+                "restaurant": "menu_items", "food": "menu_items",
+                "hotel": "rooms", "booking": "bookings", "reservation": "bookings",
+                "real estate": "listings", "property": "listings",
+                "job": "jobs", "candidate": "candidates",
+                "inventory": "items", "stock": "items",
+            }
+            for keyword, table in domain_tables.items():
+                if keyword in req_lower:
+                    return table
         return "items"
 
     kind_primary = {
@@ -239,6 +272,18 @@ def _mvp_features(app_kind: str, primary: str, frontend_only: bool) -> List[str]
         return ["Text input", "Submit to backend API", "Display response"]
     if app_kind == "dashboard":
         return ["Fetch summary data from API", "Metric cards", "Loading states"]
+    if app_kind == "complex":
+        entity = singularize(primary)
+        return [
+            "Full multi-page SPA with navigation (Home, Listing, Detail, Cart or equivalent)",
+            f"Listing page: grid/list of {primary} with search, filters, sort",
+            f"Detail view: expanded {entity} info with primary action (add to cart, book, etc.)",
+            "State management: useState across pages/views",
+            f"API integration: GET {primary}, POST/PUT/DELETE via apiFetch",
+            "Loading skeletons and error states on every data fetch",
+            "Responsive layout: works on mobile and desktop",
+            "Empty state when no data",
+        ]
     entity = singularize(primary)
     return [
         f"List {primary} from API",
@@ -261,6 +306,13 @@ def _screens_for_kind(app_kind: str) -> List[Dict[str, Any]]:
         return [{"id": "main", "title": "Main", "components": ["main-ui"]}]
     if app_kind == "dashboard":
         return [{"id": "dashboard", "title": "Dashboard", "components": ["metric-cards"]}]
+    if app_kind == "complex":
+        return [
+            {"id": "home", "title": "Home", "components": ["hero", "featured-items", "categories"]},
+            {"id": "list", "title": "Listing", "components": ["search", "filters", "item-grid"]},
+            {"id": "detail", "title": "Detail", "components": ["item-detail", "actions"]},
+            {"id": "cart", "title": "Cart / Dashboard", "components": ["summary", "actions"]},
+        ]
     return [{"id": "main", "title": "Main", "components": ["list", "form", "actions"]}]
 
 
@@ -302,7 +354,7 @@ def build_app_spec(
     if app_kind == "llm":
         frontend_only = True
     all_tables = _table_names(arch)
-    primary_table = _pick_primary_table(arch, app_kind)
+    primary_table = _pick_primary_table(arch, app_kind, requirement)
     mvp_tables = _mvp_tables(app_kind, all_tables, primary_table, frontend_only)
     entity = singularize(primary_table) if primary_table else "item"
     primary_def = _table_def(arch, primary_table)
@@ -316,12 +368,16 @@ def build_app_spec(
             "fields": _fields_from_table(table),
         })
 
-    title = "Quiz"
+    title = "My App"
     if "quiz" in requirement.lower():
         title = "Quiz"
-    m = re.search(r"^(?:create|build)\s+(.+?)(?:\s+app)?$", requirement.strip(), re.I)
+    m = re.search(r"^(?:create|build)\s+(?:a\s+|an\s+|the\s+)?(.+?)(?:\s+app(?:lication)?)?$", requirement.strip(), re.I)
     if m:
         title = m.group(1).strip().title()[:40]
+    elif requirement.strip():
+        # Use first ~5 words of requirement as title for complex apps
+        words = requirement.strip().split()[:5]
+        title = " ".join(words).title()[:40]
 
     return {
         "app_kind": app_kind,
@@ -351,8 +407,13 @@ def get_codegen_allowlist(app_spec: Dict[str, Any]) -> tuple[str, ...]:
     if not app_spec.get("frontend_only"):
         allowlist.extend(_BACKEND_ALLOWLIST)
     kind = app_spec.get("app_kind", "custom")
-    if kind in ("quiz", "static_quiz", "dashboard", "custom", "llm"):
+    if kind in ("quiz", "static_quiz", "dashboard", "custom", "llm", "complex"):
         allowlist.append(_COMPONENT_ALLOWLIST_PREFIX)
+    if kind == "complex":
+        allowlist.append("frontend/src/pages/")
+        allowlist.append("frontend/src/hooks/")
+        allowlist.append("frontend/src/context/")
+        allowlist.append(_DATA_ALLOWLIST_PREFIX)
     if _needs_static_data(app_spec):
         allowlist.append(_DATA_ALLOWLIST_PREFIX)
     return tuple(allowlist)
@@ -412,6 +473,21 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
             "Use apiFetch('/translate', { method: 'POST', body: JSON.stringify({ text: userText, gen_type: 'translate' }) }) "
             "or apiFetch('/generate', ...) for generic processing. No OpenAI SDK in generated code."
         )
+    elif kind == "complex":
+        tables = ", ".join(app_spec.get("mvp_tables", [])) or "products, orders, users"
+        api_prefix = app_spec.get("api_prefix", "/products")
+        backend_rules = f"""
+2. models.py: SQLAlchemy models for ALL entities: {tables}
+3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `str | None`
+4. routes.py: APIRouter with FULL CRUD for each entity (prefix {api_prefix}). Include search/filter query params where applicable.
+"""
+        api_rule = (
+            "Use `import { apiFetch } from './api/client.js'`. "
+            "Call as apiFetch('/products', { method: 'GET' }). "
+            f"Primary collection path: {api_prefix}. "
+            "For initial seed data for better UX, embed a small JSON array in App.jsx as `const SEED_DATA = [...]` and use it for first render while real API loads. "
+            "Hybrid static-seed + API is encouraged."
+        )
     elif frontend_only:
         backend_rules = "Skip heavy backend — minimal routes.py with /info only."
         api_rule = (
@@ -421,7 +497,7 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
     else:
         backend_rules = f"""
 2. models.py: SQLAlchemy models for: {", ".join(app_spec.get("mvp_tables", [])) or "primary entity"}
-3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True))
+3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `str | None`
 4. routes.py: APIRouter prefix `{app_spec.get("api_prefix", "/items")}` with CRUD"""
         api_rule = (
             "Use `import { apiFetch } from './api/client.js'`. "
@@ -431,6 +507,56 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
             "For demo/seed UI content, add JSON under frontend/src/data/ AND wire CRUD APIs — hybrid static + API is OK."
         )
 
+    # ── complex multi-page apps get a completely different prompt ──────────────
+    if kind == "complex":
+        title = app_spec.get("title", "My App")
+        return f"""You are an expert React + FastAPI developer building a FULL FEATURED multi-page SaaS application.
+
+**FROZEN (never generate):** package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt
+
+**GENERATE (FILE: path format):**
+{files_list}
+- frontend/src/components/*.jsx (product cards, navbar, sidebar, cart drawer, modals, etc.)
+- frontend/src/pages/*.jsx (one file per page/view — Home, Listing, Detail, Cart, etc.)
+
+**APP KIND:** complex multi-page
+**TITLE:** {title}
+
+**APP SPEC:**
+```json
+{spec_json}
+```
+
+**MVP FEATURES (implement ALL):**
+{mvp}
+
+{output_format}
+
+**UI/UX SPEC:**
+{uiux[:6000] if uiux else f"Premium e-commerce / SaaS UI: dark navy navbar, white content area, card-based product grid, accent color buttons, responsive 3-column grid on desktop, 1-column on mobile."}
+
+**ARCHITECTURE RULES:**
+1. App.jsx: Root component. Uses useState for `currentPage` to simulate routing (NO react-router — it is NOT installed). Renders the correct page component based on `currentPage`.
+   Example: `const [page, setPage] = useState('home'); return page === 'home' ? <HomePage navigate={{setPage}} /> : <ListingPage navigate={{setPage}} />;`
+2. Each page in `frontend/src/pages/PageName.jsx`. Pass `navigate` and shared state as props.
+3. Shared components (navbar, footer, cards, modals) in `frontend/src/components/`.
+4. Navbar.jsx: includes app logo/name, navigation links (call navigate prop), and key actions (cart count badge, search bar, etc.).
+{backend_rules}
+5. styles/app.css: Write FULL custom CSS (at minimum 80 lines). Include: navbar, page layouts, product/item grid cards, buttons (primary, ghost, danger), badges, modals, forms, loading spinners, empty states, responsive breakpoints. DO generate this file.
+6. {api_rule}
+7. useState/useEffect for all state — no Redux, no MobX.
+8. Seed data: embed small realistic arrays directly in page components for first render. Keep calling API to update.
+9. Every list has a loading skeleton and empty state. Every form has validation feedback.
+10. Fully responsive — works on mobile and desktop.
+11. All buttons/inputs have aria-labels. Keyboard navigable.
+
+**DO NOT** use Tailwind, Bootstrap, or any CSS framework. Write plain CSS in styles/app.css.
+**DO NOT** use react-router-dom — simulate pages with useState in App.jsx.
+**DO NOT** generate package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt.
+**DO** generate a rich, realistic, production-quality app — not a demo/stub.
+"""
+
+    # ── simple / CRUD / quiz / LLM apps ───────────────────────────────────────
     return f"""You are an expert React + FastAPI developer. Customize the generic Vite shell into a working app.
 
 **FROZEN (never generate):** package.json, vite.config.js, index.html, main.jsx, api/client.js, styles/base.css, backend/main.py, backend/database.py, backend/requirements.txt
@@ -519,17 +645,19 @@ def validate_against_app_spec(files: Dict[str, str], app_spec: Dict[str, Any]) -
     if len(css.splitlines()) < 25 and "Akkio Premium SaaS" not in css and "Akkio SaaS" not in css:
         errors.append("styles/app.css too minimal (< 25 lines)")
 
-    app_lower = app_src.lower()
-    premium_markers = ("app-container", "app-header", "app-title", "card", "form-row", "btn-primary", "list-item")
-    if app_src and sum(1 for m in premium_markers if m in app_src) < 3:
-        errors.append(
-            "App.jsx missing premium layout classes (need app-container, app-header, card, form-row, btn btn-primary, list-item)"
-        )
-    if app_src and '<input' in app_lower and 'className="input"' not in app_src and "className='input'" not in app_src:
-        if 'className={`input' not in app_src:
-            errors.append('Inputs must use className="input"')
-    if app_src and '<button' in app_lower and 'btn' not in app_src:
-        errors.append('Buttons must use className="btn btn-primary" or btn-ghost')
+    # Complex multi-page apps (e-commerce, CRM, etc.) don't use the simple card/form-row/list layout
+    if kind != "complex":
+        app_lower = app_src.lower()
+        premium_markers = ("app-container", "app-header", "app-title", "card", "form-row", "btn-primary", "list-item")
+        if app_src and sum(1 for m in premium_markers if m in app_src) < 3:
+            errors.append(
+                "App.jsx missing premium layout classes (need app-container, app-header, card, form-row, btn btn-primary, list-item)"
+            )
+        if app_src and '<input' in app_lower and 'className="input"' not in app_src and "className='input'" not in app_src:
+            if 'className={`input' not in app_src:
+                errors.append('Inputs must use className="input"')
+        if app_src and '<button' in app_lower and 'btn' not in app_src:
+            errors.append('Buttons must use className="btn btn-primary" or btn-ghost')
 
     if kind == "static_quiz":
         combined = ui_src.lower()

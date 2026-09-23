@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api.auth.dependencies import CurrentUser
-from api.auth.request_auth import resolve_user
+from api.auth.request_auth import resolve_user_for_generated_app
 from api.app_creator.project_access import assert_project_access
 
 from app_builder.services.project_config import get_project_config
@@ -23,6 +23,63 @@ from app_builder.services.runtime_paths import get_projects_dir, resolve_project
 logger = logging.getLogger("app_builder")
 
 router = APIRouter(prefix="/api/apps", tags=["Dynamic Apps"])
+
+
+async def _safe_json_body(request: Request) -> Dict[str, Any]:
+    """Parse JSON body without raising uncaught decode errors (→ 500 HTML)."""
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        return {}
+    try:
+        raw = await request.body()
+        if not raw or not raw.strip():
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {"data": data}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+
+def _format_llm_prompt(template: str, count: int) -> str:
+    try:
+        return template.format(count=count)
+    except (KeyError, ValueError):
+        return template
+
+
+def _ensure_collection_registered(config: Dict[str, Any], collection: str) -> Dict[str, Any]:
+    """If frontend hits a collection missing from config.tables, register it from fields."""
+    out = dict(config)
+    tables = list(out.get("tables") or [])
+    fields = dict(out.get("fields") or {})
+    if collection in tables:
+        return out
+    if collection in fields:
+        tables.append(collection)
+        out["tables"] = tables
+        return out
+    out["tables"] = tables + [collection]
+    out.setdefault("fields", {})[collection] = ["title"]
+    return out
+
+
+def _execute_with_schema_heal(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: Dict[str, Any],
+    collection: str,
+    operation,
+):
+    """Run DB op; on 'no such table', create schema and retry once."""
+    try:
+        return operation(conn)
+    except sqlite3.OperationalError as e:
+        if "no such table" not in str(e).lower():
+            raise
+        logger.warning("[dynamic_app] healing missing table %s for %s", collection, project_id)
+        healed = _ensure_collection_registered(config, collection)
+        _ensure_schema(conn, "", healed)
+        _migrate_schema(conn, healed)
+        return operation(conn)
 
 
 def _get_project_db_path(project_id: str) -> str:
@@ -194,7 +251,10 @@ async def _handle_llm_content(body: Dict[str, Any], config: Optional[Dict[str, A
     llm = get_llm_for_user(user_email=None, temperature=temp)
     prompt_template = GEN_PROMPTS.get(gen_type, GEN_PROMPTS["general"])
     custom_prompt = config.get("llmPrompt") or config.get("llm_prompt")
-    system_content = custom_prompt if custom_prompt and gen_type == "general" else prompt_template.format(count=count)
+    if custom_prompt and gen_type == "general":
+        system_content = custom_prompt
+    else:
+        system_content = _format_llm_prompt(prompt_template, count)
     messages = [SystemMessage(content=system_content), HumanMessage(content=topic)]
     response = await llm.ainvoke(messages)
     text = (response.content or "").strip()
@@ -265,10 +325,13 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
     except HTTPException:
         raise
     except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"LLM not available: {e}")
+        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}")
     except Exception as e:
         logger.exception("[dynamic_app] custom endpoint %s error: %s", action, e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail="AI request failed. Check API keys in server .env and try again.",
+        ) from e
 
 
 # --- CRUD routes ---
@@ -278,23 +341,27 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 async def list_collection(
     project_id: str,
     collection: str,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """List all items in collection."""
     assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
+    config = _ensure_collection_registered(config, collection)
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
     conn = _get_connection(project_id, config)
     try:
-        cursor = conn.execute(f'SELECT * FROM "{collection}"')
-        rows = cursor.fetchall()
+        def _op(c):
+            cursor = c.execute(f'SELECT * FROM "{collection}"')
+            return cursor.fetchall()
+
+        rows = _execute_with_schema_heal(conn, project_id, config, collection, _op)
         return JSONResponse(content=[_row_to_dict(r) for r in rows])
     except sqlite3.OperationalError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
     finally:
         conn.close()
 
@@ -304,25 +371,29 @@ async def get_item(
     project_id: str,
     collection: str,
     item_id: int,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Get one item by id."""
     assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
+    config = _ensure_collection_registered(config, collection)
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
     conn = _get_connection(project_id, config)
     try:
-        cursor = conn.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (item_id,))
-        row = cursor.fetchone()
+        def _op(c):
+            cursor = c.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (item_id,))
+            return cursor.fetchone()
+
+        row = _execute_with_schema_heal(conn, project_id, config, collection, _op)
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
         return JSONResponse(content=_row_to_dict(row))
     except sqlite3.OperationalError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
     finally:
         conn.close()
 
@@ -332,7 +403,7 @@ async def create_item(
     project_id: str,
     collection: str,
     request: Request,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Create item in collection, or dispatch to custom endpoint (generate-ideas, translate, etc.)."""
     assert_project_access(project_id, current)
@@ -353,12 +424,14 @@ async def create_item(
 
     # Custom endpoint (generate-ideas, translate, etc.) - dispatch before CRUD
     if isinstance(custom_endpoints, dict) and collection in custom_endpoints:
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        body = await _safe_json_body(request)
         return await _dispatch_custom_endpoint(project_id, collection, body, config)
 
+    config = _ensure_collection_registered(config, collection)
+    tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
-    body = await request.json()
+    body = await _safe_json_body(request)
     extra = {collection: [k for k in body.keys() if k != "id"]}
     conn = _get_connection(project_id, config, extra_cols=extra)
     try:
@@ -376,7 +449,7 @@ async def create_item(
         row = cursor.fetchone()
         return JSONResponse(content=_row_to_dict(row), status_code=201)
     except sqlite3.OperationalError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
     finally:
         conn.close()
 
@@ -387,7 +460,7 @@ async def update_item(
     collection: str,
     item_id: int,
     request: Request,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Update item by id."""
     assert_project_access(project_id, current)
@@ -395,9 +468,11 @@ async def update_item(
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
     tables = config.get("tables") or []
+    config = _ensure_collection_registered(config, collection)
+    tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
-    body = await request.json()
+    body = await _safe_json_body(request)
     cols = [k for k in body.keys() if k != "id"]
     if not cols:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -417,7 +492,7 @@ async def update_item(
             raise HTTPException(status_code=404, detail="Not found")
         return JSONResponse(content=_row_to_dict(row))
     except sqlite3.OperationalError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
     finally:
         conn.close()
 
@@ -428,7 +503,7 @@ async def patch_item(
     collection: str,
     item_id: int,
     request: Request,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Partial update (alias for PUT — generated apps may use PATCH)."""
     return await update_item(project_id, collection, item_id, request, current)
@@ -439,13 +514,15 @@ async def delete_item(
     project_id: str,
     collection: str,
     item_id: int,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Delete item by id."""
     assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
+    tables = config.get("tables") or []
+    config = _ensure_collection_registered(config, collection)
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
@@ -455,7 +532,7 @@ async def delete_item(
         conn.commit()
         return JSONResponse(content={"status": "deleted"})
     except sqlite3.OperationalError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
     finally:
         conn.close()
 
@@ -472,7 +549,7 @@ class LLMRequest(BaseModel):
 async def llm_proxy(
     project_id: str,
     request: LLMRequest,
-    current: CurrentUser = Depends(resolve_user),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Proxy LLM calls with project-specific system prompt."""
     assert_project_access(project_id, current)
@@ -504,7 +581,10 @@ async def llm_proxy(
         response = await llm.ainvoke(messages)
         return JSONResponse(content={"content": response.content})
     except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"LLM not available: {e}")
+        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}")
     except Exception as e:
         logger.exception("[dynamic_app] LLM error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail="AI request failed. Check API keys in server .env and try again.",
+        ) from e

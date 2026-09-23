@@ -198,6 +198,18 @@ def _infer_config_from_project(project_root: str, project_name: str) -> Optional
     return config
 
 
+def _normalize_db_schema_field(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure db_schema is SQL or empty — legacy configs stored JSON table arrays as db_schema."""
+    out = dict(config)
+    raw = out.get("db_schema") or ""
+    if isinstance(raw, dict):
+        raw = raw.get("schema") or ""
+    text = str(raw).strip()
+    if text and "CREATE TABLE" not in text.upper():
+        out["db_schema"] = ""
+    return out
+
+
 def get_project_config(project_name: str) -> Optional[Dict[str, Any]]:
     """Load project config from project_config.json. Uses resolve_project_root. Auto-creates if missing."""
     project_root = resolve_project_root(project_name)
@@ -205,7 +217,8 @@ def get_project_config(project_name: str) -> Optional[Dict[str, Any]]:
     try:
         if os.path.isfile(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                config = json.load(f)
+                return _normalize_db_schema_field(config)
         # Project dir exists but config missing (legacy apps) - infer and persist
         if os.path.isdir(project_root):
             config = _infer_config_from_project(project_root, project_name)

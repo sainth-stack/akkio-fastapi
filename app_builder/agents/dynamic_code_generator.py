@@ -547,9 +547,54 @@ def _fix_sqlalchemy_uuid_imports(files: Dict[str, str]) -> None:
             files[path] = content
 
 
+def _fix_python39_type_hints_content(content: str) -> str:
+    """
+    Generated backends run on Python 3.9 in verify/runtime — `str | None` needs Optional[str].
+    """
+    if "|" not in content:
+        return content
+    updated = content
+    prev = None
+    while updated != prev:
+        prev = updated
+        updated = re.sub(
+            r"([\w\[\], ]+?)\s*\|\s*None\b",
+            lambda m: f"Optional[{m.group(1).strip()}]",
+            updated,
+        )
+    if "Optional[" in updated and "Optional" not in updated.split("Optional[", 1)[0]:
+        if re.search(r"^from typing import .+\bOptional\b", updated, re.MULTILINE):
+            pass
+        elif re.search(r"^from typing import ", updated, re.MULTILINE):
+            updated = re.sub(
+                r"^from typing import (.+)$",
+                lambda m: f"from typing import {m.group(1)}, Optional"
+                if "Optional" not in m.group(1)
+                else m.group(0),
+                updated,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        else:
+            lines = updated.splitlines()
+            insert = 0
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped.startswith(('"""', "'''")):
+                    continue
+                insert = i
+                break
+            lines.insert(insert, "from typing import Optional")
+            updated = "\n".join(lines) + ("\n" if updated.endswith("\n") else "")
+    return updated
+
+
 def _fix_backend_pydantic_and_common(files: Dict[str, str]) -> None:
     """
     Fix common backend issues so generated apps run end-to-end without errors.
+    - Python 3.9: X | None -> Optional[X]
     - Pydantic v2: orm_mode -> from_attributes, .dict() -> .model_dump()
     - PostgreSQL-only types when using SQLite: JSONB -> JSON, etc.
     """
@@ -558,6 +603,11 @@ def _fix_backend_pydantic_and_common(files: Dict[str, str]) -> None:
             continue
         content = files[path]
         changed = False
+
+        py39 = _fix_python39_type_hints_content(content)
+        if py39 != content:
+            content = py39
+            changed = True
 
         # Pydantic v2 compatibility
         if "orm_mode = True" in content:

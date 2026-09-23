@@ -14,7 +14,30 @@ from api.app_creator.backend_verify_service import (
     discover_smoke_endpoints,
     apply_deterministic_backend_fixes,
     run_backend_api_smoke,
+    _sanitize_llm_file_content,
+    _is_valid_python,
 )
+
+
+def test_python39_optional_type_fix():
+    files = {
+        "backend/schemas.py": (
+            "from pydantic import BaseModel\n\n"
+            "class ProductUpdate(BaseModel):\n"
+            "    title: str | None = None\n"
+        ),
+    }
+    fixed = apply_deterministic_backend_fixes(files)
+    assert "Optional[str]" in fixed["backend/schemas.py"]
+    assert "from typing import Optional" in fixed["backend/schemas.py"]
+    assert _is_valid_python(fixed["backend/schemas.py"])
+
+
+def test_sanitize_llm_markdown_headers():
+    raw = "--- backend/main.py ---\nfrom fastapi import FastAPI\n"
+    cleaned = _sanitize_llm_file_content(raw)
+    assert cleaned.startswith("from fastapi")
+    assert "---" not in cleaned
 
 
 def test_discover_smoke_endpoints_from_crud_routes():
