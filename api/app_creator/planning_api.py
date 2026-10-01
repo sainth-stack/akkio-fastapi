@@ -36,6 +36,7 @@ class GenRequest(BaseModel):
     app_id: Optional[str] = None
     session_id: Optional[str] = None
     model_name: Optional[str] = None
+    builder_kind: Optional[str] = None
 
 
 def _planning_stream(
@@ -133,7 +134,12 @@ async def generate_prd_step(request: GenRequest, current: CurrentUser = Depends(
 
     async def stream_fn():
         llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.7, streaming=True)
-        async for event in stream_prd_generation(request.requirement, llm, skip_plan=True):
+        async for event in stream_prd_generation(
+            request.requirement,
+            llm,
+            skip_plan=True,
+            builder_kind=request.builder_kind,
+        ):
             yield event
 
     return StreamingResponse(
@@ -149,7 +155,12 @@ async def generate_uiux_step(request: GenRequest, current: CurrentUser = Depends
 
     async def stream_fn():
         llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.7, streaming=True)
-        async for event in stream_uiux_generation(request.requirement, request.prd or "", llm):
+        async for event in stream_uiux_generation(
+            request.requirement,
+            request.prd or "",
+            llm,
+            builder_kind=request.builder_kind,
+        ):
             yield event
 
     return StreamingResponse(
@@ -170,6 +181,7 @@ async def generate_style_step(request: GenRequest, current: CurrentUser = Depend
             request.prd or "",
             request.uiux or "",
             llm,
+            builder_kind=request.builder_kind,
         ):
             yield event
 
@@ -193,6 +205,7 @@ async def generate_arch_step(request: GenRequest, current: CurrentUser = Depends
             llm,
             request.uiux or "",
             request.design_tokens,
+            builder_kind=request.builder_kind,
         ):
             yield event
 

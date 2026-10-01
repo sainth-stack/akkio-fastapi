@@ -1,0 +1,9 @@
+{
+  "name": "base-fullstack-vite-mui",
+  "description": "Production React TypeScript Vite MUI + FastAPI PostgreSQL fullstack shell",
+  "kind": "fullstack",
+  "stack": {
+    "frontend": "vite-react-ts-mui",
+    "backend": "fastapi-postgres"
+  }
+}

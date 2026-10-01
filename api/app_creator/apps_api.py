@@ -4,7 +4,7 @@ App Builder Apps API — CRUD for created apps (Postgres-backed).
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.auth.dependencies import CurrentUser
@@ -49,6 +49,7 @@ class CreateAppRequest(BaseModel):
     architecture: Optional[dict] = None
     agents_state: Optional[dict] = None
     generated_code_json: Optional[dict] = None
+    builder_kind: Optional[str] = None
 
 
 class UpdateAppRequest(BaseModel):
@@ -71,6 +72,7 @@ class UpdateAppRequest(BaseModel):
     design_tokens: Optional[dict] = None
     design_system_md: Optional[str] = None
     llm_model: Optional[str] = None
+    builder_kind: Optional[str] = None
 
 
 @router.get("/models")
@@ -89,10 +91,15 @@ async def list_available_models(current: CurrentUser = Depends(resolve_user)):
 
 
 @router.get("/apps")
-async def list_apps(current: CurrentUser = Depends(resolve_user)):
+async def list_apps(
+    kind: Optional[str] = Query(None),
+    current: CurrentUser = Depends(resolve_user),
+):
     try:
         apps = db.get_user_app_builder_apps(
-            user_email_from(current), user_id=current.id or None
+            user_email_from(current),
+            user_id=current.id or None,
+            builder_kind=kind,
         )
         return {"status": "success", "apps": apps}
     except Exception as e:
@@ -114,6 +121,7 @@ async def create_app(request: CreateAppRequest, current: CurrentUser = Depends(r
             agents_state=request.agents_state,
             generated_code_json=request.generated_code_json,
             user_id=current.id or None,
+            builder_kind=request.builder_kind or "app",
         )
         return {"status": "success", "app": app, "message": "App created"}
     except Exception as e:
@@ -163,6 +171,10 @@ async def update_app(
             preview_url=request.preview_url,
             live_url=request.live_url,
             user_id=current.id or None,
+            design_tokens=request.design_tokens,
+            design_system_md=request.design_system_md,
+            llm_model=request.llm_model,
+            builder_kind=request.builder_kind,
         )
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")

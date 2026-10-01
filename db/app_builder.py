@@ -164,6 +164,7 @@ _METADATA_FIELDS = (
     "design_tokens",
     "design_system_md",
     "llm_model",
+    "builder_kind",
 )
 
 
@@ -195,6 +196,7 @@ def _app_row_to_dict(row: dict, user_email: str | None = None) -> dict:
     for key in _METADATA_FIELDS:
         if key in meta and key != "user_email":
             out[key] = meta[key]
+    out.setdefault("builder_kind", "app")
     return out
 
 
@@ -311,6 +313,7 @@ class AppBuilderStore(PostgresPool):
         generated_code_json: dict | None = None,
         generated_files: dict | None = None,
         user_id: int | None = None,
+        builder_kind: str | None = None,
     ) -> dict:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
@@ -326,6 +329,7 @@ class AppBuilderStore(PostgresPool):
             "agents_state": agents_state,
             "generated_code_json": generated_code_json,
             "generated_files": generated_files,
+            "builder_kind": (builder_kind or "app").strip().lower() or "app",
         }
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -340,7 +344,12 @@ class AppBuilderStore(PostgresPool):
                 row = dict(cursor.fetchone())
         return _app_row_to_dict(row, user_email)
 
-    def get_user_app_builder_apps(self, user_email: str, user_id: int | None = None) -> list:
+    def get_user_app_builder_apps(
+        self,
+        user_email: str,
+        user_id: int | None = None,
+        builder_kind: str | None = None,
+    ) -> list:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
         with self.get_connection() as conn:
@@ -352,7 +361,13 @@ class AppBuilderStore(PostgresPool):
                     """,
                     (uid,),
                 )
-                return [_app_row_to_dict(dict(r), user_email) for r in cursor.fetchall()]
+                apps = [_app_row_to_dict(dict(r), user_email) for r in cursor.fetchall()]
+        kind = (builder_kind or "").strip().lower()
+        if not kind:
+            return apps
+        if kind == "app":
+            return [a for a in apps if (a.get("builder_kind") or "app") in ("app", "", None)]
+        return [a for a in apps if a.get("builder_kind") == kind]
 
     def get_app_by_project_name(
         self,
@@ -462,6 +477,10 @@ class AppBuilderStore(PostgresPool):
         preview_url: str | None = None,
         live_url: str | None = None,
         user_id: int | None = None,
+        design_tokens: dict | None = None,
+        design_system_md: str | None = None,
+        llm_model: str | None = None,
+        builder_kind: str | None = None,
     ) -> int:
         self.init_schema()
         existing = self.get_app_builder_app(app_id, user_email=user_email, user_id=user_id)
@@ -489,6 +508,10 @@ class AppBuilderStore(PostgresPool):
             "build_error": build_error,
             "preview_url": preview_url,
             "live_url": live_url,
+            "design_tokens": design_tokens,
+            "design_system_md": design_system_md,
+            "llm_model": llm_model,
+            "builder_kind": builder_kind,
         }
         key_map = {"app_name": "name"}
         name_val = app_name

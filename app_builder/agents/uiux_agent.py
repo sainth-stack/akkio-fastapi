@@ -1,8 +1,13 @@
-from typing import List, Dict, Any, AsyncGenerator
+from typing import List, Dict, Any, AsyncGenerator, Optional
 import json
 from langchain_core.messages import SystemMessage, HumanMessage
 
-async def stream_uiux_generation(requirement: str, prd: str, llm) -> AsyncGenerator[Dict[str, Any], None]:
+async def stream_uiux_generation(
+    requirement: str,
+    prd: str,
+    llm,
+    builder_kind: Optional[str] = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streams UI/UX design generation.
     """
@@ -69,6 +74,14 @@ PRD Summary:
 Requirement:
 {requirement}
 """
+
+    from app_builder.services.fullstack_stack import is_fullstack, uiux_system_addendum
+    if is_fullstack(builder_kind):
+        system_prompt = system_prompt + "\n" + uiux_system_addendum()
+        user_prompt += (
+            "\n\nMap every module to a Material UI screen. Extract colors from the prompt. "
+            "Include reusable components and empty/loading/error states."
+        )
 
     messages = [
         SystemMessage(content=system_prompt),

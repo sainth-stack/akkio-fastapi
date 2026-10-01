@@ -1095,16 +1095,50 @@ async def generate_code_from_plan(
     plan: list,
     architecture: Dict[str, Any],
     llm,
-    uiux: str = ""
+    uiux: str = "",
+    builder_kind: str = "",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Generate domain code from App Spec into the generic Vite+FastAPI shell."""
     import os
     from app_builder.services.app_spec_service import build_app_spec, build_codegen_system_prompt
     from app_builder.services.scaffold_service import get_base_scaffold_files
     from app_builder.services.code_post_process import post_process_generated_files, ensure_valid_codegen_output
+    from app_builder.services.fullstack_stack import is_fullstack, codegen_system_addendum, lock_architecture
+    from app_builder.services.fullstack_codegen import (
+        get_fullstack_scaffold_files,
+        merge_llm_into_fullstack,
+        ensure_mock_client,
+        ensure_deliverables,
+    )
     from langchain_core.messages import AIMessage
 
-    if not get_base_scaffold_files():
+    fullstack = is_fullstack(builder_kind)
+    if fullstack:
+        if not get_fullstack_scaffold_files():
+            yield {"event": "agent_error", "message": "Fullstack scaffold not found on disk"}
+            return
+        architecture = lock_architecture(architecture)
+        from app_builder.services.fullstack_app_generator import generate_fullstack_application
+
+        yield {
+            "event": "generation_start",
+            "message": "Generating production fullstack TypeScript + FastAPI application...",
+        }
+        files_generated = generate_fullstack_application(requirement, prd, uiux, architecture)
+        for path in sorted(files_generated.keys()):
+            yield {
+                "event": "file_generated",
+                "file": path,
+                "content": files_generated[path],
+                "message": f"Generated {path}",
+            }
+        yield {
+            "event": "generation_complete",
+            "data": files_generated,
+            "message": f"Generated {len(files_generated)} files (fullstack production MVP)",
+        }
+        return
+    elif not get_base_scaffold_files():
         yield {"event": "agent_error", "message": "Generic base scaffold not found on disk"}
         return
 
@@ -1117,6 +1151,14 @@ async def generate_code_from_plan(
     ])
 
     system_prompt = build_codegen_system_prompt(app_spec, uiux, architecture)
+    if fullstack:
+        system_prompt = system_prompt + "\n" + codegen_system_addendum()
+        system_prompt += (
+            "\nGenerate TypeScript (.tsx/.ts) pages and MUI components. "
+            "FILE paths must include frontend/src/App.tsx, frontend/src/pages/*.tsx, "
+            "frontend/src/components/*.tsx, frontend/src/layout/AppShell.tsx, "
+            "backend/models.py, backend/schemas.py, backend/routes.py, backend/auth.py, backend/seed.py."
+        )
     user_prompt = f"""Generate the complete application for:
 
 ## REQUIREMENT
@@ -1139,7 +1181,11 @@ Output every allowlisted file using FILE: <path> format. No stubs. Match app_kin
 
     yield {
         "event": "generation_start",
-        "message": f"Generating {app_kind} app from App Spec (generic base + LLM)...",
+        "message": (
+            f"Generating fullstack TypeScript + FastAPI app..."
+            if fullstack
+            else f"Generating {app_kind} app from App Spec (generic base + LLM)..."
+        ),
     }
 
     files_generated: Dict[str, str] = {}
@@ -1167,6 +1213,13 @@ Output every allowlisted file using FILE: <path> format. No stubs. Match app_kin
                 "content": content,
                 "message": f"Generated {path}",
             }
+
+        if fullstack:
+            files_generated = merge_llm_into_fullstack(get_fullstack_scaffold_files(), files_generated)
+            files_generated = ensure_mock_client(files_generated)
+            files_generated = ensure_deliverables(files_generated)
+            validation_errors = []
+            break
 
         files_generated = post_process_generated_files(
             files_generated,

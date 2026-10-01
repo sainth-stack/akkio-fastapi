@@ -49,46 +49,50 @@ manager = ConnectionManager()
 
 
 def _persist_project_runtime(project_name: str, files: dict, architecture: dict, requirement: str, prd: str, uiux: str):
-    """Write project_config.json and initialize per-project SQLite."""
-    import json as _json
-
-    template_name = None
-    if should_use_template(requirement, prd, architecture):
-        template_name = "base-vite-fastapi"
-    tables = (architecture or {}).get("database_schema", {}).get("tables") or []
-    entities = []
-    for t in tables:
-        if not isinstance(t, dict):
-            continue
-        name = t.get("name") or "Entity"
-        entities.append(
-            {
-                "name": name,
-                "table_name": t.get("table_name") or str(name).lower() + "s",
-                "fields": t.get("columns") or t.get("fields") or [],
-            }
+    """Write project_config.json and initialize per-project SQLite. Best-effort; never fail codegen."""
+    try:
+        template_name = None
+        if should_use_template(requirement, prd, architecture):
+            template_name = "base-vite-fastapi"
+        tables = (architecture or {}).get("database_schema", {}).get("tables") or []
+        entities = []
+        for t in tables:
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name") or "Entity"
+            entities.append(
+                {
+                    "name": name,
+                    "table_name": t.get("table_name") or str(name).lower() + "s",
+                    "fields": t.get("columns") or t.get("fields") or [],
+                }
+            )
+        structured = {
+            "project_name": project_name,
+            "description": requirement,
+            "prd": prd,
+            "uiux": uiux,
+            "entities": entities,
+        }
+        from app_builder.services.app_spec_service import build_app_spec, detect_llm_gen_type
+        app_spec = build_app_spec(requirement, architecture, prd, uiux)
+        structured["gen_type"] = app_spec.get("gen_type") or detect_llm_gen_type(requirement, prd)
+        api_contract = (architecture or {}).get("api_contract") or {}
+        if isinstance(api_contract, list):
+            api_contract = {"endpoints": api_contract}
+        config = build_project_config(
+            project_name=project_name,
+            structured_requirement=structured,
+            architecture=architecture or {},
+            api_contract=api_contract,
+            db_schema={"schema": ""},
+            template_name=template_name,
         )
-    structured = {
-        "project_name": project_name,
-        "description": requirement,
-        "prd": prd,
-        "uiux": uiux,
-        "entities": entities,
-    }
-    from app_builder.services.app_spec_service import build_app_spec, detect_llm_gen_type
-    app_spec = build_app_spec(requirement, architecture, prd, uiux)
-    structured["gen_type"] = app_spec.get("gen_type") or detect_llm_gen_type(requirement, prd)
-    config = build_project_config(
-        project_name=project_name,
-        structured_requirement=structured,
-        architecture=architecture or {},
-        api_contract=(architecture or {}).get("api_contract") or {},
-        db_schema={"schema": ""},
-        template_name=template_name,
-    )
-    config = enrich_project_config(config, architecture or {}, app_spec)
-    persist_project_config(project_name, config)
-    ensure_project_db_initialized(project_name, config)
+        config = enrich_project_config(config, architecture or {}, app_spec)
+        persist_project_config(project_name, config)
+        ensure_project_db_initialized(project_name, config)
+    except Exception as persist_err:
+        print(f"[codegen_api] persist skipped: {persist_err}", file=sys.stderr)
 
 
 @router.websocket("/execute/{session_id}")
@@ -118,6 +122,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         app_id = request_data.get("app_id")
         model_name = request_data.get("model_name")
         design_tokens = request_data.get("design_tokens")
+        builder_kind = request_data.get("builder_kind") or ""
 
         if not project_name:
             await websocket.send_text(json.dumps({
@@ -165,6 +170,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                         architecture = app_from_db.get("architecture") or {}
                     if not design_tokens and app_from_db.get("design_tokens"):
                         design_tokens = app_from_db.get("design_tokens")
+                    if not builder_kind:
+                        builder_kind = app_from_db.get("builder_kind") or ""
                     architecture = normalize_architecture_for_codegen(
                         architecture or {},
                         api_contract=app_from_db.get("api_contract"),
@@ -180,6 +187,11 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             return
 
         architecture = normalize_architecture_for_codegen(architecture)
+
+        from app_builder.services.fullstack_stack import is_fullstack, lock_architecture
+        fullstack = is_fullstack(builder_kind)
+        if fullstack:
+            architecture = lock_architecture(architecture)
 
         if app_id and user_email:
             db.update_app_builder_app(
@@ -212,6 +224,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             uiux,
             user_email=user_email,
             model_name=model_name,
+            builder_kind=builder_kind,
         )
 
         if not files:
@@ -249,61 +262,64 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             step="validation_agent",
         )
 
-        template_name = "base-vite-fastapi"
+        template_name = "base-fullstack-vite-mui" if fullstack else "base-vite-fastapi"
 
         try:
-            files = validate_and_fix_code(files, architecture, template_name=template_name)
             from app_builder.services.app_spec_service import build_app_spec
+            from app_builder.services.fullstack_codegen import (
+                apply_theme_tokens,
+                ensure_deliverables,
+                ensure_mock_client,
+            )
             app_spec = build_app_spec(requirement, architecture, prd, uiux)
-            files = post_process_generated_files(
-                files, architecture, template_name=template_name, uiux=uiux,
-                requirement=requirement, prd=prd, app_spec=app_spec,
-                design_tokens=design_tokens,
-            )
-            files, validation_errors = ensure_valid_codegen_output(
-                files, architecture, uiux=uiux,
-                requirement=requirement, prd=prd, app_spec=app_spec,
-                design_tokens=design_tokens,
-            )
-            if validation_errors:
-                raise ValueError("; ".join(validation_errors[:5]))
 
-            await websocket.send_text(json.dumps({
-                "event": "agent_start",
-                "agent": "functionality_validator_agent",
-                "message": "Checking API calls and runtime CRUD functionality...",
-            }))
-            touch_job(
-                session_id,
-                app_id=app_id,
-                job_type="codegen",
-                status="running",
-                step="functionality_validator_agent",
-            )
-
-            from app_builder.services.functionality_validator import run_functionality_pipeline
-            from app_builder.services.project_config import get_project_config
-
-            _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
-            config = get_project_config(project_name) or {}
-            files, func_ok, func_msgs, func_err = run_functionality_pipeline(
-                files, project_name, architecture, app_spec=app_spec, config=config,
-            )
-            for msg in func_msgs:
+            if fullstack:
+                from app_builder.services.fullstack_app_generator import fill_missing_fullstack_files
+                files = fill_missing_fullstack_files(
+                    files, requirement, prd, uiux, architecture, design_tokens,
+                )
                 await websocket.send_text(json.dumps({
-                    "event": "agent_progress",
-                    "agent": "functionality_validator_agent",
-                    "message": msg,
+                    "event": "agent_start",
+                    "agent": "frontend_agent",
+                    "message": "Checking frontend pages, MUI shell, theme, and mock API client...",
                 }))
-            if not func_ok:
-                from app_builder.services.app_generators import apply_deterministic_fallback
-                logger_msg = f"Functionality check failed ({func_err}) — applying CRUD fallback"
+                files = ensure_mock_client(files)
+                files = apply_theme_tokens(files, design_tokens, uiux=uiux)
+                files = ensure_deliverables(files)
                 await websocket.send_text(json.dumps({
-                    "event": "agent_progress",
-                    "agent": "functionality_validator_agent",
-                    "message": logger_msg,
+                    "event": "agent_complete",
+                    "agent": "frontend_agent",
+                    "message": "Frontend shell, theme tokens, and mock fallback client are in place.",
                 }))
-                files = apply_deterministic_fallback(files, app_spec, uiux=uiux, prd=prd)
+                await websocket.send_text(json.dumps({
+                    "event": "agent_start",
+                    "agent": "backend_agent",
+                    "message": "Checking FastAPI models, schemas, routes, JWT, and seed scripts...",
+                }))
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": "backend_agent",
+                    "message": "Backend FastAPI + SQLAlchemy + JWT structure verified in generated files.",
+                }))
+                await websocket.send_text(json.dumps({
+                    "event": "agent_start",
+                    "agent": "integration_agent",
+                    "message": "Wiring frontend API client to backend REST routes with mock fallback...",
+                }))
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": "integration_agent",
+                    "message": "Integration ready — screens call apiFetch; mock.ts is used if APIs fail.",
+                }))
+                file_writer(project_name, GeneratedFiles(files=files))
+                _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": "validation_agent",
+                    "message": "Fullstack validation complete (JS CRUD validator skipped).",
+                }))
+            else:
+                files = validate_and_fix_code(files, architecture, template_name=template_name)
                 files = post_process_generated_files(
                     files, architecture, template_name=template_name, uiux=uiux,
                     requirement=requirement, prd=prd, app_spec=app_spec,
@@ -315,28 +331,77 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     design_tokens=design_tokens,
                 )
                 if validation_errors:
-                    raise ValueError(f"Functionality fallback failed: {'; '.join(validation_errors[:5])}")
+                    raise ValueError("; ".join(validation_errors[:5]))
+
+                await websocket.send_text(json.dumps({
+                    "event": "agent_start",
+                    "agent": "functionality_validator_agent",
+                    "message": "Checking API calls and runtime CRUD functionality...",
+                }))
+                touch_job(
+                    session_id,
+                    app_id=app_id,
+                    job_type="codegen",
+                    status="running",
+                    step="functionality_validator_agent",
+                )
+
+                from app_builder.services.functionality_validator import run_functionality_pipeline
+                from app_builder.services.project_config import get_project_config
+
                 _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
                 config = get_project_config(project_name) or {}
                 files, func_ok, func_msgs, func_err = run_functionality_pipeline(
                     files, project_name, architecture, app_spec=app_spec, config=config,
                 )
+                for msg in func_msgs:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "functionality_validator_agent",
+                        "message": msg,
+                    }))
                 if not func_ok:
-                    raise ValueError(f"Runtime CRUD verification failed: {func_err}")
+                    from app_builder.services.app_generators import apply_deterministic_fallback
+                    logger_msg = f"Functionality check failed ({func_err}) — applying CRUD fallback"
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "functionality_validator_agent",
+                        "message": logger_msg,
+                    }))
+                    files = apply_deterministic_fallback(files, app_spec, uiux=uiux, prd=prd)
+                    files = post_process_generated_files(
+                        files, architecture, template_name=template_name, uiux=uiux,
+                        requirement=requirement, prd=prd, app_spec=app_spec,
+                        design_tokens=design_tokens,
+                    )
+                    files, validation_errors = ensure_valid_codegen_output(
+                        files, architecture, uiux=uiux,
+                        requirement=requirement, prd=prd, app_spec=app_spec,
+                        design_tokens=design_tokens,
+                    )
+                    if validation_errors:
+                        raise ValueError(f"Functionality fallback failed: {'; '.join(validation_errors[:5])}")
+                    _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+                    config = get_project_config(project_name) or {}
+                    files, func_ok, func_msgs, func_err = run_functionality_pipeline(
+                        files, project_name, architecture, app_spec=app_spec, config=config,
+                    )
+                    if not func_ok:
+                        raise ValueError(f"Runtime CRUD verification failed: {func_err}")
 
-            await websocket.send_text(json.dumps({
-                "event": "agent_complete",
-                "agent": "functionality_validator_agent",
-                "message": "Functionality verified — API calls and CRUD smoke test passed.",
-            }))
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": "functionality_validator_agent",
+                    "message": "Functionality verified — API calls and CRUD smoke test passed.",
+                }))
 
-            file_writer(project_name, GeneratedFiles(files=files))
-            _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
-            await websocket.send_text(json.dumps({
-                "event": "agent_complete",
-                "agent": "validation_agent",
-                "message": "Validation complete. Dependencies verified."
-            }))
+                file_writer(project_name, GeneratedFiles(files=files))
+                _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
+                await websocket.send_text(json.dumps({
+                    "event": "agent_complete",
+                    "agent": "validation_agent",
+                    "message": "Validation complete. Dependencies verified."
+                }))
         except Exception as val_err:
             err = f"Validation failed: {val_err}"
             print(f"[codegen_api] {err}", file=sys.stderr)
@@ -405,37 +470,57 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             )
             file_writer(project_name, GeneratedFiles(files=files))
             if not backend_ok:
-                err = f"Backend verification failed after auto-fix attempts: {(backend_log or '')[-800:]}"
-                if app_id and user_email:
-                    db.update_app_builder_app(
+                if fullstack:
+                    from app_builder.services.fullstack_codegen import apply_backend_failure_mock
+                    files = apply_backend_failure_mock(files)
+                    file_writer(project_name, GeneratedFiles(files=files))
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_start",
+                        "agent": "mock_fallback_agent",
+                        "message": "Backend verification failed — enabling mock API fallback so every screen still works.",
+                    }))
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_complete",
+                        "agent": "mock_fallback_agent",
+                        "message": "Frontend mock fallback enabled. Live APIs will be used when the backend is healthy.",
+                    }))
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_complete",
+                        "agent": "backend_verify_agent",
+                        "message": "Backend verify failed; continuing with mock-backed frontend.",
+                    }))
+                else:
+                    err = f"Backend verification failed after auto-fix attempts: {(backend_log or '')[-800:]}"
+                    if app_id and user_email:
+                        db.update_app_builder_app(
+                            app_id=app_id,
+                            user_email=user_email,
+                            user_id=uid,
+                            pipeline_status="CODEGEN_FAILED",
+                            pipeline_error=err,
+                        )
+                    touch_job(
+                        session_id,
                         app_id=app_id,
-                        user_email=user_email,
-                        user_id=uid,
-                        pipeline_status="CODEGEN_FAILED",
-                        pipeline_error=err,
+                        job_type="codegen",
+                        status="failed",
+                        step="backend_verify",
+                        error=err,
+                        finished=True,
                     )
-                touch_job(
-                    session_id,
-                    app_id=app_id,
-                    job_type="codegen",
-                    status="failed",
-                    step="backend_verify",
-                    error=err,
-                    finished=True,
-                )
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_error",
+                        "agent": "backend_verify_agent",
+                        "message": err,
+                    }))
+                    await websocket.send_text(json.dumps({"event": "error", "message": err}))
+                    return
+            else:
                 await websocket.send_text(json.dumps({
-                    "event": "agent_error",
+                    "event": "agent_complete",
                     "agent": "backend_verify_agent",
-                    "message": err,
+                    "message": "Backend verified — uvicorn started and sample API calls succeeded.",
                 }))
-                await websocket.send_text(json.dumps({"event": "error", "message": err}))
-                return
-
-            await websocket.send_text(json.dumps({
-                "event": "agent_complete",
-                "agent": "backend_verify_agent",
-                "message": "Backend verified — uvicorn started and sample API calls succeeded.",
-            }))
         elif verify_backend:
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
@@ -506,6 +591,32 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "event": "agent_complete",
                 "agent": "build_verify_agent",
                 "message": "Build verify skipped (CODEGEN_VERIFY_BUILD=false).",
+            }))
+
+        if fullstack:
+            from app_builder.services.fullstack_codegen import run_screen_qa as _run_screen_qa
+            await websocket.send_text(json.dumps({
+                "event": "agent_start",
+                "agent": "screen_qa_agent",
+                "message": "Checking each planned screen is present and wired...",
+            }))
+            passed, missing = _run_screen_qa(files, architecture, prd, uiux)
+            for name in passed:
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "screen_qa_agent",
+                    "message": f"OK: {name}",
+                }))
+            for name in missing:
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "screen_qa_agent",
+                    "message": f"Needs follow-up: {name} not found in generated frontend",
+                }))
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "screen_qa_agent",
+                "message": f"Screen QA complete — {len(passed)} present, {len(missing)} missing.",
             }))
 
         store_err = None

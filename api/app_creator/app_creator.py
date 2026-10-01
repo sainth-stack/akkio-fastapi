@@ -388,10 +388,16 @@ def _sync_project_disk_from_db(project_name: str, current: CurrentUser) -> int:
         return 0
     try:
         from app_builder.services.code_post_process import post_process_generated_files
+        from app_builder.services.fullstack_codegen import is_fullstack_generated_files
+
         files = post_process_generated_files(
             files,
             app.get("architecture") or {},
             uiux=app.get("generated_uiux") or "",
+            requirement=app.get("prompt") or app.get("description") or "",
+            prd=app.get("prd") or "",
+            design_tokens=app.get("design_tokens"),
+            builder_kind=app.get("builder_kind"),
         )
     except Exception as exc:
         logger.warning("[sync-from-db] post_process failed: %s", exc)
@@ -399,7 +405,12 @@ def _sync_project_disk_from_db(project_name: str, current: CurrentUser) -> int:
     project_root = _project_root(project_name)
     frontend_dir = _resolve_frontend_dir(project_root, "frontend")
     if frontend_dir:
-        prepare_frontend_dir_on_disk(frontend_dir)
+        from api.app_creator.vite_build import is_vite_frontend, prepare_vite_frontend_dir
+
+        if is_vite_frontend(frontend_dir) or is_fullstack_generated_files(files):
+            prepare_vite_frontend_dir(frontend_dir)
+        else:
+            prepare_frontend_dir_on_disk(frontend_dir)
     return len(files)
 
 

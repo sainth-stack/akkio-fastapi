@@ -189,6 +189,7 @@ async def execute_code_generator_agent(
     uiux: str = "",
     user_email: Optional[str] = None,
     model_name: Optional[str] = None,
+    builder_kind: Optional[str] = None,
 ):
     """Execute dynamic code generation agent using LLM"""
     try:
@@ -227,7 +228,9 @@ async def execute_code_generator_agent(
         # Generate code using LLM
         files_dict = {}
         codegen_error = None
-        async for event in generate_code_from_plan(requirement, prd, plan, architecture, llm, uiux):
+        async for event in generate_code_from_plan(
+            requirement, prd, plan, architecture, llm, uiux, builder_kind=builder_kind or "",
+        ):
             if event["event"] == "generation_start":
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -64,6 +64,7 @@ async def stream_styling_generation(
     prd: str,
     uiux: str,
     llm,
+    builder_kind: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     system_prompt = """You are a senior product designer building SaaS-grade design systems.
 Given PRD and UI/UX specs, output:
@@ -104,6 +105,14 @@ UI/UX:
 {(uiux or '')[:6000]}
 
 Produce the design system JSON block and complete app.css."""
+
+    from app_builder.services.fullstack_stack import is_fullstack
+    if is_fullstack(builder_kind):
+        system_prompt += (
+            "\nAlso emit MUI palette fields (primary.main, background.default, text.primary) "
+            "matching the prompt colors. This theme is applied via Material UI createTheme."
+        )
+        user_prompt += "\nExtract hex colors from the requirement/UI-UX exactly. Enterprise light theme unless specified."
 
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     full_response = ""

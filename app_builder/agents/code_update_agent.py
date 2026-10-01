@@ -191,6 +191,46 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
     except Exception as e:
         print(f"Architecture update failed: {e}")
 
+    combined_spec = "\n".join([
+        original_requirement or "",
+        user_request or "",
+        updated_prd or "",
+        prd or "",
+    ])
+    try:
+        from app_builder.services.fullstack_docchat_generator import is_doc_chat_domain
+        from app_builder.services.fullstack_app_generator import generate_fullstack_application
+        from app_builder.services.fullstack_codegen import post_process_fullstack_files
+        from app_builder.services.file_writer import file_writer
+        from app_builder.schemas.files import GeneratedFiles
+
+        if is_doc_chat_domain(combined_spec, updated_prd, uiux):
+            if websocket:
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "update_code_agent",
+                    "message": "Regenerating document upload + chat application (2 screens)...",
+                }))
+            new_files = generate_fullstack_application(
+                combined_spec,
+                updated_prd,
+                uiux,
+                updated_architecture,
+                design_tokens,
+            )
+            new_files = post_process_fullstack_files(new_files, design_tokens=design_tokens, uiux=uiux)
+            file_writer(project_name, GeneratedFiles(files=new_files))
+            return {
+                "status": "success",
+                "message": "Built Upload + Document Chat screens with grounded Q&A from uploaded files.",
+                "updated_code_dict": new_files,
+                "updated_prd": updated_prd,
+                "updated_architecture": updated_architecture,
+                "changes": [{"file": k, "action": "regenerated"} for k in sorted(new_files.keys())[:40]],
+            }
+    except Exception as regen_exc:
+        print(f"[update_code] doc-chat regenerate skipped: {regen_exc}")
+
     if websocket:
         await websocket.send_text(json.dumps({
             "event": "agent_progress",

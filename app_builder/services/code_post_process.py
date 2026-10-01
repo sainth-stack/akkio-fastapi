@@ -88,8 +88,16 @@ def post_process_generated_files(
     prd: str = "",
     app_spec: Optional[Dict[str, Any]] = None,
     design_tokens: Optional[Dict[str, Any]] = None,
+    builder_kind: Optional[str] = None,
 ) -> Dict[str, str]:
     """Apply normalization/fixups. Merges LLM output into generic base shell."""
+    from app_builder.services.fullstack_codegen import is_fullstack_generated_files, post_process_fullstack_files
+    from app_builder.services.fullstack_stack import is_fullstack
+
+    files_in = dict(files or {})
+    if is_fullstack(builder_kind) or is_fullstack_generated_files(files_in):
+        return post_process_fullstack_files(files_in, design_tokens=design_tokens, uiux=uiux)
+
     spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
     allowlist = get_codegen_allowlist(spec)
     base = get_base_scaffold_files()

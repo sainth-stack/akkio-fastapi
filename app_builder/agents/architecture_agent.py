@@ -12,6 +12,7 @@ async def stream_architecture_generation(
     llm,
     uiux: str = "",
     design_tokens: Optional[Dict[str, Any]] = None,
+    builder_kind: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Dynamically generates architecture decisions using LLM based on requirement, PRD, and plan.
@@ -97,6 +98,10 @@ CRITICAL RULES:
 5. Output ONLY the JSON, nothing else.
 """
 
+    from app_builder.services.fullstack_stack import is_fullstack, architecture_system_addendum, lock_architecture
+    if is_fullstack(builder_kind):
+        architecture_prompt = architecture_prompt + "\n" + architecture_system_addendum()
+
     messages = [
         SystemMessage(content="You are a senior solutions architect. Design optimal architectures based on requirements."),
         HumanMessage(content=architecture_prompt)
@@ -141,18 +146,26 @@ CRITICAL RULES:
             "message": f"JSON parsing failed, using intelligent fallback based on requirement..."
         }
         # Fallback: Create architecture based on requirement keywords
-        architecture_data = create_fallback_architecture(requirement, prd, plan)
+        architecture_data = create_fallback_architecture(requirement, prd, plan, builder_kind=builder_kind)
     
     if not architecture_data:
-        architecture_data = create_fallback_architecture(requirement, prd, plan)
-    
+        architecture_data = create_fallback_architecture(requirement, prd, plan, builder_kind=builder_kind)
+
+    if is_fullstack(builder_kind):
+        architecture_data = lock_architecture(architecture_data)
+
     yield {
         "event": "architecture_complete",
         "data": architecture_data
     }
 
 
-def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict[str, Any]:
+def create_fallback_architecture(
+    requirement: str,
+    prd: str,
+    plan: list,
+    builder_kind: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a reasonable architecture based on requirement keywords.
     """
@@ -177,7 +190,7 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
     # Infer domain entities
     entities = infer_entities_from_requirement(requirement, prd)
     
-    return {
+    arch = {
         "frontend_structure": {
             "framework": framework,
             "template": "Modern SPA with component-based architecture",
@@ -219,6 +232,10 @@ def create_fallback_architecture(requirement: str, prd: str, plan: list) -> Dict
             "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
         }
     }
+    from app_builder.services.fullstack_stack import is_fullstack, lock_architecture
+    if is_fullstack(builder_kind):
+        return lock_architecture(arch)
+    return arch
 
 
 def infer_entities_from_requirement(requirement: str, prd: str) -> list:

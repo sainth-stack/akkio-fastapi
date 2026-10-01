@@ -12,35 +12,70 @@ from .runtime_paths import get_projects_dir, resolve_project_root
 logger = logging.getLogger("app_builder")
 
 
+def _iter_endpoint_entries(api_contract: Dict[str, Any]):
+    """Yield (path_spec_str, spec_dict) from dict or list-of-dict API contracts."""
+    if not isinstance(api_contract, dict):
+        return
+    endpoints = api_contract.get("endpoints") or {}
+    if isinstance(endpoints, list):
+        for item in endpoints:
+            if isinstance(item, dict):
+                method = str(item.get("method") or "GET").upper()
+                path = str(item.get("path") or item.get("url") or "")
+                yield f"{method} {path}".strip(), item
+            elif isinstance(item, str):
+                yield item, {}
+        return
+    if isinstance(endpoints, dict):
+        for path_spec, spec in endpoints.items():
+            if isinstance(path_spec, dict):
+                method = str(path_spec.get("method") or "GET").upper()
+                path = str(path_spec.get("path") or "")
+                yield f"{method} {path}".strip(), spec if isinstance(spec, dict) else {}
+            else:
+                yield str(path_spec), spec if isinstance(spec, dict) else {}
+
+
+def _collection_segment(path: str) -> str:
+    parts = [p for p in path.strip("/").split("/") if p and not p.startswith("{")]
+    if parts and parts[0] == "api":
+        parts = parts[1:]
+    if not parts:
+        return ""
+    segment = parts[0]
+    if segment.isdigit():
+        return ""
+    return segment
+
+
 def _extract_tables_from_contract(api_contract: Dict[str, Any]) -> List[str]:
     """Extract collection/table names from API contract paths (e.g. GET /users -> users)."""
     tables = set()
-    endpoints = api_contract.get("endpoints") or {}
-    for path_spec in endpoints:
-        # path_spec is like "GET /users", "POST /todos", "GET /todos/{id}"
+    for path_spec, _spec in _iter_endpoint_entries(api_contract or {}):
+        if not isinstance(path_spec, str):
+            continue
         parts = path_spec.split()
-        if len(parts) >= 2:
-            path = parts[1].strip("/")
-            # Get first segment (e.g. "users" from "users" or "users/123")
-            segment = path.split("/")[0]
-            if segment and not segment.isdigit() and segment != "api":
-                tables.add(segment)
+        if len(parts) < 2:
+            continue
+        segment = _collection_segment(parts[1])
+        if segment:
+            tables.add(segment)
     return sorted(tables)
 
 
 def _extract_fields_from_contract(api_contract: Dict[str, Any]) -> Dict[str, List[str]]:
     """Extract field names per collection from API contract response schemas."""
     fields: Dict[str, List[str]] = {}
-    endpoints = api_contract.get("endpoints") or {}
-    for path_spec, spec in endpoints.items():
+    for path_spec, spec in _iter_endpoint_entries(api_contract or {}):
+        if not isinstance(path_spec, str):
+            continue
         parts = path_spec.split()
         if len(parts) < 2:
             continue
-        path = parts[1].strip("/")
-        segment = path.split("/")[0]
-        if not segment or segment.isdigit() or segment == "api":
+        segment = _collection_segment(parts[1])
+        if not segment:
             continue
-        response = spec.get("response") or {}
+        response = spec.get("response") or spec.get("response_schema") or {}
         if isinstance(response, dict):
             field_names = [k for k in response.keys() if k != "id"]
             if field_names and (segment not in fields or len(field_names) > len(fields.get(segment, []))):
@@ -79,14 +114,14 @@ def _extract_custom_endpoints(
         custom["translate"] = "llm_translate"
 
     # 2. From api_contract: POST endpoints that are not CRUD collections
-    endpoints = api_contract.get("endpoints") or {}
-    for path_spec in endpoints:
+    for path_spec, _spec in _iter_endpoint_entries(api_contract or {}):
+        if not isinstance(path_spec, str):
+            continue
         parts = path_spec.split()
         if len(parts) < 2 or parts[0].upper() != "POST":
             continue
-        path = parts[1].strip("/")
-        segment = path.split("/")[0]
-        if not segment or segment.isdigit() or segment == "api":
+        segment = _collection_segment(parts[1])
+        if not segment:
             continue
         if segment in tables_set:
             continue  # CRUD collection, skip

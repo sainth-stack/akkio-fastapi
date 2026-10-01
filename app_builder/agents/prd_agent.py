@@ -1,7 +1,7 @@
 """
 PRD Agent - Generates Product Requirements Document and detailed plan using LLM
 """
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Optional
 import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -23,7 +23,12 @@ def _chunk_text(content) -> str:
     return str(content)
 
 
-async def stream_prd_generation(requirement: str, llm, skip_plan: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+async def stream_prd_generation(
+    requirement: str,
+    llm,
+    skip_plan: bool = False,
+    builder_kind: Optional[str] = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streams PRD generation using LLM.
     
@@ -72,13 +77,21 @@ Formatting rules:
 - Use `#` for main sections (1–4), `##` for subsections (2.1, 2.2).
 - Use `- ` for all bullet lists; no mixed styles.
 - Keep sentences short and clear. No run-on paragraphs.
-- Do not add a Tech Stack section."""
+- Do not add a Tech Stack section unless the product is a fullstack enterprise application."""
 
     user_prompt = f"""Create a concise and well-formatted PRD for:
 
 {requirement}
 
 Follow the exact structure (1. Product Overview, 2. Business Requirements with FR and NFR, 3. Core Features, 4. Process Flows / Use Cases). Use clean Markdown so it displays perfectly."""
+
+    from app_builder.services.fullstack_stack import is_fullstack, prd_system_addendum
+    if is_fullstack(builder_kind):
+        system_prompt = system_prompt + "\n" + prd_system_addendum()
+        user_prompt += (
+            "\n\nThis is a FULLSTACK agentic application. Include modules, APIs, data model, "
+            "roles, quality requirements, and deliverables. Keep the locked tech stack."
+        )
 
     messages = [
         SystemMessage(content=system_prompt),
