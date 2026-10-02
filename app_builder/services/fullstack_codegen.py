@@ -183,11 +183,20 @@ def post_process_fullstack_files(
     files: Dict[str, str],
     design_tokens: Optional[Dict[str, Any]] = None,
     uiux: str = "",
+    requirement: str = "",
+    prd: str = "",
 ) -> Dict[str, str]:
-    """Lightweight post-process for fullstack apps — never merge into generic CRA shell."""
+    """Post-process for fullstack apps — fills missing/stale pages, regenerates theme, never CRA-merges."""
     from api.app_creator.backend_verify_service import apply_deterministic_backend_fixes
+    from app_builder.services.fullstack_app_generator import fill_missing_fullstack_files
 
     out = dict(files or {})
+    # Fill stale or missing pages based on app mode (ecommerce / doc_chat / quality)
+    if requirement or prd:
+        try:
+            out = fill_missing_fullstack_files(out, requirement, prd, uiux, design_tokens=design_tokens)
+        except Exception as _fill_exc:
+            logger.warning("[fullstack] fill_missing_fullstack_files failed: %s", _fill_exc)
     apply_deterministic_backend_fixes(out)
     out = apply_theme_tokens(out, design_tokens, uiux=uiux)
     out = ensure_mock_client(out)

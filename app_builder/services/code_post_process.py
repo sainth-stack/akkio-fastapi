@@ -96,7 +96,13 @@ def post_process_generated_files(
 
     files_in = dict(files or {})
     if is_fullstack(builder_kind) or is_fullstack_generated_files(files_in):
-        return post_process_fullstack_files(files_in, design_tokens=design_tokens, uiux=uiux)
+        return post_process_fullstack_files(
+            files_in,
+            design_tokens=design_tokens,
+            uiux=uiux,
+            requirement=requirement,
+            prd=prd,
+        )
 
     spec = app_spec or build_app_spec(requirement, architecture, prd, uiux)
     allowlist = get_codegen_allowlist(spec)

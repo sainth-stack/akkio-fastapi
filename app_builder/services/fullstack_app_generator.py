@@ -12,11 +12,18 @@ from app_builder.services.fullstack_docchat_generator import (
     doc_chat_frontend_files,
     is_doc_chat_domain,
 )
+from app_builder.services.fullstack_ecommerce_generator import (
+    ecommerce_frontend_files,
+    ecommerce_backend_files,
+    is_ecommerce_domain,
+)
 
 
 def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
     if is_doc_chat_domain(requirement, prd, uiux):
         return "doc_chat"
+    if is_ecommerce_domain(requirement, prd, uiux):
+        return "ecommerce"
     if is_quality_domain(requirement, prd, uiux):
         return "quality"
     return "generic"
@@ -41,6 +48,8 @@ def extract_app_title(requirement: str, prd: str = "") -> str:
             return "Supplier Quality & Incoming Material Release"
         if is_doc_chat_domain(requirement, prd):
             return "Document Upload & Chat"
+        if is_ecommerce_domain(requirement, prd):
+            return "E-Commerce Shopping Cart"
         return "Enterprise Application"
     return first[:90] if first else "Enterprise Application"
 
@@ -62,6 +71,22 @@ def generate_fullstack_application(
         files["backend/requirements.txt"] = _doc_chat_requirements()
         for stale in (
             "frontend/src/pages/DashboardPage.tsx",
+            "frontend/src/pages/ResourceListPage.tsx",
+            "frontend/src/pages/SupplierDetailPage.tsx",
+            "frontend/src/pages/LotDetailPage.tsx",
+            "frontend/src/pages/InspectionPage.tsx",
+            "frontend/src/pages/CapaPage.tsx",
+            "frontend/src/pages/ReportsPage.tsx",
+            "frontend/src/pages/AIAssistantPage.tsx",
+            "backend/risk_engine.py",
+        ):
+            files.pop(stale, None)
+    elif mode == "ecommerce":
+        files.update(ecommerce_frontend_files(title, colors))
+        files.update(ecommerce_backend_files(title))
+        files["backend/requirements.txt"] = _ecommerce_requirements()
+        # remove quality-only stale pages
+        for stale in (
             "frontend/src/pages/ResourceListPage.tsx",
             "frontend/src/pages/SupplierDetailPage.tsx",
             "frontend/src/pages/LotDetailPage.tsx",
@@ -97,7 +122,7 @@ def fill_missing_fullstack_files(
     for path, content in (files or {}).items():
         if isinstance(path, str) and isinstance(content, str):
             out[path] = content
-    if mode == "doc_chat":
+    if mode in ("doc_chat", "ecommerce"):
         from app_builder.services.fullstack_codegen import FULLSTACK_FROZEN
 
         for path, content in generated.items():
@@ -141,22 +166,50 @@ def _is_thin_shell(path: str, content: str) -> bool:
     if path.endswith("KPICard.tsx"):
         return "borderLeft" not in text
     if path.endswith("DashboardPage.tsx"):
-        return "recharts" not in text.lower() and "TrendChart" not in text
+        return "recharts" not in text.lower() and "TrendChart" not in text and "total_orders" not in text
     if path.endswith("mock.ts"):
         if "mock-jwt" not in text:
             return True
         if "supplier-quality-manual" in text or ("chunks" in text and "documents" in text):
             return False
+        if "mockFetch" in text and "auth/login" in text:
+            return False  # e-commerce mock
         return "ppm_trend" not in text
     if path.endswith("README.md"):
-        return "demo users" not in text.lower() and "capa" not in text.lower()
+        return "demo users" not in text.lower() and "capa" not in text.lower() and "cash on delivery" not in text.lower()
     if path.endswith("models.py"):
         if "class Document" in text:
             return "DocumentChunk" not in text
+        if "class Product" in text:
+            return "class Order" not in text
         return "class Supplier" not in text
     if path.endswith("seed.py"):
-        return "LOT-20260925" not in text
+        return "LOT-20260925" not in text and "Laptop" not in text
+    if path.endswith("CartPage.tsx"):
+        return "CartProvider" not in text and "useCart" not in text
+    if path.endswith("CheckoutPage.tsx"):
+        return "Place Order" not in text and "shipping_address" not in text
+    if path.endswith("OrderConfirmationPage.tsx"):
+        return "CheckCircle" not in text
+    if path.endswith("CartContext.tsx"):
+        return "createContext" not in text
     return False
+
+
+def _ecommerce_requirements() -> str:
+    return """fastapi
+uvicorn
+sqlalchemy
+pydantic
+pydantic-settings
+psycopg2-binary
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+alembic
+pytest
+httpx
+"""
 
 
 def _doc_chat_requirements() -> str:

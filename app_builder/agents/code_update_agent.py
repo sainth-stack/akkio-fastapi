@@ -199,17 +199,18 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
     ])
     try:
         from app_builder.services.fullstack_docchat_generator import is_doc_chat_domain
+        from app_builder.services.fullstack_ecommerce_generator import is_ecommerce_domain
         from app_builder.services.fullstack_app_generator import generate_fullstack_application
         from app_builder.services.fullstack_codegen import post_process_fullstack_files
         from app_builder.services.file_writer import file_writer
         from app_builder.schemas.files import GeneratedFiles
 
-        if is_doc_chat_domain(combined_spec, updated_prd, uiux):
+        if is_doc_chat_domain(combined_spec, updated_prd, uiux) or is_ecommerce_domain(combined_spec, updated_prd, uiux):
             if websocket:
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "update_code_agent",
-                    "message": "Regenerating document upload + chat application (2 screens)...",
+                    "message": "Regenerating fullstack application from requirement...",
                 }))
             new_files = generate_fullstack_application(
                 combined_spec,
@@ -218,7 +219,8 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 updated_architecture,
                 design_tokens,
             )
-            new_files = post_process_fullstack_files(new_files, design_tokens=design_tokens, uiux=uiux)
+            new_files = post_process_fullstack_files(new_files, design_tokens=design_tokens, uiux=uiux,
+                                                     requirement=combined_spec, prd=updated_prd)
             file_writer(project_name, GeneratedFiles(files=new_files))
             return {
                 "status": "success",
