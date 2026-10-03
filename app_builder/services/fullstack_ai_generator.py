@@ -185,23 +185,60 @@ Requirements:
 No markdown. Return ONLY the TypeScript code. Export default function LoginPage().'''
 
 
-BACKEND_GENERATION_PROMPT = '''You are a senior Python/FastAPI developer. Generate production backend code.
+BACKEND_GENERATION_PROMPT = '''You are a senior Python/FastAPI developer. Generate production-ready backend code.
 
-App Title: {title}
+App: {title}
+Domain: {requirement}
 PRD: {prd}
 
 Database tables from architecture:
 {tables_json}
 
-Generate a complete FastAPI routes file with:
-1. SQLAlchemy ORM models matching the tables
-2. Pydantic schemas for request/response
-3. CRUD routes: GET /api/items, POST /api/items, GET /api/items/{{id}}, PUT /api/items/{{id}}, DELETE /api/items/{{id}}
-4. Authentication guard using: from auth import get_current_user
-5. Proper error handling with HTTPException
-6. Use database.py (already exists): from database import Base, SessionLocal, engine, get_db
+Generate a complete FastAPI routes.py with:
+1. SQLAlchemy ORM models matching the tables with __tablename__, columns, relationships
+2. Pydantic v2 schemas (BaseModel) for request/response
+3. CRUD endpoints for each table: GET list, POST create, GET by id, PUT update, DELETE
+4. Auth endpoints: POST /api/auth/login, POST /api/auth/register
+5. A startup seed function that inserts 10 realistic sample records matching the DOMAIN
+   - If pharma ecommerce: seed with real medicine/pharma product names (Paracetamol, Amoxicillin, etc.)
+   - If food delivery: seed with real food items
+   - If fashion: seed with clothing items
+   - Always match the domain from "App" and "Domain" fields above
+6. from auth import get_current_user for protected routes
+7. from database import Base, SessionLocal, engine, get_db
+8. Use @app.on_event("startup") or lifespan to run seed
 
-Return the complete routes.py file content. Python 3.9 compatible. No markdown fences.'''
+Return ONLY the complete routes.py. Python 3.10 compatible. No markdown fences.'''
+
+
+MOCK_DATA_PROMPT = '''You are a senior TypeScript developer. Generate realistic mock API data for a frontend app.
+
+App: {title}
+Domain: {requirement}
+Pages in the app: {pages}
+PRD summary: {prd_summary}
+
+Generate a TypeScript mock.ts file that:
+1. Has realistic arrays of 8-10 sample items matching the DOMAIN:
+   - If pharma ecommerce: medicines — Paracetamol 500mg, Amoxicillin 250mg, Vitamin C tablets, etc. with MRP prices
+   - If food delivery: dishes with restaurant names, prices in INR
+   - If fashion: clothes with sizes, colors, brands
+   - If HR/employee: employees with realistic Indian names, departments, salaries
+   - ALWAYS match the actual domain — never use generic Laptop/Mouse data
+2. Exports `mockFetch<T>(path, options): Promise<T>` function that:
+   - Handles auth/login, auth/register
+   - Handles GET /api/<entity> → returns {{ items: [...], total: N }}
+   - Handles POST /api/<entity> → creates item, returns created item
+   - Handles GET /api/<entity>/{{id}} → returns single item
+   - Matches the pages listed above
+3. Types: `type Json = Record<string, unknown>`
+
+Important rules:
+- All prices in INR (₹) if e-commerce
+- Use realistic domain-specific field names
+- No imports needed — pure TypeScript
+
+Return ONLY the TypeScript code. No markdown fences.'''
 
 
 def _extract_json_from_llm(text: str) -> Optional[dict]:
@@ -466,8 +503,9 @@ async def generate_backend_with_ai(
     prd: str,
     architecture: Dict[str, Any],
     llm=None,
+    requirement: str = "",
 ) -> Optional[str]:
-    """Use LLM to generate a custom FastAPI routes.py based on PRD + architecture."""
+    """Use LLM to generate a domain-aware FastAPI routes.py with seed data matching the domain."""
     if llm is None:
         try:
             from llm_helper import get_llm_for_user
@@ -480,12 +518,13 @@ async def generate_backend_with_ai(
 
     prompt = BACKEND_GENERATION_PROMPT.format(
         title=title,
+        requirement=(requirement or title)[:400],
         prd=(prd or "")[:3000],
         tables_json=tables_json,
     )
 
     try:
-        resp = await asyncio.to_thread(llm.invoke, prompt)
+        resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
         code = _extract_code_from_llm(text)
         if code and len(code) > 300 and ("@router" in code or "APIRouter" in code):
@@ -493,6 +532,44 @@ async def generate_backend_with_ai(
             return code
     except Exception as e:
         logger.warning("[ai-backend] routes.py generation failed: %s", e)
+    return None
+
+
+async def generate_mock_data_with_ai(
+    title: str,
+    requirement: str,
+    prd: str,
+    pages: List[Tuple[str, str]],
+    llm=None,
+) -> Optional[str]:
+    """Generate domain-specific mock data using LLM — no hardcoded products."""
+    if llm is None:
+        try:
+            from llm_helper import get_llm_for_user
+            llm = get_llm_for_user(None, temperature=0.2)
+        except Exception:
+            return None
+
+    pages_str = ", ".join(n for n, _ in pages[:10])
+    prd_lines = [l.strip() for l in (prd or "").split("\n") if l.strip().startswith(("- ", "* ", "•"))]
+    prd_summary = "\n".join(prd_lines[:10]) or (prd or "")[:400]
+
+    prompt = MOCK_DATA_PROMPT.format(
+        title=title,
+        requirement=(requirement or title)[:500],
+        pages=pages_str,
+        prd_summary=prd_summary,
+    )
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        code = _extract_code_from_llm(text)
+        if code and len(code) > 300 and "mockFetch" in code:
+            logger.info("[ai-mock] ✓ mock.ts generated (%d chars) — domain: %s", len(code), title)
+            return code
+    except Exception as e:
+        logger.warning("[ai-mock] mock.ts generation failed: %s", e)
     return None
 
 
@@ -901,19 +978,22 @@ async def generate_fullstack_app_with_ai(
 
     # Run everything in parallel — true Lovable-style parallel generation
     page_tasks = [gen_page(name, desc) for name, desc in pages]
-    layout_task = generate_layout_with_ai(title, pages, colors, requirement, llm)
-    login_task  = generate_login_with_ai(title, colors, requirement, llm)
-    backend_task = generate_backend_with_ai(title, prd, architecture or {}, llm)
+    layout_task  = generate_layout_with_ai(title, pages, colors, requirement, llm)
+    login_task   = generate_login_with_ai(title, colors, requirement, llm)
+    backend_task = generate_backend_with_ai(title, prd, architecture or {}, llm, requirement=requirement)
+    mock_task    = generate_mock_data_with_ai(title, requirement, prd, pages, llm)
 
     all_results = await asyncio.gather(
-        *page_tasks, layout_task, login_task, backend_task,
+        *page_tasks, layout_task, login_task, backend_task, mock_task,
         return_exceptions=True,
     )
 
-    page_results = all_results[:len(page_tasks)]
-    ai_layout   = all_results[len(page_tasks)]
-    ai_login    = all_results[len(page_tasks) + 1]
-    ai_routes   = all_results[len(page_tasks) + 2]
+    n_pages      = len(page_tasks)
+    page_results = all_results[:n_pages]
+    ai_layout    = all_results[n_pages]
+    ai_login     = all_results[n_pages + 1]
+    ai_routes    = all_results[n_pages + 2]
+    ai_mock      = all_results[n_pages + 3]
 
     # ── Step 4: Assemble file set ─────────────────────────────────────────────
     files = dict(get_fullstack_scaffold_files())
@@ -922,8 +1002,15 @@ async def generate_fullstack_app_with_ai(
     files["frontend/src/theme.ts"] = build_theme_ts(colors)
     files["frontend/src/auth.ts"] = _auth_ts()
     files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(pages)
-    files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title)
     files.pop("frontend/src/layout/AppShell.tsx", None)
+
+    # mock.ts — LLM-generated with domain-specific data; fallback to template
+    if isinstance(ai_mock, str) and ai_mock and "mockFetch" in ai_mock:
+        files["frontend/src/api/mock.ts"] = ai_mock
+        logger.info("[ai-gen] ✓ mock.ts from LLM (domain-aware)")
+    else:
+        logger.warning("[ai-gen] mock.ts LLM failed — using template fallback")
+        files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title)
 
     # AppLayout — LLM-generated, fallback to template
     if isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300:

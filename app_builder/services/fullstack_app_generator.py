@@ -118,6 +118,20 @@ def generate_fullstack_application(
     return files
 
 
+def _has_ai_generated_pages(files: Dict[str, str]) -> bool:
+    """True if files already contain real LLM-generated page content (not thin shells)."""
+    page_files = [
+        p for p in files
+        if p.startswith("frontend/src/pages/") and p.endswith(".tsx")
+        and p not in ("frontend/src/pages/LoginPage.tsx",)
+    ]
+    if len(page_files) < 2:
+        return False
+    # Real pages are substantial — if any page has real content (>500 chars) it's AI-generated
+    substantive = sum(1 for p in page_files if len(files.get(p, "")) > 500)
+    return substantive >= 2
+
+
 def fill_missing_fullstack_files(
     files: Dict[str, str],
     requirement: str,
@@ -126,15 +140,44 @@ def fill_missing_fullstack_files(
     architecture: Optional[Dict[str, Any]] = None,
     design_tokens: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    generated = generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
-    mode = resolve_app_mode(requirement, prd, uiux)
     out = {}
     for path, content in (files or {}).items():
         if isinstance(path, str) and isinstance(content, str):
             out[path] = content
+
+    # If the incoming files already have substantial AI-generated pages, ONLY fill
+    # truly missing infrastructure files (theme, auth, mock, App.tsx) — never overwrite pages.
+    # This preserves LLM-generated pharma/domain-specific content.
+    if _has_ai_generated_pages(out):
+        generated = generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
+        from app_builder.services.fullstack_codegen import FULLSTACK_FROZEN
+        # Only fill files that are completely missing (not pages that already exist)
+        infra_only = {
+            "frontend/src/theme.ts", "frontend/src/auth.ts", "frontend/src/App.tsx",
+            "frontend/src/layout/AppLayout.tsx", "frontend/src/api/mock.ts",
+            "backend/main.py", "backend/database.py", "backend/auth.py",
+        }
+        for path, content in generated.items():
+            if path in FULLSTACK_FROZEN:
+                continue
+            if path.endswith(".jsx") or path.endswith("app.css"):
+                continue
+            # Only inject if the file is missing OR it's an infra file that looks like a thin shell
+            current = out.get(path, "")
+            if not current:
+                out[path] = content
+            elif path in infra_only and _is_thin_shell(path, current):
+                out[path] = content
+        out.pop("frontend/src/App.jsx", None)
+        out.pop("frontend/src/styles/app.css", None)
+        return out
+
+    # No AI pages present — run normal fill logic
+    generated = generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
+    mode = resolve_app_mode(requirement, prd, uiux)
+
     if mode in ("doc_chat", "ecommerce"):
         from app_builder.services.fullstack_codegen import FULLSTACK_FROZEN
-
         for path, content in generated.items():
             if path.endswith(".jsx") or path.endswith("app.css"):
                 continue
@@ -148,6 +191,7 @@ def fill_missing_fullstack_files(
                 continue
             if not current or _is_thin_shell(path, current):
                 out[path] = content
+
     out.pop("frontend/src/App.jsx", None)
     out.pop("frontend/src/styles/app.css", None)
     return out

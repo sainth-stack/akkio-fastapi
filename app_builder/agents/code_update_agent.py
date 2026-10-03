@@ -191,10 +191,16 @@ Respond with ONLY a JSON object:
 }}
 
 Classification rules:
-- "theme_only": user asks to change colors, theme, style, fonts, dark mode, brand look — NO new features
-- "add_page": user wants a new page/screen/section added
-- "modify_page": user wants specific page(s) functionality changed (not just colors)
-- "full_regen": user wants completely different app type, or major structural change
+- "theme_only": ONLY if user asks to change colors, theme, style, fonts, dark mode, or brand look with NO data/feature changes
+- "add_page": user wants a new page/screen/section added to an existing app
+- "modify_page": user wants specific page(s) functionality or content changed (but same domain)
+- "full_regen": ANY of these → domain change (electronics → pharma, fashion → healthcare), 
+  "make it pharma/food/medical/...", changing the core product/data type, 
+  "data should be X", "products should be X", major restructuring
+
+Important: If the user is changing the DOMAIN or PRODUCT TYPE of the app → always "full_regen"
+Examples of full_regen: "make it pharma", "products should be medicines", 
+"change to food delivery", "create hospital management system"
 
 Return ONLY valid JSON."""
 
