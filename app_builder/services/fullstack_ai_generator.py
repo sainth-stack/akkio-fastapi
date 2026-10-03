@@ -97,7 +97,7 @@ Style: {style}
 ═══ TECH RULES ═══
 - MUI v6: Box, Card, Grid2, Stack, Typography, Button, TextField, Table, Chip, Avatar, IconButton, Fab, Drawer, Dialog, etc.
 - Data fetching: useQuery from @tanstack/react-query  
-- API calls: apiFetch from '../api/client'
+- API calls: `import { apiFetch } from '../api/client'`  ← NAMED import, NOT default
 - Routing: useNavigate from react-router-dom (for links to other pages)
 - Colors: use sx={{}} with the hex values above directly
 - Loading: <CircularProgress sx={{{{ color: '{primary}' }}}} />
@@ -180,7 +180,7 @@ Requirements:
 - Form state with useState, fake login: store token in localStorage, navigate to /
 - Clean, professional. Inspired by Figma/Notion/Linear login pages
 - useNavigate from react-router-dom for post-login redirect
-- Import apiFetch from '../api/client' for the login API call
+- `import {{ apiFetch }} from '../api/client'` — named import (NOT default import)
 
 No markdown. Return ONLY the TypeScript code. Export default function LoginPage().'''
 
@@ -239,6 +239,32 @@ Important rules:
 - No imports needed — pure TypeScript
 
 Return ONLY the TypeScript code. No markdown fences.'''
+
+
+def _fix_ts_imports(code: str) -> str:
+    """
+    Deterministically fix common import mistakes LLMs make for our frozen client.ts.
+    client.ts uses named exports — LLMs often generate wrong default imports.
+    """
+    # Fix: import apiFetch from '../api/client' → import { apiFetch } from '../api/client'
+    code = re.sub(
+        r"import\s+apiFetch\s+from\s+['\"](\.\./)*api/client['\"]",
+        "import { apiFetch } from '../api/client'",
+        code,
+    )
+    # Fix: import apiFetch, { X } from '../api/client' → import { apiFetch, X } from '...'
+    code = re.sub(
+        r"import\s+apiFetch\s*,\s*\{([^}]+)\}\s+from\s+['\"](\.\./)*api/client['\"]",
+        lambda m: "import { apiFetch, " + m.group(1).strip() + " } from '../api/client'",
+        code,
+    )
+    # Fix: import { default as apiFetch } → import { apiFetch }
+    code = re.sub(
+        r"import\s*\{\s*default\s+as\s+apiFetch\s*\}\s+from\s+['\"](\.\./)*api/client['\"]",
+        "import { apiFetch } from '../api/client'",
+        code,
+    )
+    return code
 
 
 def _extract_json_from_llm(text: str) -> Optional[dict]:
@@ -410,6 +436,7 @@ async def generate_page_with_ai(
         resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
         code = _extract_code_from_llm(text)
+        code = _fix_ts_imports(code)
         if code and len(code) > 300 and "export default" in code:
             logger.info("[ai-page] ✓ %s  (%d chars)", page_name, len(code))
             return code
@@ -452,7 +479,7 @@ async def generate_layout_with_ai(
     try:
         resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
-        code = _extract_code_from_llm(text)
+        code = _fix_ts_imports(_extract_code_from_llm(text))
         if code and len(code) > 300 and "export default" in code:
             logger.info("[ai-layout] ✓ AppLayout (%d chars)", len(code))
             return code
@@ -489,7 +516,7 @@ async def generate_login_with_ai(
     try:
         resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
-        code = _extract_code_from_llm(text)
+        code = _fix_ts_imports(_extract_code_from_llm(text))
         if code and len(code) > 300 and "export default" in code:
             logger.info("[ai-login] ✓ LoginPage (%d chars)", len(code))
             return code
@@ -1039,7 +1066,7 @@ async def generate_fullstack_app_with_ai(
         if page_name == "LoginPage":
             continue  # Already handled above
         if code:
-            files[f"frontend/src/pages/{page_name}.tsx"] = code
+            files[f"frontend/src/pages/{page_name}.tsx"] = _fix_ts_imports(code)
             successful_pages += 1
         else:
             failed_pages.append(page_name)

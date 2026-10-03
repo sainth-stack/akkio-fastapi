@@ -179,6 +179,25 @@ def is_fullstack_generated_files(files: Dict[str, str]) -> bool:
     return False
 
 
+def _fix_apifetch_imports(files: Dict[str, str]) -> Dict[str, str]:
+    """
+    Sweep all TypeScript files and fix LLM-generated wrong default imports of apiFetch.
+    client.ts uses named export: export async function apiFetch(...)
+    LLMs often write: import apiFetch from '../api/client'  ← wrong
+    Should be:        import { apiFetch } from '../api/client'  ← correct
+    """
+    import re
+    pattern = re.compile(
+        r"import\s+apiFetch\s+from\s+['\"](\.\./)*api/client['\"]"
+    )
+    out = {}
+    for path, content in files.items():
+        if path.endswith((".ts", ".tsx")) and "api/client" in content:
+            content = pattern.sub("import { apiFetch } from '../api/client'", content)
+        out[path] = content
+    return out
+
+
 def post_process_fullstack_files(
     files: Dict[str, str],
     design_tokens: Optional[Dict[str, Any]] = None,
@@ -200,6 +219,8 @@ def post_process_fullstack_files(
     apply_deterministic_backend_fixes(out)
     out = apply_theme_tokens(out, design_tokens, uiux=uiux)
     out = ensure_mock_client(out)
+    # Fix import mistakes LLMs make (default vs named imports for apiFetch)
+    out = _fix_apifetch_imports(out)
     out.pop("frontend/src/App.jsx", None)
     out.pop("frontend/src/styles/app.css", None)
     return out
