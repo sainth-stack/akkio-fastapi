@@ -17,7 +17,9 @@ logger = logging.getLogger("app_builder")
 # 1. DESIGN EXTRACTION — LLM reads prompt and returns colors + style guide
 # ──────────────────────────────────────────────────────────────────────────────
 
-DESIGN_EXTRACTION_PROMPT = '''You are a senior UI/UX designer. Read the user's app requirement and extract a complete design system.
+DESIGN_EXTRACTION_PROMPT = '''You are a senior product designer with expertise in brand identity, color theory, and design systems.
+
+Read the user's app requirement and extract a complete, cohesive design system that matches their intent.
 
 User Requirement:
 {requirement}
@@ -28,36 +30,35 @@ PRD:
 UIUX Notes (if any):
 {uiux}
 
-Return a JSON object with EXACTLY this structure (no extra keys):
+Instructions:
+- Use your knowledge of real brands, design systems, and color psychology
+- If they reference a brand ("like Myntra", "Zomato-style") → use that brand's actual colors
+- If they describe a mood ("luxury", "playful", "minimal", "dark") → choose colors that express it
+- If they name colors or hex codes → use them directly
+- If they describe an industry ("healthcare", "fintech", "edtech") → use industry-standard palettes
+- Generate a harmonious, complete color system — not just primary color
+
+Return a JSON object with EXACTLY this structure (no extra keys, no markdown):
 {{
-  "primary": "#HEX",           // main brand color (from prompt or best fit for the domain)
-  "primary_dark": "#HEX",      // darker shade of primary
-  "primary_light": "#HEX",     // lighter shade of primary
-  "secondary": "#HEX",         // secondary/accent brand color
-  "accent": "#HEX",            // highlight/action color
-  "background": "#HEX",        // page background
-  "surface": "#HEX",           // card/panel background
-  "text": "#HEX",              // primary text
-  "muted": "#HEX",             // secondary/muted text
-  "border": "#HEX",            // dividers and borders
-  "danger": "#HEX",            // errors/delete actions
-  "success": "#HEX",           // success/completed
-  "warning": "#HEX",           // warnings
-  "info": "#HEX",              // info messages
+  "primary": "#HEX",
+  "primary_dark": "#HEX",
+  "primary_light": "#HEX",
+  "secondary": "#HEX",
+  "accent": "#HEX",
+  "background": "#HEX",
+  "surface": "#HEX",
+  "text": "#HEX",
+  "muted": "#HEX",
+  "border": "#HEX",
+  "danger": "#HEX",
+  "success": "#HEX",
+  "warning": "#HEX",
+  "info": "#HEX",
   "style": "minimal|bold|dark|corporate|playful|luxury",
-  "font_pair": "description of font pairing"
+  "font_pair": "e.g. Inter + Playfair Display"
 }}
 
-Rules:
-- If the user mentions a specific color or hex code, use it as primary
-- If they say "dark theme" or "dark mode", set background to #121212 and surface to #1E1E1E
-- If they mention "green" → primary around #2E7D32
-- If they mention "red" → primary around #C62828
-- If they mention "blue" or "corporate" → primary around #1565C0
-- For e-commerce: vibrant, use orange/teal accents
-- For healthcare: calming blues and greens
-- For fintech: professional navy/dark blue
-- ALWAYS return valid hex codes. Return ONLY the JSON.'''
+ALWAYS return valid 6-digit hex codes (#RRGGBB). Return ONLY the JSON object.'''
 
 
 PAGE_GENERATION_PROMPT = '''You are an expert React/TypeScript developer. Generate a production-quality page component.

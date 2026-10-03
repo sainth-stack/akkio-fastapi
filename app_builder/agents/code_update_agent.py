@@ -71,64 +71,110 @@ Respond ONLY with a JSON object: {{"content": "FULL_UPDATED_FILE_CONTENT"}}"""
     return result
 
 
-_COLOR_NAMES: Dict[str, str] = {
-    "red": "#C62828", "dark red": "#B71C1C", "crimson": "#C62828",
-    "blue": "#1565C0", "navy": "#0B3D6F", "dark blue": "#0B3D6F", "royal blue": "#1565C0",
-    "green": "#2E7D32", "dark green": "#1B5E20", "emerald": "#00796B",
-    "teal": "#00695C", "cyan": "#0097A7",
-    "purple": "#6A1B9A", "violet": "#7B1FA2", "indigo": "#283593",
-    "orange": "#E65100", "amber": "#F57C00", "yellow": "#F9A825",
-    "pink": "#AD1457", "rose": "#C2185B",
-    "black": "#212121", "dark": "#212121", "charcoal": "#37474F",
-    "white": "#FFFFFF", "light": "#F5F5F5",
-    "gray": "#616161", "grey": "#616161", "slate": "#455A64",
-    "brown": "#4E342E",
-}
+_DESIGN_INTENT_PROMPT = """You are a senior product designer with deep knowledge of global brands, design systems, and color psychology.
+
+The user wants to update an app's visual design. Understand their intent and extract the exact color scheme they want.
+
+User request: "{request}"
+Current primary color: {current_primary}
+Current background: {current_background}
+
+Your job:
+- Understand ANY reference: brand names (Myntra, Zomato, Spotify, Netflix, Airbnb...), moods ("luxury", "playful", "dark"), industries ("healthcare", "fintech"), or explicit colors ("#FF3F6C", "deep orange")
+- Use your knowledge of real brand color systems
+- If they say "like Myntra" → use Myntra's actual brand colors (hot pink #FF3F6C)
+- If they say "dark mode" → dark background #121212, light text
+- If no visual change is requested → return the current colors unchanged
+
+Return ONLY a valid JSON object, nothing else:
+{{
+  "primary": "#HEX",
+  "primary_dark": "#HEX",
+  "primary_light": "#HEX",
+  "secondary": "#HEX",
+  "accent": "#HEX",
+  "background": "#HEX",
+  "surface": "#HEX",
+  "text": "#HEX",
+  "muted": "#HEX",
+  "border": "#HEX",
+  "style": "minimal|bold|dark|corporate|playful|luxury",
+  "reasoning": "one sentence explaining the color choices"
+}}"""
 
 
-def _merge_color_hints(user_request: str, design_tokens: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Extract color hints from user request and merge into design_tokens."""
-    req = (user_request or "").lower()
-    merged = dict(design_tokens or {})
-    colors = dict((merged.get("colors") or {}))
+async def _extract_design_intent_with_llm(
+    user_request: str,
+    existing_tokens: Optional[Dict[str, Any]],
+    llm,
+) -> Dict[str, Any]:
+    """
+    LLM-powered design intent extraction.
+    Understands brands, moods, color names, hex codes — no hardcoding needed.
+    Falls back to existing tokens if LLM fails or no color change is requested.
+    """
+    existing_colors = (existing_tokens or {}).get("colors") or {}
+    current_primary = existing_colors.get("primary", "#1565C0")
+    current_background = existing_colors.get("background", "#FFFFFF")
 
-    # Extract hex codes directly: #RRGGBB or #RGB
-    hex_matches = re.findall(r'#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b', user_request)
-    if hex_matches:
-        colors["primary"] = "#" + hex_matches[0]
+    prompt = _DESIGN_INTENT_PROMPT.format(
+        request=user_request,
+        current_primary=current_primary,
+        current_background=current_background,
+    )
 
-    # Match "use X theme", "X color scheme", "X primary", "primary X"
-    patterns = [
-        r'(?:use|make it|change to|switch to|apply)\s+(\w[\w\s]*?)\s+(?:theme|color|scheme|palette|style)',
-        r'(\w+)\s+(?:theme|color scheme|palette)',
-        r'primary\s+(?:color\s+)?(?:is\s+)?(\w+)',
-        r'(\w+)\s+(?:as\s+)?(?:primary|main)\s+color',
-    ]
-    for pat in patterns:
-        m = re.search(pat, req)
-        if m:
-            word = m.group(1).strip()
-            for name, hex_val in _COLOR_NAMES.items():
-                if name in word:
-                    colors["primary"] = hex_val
-                    break
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
 
-    merged["colors"] = colors
-    return merged
+        # Extract JSON
+        m = re.search(r'\{[\s\S]*\}', text)
+        if not m:
+            return dict(existing_tokens or {})
+
+        try:
+            data = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            try:
+                from json_repair import repair_json
+                data = json.loads(repair_json(m.group(0)))
+            except Exception:
+                return dict(existing_tokens or {})
+
+        # Validate — must have real hex codes
+        valid_hex = re.compile(r'^#[0-9a-fA-F]{6}$')
+        extracted = {
+            k: v for k, v in data.items()
+            if isinstance(v, str) and (valid_hex.match(v) or k in ("style", "reasoning"))
+        }
+        if not extracted.get("primary"):
+            return dict(existing_tokens or {})
+
+        # Merge into existing tokens
+        merged = dict(existing_tokens or {})
+        merged["colors"] = {**existing_colors, **{k: v for k, v in extracted.items() if k != "reasoning"}}
+        print(f"[design-intent] LLM extracted: primary={extracted.get('primary')} style={extracted.get('style')} | reasoning: {extracted.get('reasoning', '')}")
+        return merged
+
+    except Exception as e:
+        print(f"[design-intent] LLM extraction failed ({e}) — using existing tokens")
+        return dict(existing_tokens or {})
 
 
-def _color_uiux_from_request(user_request: str) -> str:
-    """Turn color mentions in user_request into a UIUX hint string for theme_from_tokens."""
-    req = (user_request or "").lower()
-    hints: list = []
-    hex_matches = re.findall(r'#[0-9a-fA-F]{6}', user_request)
-    if hex_matches:
-        hints.append(f"Primary: {hex_matches[0]}")
-    for name, hex_val in _COLOR_NAMES.items():
-        if name in req and "theme" in req or "color" in req or "primary" in req:
-            hints.append(f"Primary: {hex_val}")
-            break
+def _color_uiux_from_tokens(tokens: Dict[str, Any]) -> str:
+    """Build a UIUX hint string from extracted design tokens."""
+    colors = (tokens or {}).get("colors") or {}
+    hints = []
+    if colors.get("primary"):
+        hints.append(f"Primary: {colors['primary']}")
+    if colors.get("background"):
+        hints.append(f"Background: {colors['background']}")
+    if colors.get("style"):
+        hints.append(f"Style: {colors['style']}")
     return "\n".join(hints)
+
+
+# _color_uiux_from_request removed — replaced by LLM-driven _extract_design_intent_with_llm
 
 
 async def update_code_from_chat(
@@ -287,21 +333,30 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
         is_fs = is_fullstack(builder_kind) or is_fullstack_generated_files(disk_files)
 
         if is_fs:
-            # Merge color hints from user_request into design_tokens
-            merged_tokens = _merge_color_hints(user_request, design_tokens)
-            # Also append color hints to uiux so theme_from_tokens picks them up
-            color_uiux = _color_uiux_from_request(user_request)
-            merged_uiux = "\n".join(filter(None, [uiux, color_uiux]))
-
-            # For mode detection, use the updated_prd + user_request as primary
-            # (not combined_spec which includes the original requirement, confusing domain switches)
-            update_spec = "\n".join(filter(None, [user_request, updated_prd]))
-
+            # ── LLM-driven design intent extraction ───────────────────────────
+            # The LLM understands brands, moods, color names — no hardcoding needed.
+            # "like myntra" → LLM returns #FF3F6C pink
+            # "dark mode" → LLM returns #121212 background
+            # "green theme" → LLM returns #2E7D32 primary
             if websocket:
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "update_code_agent",
-                    "message": "Regenerating fullstack application with updated requirement and theme...",
+                    "message": "🎨 AI is reading your design intent (colors, theme, style)...",
+                }))
+
+            merged_tokens = await _extract_design_intent_with_llm(user_request, design_tokens, llm)
+            merged_uiux = "\n".join(filter(None, [uiux, _color_uiux_from_tokens(merged_tokens)]))
+
+            # For mode detection: use only user_request + updated_prd (not old requirement)
+            update_spec = "\n".join(filter(None, [user_request, updated_prd]))
+
+            if websocket:
+                primary = (merged_tokens.get("colors") or {}).get("primary", "")
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "update_code_agent",
+                    "message": f"🎨 Design extracted{f' — primary: {primary}' if primary else ''}. Regenerating app...",
                 }))
 
             # Try AI-powered regen first (reads updated prompt + extracts new colors/pages)
@@ -324,14 +379,18 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 prd=updated_prd,
             )
             file_writer(project_name, GeneratedFiles(files=new_files))
+            file_list = sorted(new_files.keys())
             return {
                 "status": "success",
-                "message": f"Fullstack app regenerated with updated requirement. {len(new_files)} files updated.",
+                # "analysis" is what the frontend reads for the chat message
+                "analysis": f"Fullstack app regenerated with your request. {len(new_files)} files updated with the new theme and layout.",
+                # "updated_files" is what the frontend reads to refresh the app view
+                "updated_files": file_list,
                 "updated_code_dict": new_files,
                 "updated_prd": updated_prd,
                 "updated_architecture": updated_architecture,
                 "merged_design_tokens": merged_tokens,
-                "changes": [{"file": k, "action": "regenerated"} for k in sorted(new_files.keys())[:60]],
+                "changes": [{"file": k, "action": "regenerated"} for k in file_list[:60]],
             }
     except Exception as regen_exc:
         print(f"[update_code] fullstack regenerate failed: {regen_exc}")
