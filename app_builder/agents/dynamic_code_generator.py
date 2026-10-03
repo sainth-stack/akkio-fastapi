@@ -1128,25 +1128,23 @@ async def generate_code_from_plan(
         }
 
         # Try AI-driven generation first (LLM extracts colors + generates each page)
+        # MUST use `await` here — generate_code_from_plan is async, asyncio.run() would fail
         try:
-            import asyncio as _asyncio
             from app_builder.services.fullstack_ai_generator import generate_fullstack_app_with_ai
 
             yield {
                 "event": "agent_progress",
                 "agent": "design_agent",
-                "message": "Extracting design system from your prompt (colors, theme, style)...",
+                "message": "🤖 AI reading your prompt — extracting colors, pages, features...",
             }
 
-            files_generated = _asyncio.run(
-                generate_fullstack_app_with_ai(
-                    requirement, prd, uiux, architecture, design_tokens,
-                )
+            files_generated = await generate_fullstack_app_with_ai(
+                requirement, prd, uiux, architecture, design_tokens,
             )
             yield {
                 "event": "agent_progress",
                 "agent": "design_agent",
-                "message": f"Design extracted. Generating {len(files_generated)} files with AI...",
+                "message": f"✅ AI generated {len(files_generated)} files customized to your prompt.",
             }
         except Exception as ai_exc:
             logger.warning("[codegen] AI generation failed (%s) — falling back to deterministic", ai_exc)

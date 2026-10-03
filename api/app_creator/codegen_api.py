@@ -274,10 +274,16 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             app_spec = build_app_spec(requirement, architecture, prd, uiux)
 
             if fullstack:
-                from app_builder.services.fullstack_app_generator import fill_missing_fullstack_files
-                files = fill_missing_fullstack_files(
-                    files, requirement, prd, uiux, architecture, design_tokens,
+                from app_builder.services.fullstack_app_generator import (
+                    fill_missing_fullstack_files, _has_ai_generated_pages,
                 )
+                # Only fill missing files if AI didn't already generate real pages.
+                # If AI generator ran successfully, it produced domain-specific pages —
+                # don't overwrite them with the hardcoded ecommerce/electronics template.
+                if not _has_ai_generated_pages(files):
+                    files = fill_missing_fullstack_files(
+                        files, requirement, prd, uiux, architecture, design_tokens,
+                    )
                 await websocket.send_text(json.dumps({
                     "event": "agent_start",
                     "agent": "frontend_agent",
