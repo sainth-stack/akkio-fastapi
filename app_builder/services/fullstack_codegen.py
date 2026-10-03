@@ -79,6 +79,8 @@ def apply_theme_tokens(
     return files
 
 
+_DEFAULT_EXPORT_PATCH = "\n// Export as default so both import styles work\nexport default apiFetch;\n"
+
 def ensure_mock_client(files: Dict[str, str]) -> Dict[str, str]:
     client = files.get("frontend/src/api/client.ts") or files.get("frontend/src/api/client.js") or ""
     if "mockFetch" not in client:
@@ -91,6 +93,13 @@ def ensure_mock_client(files: Dict[str, str]) -> Dict[str, str]:
         scaffold = get_fullstack_scaffold_files()
         if "frontend/src/api/mock.ts" in scaffold:
             files["frontend/src/api/mock.ts"] = scaffold["frontend/src/api/mock.ts"]
+
+    # Ensure client.ts always has default export so LLM-generated pages compile
+    # regardless of whether they use:  import apiFetch from '...'  OR  import { apiFetch } from '...'
+    client_key = "frontend/src/api/client.ts"
+    if client_key in files and "export default apiFetch" not in files[client_key]:
+        files[client_key] = files[client_key].rstrip() + _DEFAULT_EXPORT_PATCH
+
     return files
 
 

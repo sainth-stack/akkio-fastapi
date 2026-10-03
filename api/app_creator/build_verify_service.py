@@ -146,6 +146,39 @@ def _pick_files_for_fix(files: Dict[str, str], build_log: str) -> Dict[str, str]
     return out
 
 
+_DEFAULT_EXPORT_LINE = "\n// Dual export — supports both named and default import styles\nexport default apiFetch;\n"
+
+def _deterministic_build_fix(files: Dict[str, str], build_log: str, project_root: str) -> Dict[str, str]:
+    """
+    Apply deterministic fixes for known recurring build errors BEFORE calling the LLM.
+    Returns updated files dict (also patches on disk).
+    """
+    updated = dict(files)
+    log_lower = build_log.lower()
+
+    # ── Fix: "default" is not exported by "src/api/client.ts" ────────────────
+    # LLMs always generate: import apiFetch from '../api/client'  (default import)
+    # But client.ts only has named export.  Solution: add default export to client.ts.
+    if '"default" is not exported by' in build_log and "api/client" in build_log:
+        client_key = "frontend/src/api/client.ts"
+        client_path = os.path.join(project_root, "frontend", "src", "api", "client.ts")
+
+        # Patch in-memory files
+        if client_key in updated and "export default apiFetch" not in updated[client_key]:
+            updated[client_key] = updated[client_key].rstrip() + _DEFAULT_EXPORT_LINE
+            logger.info("[build-fix] Patched client.ts — added export default apiFetch")
+
+        # Patch file on disk (build reads from disk)
+        if os.path.isfile(client_path):
+            content = open(client_path, "r", encoding="utf-8").read()
+            if "export default apiFetch" not in content:
+                with open(client_path, "a", encoding="utf-8") as f:
+                    f.write(_DEFAULT_EXPORT_LINE)
+                logger.info("[build-fix] Patched client.ts on disk")
+
+    return updated
+
+
 async def _llm_fix_build(files: Dict[str, str], build_log: str, user_email: Optional[str]) -> Dict[str, str]:
     """Ask LLM to patch files to fix the build log."""
     subset = _pick_files_for_fix(files, build_log)
@@ -267,6 +300,10 @@ async def verify_build_and_fix(
             attempt=attempt,
         )
         try:
+            project_root = resolve_project_root(project_name)
+            # 1. Deterministic fixes first (fast, reliable for known patterns)
+            files = _deterministic_build_fix(files, last_log or (err or ""), project_root)
+            # 2. LLM fixes for anything deterministic didn't catch
             files = await _llm_fix_build(files, last_log or (err or ""), user_email)
             file_writer(project_name, GeneratedFiles(files=files))
         except Exception as fix_err:

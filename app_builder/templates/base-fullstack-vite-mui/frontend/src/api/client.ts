@@ -59,3 +59,8 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     return mockFetch<T>(path, options);
   }
 }
+
+// Export as default so both import styles work:
+//   import apiFetch from '../api/client'          ← default (LLMs often generate this)
+//   import { apiFetch } from '../api/client'      ← named  (also correct)
+export default apiFetch;
