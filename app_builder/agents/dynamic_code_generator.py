@@ -1119,6 +1119,9 @@ async def generate_code_from_plan(
             return
         architecture = lock_architecture(architecture)
 
+        # design_tokens start empty — the AI generator will extract them from the prompt via LLM
+        design_tokens: Dict[str, str] = {}
+
         yield {
             "event": "generation_start",
             "message": "🤖 AI is reading your prompt to extract colors, pages, and features...",
