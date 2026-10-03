@@ -186,7 +186,8 @@ async def _llm_fix_build(files: Dict[str, str], build_log: str, user_email: Opti
     for path, content in subset.items():
         snippets.append(f"--- {path} ---\n{content[:4000]}")
 
-    prompt = f"""You are fixing a Create React App (react-scripts 5) project that failed `npm run build`.
+    prompt = f"""You are fixing a Vite + React + TypeScript + MUI project that failed `npm run build`.
+The bundler is Vite (NOT Create React App / react-scripts). Do NOT suggest craco, ajv-keywords, or NODE_OPTIONS hacks — those are webpack/CRA-only.
 
 BUILD LOG (last lines):
 ```
@@ -197,16 +198,13 @@ CURRENT FILES:
 {chr(10).join(snippets)}
 
 Rules:
-1. If the error mentions ajv, ajv-keywords, fork-ts-checker, or "reading 'date'":
-   - Add devDependencies: @craco/craco 7.1.0, ajv 6.12.6, ajv-keywords 3.5.2
-   - Set scripts.build to "NODE_OPTIONS=--openssl-legacy-provider craco build"
-   - Set scripts.start to "NODE_OPTIONS=--openssl-legacy-provider craco start"
-   - Add frontend/craco.config.js that filters out ForkTsCheckerWebpackPlugin from webpack plugins
-   - Set overrides: {json.dumps({"ajv": "6.12.6", "ajv-keywords": "3.5.2"})}
-2. Keep react-scripts 5; use NODE_OPTIONS=--openssl-legacy-provider in build script if missing.
-3. Fix syntax/import errors in source files if shown in the log.
-4. Return ONLY changed files as valid JSON: {{"files": {{"path/to/file": "full file content"}}}}
-5. Do not truncate files — return complete file contents for each changed path."""
+1. Fix TypeScript type errors, missing imports, or wrong export styles shown in the log.
+2. If the error mentions "default is not exported" for api/client: add `export default apiFetch;` at the end of client.ts.
+3. If the error mentions a missing module: add the correct named import, do NOT add CRA/webpack dependencies.
+4. If vite.config.ts is missing: create one with `defineConfig({{ plugins: [react()] }})`.
+5. Fix syntax/import errors in source files shown in the log.
+6. Return ONLY changed files as valid JSON: {{"files": {{"path/to/file": "full file content"}}}}
+7. Do not truncate files — return complete file contents for each changed path."""
 
     llm = get_llm_for_user(user_email, temperature=0.15)
     resp = await llm.ainvoke(prompt)

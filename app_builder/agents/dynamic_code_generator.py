@@ -947,6 +947,50 @@ def _fix_backend_routes_import(files: Dict[str, str]) -> None:
         files[main_path] = content
 
 
+def _fix_backend_catch_all_routes(files: Dict[str, str]) -> None:
+    """
+    Fix LLM-generated bare /{item_id} catch-all routes that intercept resource list calls.
+    
+    BAD:  @router.get("/{item_id}")           → matches /products, /users, EVERYTHING
+    GOOD: @router.get("/products/{product_id}") → only matches /products/123
+    
+    Strategy: detect the bare catch-all patterns and comment them out if resource-specific
+    routes exist for the same HTTP method.
+    """
+    routes_path = "backend/routes.py"
+    if routes_path not in files:
+        return
+
+    content = files[routes_path]
+
+    # Pattern: @router.METHOD("/{some_id}") where no resource name prefix — catch-all
+    # These match paths like /api/{id} which grabs /api/products, /api/users etc.
+    catch_all_pattern = re.compile(
+        r'(@router\.(get|post|put|delete|patch)\s*\(\s*["\']\/\{[^}]+\}["\'])',
+        re.IGNORECASE,
+    )
+
+    # Check what resource-specific routes already exist
+    resource_routes = re.findall(
+        r'@router\.(get|post|put|delete|patch)\s*\(\s*["\']\/(\w+)',
+        content,
+        re.IGNORECASE,
+    )
+    has_resource_routes = len(resource_routes) > 1  # more than just auth
+
+    if has_resource_routes:
+        # Comment out the catch-all routes — resource-specific routes cover the same methods
+        def comment_out(m):
+            return f"# REMOVED catch-all (use resource-specific routes instead)\n# {m.group(1)}"
+        new_content = catch_all_pattern.sub(comment_out, content)
+        if new_content != content:
+            files[routes_path] = new_content
+            import logging as _log
+            _log.getLogger("app_builder").info(
+                "[backend-fix] Removed catch-all /{id} routes from routes.py"
+            )
+
+
 def _ensure_vite_react_plugin_in_package_json(files: Dict[str, str]) -> None:
     """
     If the project has a Vite frontend (vite.config.js/ts), ensure frontend/package.json

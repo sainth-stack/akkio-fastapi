@@ -196,13 +196,28 @@ def _fix_apifetch_imports(files: Dict[str, str]) -> Dict[str, str]:
     Should be:        import { apiFetch } from '../api/client'  ← correct
     """
     import re
-    pattern = re.compile(
+    # Pattern 1: import apiFetch from '../api/client'  (bare default)
+    pattern_bare = re.compile(
         r"import\s+apiFetch\s+from\s+['\"](\.\./)*api/client['\"]"
+    )
+    # Pattern 2: import apiFetch, { Foo } from '../api/client'  (default + named)
+    pattern_mixed = re.compile(
+        r"import\s+apiFetch\s*,\s*\{([^}]+)\}\s+from\s+['\"](\.\./)*api/client['\"]"
+    )
+    # Pattern 3: import { default as apiFetch } from '../api/client'
+    pattern_default_as = re.compile(
+        r"import\s*\{\s*default\s+as\s+apiFetch\s*\}\s+from\s+['\"](\.\./)*api/client['\"]"
     )
     out = {}
     for path, content in files.items():
         if path.endswith((".ts", ".tsx")) and "api/client" in content:
-            content = pattern.sub("import { apiFetch } from '../api/client'", content)
+            # Order matters: fix mixed first (it contains "apiFetch from"), then bare
+            content = pattern_mixed.sub(
+                lambda m: f"import {{ apiFetch, {m.group(1).strip()} }} from '../api/client'",
+                content,
+            )
+            content = pattern_default_as.sub("import { apiFetch } from '../api/client'", content)
+            content = pattern_bare.sub("import { apiFetch } from '../api/client'", content)
         out[path] = content
     return out
 
@@ -225,7 +240,7 @@ def post_process_fullstack_files(
             out = fill_missing_fullstack_files(out, requirement, prd, uiux, design_tokens=design_tokens)
         except Exception as _fill_exc:
             logger.warning("[fullstack] fill_missing_fullstack_files failed: %s", _fill_exc)
-    apply_deterministic_backend_fixes(out)
+    out = apply_deterministic_backend_fixes(out)  # capture the returned fixed copy
     out = apply_theme_tokens(out, design_tokens, uiux=uiux)
     out = ensure_mock_client(out)
     # Fix import mistakes LLMs make (default vs named imports for apiFetch)

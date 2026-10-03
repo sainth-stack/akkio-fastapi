@@ -182,6 +182,7 @@ def apply_deterministic_backend_fixes(files: Dict[str, str]) -> Dict[str, str]:
 
     out = dict(files)
     dcg._fix_backend_routes_import(out)
+    dcg._fix_backend_catch_all_routes(out)   # Fix /{item_id} catch-all route conflicts
     dcg._normalize_backend_requirements(out)
     dcg._ensure_sqlite_database_default(out)
     dcg._fix_backend_python_relative_imports(out)

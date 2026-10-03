@@ -195,18 +195,32 @@ Database tables from architecture:
 {tables_json}
 
 Generate a complete FastAPI routes.py with:
-1. SQLAlchemy ORM models matching the tables with __tablename__, columns, relationships
-2. Pydantic v2 schemas (BaseModel) for request/response
-3. CRUD endpoints for each table: GET list, POST create, GET by id, PUT update, DELETE
-4. Auth endpoints: POST /api/auth/login, POST /api/auth/register
-5. A startup seed function that inserts 10 realistic sample records matching the DOMAIN
-   - If pharma ecommerce: seed with real medicine/pharma product names (Paracetamol, Amoxicillin, etc.)
-   - If food delivery: seed with real food items
-   - If fashion: seed with clothing items
-   - Always match the domain from "App" and "Domain" fields above
-6. from auth import get_current_user for protected routes
+
+1. SQLAlchemy ORM models (Base, columns, relationships)
+2. Pydantic v2 schemas for request/response  
+3. CRUD endpoints — use RESOURCE-SPECIFIC paths like:
+   - GET  /api/products          → list all (NOT /{item_id} catch-alls)
+   - POST /api/products          → create
+   - GET  /api/products/{{id}}   → get one  (integer id, resource-prefixed)
+   - PUT  /api/products/{{id}}   → update
+   - DELETE /api/products/{{id}} → delete
+   CRITICAL: NEVER use bare `/{item_id}` or `/{id}` routes without resource prefix!
+   BAD:  @router.get("/{item_id}")  ← this matches EVERYTHING
+   GOOD: @router.get("/products/{product_id}")  ← resource-specific
+
+4. Auth endpoints:
+   - POST /api/auth/login    → returns access_token + user
+   - POST /api/auth/register → creates user
+
+5. Seed 10 realistic records matching the DOMAIN on startup:
+   - Pharma ecommerce: Paracetamol 500mg ₹45, Amoxicillin 250mg ₹120, Vitamin C 1000mg ₹85...
+   - Food delivery: Paneer Tikka ₹180, Chicken Biryani ₹220...
+   - Fashion: Blue Denim Jeans M ₹899, White Cotton Shirt L ₹599...
+   - ALWAYS match the actual domain, never use generic item data
+
+6. from auth import get_current_user
 7. from database import Base, SessionLocal, engine, get_db
-8. Use @app.on_event("startup") or lifespan to run seed
+8. router = APIRouter() — main.py includes it with prefix="/api"
 
 Return ONLY the complete routes.py. Python 3.10 compatible. No markdown fences.'''
 
@@ -316,7 +330,7 @@ async def extract_design_from_prompt(
         uiux=(uiux or "")[:1000],
     )
     try:
-        resp = await asyncio.to_thread(llm.invoke, prompt)
+        resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
         data = _extract_json_from_llm(text)
         if data and "primary" in data:
@@ -376,10 +390,18 @@ async def generate_page_with_ai(
     api_endpoints = []
 
     screens = architecture.get("screens") or []
+    # Use token-based matching so "ProductListPage" matches screen name "Products"
+    import re as _re
+    _page_tokens = set(_re.split(r'[^a-z0-9]+', page_lower.replace("page", "").replace("view", ""))) - {""}
     for s in screens:
         if not isinstance(s, dict):
             continue
-        if (s.get("name") or "").lower().replace(" ", "") in page_lower.replace("page", ""):
+        _screen_tokens = set(_re.split(r'[^a-z0-9]+', (s.get("name") or "").lower())) - {""}
+        _matched = bool(_screen_tokens and _screen_tokens & _page_tokens)
+        if not _matched:
+            # Fallback: old substring check
+            _matched = (s.get("name") or "").lower().replace(" ", "") in page_lower.replace("page", "")
+        if _matched:
             if s.get("description"):
                 screen_spec = s["description"]
             if s.get("components"):

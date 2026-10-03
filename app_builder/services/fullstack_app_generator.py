@@ -226,8 +226,10 @@ def _is_thin_shell(path: str, content: str) -> bool:
             return True
         if "supplier-quality-manual" in text or ("chunks" in text and "documents" in text):
             return False
-        if "mockFetch" in text and "auth/login" in text:
-            return False  # e-commerce mock
+        # Any substantial mock.ts that has mock-jwt + mockFetch/auth is domain-specific — preserve it.
+        # The old "ecommerce" label was too narrow; pharma/HR/food apps also use mockFetch+auth/login.
+        if "mockFetch" in text and "auth/login" in text and len(text) > 500:
+            return False
         return "ppm_trend" not in text
     if path.endswith("README.md"):
         return "demo users" not in text.lower() and "capa" not in text.lower() and "cash on delivery" not in text.lower()

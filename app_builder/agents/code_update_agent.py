@@ -332,7 +332,14 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
         # Parse JSON
         obj_match = re.search(r'\{[\s\S]*\}', arch_text)
         if obj_match:
-            updated_architecture = json.loads(obj_match.group(0))
+            try:
+                updated_architecture = json.loads(obj_match.group(0))
+            except json.JSONDecodeError:
+                try:
+                    from json_repair import repair_json
+                    updated_architecture = json.loads(repair_json(obj_match.group(0)))
+                except Exception:
+                    pass  # keep old architecture if parsing fails
         
         if websocket:
             await websocket.send_text(json.dumps({
@@ -483,12 +490,17 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                     )
 
             if new_files:
+                # For theme_only updates, don't pass requirement/prd to post_process:
+                # fill_missing_fullstack_files would see 0 AI pages and overwrite them
+                # with generic deterministic pages (killing the user's actual app content).
+                _pp_req = "" if update_type == "theme_only" else update_spec
+                _pp_prd = "" if update_type == "theme_only" else updated_prd
                 new_files = post_process_fullstack_files(
                     new_files,
                     design_tokens=merged_tokens,
                     uiux=merged_uiux,
-                    requirement=update_spec,
-                    prd=updated_prd,
+                    requirement=_pp_req,
+                    prd=_pp_prd,
                 )
                 file_writer(project_name, GeneratedFiles(files=new_files))
 
