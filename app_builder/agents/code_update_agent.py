@@ -1,7 +1,8 @@
 import os
 import re
 import json
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, List, Optional, Tuple
 from llm_helper import get_llm_for_user
 
 
@@ -177,6 +178,48 @@ def _color_uiux_from_tokens(tokens: Dict[str, Any]) -> str:
 # _color_uiux_from_request removed — replaced by LLM-driven _extract_design_intent_with_llm
 
 
+_UPDATE_CLASSIFIER_PROMPT = """You are a software architect. Classify what kind of update the user is requesting.
+
+User request: "{request}"
+
+Respond with ONLY a JSON object:
+{{
+  "type": "theme_only | add_page | modify_page | full_regen",
+  "scope": "brief description of what changes",
+  "pages_affected": ["PageName1", "PageName2"],
+  "reason": "one sentence explanation"
+}}
+
+Classification rules:
+- "theme_only": user asks to change colors, theme, style, fonts, dark mode, brand look — NO new features
+- "add_page": user wants a new page/screen/section added
+- "modify_page": user wants specific page(s) functionality changed (not just colors)
+- "full_regen": user wants completely different app type, or major structural change
+
+Return ONLY valid JSON."""
+
+
+async def _classify_update(user_request: str, llm) -> Dict[str, Any]:
+    """Use LLM to classify update scope — avoids unnecessary full regeneration."""
+    prompt = _UPDATE_CLASSIFIER_PROMPT.format(request=user_request)
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        m = re.search(r'\{[\s\S]*\}', text)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                update_type = data.get("type", "full_regen")
+                print(f"[update-classifier] type={update_type} | {data.get('reason','')}")
+                return data
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[update-classifier] failed: {e}")
+    # Default: full_regen to be safe
+    return {"type": "full_regen", "scope": "unknown", "pages_affected": [], "reason": "classification failed"}
+
+
 async def update_code_from_chat(
     project_name: str,
     project_root: str,
@@ -333,64 +376,135 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
         is_fs = is_fullstack(builder_kind) or is_fullstack_generated_files(disk_files)
 
         if is_fs:
-            # ── LLM-driven design intent extraction ───────────────────────────
-            # The LLM understands brands, moods, color names — no hardcoding needed.
-            # "like myntra" → LLM returns #FF3F6C pink
-            # "dark mode" → LLM returns #121212 background
-            # "green theme" → LLM returns #2E7D32 primary
+            from app_builder.services.fullstack_ai_generator import (
+                generate_fullstack_app_with_ai,
+                generate_layout_with_ai,
+                generate_login_with_ai,
+            )
+            from app_builder.services.fullstack_frontend_generator import build_theme_ts
+
+            # ── Step 1: Classify the update scope with LLM ────────────────────
             if websocket:
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "update_code_agent",
-                    "message": "🎨 AI is reading your design intent (colors, theme, style)...",
+                    "message": "🧠 Analysing what needs to change...",
+                }))
+
+            update_classification = await _classify_update(user_request, llm)
+            update_type = update_classification.get("type", "full_regen")
+
+            # ── Step 2: Extract design intent with LLM ────────────────────────
+            if websocket:
+                await websocket.send_text(json.dumps({
+                    "event": "agent_progress",
+                    "agent": "update_code_agent",
+                    "message": "🎨 AI extracting colors, theme, style from your request...",
                 }))
 
             merged_tokens = await _extract_design_intent_with_llm(user_request, design_tokens, llm)
             merged_uiux = "\n".join(filter(None, [uiux, _color_uiux_from_tokens(merged_tokens)]))
-
-            # For mode detection: use only user_request + updated_prd (not old requirement)
             update_spec = "\n".join(filter(None, [user_request, updated_prd]))
+            primary = (merged_tokens.get("colors") or {}).get("primary", "")
 
             if websocket:
-                primary = (merged_tokens.get("colors") or {}).get("primary", "")
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "update_code_agent",
-                    "message": f"🎨 Design extracted{f' — primary: {primary}' if primary else ''}. Regenerating app...",
+                    "message": f"🎨 Theme extracted{f' — {primary}' if primary else ''}. Update type: {update_type}",
                 }))
 
-            # Try AI-powered regen first (reads updated prompt + extracts new colors/pages)
-            try:
-                from app_builder.services.fullstack_ai_generator import generate_fullstack_app_with_ai
-                new_files = await generate_fullstack_app_with_ai(
-                    update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+            new_files: Dict[str, str] = {}
+
+            # ── Step 3: Smart update — only regenerate what's needed ──────────
+            if update_type == "theme_only":
+                # Fastest path: only update theme.ts + AppLayout + LoginPage
+                # Pages keep their existing content — only colors change
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "update_code_agent",
+                        "message": "⚡ Theme update — regenerating theme, layout and login page...",
+                    }))
+
+                colors = (merged_tokens.get("colors") or merged_tokens)
+                from app_builder.services.fullstack_app_generator import extract_app_title
+                title = extract_app_title(original_requirement or update_spec, updated_prd)
+
+                # Extract pages from disk for layout/routing
+                pages_from_disk = [
+                    (os.path.splitext(os.path.basename(p))[0], "")
+                    for p in disk_files
+                    if p.startswith("frontend/src/pages/") and p.endswith(".tsx")
+                    and "LoginPage" not in p
+                ]
+
+                # Generate theme, layout, login in parallel (not all pages)
+                from app_builder.services.fullstack_ai_generator import _build_app_layout_tsx, _build_login_page_tsx
+                theme_ts = build_theme_ts(colors)
+                layout_code, login_code = await asyncio.gather(
+                    generate_layout_with_ai(title, pages_from_disk, colors, original_requirement or update_spec, llm),
+                    generate_login_with_ai(title, colors, original_requirement or update_spec, llm),
                 )
-            except Exception as ai_exc:
-                print(f"[update_code] AI regen failed ({ai_exc}) — using deterministic fallback")
-                from app_builder.services.fullstack_app_generator import generate_fullstack_application
-                new_files = generate_fullstack_application(
-                    update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+
+                new_files["frontend/src/theme.ts"] = theme_ts
+                new_files["frontend/src/layout/AppLayout.tsx"] = (
+                    layout_code if (layout_code and len(layout_code) > 300)
+                    else _build_app_layout_tsx(title, pages_from_disk, colors)
                 )
-            new_files = post_process_fullstack_files(
-                new_files,
-                design_tokens=merged_tokens,
-                uiux=merged_uiux,
-                requirement=update_spec,
-                prd=updated_prd,
-            )
-            file_writer(project_name, GeneratedFiles(files=new_files))
+                new_files["frontend/src/pages/LoginPage.tsx"] = (
+                    login_code if (login_code and len(login_code) > 300)
+                    else _build_login_page_tsx(title, colors)
+                )
+
+            else:
+                # Full AI regen for add_page / modify_page / full_regen
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "update_code_agent",
+                        "message": f"🤖 AI regenerating app — {update_classification.get('scope', 'applying changes')}...",
+                    }))
+                try:
+                    new_files = await generate_fullstack_app_with_ai(
+                        update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens, llm,
+                    )
+                except Exception as ai_exc:
+                    print(f"[update_code] AI regen failed ({ai_exc}) — deterministic fallback")
+                    from app_builder.services.fullstack_app_generator import generate_fullstack_application
+                    new_files = generate_fullstack_application(
+                        update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+                    )
+
+            if new_files:
+                new_files = post_process_fullstack_files(
+                    new_files,
+                    design_tokens=merged_tokens,
+                    uiux=merged_uiux,
+                    requirement=update_spec,
+                    prd=updated_prd,
+                )
+                file_writer(project_name, GeneratedFiles(files=new_files))
+
             file_list = sorted(new_files.keys())
+            n = len(file_list)
+            summary = {
+                "theme_only": f"Theme updated with new colors ({primary}). {n} files refreshed — no page logic changed.",
+                "add_page": f"New page added and app updated. {n} files regenerated.",
+                "modify_page": f"Page logic updated. {n} files regenerated.",
+                "full_regen": f"App fully regenerated with your request. {n} files updated.",
+            }.get(update_type, f"{n} files updated.")
+
             return {
                 "status": "success",
-                # "analysis" is what the frontend reads for the chat message
-                "analysis": f"Fullstack app regenerated with your request. {len(new_files)} files updated with the new theme and layout.",
-                # "updated_files" is what the frontend reads to refresh the app view
+                "analysis": summary,
                 "updated_files": file_list,
                 "updated_code_dict": new_files,
                 "updated_prd": updated_prd,
                 "updated_architecture": updated_architecture,
                 "merged_design_tokens": merged_tokens,
-                "changes": [{"file": k, "action": "regenerated"} for k in file_list[:60]],
+                "update_type": update_type,
+                "changes": [{"file": k, "action": "updated"} for k in file_list[:60]],
             }
     except Exception as regen_exc:
         print(f"[update_code] fullstack regenerate failed: {regen_exc}")

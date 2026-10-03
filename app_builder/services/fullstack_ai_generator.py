@@ -61,40 +61,128 @@ Return a JSON object with EXACTLY this structure (no extra keys, no markdown):
 ALWAYS return valid 6-digit hex codes (#RRGGBB). Return ONLY the JSON object.'''
 
 
-PAGE_GENERATION_PROMPT = '''You are an expert React/TypeScript developer. Generate a production-quality page component.
+PAGE_GENERATION_PROMPT = '''You are a senior React/TypeScript engineer at a product company like Lovable or Vercel.
+Generate a complete, production-quality page that feels handcrafted — not generic.
 
-App Title: {title}
+═══ APP CONTEXT ═══
+App: {title}
+What this app does: {requirement}
+
+Key product requirements:
+{prd_summary}
+
+═══ PAGE TO BUILD ═══
 Page: {page_name}
-Description: {page_description}
+Purpose: {page_description}
 
-Design Tokens (use these EXACT colors via theme or inline):
+Screen spec from architecture:
+{screen_spec}
+
+Related API endpoints for this page:
+{api_endpoints}
+
+Other pages in the app (for navigation links): {all_pages}
+
+═══ DESIGN SYSTEM ═══
 Primary: {primary}
+Primary Dark: {primary_dark}
 Secondary: {secondary}
 Accent: {accent}
 Background: {background}
 Surface: {surface}
 Text: {text}
+Muted: {muted}
+Style: {style}
 
-Architecture Context:
-{architecture_context}
+═══ TECH RULES ═══
+- MUI v6: Box, Card, Grid2, Stack, Typography, Button, TextField, Table, Chip, Avatar, IconButton, Fab, Drawer, Dialog, etc.
+- Data fetching: useQuery from @tanstack/react-query  
+- API calls: apiFetch from '../api/client'
+- Routing: useNavigate from react-router-dom (for links to other pages)
+- Colors: use sx={{}} with the hex values above directly
+- Loading: <CircularProgress sx={{{{ color: '{primary}' }}}} />
+- Error: friendly error Card with retry button
 
-Mock API endpoint: {api_endpoint}
+═══ QUALITY REQUIREMENTS ═══
+- Build what the page ACTUALLY needs — not a generic table
+- For dashboard: KPI cards with real metrics + activity feed or chart area
+- For forms: complete form with validation, proper fields, submit handler
+- For lists: filtering, search, add/edit modal or inline actions
+- For e-commerce: product cards with images, prices, cart buttons
+- For auth: clean login/register form matching the brand theme
+- Use real fake data in mock states (realistic names, numbers, statuses)
+- Responsive layout using Grid2 or Stack
+- Typography hierarchy: h4 for title, h6 for sections, body2 for labels
+- At least 60-80 lines of JSX — no stub components
+
+Export default function {page_name}(). No markdown, no explanation, just the code.'''
+
+
+LAYOUT_GENERATION_PROMPT = '''You are a senior React/TypeScript engineer. Generate the main app layout with sidebar navigation.
+
+App: {title}
+User requirement: {requirement}
+Style: {style}
+
+Pages to show in sidebar:
+{pages_list}
+
+Design system:
+Primary: {primary} (sidebar background)
+Primary Dark: {primary_dark}
+Surface: {surface} (content area background)
+Text on primary: #FFFFFF
+Muted: {muted}
+Background: {background}
 
 Rules:
-1. Use Material UI (MUI) v6 components ONLY — Box, Card, Grid, Typography, Button, TextField, Table, Chip, Avatar, IconButton, etc.
-2. Import useQuery from @tanstack/react-query for data fetching
-3. Import apiFetch from '../api/client' for API calls
-4. Use the theme colors via sx={{}} props with hex values directly (e.g., sx={{ color: '{primary}', bgcolor: '{background}' }})
-5. Include loading states (CircularProgress) and error states
-6. Make it visually impressive — use cards, proper spacing (p/m: 2-4), shadows (elevation: 3), rounded corners (borderRadius: 2)
-7. For lists: use MUI Table or Grid of Cards
-8. For forms: use TextField + Button in a Card
-9. For dashboards: use KPI cards (4 stats at top) + charts area
-10. Import icons from @mui/icons-material as needed
-11. Export default function {page_name}()
+- Sidebar: fixed left, 240px wide, bg={primary}, white text and icons
+- Top bar: app title + user avatar/menu
+- Content area: bg={background}, right of sidebar, fills screen
+- Use Drawer (permanent variant) for sidebar
+- Icons from @mui/icons-material — pick appropriate icons per page name
+- Active route highlighted with slightly lighter bg
+- useNavigate + useLocation for routing and active state
+- Export default function AppLayout() with <Outlet /> for content
 
-Return ONLY the TypeScript React component code. No markdown, no explanation.
-Start with imports, end with export default.'''
+Structure:
+```
+<Box sx={{ display: 'flex' }}>
+  <Drawer permanent> ... nav items ... </Drawer>
+  <Box component="main" sx={{ flexGrow: 1 }}>
+    <TopBar />
+    <Outlet />
+  </Box>
+</Box>
+```
+
+No markdown, no explanation. Return ONLY the TypeScript code.'''
+
+
+LOGIN_PAGE_PROMPT = '''You are a senior React/TypeScript engineer. Generate a stunning login/auth page.
+
+App: {title}
+Requirement: {requirement}
+Style: {style}
+
+Design:
+Primary: {primary}
+Primary Dark: {primary_dark}
+Background: {background}
+Surface: {surface}
+Text: {text}
+
+Requirements:
+- Left half: brand panel with gradient (primary → primary_dark), app name, tagline matching the requirement
+- Right half: login form — email + password + "Sign In" button using primary color
+- "Register" link below the form
+- Show/hide password toggle (VisibilityOff icon)
+- Form state with useState, fake login: store token in localStorage, navigate to /
+- Clean, professional. Inspired by Figma/Notion/Linear login pages
+- useNavigate from react-router-dom for post-login redirect
+- Import apiFetch from '../api/client' for the login API call
+
+No markdown. Return ONLY the TypeScript code. Export default function LoginPage().'''
 
 
 BACKEND_GENERATION_PROMPT = '''You are a senior Python/FastAPI developer. Generate production backend code.
@@ -203,8 +291,105 @@ async def generate_page_with_ai(
     colors: Dict[str, str],
     architecture: Dict[str, Any],
     llm=None,
+    requirement: str = "",
+    prd: str = "",
+    all_pages: Optional[List[Tuple[str, str]]] = None,
 ) -> Optional[str]:
-    """Use LLM to generate a custom MUI TypeScript page component."""
+    """Use LLM to generate a fully custom MUI TypeScript page component with full app context."""
+    if llm is None:
+        try:
+            from llm_helper import get_llm_for_user
+            llm = get_llm_for_user(None, temperature=0.2)
+        except Exception:
+            return None
+
+    # ── Build rich architecture context for THIS specific page ────────────────
+    tables = (architecture.get("database_schema") or {}).get("tables") or []
+    table_names = [t.get("table_name") or t.get("name") or "" for t in tables if isinstance(t, dict)]
+
+    # Find this page's screen spec from architecture
+    page_lower = page_name.lower()
+    screen_spec = page_description
+    api_endpoints = []
+
+    screens = architecture.get("screens") or []
+    for s in screens:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("name") or "").lower().replace(" ", "") in page_lower.replace("page", ""):
+            if s.get("description"):
+                screen_spec = s["description"]
+            if s.get("components"):
+                screen_spec += f"\nComponents: {', '.join(s['components'][:8])}"
+            if s.get("api_calls"):
+                api_endpoints = s["api_calls"][:6]
+            break
+
+    # Derive API endpoints from tables if not found in architecture
+    if not api_endpoints:
+        for tname in table_names[:4]:
+            api_endpoints.append(f"GET /api/{tname}")
+        # Page-specific endpoints
+        if "dashboard" in page_lower or "home" in page_lower:
+            api_endpoints = ["GET /api/dashboard", "GET /api/stats"]
+        elif "product" in page_lower:
+            api_endpoints = ["GET /api/products", "POST /api/products", "DELETE /api/products/{id}"]
+        elif "order" in page_lower:
+            api_endpoints = ["GET /api/orders", "POST /api/orders", "PUT /api/orders/{id}"]
+        elif "user" in page_lower:
+            api_endpoints = ["GET /api/users", "POST /api/users", "DELETE /api/users/{id}"]
+
+    # All pages list for navigation context
+    other_pages = [(n, _page_name_to_path(n)) for n, _ in (all_pages or []) if n != page_name and n != "LoginPage"]
+    pages_nav = ", ".join(f"{n} ({p})" for n, p in other_pages[:8]) or "Dashboard (/)"
+
+    # PRD summary — extract bullet points from PRD
+    prd_summary = ""
+    if prd:
+        lines = [l.strip() for l in prd.split("\n") if l.strip().startswith(("- ", "* ", "•")) or "##" in l]
+        prd_summary = "\n".join(lines[:15]) or prd[:600]
+
+    prompt = PAGE_GENERATION_PROMPT.format(
+        title=title,
+        requirement=(requirement or title)[:600],
+        prd_summary=prd_summary[:800],
+        page_name=page_name,
+        page_description=page_description,
+        screen_spec=screen_spec[:600],
+        api_endpoints="\n".join(api_endpoints) or f"GET /api/{page_lower.replace('page','')}",
+        all_pages=pages_nav,
+        primary=colors.get("primary", "#1565C0"),
+        primary_dark=colors.get("primary_dark", "#0D47A1"),
+        secondary=colors.get("secondary", "#7B1FA2"),
+        accent=colors.get("accent", "#00897B"),
+        background=colors.get("background", "#F5F5F5"),
+        surface=colors.get("surface", "#FFFFFF"),
+        text=colors.get("text", "#212121"),
+        muted=colors.get("muted", "#757575"),
+        style=colors.get("style", "corporate"),
+    )
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        code = _extract_code_from_llm(text)
+        if code and len(code) > 300 and "export default" in code:
+            logger.info("[ai-page] ✓ %s  (%d chars)", page_name, len(code))
+            return code
+        logger.warning("[ai-page] %s: output too short (%d chars) — will fallback", page_name, len(code))
+    except Exception as e:
+        logger.warning("[ai-page] Failed to generate %s: %s", page_name, e)
+    return None
+
+
+async def generate_layout_with_ai(
+    title: str,
+    pages: List[Tuple[str, str]],
+    colors: Dict[str, str],
+    requirement: str = "",
+    llm=None,
+) -> Optional[str]:
+    """Use LLM to generate a custom sidebar AppLayout instead of hardcoded template."""
     if llm is None:
         try:
             from llm_helper import get_llm_for_user
@@ -212,52 +397,67 @@ async def generate_page_with_ai(
         except Exception:
             return None
 
-    # Build architecture context for this page
-    tables = (architecture.get("database_schema") or {}).get("tables") or []
-    table_names = [t.get("table_name") or t.get("name") or "" for t in tables if isinstance(t, dict)]
-    # Guess API endpoint from page name
-    api_map = {
-        "dashboard": "/api/dashboard", "home": "/api/stats",
-        "list": "/api/items", "products": "/api/products",
-        "orders": "/api/orders", "users": "/api/users",
-        "suppliers": "/api/suppliers", "reports": "/api/reports",
-    }
-    page_lower = page_name.lower()
-    api_endpoint = next((v for k, v in api_map.items() if k in page_lower), f"/api/{page_lower.replace('page', '').lower()}")
+    nav_pages = [(n, _page_name_to_path(n)) for n, _ in pages if n != "LoginPage"]
+    pages_list = "\n".join(f"- {n} → {p}" for n, p in nav_pages)
 
-    arch_context = f"Tables: {', '.join(table_names[:8])}" if table_names else "No specific DB tables defined."
-    screens = (architecture.get("screens") or [])
-    for s in screens:
-        if isinstance(s, dict) and (s.get("name") or "").lower() in page_lower:
-            if s.get("description"):
-                arch_context += f"\nScreen spec: {s['description']}"
-            if s.get("components"):
-                arch_context += f"\nComponents: {', '.join(s['components'][:5])}"
-            break
-
-    prompt = PAGE_GENERATION_PROMPT.format(
+    prompt = LAYOUT_GENERATION_PROMPT.format(
         title=title,
-        page_name=page_name,
-        page_description=page_description,
+        requirement=(requirement or title)[:400],
+        pages_list=pages_list,
+        style=colors.get("style", "corporate"),
         primary=colors.get("primary", "#1565C0"),
-        secondary=colors.get("secondary", "#7B1FA2"),
-        accent=colors.get("accent", "#00897B"),
-        background=colors.get("background", "#F5F5F5"),
+        primary_dark=colors.get("primary_dark", "#0D47A1"),
         surface=colors.get("surface", "#FFFFFF"),
-        text=colors.get("text", "#212121"),
-        architecture_context=arch_context,
-        api_endpoint=api_endpoint,
+        muted=colors.get("muted", "#757575"),
+        background=colors.get("background", "#F5F5F5"),
     )
 
     try:
-        resp = await asyncio.to_thread(llm.invoke, prompt)
+        resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
         code = _extract_code_from_llm(text)
-        if code and len(code) > 200 and "export default" in code:
-            logger.info("[ai-page] Generated %s (%d chars)", page_name, len(code))
+        if code and len(code) > 300 and "export default" in code:
+            logger.info("[ai-layout] ✓ AppLayout (%d chars)", len(code))
             return code
     except Exception as e:
-        logger.warning("[ai-page] Failed to generate %s: %s", page_name, e)
+        logger.warning("[ai-layout] AppLayout generation failed: %s", e)
+    return None
+
+
+async def generate_login_with_ai(
+    title: str,
+    colors: Dict[str, str],
+    requirement: str = "",
+    llm=None,
+) -> Optional[str]:
+    """Use LLM to generate a branded login page instead of hardcoded template."""
+    if llm is None:
+        try:
+            from llm_helper import get_llm_for_user
+            llm = get_llm_for_user(None, temperature=0.2)
+        except Exception:
+            return None
+
+    prompt = LOGIN_PAGE_PROMPT.format(
+        title=title,
+        requirement=(requirement or title)[:400],
+        style=colors.get("style", "corporate"),
+        primary=colors.get("primary", "#1565C0"),
+        primary_dark=colors.get("primary_dark", "#0D47A1"),
+        background=colors.get("background", "#F5F5F5"),
+        surface=colors.get("surface", "#FFFFFF"),
+        text=colors.get("text", "#212121"),
+    )
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        code = _extract_code_from_llm(text)
+        if code and len(code) > 300 and "export default" in code:
+            logger.info("[ai-login] ✓ LoginPage (%d chars)", len(code))
+            return code
+    except Exception as e:
+        logger.warning("[ai-login] LoginPage generation failed: %s", e)
     return None
 
 
@@ -689,60 +889,84 @@ async def generate_fullstack_app_with_ai(
 
     logger.info("[ai-gen] Pages to generate: %s", [p[0] for p in pages])
 
-    # ── Step 3: Generate pages in parallel ───────────────────────────────────
+    # ── Step 3: Generate ALL files in parallel (pages + layout + login + backend) ──
+    logger.info("[ai-gen] Generating %d pages + layout + login + backend in parallel...", len(pages))
+
     async def gen_page(page_name: str, desc: str) -> Tuple[str, Optional[str]]:
-        code = await generate_page_with_ai(page_name, desc, title, colors, architecture or {}, llm)
+        code = await generate_page_with_ai(
+            page_name, desc, title, colors, architecture or {}, llm,
+            requirement=requirement, prd=prd, all_pages=pages,
+        )
         return page_name, code
 
-    tasks = [gen_page(name, desc) for name, desc in pages]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # ── Step 4: Generate backend routes with AI ───────────────────────────────
+    # Run everything in parallel — true Lovable-style parallel generation
+    page_tasks = [gen_page(name, desc) for name, desc in pages]
+    layout_task = generate_layout_with_ai(title, pages, colors, requirement, llm)
+    login_task  = generate_login_with_ai(title, colors, requirement, llm)
     backend_task = generate_backend_with_ai(title, prd, architecture or {}, llm)
-    ai_routes = await backend_task
 
-    # ── Step 5: Assemble file set ─────────────────────────────────────────────
-    # Start with scaffold
+    all_results = await asyncio.gather(
+        *page_tasks, layout_task, login_task, backend_task,
+        return_exceptions=True,
+    )
+
+    page_results = all_results[:len(page_tasks)]
+    ai_layout   = all_results[len(page_tasks)]
+    ai_login    = all_results[len(page_tasks) + 1]
+    ai_routes   = all_results[len(page_tasks) + 2]
+
+    # ── Step 4: Assemble file set ─────────────────────────────────────────────
     files = dict(get_fullstack_scaffold_files())
 
-    # Core generated files
+    # Always-present infrastructure files
     files["frontend/src/theme.ts"] = build_theme_ts(colors)
     files["frontend/src/auth.ts"] = _auth_ts()
     files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(pages)
-    files["frontend/src/layout/AppLayout.tsx"] = _build_app_layout_tsx(title, pages, colors)
     files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title)
-    files["frontend/src/pages/LoginPage.tsx"] = _build_login_page_tsx(title, colors)
-
-    # Remove old AppShell if we have AppLayout
     files.pop("frontend/src/layout/AppShell.tsx", None)
+
+    # AppLayout — LLM-generated, fallback to template
+    if isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300:
+        files["frontend/src/layout/AppLayout.tsx"] = ai_layout
+        logger.info("[ai-gen] ✓ AppLayout from LLM")
+    else:
+        logger.warning("[ai-gen] AppLayout LLM failed — using template fallback")
+        files["frontend/src/layout/AppLayout.tsx"] = _build_app_layout_tsx(title, pages, colors)
+
+    # LoginPage — LLM-generated, fallback to template
+    if isinstance(ai_login, str) and ai_login and len(ai_login) > 300:
+        files["frontend/src/pages/LoginPage.tsx"] = ai_login
+        logger.info("[ai-gen] ✓ LoginPage from LLM")
+    else:
+        logger.warning("[ai-gen] LoginPage LLM failed — using template fallback")
+        files["frontend/src/pages/LoginPage.tsx"] = _build_login_page_tsx(title, colors)
 
     # AI-generated page files
     successful_pages = 0
     failed_pages = []
-    for result in results:
+    for result in page_results:
         if isinstance(result, Exception):
             logger.warning("[ai-gen] Page task exception: %s", result)
             continue
         page_name, code = result
         if page_name == "LoginPage":
-            continue  # Already generated above
+            continue  # Already handled above
         if code:
             files[f"frontend/src/pages/{page_name}.tsx"] = code
             successful_pages += 1
         else:
             failed_pages.append(page_name)
-            logger.warning("[ai-gen] Failed to generate %s — will use fallback", page_name)
 
-    # Fallback for failed pages
     if failed_pages:
+        logger.warning("[ai-gen] Fallback for pages: %s", failed_pages)
         _add_fallback_pages(files, failed_pages, colors, architecture or {})
 
-    # AI-generated backend
-    if ai_routes:
+    # Backend routes — LLM-generated, fallback to deterministic
+    if isinstance(ai_routes, str) and ai_routes and len(ai_routes) > 300:
         files["backend/routes.py"] = ai_routes
+        logger.info("[ai-gen] ✓ routes.py from LLM")
     else:
-        # Fallback to deterministic backend
-        logger.warning("[ai-gen] AI backend failed — using deterministic backend")
+        logger.warning("[ai-gen] Backend LLM failed — using deterministic fallback")
         _add_fallback_backend(files, title, architecture or {})
 
     logger.info(
