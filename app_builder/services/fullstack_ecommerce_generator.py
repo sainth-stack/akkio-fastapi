@@ -1,10 +1,13 @@
 """E-commerce shopping cart MVP generator for Agentic Builder.
 
+Domain-aware: detects pharma / food / fashion / grocery / books / electronics
+and seeds correct products in mock.ts, seed.py, and the featured banner.
+
 Pages: Home, Register, Login, Products, ProductDetail, Cart, Checkout, OrderConfirmation, Dashboard
 Backend: User, Product, Cart, Order, OrderItem + JWT auth + seed 10 products
 """
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, List, Tuple
 
 
 ECOMMERCE_KEYWORDS = (
@@ -28,8 +31,167 @@ def is_ecommerce_domain(requirement: str, prd: str = "", uiux: str = "") -> bool
     return strong >= 1 and support >= 3
 
 
-def ecommerce_frontend_files(title: str, colors: Dict[str, str]) -> Dict[str, str]:
+# ──────────────────────────────────────────────────────────────
+# DOMAIN-AWARE PRODUCT CATALOGUE
+# Each tuple: (name, description, price_inr, picsum_url, stock)
+# ──────────────────────────────────────────────────────────────
+
+_DOMAIN_PRODUCTS: Dict[str, List[Tuple]] = {
+    "pharma": [
+        ("Paracetamol 500mg", "Antipyretic and analgesic tablet, strip of 10", 25, "https://picsum.photos/seed/paracetamol/400/300", 500),
+        ("Amoxicillin 500mg", "Broad-spectrum antibiotic capsule, strip of 10", 85, "https://picsum.photos/seed/amoxicillin/400/300", 200),
+        ("Cetirizine 10mg", "Antihistamine for allergies, strip of 10", 30, "https://picsum.photos/seed/cetirizine/400/300", 300),
+        ("Vitamin D3 1000IU", "Vitamin D3 supplement, bottle of 60 capsules", 299, "https://picsum.photos/seed/vitamind3/400/300", 150),
+        ("Metformin 500mg", "Anti-diabetic tablet, strip of 15", 45, "https://picsum.photos/seed/metformin/400/300", 400),
+        ("Omeprazole 20mg", "Proton pump inhibitor capsule, strip of 14", 65, "https://picsum.photos/seed/omeprazole/400/300", 250),
+        ("Azithromycin 500mg", "Antibiotic tablet, strip of 5", 120, "https://picsum.photos/seed/azithromycin/400/300", 180),
+        ("Ibuprofen 400mg", "Anti-inflammatory analgesic tablet, strip of 10", 35, "https://picsum.photos/seed/ibuprofen/400/300", 350),
+        ("Atorvastatin 10mg", "Statin for cholesterol management, strip of 14", 95, "https://picsum.photos/seed/atorvastatin/400/300", 200),
+        ("Multivitamin Daily", "Complete daily multivitamin supplement, bottle of 30", 199, "https://picsum.photos/seed/multivitamin/400/300", 300),
+    ],
+    "food": [
+        ("Organic Basmati Rice 5kg", "Premium aged basmati rice, naturally fragrant", 450, "https://picsum.photos/seed/rice/400/300", 200),
+        ("Extra Virgin Olive Oil 1L", "Cold-pressed olive oil from Spain", 850, "https://picsum.photos/seed/oliveoil/400/300", 100),
+        ("Whole Wheat Atta 10kg", "Stone-ground whole wheat flour", 380, "https://picsum.photos/seed/atta/400/300", 300),
+        ("Raw Honey 500g", "Pure forest honey, no artificial additives", 320, "https://picsum.photos/seed/honey/400/300", 150),
+        ("Turmeric Powder 200g", "Organic turmeric powder, high curcumin content", 120, "https://picsum.photos/seed/turmeric/400/300", 250),
+        ("Desi Ghee 1kg", "Pure cow ghee, traditionally churned", 650, "https://picsum.photos/seed/ghee/400/300", 80),
+        ("Organic Green Tea 100g", "Darjeeling first flush organic green tea", 280, "https://picsum.photos/seed/greentea/400/300", 200),
+        ("Cold Pressed Coconut Oil 1L", "Virgin cold-pressed coconut oil", 380, "https://picsum.photos/seed/coconutoil/400/300", 120),
+        ("Mixed Nuts 500g", "Premium assorted almonds, cashews and walnuts", 650, "https://picsum.photos/seed/nuts/400/300", 150),
+        ("Quinoa 500g", "Organic white quinoa, high-protein grain", 350, "https://picsum.photos/seed/quinoa/400/300", 180),
+    ],
+    "fashion": [
+        ("Cotton Kurta", "Handloom cotton kurta for men, sizes S-XXL", 799, "https://picsum.photos/seed/kurta/400/300", 50),
+        ("Silk Saree", "Traditional Kanjivaram silk saree with zari border", 4500, "https://picsum.photos/seed/saree/400/300", 30),
+        ("Slim Fit Jeans", "Stretchable slim fit denim jeans", 1299, "https://picsum.photos/seed/jeans/400/300", 100),
+        ("Casual T-Shirt", "100% cotton round-neck t-shirt, 5 colours", 499, "https://picsum.photos/seed/tshirt/400/300", 200),
+        ("Leather Wallet", "Genuine leather bifold wallet with card slots", 899, "https://picsum.photos/seed/wallet/400/300", 80),
+        ("UV400 Sunglasses", "Polarized sunglasses with UV400 protection", 699, "https://picsum.photos/seed/sunglasses/400/300", 60),
+        ("Running Shoes", "Lightweight breathable running shoes, sizes 6-12", 2499, "https://picsum.photos/seed/shoes/400/300", 40),
+        ("Tote Handbag", "Premium faux leather tote bag, large capacity", 1599, "https://picsum.photos/seed/handbag/400/300", 35),
+        ("Formal Shirt", "100% cotton formal shirt, slim fit", 1099, "https://picsum.photos/seed/shirt/400/300", 75),
+        ("Pashmina Shawl", "Pure wool pashmina shawl, handwoven", 2999, "https://picsum.photos/seed/shawl/400/300", 25),
+    ],
+    "grocery": [
+        ("Fresh Milk 1L", "Full cream pasteurized fresh milk", 60, "https://picsum.photos/seed/milk/400/300", 200),
+        ("Brown Bread Loaf", "Whole grain brown bread, freshly baked", 45, "https://picsum.photos/seed/bread/400/300", 150),
+        ("Farm Eggs 12pcs", "Free-range farm fresh eggs", 85, "https://picsum.photos/seed/eggs/400/300", 300),
+        ("Fresh Paneer 200g", "Cottage cheese from pure cow milk", 65, "https://picsum.photos/seed/paneer/400/300", 200),
+        ("Tomatoes 1kg", "Fresh vine-ripened tomatoes", 40, "https://picsum.photos/seed/tomatoes/400/300", 400),
+        ("Potatoes 2kg", "Fresh Agra potatoes", 55, "https://picsum.photos/seed/potatoes/400/300", 500),
+        ("Red Onions 1kg", "Nashik fresh red onions", 35, "https://picsum.photos/seed/onions/400/300", 600),
+        ("Baby Spinach 250g", "Fresh organic spinach leaves", 30, "https://picsum.photos/seed/spinach/400/300", 250),
+        ("Butter 500g", "Salted white butter", 220, "https://picsum.photos/seed/butter/400/300", 120),
+        ("Set Curd 400g", "Natural yoghurt from full-fat milk", 50, "https://picsum.photos/seed/yoghurt/400/300", 180),
+    ],
+    "books": [
+        ("Clean Code", "Handbook of Agile Software Craftsmanship by Robert C. Martin", 799, "https://picsum.photos/seed/cleancode/400/300", 50),
+        ("Atomic Habits", "Tiny Changes, Remarkable Results by James Clear", 499, "https://picsum.photos/seed/atomichabits/400/300", 100),
+        ("The Alchemist", "A Novel by Paulo Coelho", 299, "https://picsum.photos/seed/alchemist/400/300", 200),
+        ("Design Patterns", "Elements of Reusable Object-Oriented Software", 999, "https://picsum.photos/seed/designpatterns/400/300", 30),
+        ("Zero to One", "Notes on Startups by Peter Thiel", 399, "https://picsum.photos/seed/zerotoone/400/300", 80),
+        ("Deep Work", "Rules for Focused Success by Cal Newport", 449, "https://picsum.photos/seed/deepwork/400/300", 60),
+        ("Rich Dad Poor Dad", "What the Rich Teach Their Kids About Money", 349, "https://picsum.photos/seed/richdad/400/300", 150),
+        ("Sapiens", "A Brief History of Humankind by Yuval Noah Harari", 549, "https://picsum.photos/seed/sapiens/400/300", 90),
+        ("The Lean Startup", "Continuous Innovation in Startups by Eric Ries", 499, "https://picsum.photos/seed/leanstartup/400/300", 40),
+        ("Python Crash Course", "Hands-On Project-Based Introduction to Programming", 699, "https://picsum.photos/seed/pythonbook/400/300", 70),
+    ],
+    "electronics": [
+        ("Laptop", "15.6 inch Full HD display, Intel i5, 8GB RAM, 512GB SSD", 50000, "https://picsum.photos/seed/laptop/400/300", 20),
+        ("Wireless Mouse", "Ergonomic wireless optical mouse with 2.4GHz connectivity", 1000, "https://picsum.photos/seed/mouse/400/300", 50),
+        ("Noise-Cancelling Headphones", "Over-ear wireless headphones with active noise cancellation", 3000, "https://picsum.photos/seed/headphones/400/300", 30),
+        ("Mechanical Keyboard", "RGB backlit mechanical keyboard with blue switches", 4500, "https://picsum.photos/seed/keyboard/400/300", 15),
+        ("USB-C Hub", "7-in-1 USB-C hub with HDMI, USB3.0, SD card slots", 2200, "https://picsum.photos/seed/hub/400/300", 40),
+        ("Webcam HD", "1080p Full HD webcam with built-in microphone", 2800, "https://picsum.photos/seed/webcam/400/300", 25),
+        ("External SSD 1TB", "Portable USB 3.2 Gen2 external SSD", 7500, "https://picsum.photos/seed/ssd/400/300", 10),
+        ("Monitor 24 inch", "24 inch IPS Full HD monitor with HDMI and VGA", 15000, "https://picsum.photos/seed/monitor/400/300", 8),
+        ("Laptop Stand", "Adjustable aluminium laptop stand for 10-17 inch laptops", 1500, "https://picsum.photos/seed/stand/400/300", 60),
+        ("Smart Watch", "Fitness tracker with heart rate monitor, GPS and 7-day battery", 8000, "https://picsum.photos/seed/watch/400/300", 18),
+    ],
+}
+
+# Hero banner (title, subtitle) per domain
+_DOMAIN_HERO: Dict[str, Tuple[str, str]] = {
+    "pharma":      ("Your Trusted Online Pharmacy",   "Order medicines, vitamins and health products with fast home delivery."),
+    "food":        ("Your Organic Food Store",         "Discover fresh, organic, and natural food products."),
+    "fashion":     ("Your Style Destination",          "Explore trendy clothes, accessories, and footwear."),
+    "grocery":     ("Fresh Groceries Delivered",       "Order fresh vegetables, dairy, and everyday essentials."),
+    "books":       ("Your Online Bookstore",           "Explore thousands of books across all genres."),
+    "electronics": ("Welcome to Our Store",            "Discover amazing products at unbeatable prices."),
+}
+
+
+def _detect_product_domain(requirement: str = "", prd: str = "") -> str:
+    """Detect product domain from requirement/PRD text.
+    Returns one of: pharma | food | fashion | grocery | books | electronics (default).
+    """
+    text = "\n".join([requirement or "", prd or ""]).lower()
+
+    pharma_keys = ("pharma", "medicine", "medicines", "drug", "drugs", "tablet", "capsule",
+                   "pharmacy", "pharmaceutical", "healthcare", "prescription", "otc", "vitamin",
+                   "supplement", "antibiotic", "paracetamol", "syrup", "medical store", "chemist")
+    if sum(1 for k in pharma_keys if k in text) >= 1:
+        return "pharma"
+
+    fashion_keys = ("fashion", "clothing", "clothes", "apparel", "garment", "dress", "shirt",
+                    "kurta", "saree", "jeans", "t-shirt", "shoes", "footwear", "jewellery",
+                    "jewelry", "accessories", "wardrobe", "boutique", "wear", "outfit")
+    if sum(1 for k in fashion_keys if k in text) >= 2:
+        return "fashion"
+
+    grocery_keys = ("grocery", "vegetables", "fruits", "fresh produce", "dairy", "milk", "eggs",
+                    "bakery", "kirana", "supermarket", "mart", "greens")
+    if sum(1 for k in grocery_keys if k in text) >= 2:
+        return "grocery"
+
+    food_keys = ("organic food", "health food", "natural food", "spices", "olive oil", "ghee",
+                 "ayurvedic", "nuts", "seeds", "flour", "foodstore", "food store", "health store")
+    if sum(1 for k in food_keys if k in text) >= 1:
+        return "food"
+
+    books_keys = ("books", "bookstore", "book store", "library", "ebook", "novel", "textbook",
+                  "publication", "author", "isbn", "reading", "literature")
+    if sum(1 for k in books_keys if k in text) >= 2:
+        return "books"
+
+    return "electronics"
+
+
+def _make_products_ts(products: List[Tuple]) -> str:
+    """Convert product tuples to a TypeScript array literal string."""
+    lines = []
+    for i, (name, desc, price, img, stock) in enumerate(products, 1):
+        n = name.replace("'", "\\'")
+        d = desc.replace("'", "\\'")
+        lines.append(
+            "  { id: " + str(i) + ", name: '" + n + "', description: '" + d
+            + "', price: " + str(price) + ", image: '" + img + "', stock: " + str(stock) + " }"
+        )
+    return "[\n" + ",\n".join(lines) + ",\n]"
+
+
+def _make_products_py(products: List[Tuple]) -> str:
+    """Convert product tuples to a Python list literal string for seed.py."""
+    lines = []
+    for name, desc, price, img, stock in products:
+        n = name.replace('"', "'")
+        d = desc.replace('"', "'")
+        lines.append('    ("' + n + '", "' + d + '", ' + str(price) + ', "' + img + '", ' + str(stock) + '),')
+    return "[\n" + "\n".join(lines) + "\n]"
+
+
+def ecommerce_frontend_files(
+    title: str,
+    colors: Dict[str, str],
+    requirement: str = "",
+    prd: str = "",
+) -> Dict[str, str]:
+    """Generate frontend files using domain-aware products (pharma / food / fashion / etc.)."""
     from app_builder.services.fullstack_frontend_generator import build_theme_ts, _auth_ts
+    domain = _detect_product_domain(requirement, prd)
+    products = _DOMAIN_PRODUCTS.get(domain, _DOMAIN_PRODUCTS["electronics"])
+    hero_title, hero_subtitle = _DOMAIN_HERO.get(domain, _DOMAIN_HERO["electronics"])
     safe = title.replace("\\", "\\\\").replace("'", "\\'")
     return {
         "frontend/src/theme.ts": build_theme_ts(colors),
@@ -37,7 +199,7 @@ def ecommerce_frontend_files(title: str, colors: Dict[str, str]) -> Dict[str, st
         "frontend/src/App.tsx": _app_tsx(),
         "frontend/src/context/CartContext.tsx": _cart_context_tsx(),
         "frontend/src/layout/Navbar.tsx": _navbar_tsx(safe),
-        "frontend/src/pages/HomePage.tsx": _home_page_tsx(),
+        "frontend/src/pages/HomePage.tsx": _home_page_tsx(hero_title, hero_subtitle),
         "frontend/src/pages/RegisterPage.tsx": _register_page_tsx(),
         "frontend/src/pages/LoginPage.tsx": _login_page_tsx(safe),
         "frontend/src/pages/ProductsPage.tsx": _products_page_tsx(),
@@ -46,17 +208,24 @@ def ecommerce_frontend_files(title: str, colors: Dict[str, str]) -> Dict[str, st
         "frontend/src/pages/CheckoutPage.tsx": _checkout_page_tsx(),
         "frontend/src/pages/OrderConfirmationPage.tsx": _order_confirmation_page_tsx(),
         "frontend/src/pages/DashboardPage.tsx": _dashboard_page_tsx(),
-        "frontend/src/api/mock.ts": _ecommerce_mock_ts(),
+        "frontend/src/api/mock.ts": _ecommerce_mock_ts(products),
     }
 
 
-def ecommerce_backend_files(title: str) -> Dict[str, str]:
+def ecommerce_backend_files(
+    title: str,
+    requirement: str = "",
+    prd: str = "",
+) -> Dict[str, str]:
+    """Generate backend files with domain-appropriate seed data."""
+    domain = _detect_product_domain(requirement, prd)
+    products = _DOMAIN_PRODUCTS.get(domain, _DOMAIN_PRODUCTS["electronics"])
     safe = (title or "E-Commerce Shop").replace('"', "'")[:80]
     return {
         "backend/models.py": _models_py(),
         "backend/schemas.py": _schemas_py(),
         "backend/routes.py": _routes_py(),
-        "backend/seed.py": _seed_py(),
+        "backend/seed.py": _seed_py(products),
         "backend/main.py": _main_py(safe),
         "backend/requirements.txt": _requirements_txt(),
         "backend/tests/test_cart.py": _test_cart_py(),
@@ -245,7 +414,12 @@ export default function Navbar() {
 """
 
 
-def _home_page_tsx() -> str:
+def _home_page_tsx(
+    hero_title: str = "Welcome to Our Store",
+    hero_subtitle: str = "Discover amazing products at unbeatable prices.",
+) -> str:
+    ht = hero_title.replace("'", "\\'")
+    hs = hero_subtitle.replace("'", "\\'")
     return r"""import { useQuery } from '@tanstack/react-query';
 import { Box, Button, Card, CardActions, CardContent, CardMedia, Container, Grid, Snackbar, Typography } from '@mui/material';
 import { Link, useNavigate } from 'react-router-dom';
@@ -273,10 +447,10 @@ export default function HomePage() {
       <Box sx={{ background: 'linear-gradient(135deg, #1565C0 0%, #0D47A1 100%)', color: '#fff', py: { xs: 8, md: 12 } }}>
         <Container maxWidth="lg">
           <Typography variant="h2" fontWeight={800} sx={{ mb: 2, fontSize: { xs: '2rem', md: '3.5rem' } }}>
-            Welcome to Our Store
+            """ + ht + r"""
           </Typography>
           <Typography variant="h6" sx={{ mb: 4, opacity: 0.9 }}>
-            Discover amazing products at unbeatable prices.
+            """ + hs + r"""
           </Typography>
           <Button variant="contained" size="large" color="secondary" onClick={() => navigate('/products')}
             sx={{ fontWeight: 700, px: 4, py: 1.5, fontSize: '1.1rem' }}>
@@ -862,29 +1036,25 @@ export default function DashboardPage() {
 """
 
 
-def _ecommerce_mock_ts() -> str:
-    return r"""type Json = Record<string, unknown>;
-const now = () => new Date().toISOString();
-let nextOrderId = 1002;
-const users: Json[] = [
-  { id: 1, email: 'user@example.com', password: 'password123', name: 'Vijay Kumar', phone: '9876543210' },
-];
-const products: Json[] = [
-  { id: 1, name: 'Laptop', description: '15.6" Full HD display, Intel i5, 8GB RAM, 512GB SSD', price: 50000, image: 'https://picsum.photos/seed/laptop/400/300', stock: 20 },
-  { id: 2, name: 'Wireless Mouse', description: 'Ergonomic wireless optical mouse with 2.4GHz connectivity', price: 1000, image: 'https://picsum.photos/seed/mouse/400/300', stock: 50 },
-  { id: 3, name: 'Noise-Cancelling Headphones', description: 'Over-ear wireless headphones with active noise cancellation', price: 3000, image: 'https://picsum.photos/seed/headphones/400/300', stock: 30 },
-  { id: 4, name: 'Mechanical Keyboard', description: 'RGB backlit mechanical keyboard with blue switches', price: 4500, image: 'https://picsum.photos/seed/keyboard/400/300', stock: 15 },
-  { id: 5, name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI, USB3.0, SD card slots', price: 2200, image: 'https://picsum.photos/seed/hub/400/300', stock: 40 },
-  { id: 6, name: 'Webcam HD', description: '1080p Full HD webcam with built-in microphone', price: 2800, image: 'https://picsum.photos/seed/webcam/400/300', stock: 25 },
-  { id: 7, name: 'External SSD 1TB', description: 'Portable USB 3.2 Gen2 external SSD', price: 7500, image: 'https://picsum.photos/seed/ssd/400/300', stock: 10 },
-  { id: 8, name: 'Monitor 24"', description: '24" IPS Full HD monitor with HDMI and VGA', price: 15000, image: 'https://picsum.photos/seed/monitor/400/300', stock: 8 },
-  { id: 9, name: 'Laptop Stand', description: 'Adjustable aluminium laptop stand for 10"–17" laptops', price: 1500, image: 'https://picsum.photos/seed/stand/400/300', stock: 60 },
-  { id: 10, name: 'Smart Watch', description: 'Fitness tracker with heart rate monitor, GPS & 7-day battery', price: 8000, image: 'https://picsum.photos/seed/watch/400/300', stock: 18 },
-];
-const orders: Json[] = [
-  { id: 1001, order_number: 'ORD-1001', user_id: 1, total: 51000, status: 'Delivered', shipping_address: '12 MG Road, Mumbai, Maharashtra - 400001', created_at: new Date(Date.now() - 86400000).toISOString() },
-];
-
+def _ecommerce_mock_ts(products: List[Tuple]) -> str:
+    """Generate mock.ts with domain-specific product data."""
+    products_ts = _make_products_ts(products)
+    first_price = products[0][2] if products else 499
+    header = (
+        "type Json = Record<string, unknown>;\n"
+        "const now = () => new Date().toISOString();\n"
+        "let nextOrderId = 1002;\n"
+        "const users: Json[] = [\n"
+        "  { id: 1, email: 'user@example.com', password: 'password123', name: 'Demo User', phone: '9876543210' },\n"
+        "];\n"
+        "const products: Json[] = " + products_ts + ";\n"
+        "const orders: Json[] = [\n"
+        "  { id: 1001, order_number: 'ORD-1001', user_id: 1, total: " + str(first_price)
+        + ", status: 'Delivered', shipping_address: '12 MG Road, Mumbai, Maharashtra - 400001',"
+        " created_at: new Date(Date.now() - 86400000).toISOString() },\n"
+        "];\n"
+    )
+    tail = r"""
 function resp<T>(data: T): Promise<T> { return Promise.resolve(data); }
 function err(msg: string, status = 400): Promise<never> { return Promise.reject(new Error(msg)); }
 
@@ -902,7 +1072,7 @@ export async function mockFetch<T = unknown>(path: string, options: RequestInit 
   if (clean === 'auth/register' && method === 'POST') {
     const b = JSON.parse(String(options.body || '{}'));
     if (users.find((u) => u.email === b.email)) return err('Email already registered');
-    const u = { id: users.length + 1, email: b.email, password: b.password, name: `${b.first_name} ${b.last_name}`, phone: b.phone || '' };
+    const u = { id: users.length + 1, email: b.email, password: b.password, name: b.name || b.email, phone: b.phone || '' };
     users.push(u);
     return resp({ ok: true }) as T;
   }
@@ -920,13 +1090,14 @@ export async function mockFetch<T = unknown>(path: string, options: RequestInit 
     const items: any[] = b.items || [];
     const total = items.reduce((s: number, i: any) => s + i.price * i.quantity, 0);
     const order_number = 'ORD-' + nextOrderId++;
-    orders.push({ id: nextOrderId, order_number, user_id: 1, total, status: 'Placed', shipping_address: b.shipping_address, created_at: now() });
+    orders.push({ id: nextOrderId, order_number, user_id: 1, total, status: 'Placed', shipping_address: b.shipping_address || '', created_at: now() });
     return resp({ order_number, total }) as T;
   }
   if (clean === 'orders' && method === 'GET') return resp({ items: orders, total: orders.length }) as T;
   return resp({ ok: true, mocked: true, path, method }) as T;
 }
 """
+    return header + tail
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1256,46 +1427,39 @@ def dashboard(db: Session = Depends(get_db), user: Optional[User] = Depends(get_
 '''
 
 
-def _seed_py() -> str:
-    return r'''"""Seed 10 e-commerce products and demo users."""
-from database import Base, SessionLocal, engine
-from models import Product, User
-from auth import hash_password
-
-PRODUCTS = [
-    ("Laptop",              "15.6\" Full HD Intel i5 8GB RAM 512GB SSD",                        50000, "https://picsum.photos/seed/laptop/400/300",    20),
-    ("Wireless Mouse",      "Ergonomic wireless optical mouse 2.4GHz",                          1000,  "https://picsum.photos/seed/mouse/400/300",     50),
-    ("Headphones",          "Over-ear wireless noise-cancelling headphones",                    3000,  "https://picsum.photos/seed/headphones/400/300",30),
-    ("Mechanical Keyboard", "RGB backlit mechanical keyboard blue switches",                    4500,  "https://picsum.photos/seed/keyboard/400/300",  15),
-    ("USB-C Hub",           "7-in-1 USB-C hub HDMI USB3.0 SD card",                            2200,  "https://picsum.photos/seed/hub/400/300",       40),
-    ("Webcam HD",           "1080p webcam with built-in microphone",                           2800,  "https://picsum.photos/seed/webcam/400/300",    25),
-    ("External SSD 1TB",    "Portable USB 3.2 Gen2 external SSD",                              7500,  "https://picsum.photos/seed/ssd/400/300",       10),
-    ("Monitor 24\"",        "24\" IPS Full HD HDMI VGA",                                       15000, "https://picsum.photos/seed/monitor/400/300",   8),
-    ("Laptop Stand",        "Adjustable aluminium laptop stand 10-17 inch",                    1500,  "https://picsum.photos/seed/stand/400/300",     60),
-    ("Smart Watch",         "Fitness tracker heart rate GPS 7-day battery",                    8000,  "https://picsum.photos/seed/watch/400/300",     18),
-]
-
-Base.metadata.create_all(bind=engine)
-
-
-def run():
-    db = SessionLocal()
-    try:
-        if db.query(Product).count() == 0:
-            for name, desc, price, image, stock in PRODUCTS:
-                db.add(Product(name=name, description=desc, price=price, image=image, stock=stock))
-            print(f"Seeded {len(PRODUCTS)} products")
-        if db.query(User).count() == 0:
-            db.add(User(first_name="Vijay", last_name="Kumar", email="user@example.com", phone="9876543210", hashed_password=hash_password("password123")))
-            print("Seeded demo user: user@example.com / password123")
-        db.commit()
-    finally:
-        db.close()
-
-
-if __name__ == "__main__":
-    run()
-'''
+def _seed_py(products: List[Tuple]) -> str:
+    """Generate seed.py with domain-specific product data."""
+    products_py = _make_products_py(products)
+    return (
+        '"""Seed domain-specific products and demo users."""\n'
+        "from database import Base, SessionLocal, engine\n"
+        "from models import Product, User\n"
+        "from auth import hash_password\n"
+        "\n"
+        "PRODUCTS = " + products_py + "\n"
+        "\n"
+        "Base.metadata.create_all(bind=engine)\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    db = SessionLocal()\n"
+        "    try:\n"
+        "        if db.query(Product).count() == 0:\n"
+        "            for name, desc, price, image, stock in PRODUCTS:\n"
+        "                db.add(Product(name=name, description=desc, price=price, image=image, stock=stock))\n"
+        '            print("Seeded", len(PRODUCTS), "products")\n'
+        "        if db.query(User).count() == 0:\n"
+        '            db.add(User(first_name="Demo", last_name="User", email="user@example.com",'
+        ' phone="9876543210", hashed_password=hash_password("password123")))\n'
+        '            print("Seeded demo user: user@example.com / password123")\n'
+        "        db.commit()\n"
+        "    finally:\n"
+        "        db.close()\n"
+        "\n"
+        "\n"
+        'if __name__ == "__main__":\n'
+        "    run()\n"
+    )
 
 
 def _test_cart_py() -> str:

@@ -875,9 +875,35 @@ def _build_login_page_tsx(title: str, colors: Dict[str, str]) -> str:
             .replace("__BG__", bg))
 
 
-def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str) -> str:
-    """Generate a mock.ts that handles all page API calls. No f-string to avoid brace escaping."""
+def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requirement: str = "", prd: str = "") -> str:
+    """Generate a domain-aware mock.ts for all page API calls."""
+    # Build a domain-specific products seed if this looks like a shopping/product app
+    product_seed_lines: List[str] = []
+    try:
+        from app_builder.services.fullstack_ecommerce_generator import (
+            _detect_product_domain, _DOMAIN_PRODUCTS, _make_products_ts,
+        )
+        has_products_page = any(
+            "product" in n.lower() or "shop" in n.lower() or "medicine" in n.lower()
+            for n, _ in pages
+        )
+        if has_products_page:
+            domain = _detect_product_domain(requirement or title, prd)
+            domain_products = _DOMAIN_PRODUCTS.get(domain, [])
+            if domain_products:
+                products_ts = _make_products_ts(domain_products)
+                product_seed_lines = [
+                    "// Domain-specific products (" + domain + ")",
+                    "const _domainProducts: any[] = " + products_ts + ";",
+                ]
+    except Exception:
+        pass
+
     lines = [
+        f"// Auto-generated mock API — {title}",
+        "// All API calls fall back here when backend is unreachable.",
+        *product_seed_lines,
+        "const USERS = [",
         f"// Auto-generated mock API — {title}",
         "// All API calls fall back here when backend is unreachable.",
         "const USERS = [",
@@ -886,6 +912,8 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str) -> str:
         "];",
         "let _id = 100;",
         "const _store: Record<string, any[]> = { items: [], records: [], entries: [] };",
+        # Pre-seed products with domain data so /api/products returns correct items
+        "if (typeof _domainProducts !== 'undefined') { _store['products'] = [..._domainProducts]; }",
         "",
         "function ok<T>(data: T): Promise<T> { return Promise.resolve(data); }",
         "function err(msg: string): Promise<never> { return Promise.reject(new Error(msg)); }",
@@ -1058,8 +1086,8 @@ async def generate_fullstack_app_with_ai(
         files["frontend/src/api/mock.ts"] = ai_mock
         logger.info("[ai-gen] ✓ mock.ts from LLM (domain-aware)")
     else:
-        logger.warning("[ai-gen] mock.ts LLM failed — using template fallback")
-        files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title)
+        logger.warning("[ai-gen] mock.ts LLM failed — using domain-aware template fallback")
+        files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title, requirement=requirement, prd=prd)
 
     # AppLayout — LLM-generated, fallback to template
     if isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300:

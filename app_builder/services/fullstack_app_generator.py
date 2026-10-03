@@ -92,8 +92,8 @@ def generate_fullstack_application(
         ):
             files.pop(stale, None)
     elif mode == "ecommerce":
-        files.update(ecommerce_frontend_files(title, colors))
-        files.update(ecommerce_backend_files(title))
+        files.update(ecommerce_frontend_files(title, colors, requirement=requirement, prd=prd))
+        files.update(ecommerce_backend_files(title, requirement=requirement, prd=prd))
         files["backend/requirements.txt"] = _ecommerce_requirements()
         # remove quality-only stale pages
         for stale in (
