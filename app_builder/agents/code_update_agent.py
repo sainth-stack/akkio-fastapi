@@ -71,6 +71,66 @@ Respond ONLY with a JSON object: {{"content": "FULL_UPDATED_FILE_CONTENT"}}"""
     return result
 
 
+_COLOR_NAMES: Dict[str, str] = {
+    "red": "#C62828", "dark red": "#B71C1C", "crimson": "#C62828",
+    "blue": "#1565C0", "navy": "#0B3D6F", "dark blue": "#0B3D6F", "royal blue": "#1565C0",
+    "green": "#2E7D32", "dark green": "#1B5E20", "emerald": "#00796B",
+    "teal": "#00695C", "cyan": "#0097A7",
+    "purple": "#6A1B9A", "violet": "#7B1FA2", "indigo": "#283593",
+    "orange": "#E65100", "amber": "#F57C00", "yellow": "#F9A825",
+    "pink": "#AD1457", "rose": "#C2185B",
+    "black": "#212121", "dark": "#212121", "charcoal": "#37474F",
+    "white": "#FFFFFF", "light": "#F5F5F5",
+    "gray": "#616161", "grey": "#616161", "slate": "#455A64",
+    "brown": "#4E342E",
+}
+
+
+def _merge_color_hints(user_request: str, design_tokens: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract color hints from user request and merge into design_tokens."""
+    req = (user_request or "").lower()
+    merged = dict(design_tokens or {})
+    colors = dict((merged.get("colors") or {}))
+
+    # Extract hex codes directly: #RRGGBB or #RGB
+    hex_matches = re.findall(r'#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b', user_request)
+    if hex_matches:
+        colors["primary"] = "#" + hex_matches[0]
+
+    # Match "use X theme", "X color scheme", "X primary", "primary X"
+    patterns = [
+        r'(?:use|make it|change to|switch to|apply)\s+(\w[\w\s]*?)\s+(?:theme|color|scheme|palette|style)',
+        r'(\w+)\s+(?:theme|color scheme|palette)',
+        r'primary\s+(?:color\s+)?(?:is\s+)?(\w+)',
+        r'(\w+)\s+(?:as\s+)?(?:primary|main)\s+color',
+    ]
+    for pat in patterns:
+        m = re.search(pat, req)
+        if m:
+            word = m.group(1).strip()
+            for name, hex_val in _COLOR_NAMES.items():
+                if name in word:
+                    colors["primary"] = hex_val
+                    break
+
+    merged["colors"] = colors
+    return merged
+
+
+def _color_uiux_from_request(user_request: str) -> str:
+    """Turn color mentions in user_request into a UIUX hint string for theme_from_tokens."""
+    req = (user_request or "").lower()
+    hints: list = []
+    hex_matches = re.findall(r'#[0-9a-fA-F]{6}', user_request)
+    if hex_matches:
+        hints.append(f"Primary: {hex_matches[0]}")
+    for name, hex_val in _COLOR_NAMES.items():
+        if name in req and "theme" in req or "color" in req or "primary" in req:
+            hints.append(f"Primary: {hex_val}")
+            break
+    return "\n".join(hints)
+
+
 async def update_code_from_chat(
     project_name: str,
     project_root: str,
@@ -80,7 +140,8 @@ async def update_code_from_chat(
     architecture: Dict[str, Any] = None,
     uiux: str = "",
     design_tokens: Optional[Dict[str, Any]] = None,
-    websocket: Optional[Any] = None
+    websocket: Optional[Any] = None,
+    builder_kind: str = "",
 ) -> Dict[str, Any]:
     """
     Spec-driven code update:
@@ -198,40 +259,77 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
         prd or "",
     ])
     try:
-        from app_builder.services.fullstack_docchat_generator import is_doc_chat_domain
-        from app_builder.services.fullstack_ecommerce_generator import is_ecommerce_domain
+        from app_builder.services.fullstack_stack import is_fullstack
         from app_builder.services.fullstack_app_generator import generate_fullstack_application
-        from app_builder.services.fullstack_codegen import post_process_fullstack_files
+        from app_builder.services.fullstack_codegen import (
+            post_process_fullstack_files,
+            is_fullstack_generated_files,
+        )
         from app_builder.services.file_writer import file_writer
         from app_builder.schemas.files import GeneratedFiles
 
-        if is_doc_chat_domain(combined_spec, updated_prd, uiux) or is_ecommerce_domain(combined_spec, updated_prd, uiux):
+        # Check if this is a fullstack app (by builder_kind OR by existing files on disk)
+        disk_files: Dict[str, str] = {}
+        try:
+            for root, dirs, fnames in os.walk(project_root):
+                dirs[:] = [d for d in dirs if d not in ("node_modules", "__pycache__", "dist", "build", ".git")]
+                for fn in fnames:
+                    if fn.endswith(('.ts', '.tsx', '.py', '.json')):
+                        rel = os.path.relpath(os.path.join(root, fn), project_root)
+                        try:
+                            with open(os.path.join(root, fn), 'r', encoding='utf-8', errors='replace') as fh:
+                                disk_files[rel.replace('\\', '/')] = fh.read(4000)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        is_fs = is_fullstack(builder_kind) or is_fullstack_generated_files(disk_files)
+
+        if is_fs:
+            # Merge color hints from user_request into design_tokens
+            merged_tokens = _merge_color_hints(user_request, design_tokens)
+            # Also append color hints to uiux so theme_from_tokens picks them up
+            color_uiux = _color_uiux_from_request(user_request)
+            merged_uiux = "\n".join(filter(None, [uiux, color_uiux]))
+
+            # For mode detection, use the updated_prd + user_request as primary
+            # (not combined_spec which includes the original requirement, confusing domain switches)
+            update_spec = "\n".join(filter(None, [user_request, updated_prd]))
+
             if websocket:
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
                     "agent": "update_code_agent",
-                    "message": "Regenerating fullstack application from requirement...",
+                    "message": "Regenerating fullstack application with updated requirement and theme...",
                 }))
+
             new_files = generate_fullstack_application(
-                combined_spec,
+                update_spec,
                 updated_prd,
-                uiux,
+                merged_uiux,
                 updated_architecture,
-                design_tokens,
+                merged_tokens,
             )
-            new_files = post_process_fullstack_files(new_files, design_tokens=design_tokens, uiux=uiux,
-                                                     requirement=combined_spec, prd=updated_prd)
+            new_files = post_process_fullstack_files(
+                new_files,
+                design_tokens=merged_tokens,
+                uiux=merged_uiux,
+                requirement=update_spec,
+                prd=updated_prd,
+            )
             file_writer(project_name, GeneratedFiles(files=new_files))
             return {
                 "status": "success",
-                "message": "Built Upload + Document Chat screens with grounded Q&A from uploaded files.",
+                "message": f"Fullstack app regenerated with updated requirement. {len(new_files)} files updated.",
                 "updated_code_dict": new_files,
                 "updated_prd": updated_prd,
                 "updated_architecture": updated_architecture,
-                "changes": [{"file": k, "action": "regenerated"} for k in sorted(new_files.keys())[:40]],
+                "merged_design_tokens": merged_tokens,
+                "changes": [{"file": k, "action": "regenerated"} for k in sorted(new_files.keys())[:60]],
             }
     except Exception as regen_exc:
-        print(f"[update_code] doc-chat regenerate skipped: {regen_exc}")
+        print(f"[update_code] fullstack regenerate failed: {regen_exc}")
 
     if websocket:
         await websocket.send_text(json.dumps({

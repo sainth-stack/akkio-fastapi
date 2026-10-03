@@ -347,7 +347,6 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 )
 
                 from app_builder.services.functionality_validator import run_functionality_pipeline
-                from app_builder.services.project_config import get_project_config
 
                 _persist_project_runtime(project_name, files, architecture, requirement, prd, uiux)
                 config = get_project_config(project_name) or {}

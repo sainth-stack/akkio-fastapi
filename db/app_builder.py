@@ -101,6 +101,10 @@ CREATE TABLE IF NOT EXISTS builder_app_jobs (
 CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_app_id ON builder_app_jobs (app_id);
 CREATE INDEX IF NOT EXISTS idx_builder_app_jobs_session_id ON builder_app_jobs (session_id);
 ALTER TABLE app_builder_deployments ADD COLUMN IF NOT EXISTS deploy_log TEXT;
+ALTER TABLE app_builder_codegen_sessions ADD COLUMN IF NOT EXISTS api_contract TEXT;
+ALTER TABLE app_builder_codegen_sessions ADD COLUMN IF NOT EXISTS db_schema TEXT;
+ALTER TABLE app_builder_codegen_sessions ADD COLUMN IF NOT EXISTS generated_files JSONB;
+ALTER TABLE app_builder_codegen_sessions ADD COLUMN IF NOT EXISTS app_id INTEGER;
 
 -- Fix legacy FK that pointed at app_builder_apps instead of builder_apps
 DO $$

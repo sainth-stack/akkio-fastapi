@@ -687,6 +687,7 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
         architecture = {}
         uiux_text = ""
         design_tokens = None
+        builder_kind_text = ""
         app_record = None
         try:
             if app_id:
@@ -703,6 +704,7 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
                 architecture = app_record.get("architecture") or {}
                 uiux_text = app_record.get("generated_uiux") or ""
                 design_tokens = app_record.get("design_tokens")
+                builder_kind_text = app_record.get("builder_kind") or ""
         except Exception as db_err:
             print(f"[update-code-ws] DB fetch warning: {db_err}", file=sys.stderr)
 
@@ -715,7 +717,8 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             architecture=architecture,
             uiux=uiux_text,
             design_tokens=design_tokens,
-            websocket=websocket
+            websocket=websocket,
+            builder_kind=builder_kind_text,
         )
 
         if result.get("status") == "success":
@@ -731,13 +734,18 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
 
                 target_id = app_id or (app_record.get("id") if app_record else None)
                 if target_id:
-                    db.update_app_builder_app(
+                    update_kwargs: dict = dict(
                         app_id=target_id,
                         user_email=app_record.get("user_email", "") if app_record else "",
                         generated_code_json=merged_code,
                         prd=updated_prd,
-                        architecture=updated_architecture
+                        architecture=updated_architecture,
                     )
+                    # Persist merged design tokens if updated
+                    merged_tokens = result.get("merged_design_tokens")
+                    if merged_tokens:
+                        update_kwargs["design_tokens"] = merged_tokens
+                    db.update_app_builder_app(**update_kwargs)
             except Exception as save_err:
                 print(f"[update-code-ws] DB save warning: {save_err}", file=sys.stderr)
 

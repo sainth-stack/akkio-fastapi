@@ -31,7 +31,17 @@ def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
 
 def is_quality_domain(requirement: str, prd: str = "", uiux: str = "") -> bool:
     text = "\n".join([requirement or "", prd or "", uiux or ""]).lower()
-    keys = ("supplier quality", "incoming lot", "incoming material", "capa", "ppm", "release decision")
+    # Strong single-phrase matches → quality
+    strong = (
+        "supplier quality management", "incoming material release",
+        "supplier quality & incoming", "quality management system",
+        "incoming lot inspection",
+    )
+    if any(k in text for k in strong):
+        return True
+    # Multiple supporting keywords → quality
+    keys = ("supplier quality", "incoming lot", "incoming material", "capa", "ppm", "release decision",
+            "defect rate", "inspection result", "quality control", "quality assurance", "supplier scorecard")
     return sum(1 for k in keys if k in text) >= 2
 
 
