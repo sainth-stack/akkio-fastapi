@@ -304,13 +304,18 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                     "message": "Regenerating fullstack application with updated requirement and theme...",
                 }))
 
-            new_files = generate_fullstack_application(
-                update_spec,
-                updated_prd,
-                merged_uiux,
-                updated_architecture,
-                merged_tokens,
-            )
+            # Try AI-powered regen first (reads updated prompt + extracts new colors/pages)
+            try:
+                from app_builder.services.fullstack_ai_generator import generate_fullstack_app_with_ai
+                new_files = await generate_fullstack_app_with_ai(
+                    update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+                )
+            except Exception as ai_exc:
+                print(f"[update_code] AI regen failed ({ai_exc}) — using deterministic fallback")
+                from app_builder.services.fullstack_app_generator import generate_fullstack_application
+                new_files = generate_fullstack_application(
+                    update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+                )
             new_files = post_process_fullstack_files(
                 new_files,
                 design_tokens=merged_tokens,

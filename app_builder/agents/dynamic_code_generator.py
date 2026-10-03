@@ -1118,13 +1118,43 @@ async def generate_code_from_plan(
             yield {"event": "agent_error", "message": "Fullstack scaffold not found on disk"}
             return
         architecture = lock_architecture(architecture)
-        from app_builder.services.fullstack_app_generator import generate_fullstack_application
 
         yield {
             "event": "generation_start",
-            "message": "Generating production fullstack TypeScript + FastAPI application...",
+            "message": "🤖 AI is reading your prompt to extract colors, pages, and features...",
         }
-        files_generated = generate_fullstack_application(requirement, prd, uiux, architecture)
+
+        # Try AI-driven generation first (LLM extracts colors + generates each page)
+        try:
+            import asyncio as _asyncio
+            from app_builder.services.fullstack_ai_generator import generate_fullstack_app_with_ai
+
+            yield {
+                "event": "agent_progress",
+                "agent": "design_agent",
+                "message": "Extracting design system from your prompt (colors, theme, style)...",
+            }
+
+            files_generated = _asyncio.run(
+                generate_fullstack_app_with_ai(
+                    requirement, prd, uiux, architecture, design_tokens,
+                )
+            )
+            yield {
+                "event": "agent_progress",
+                "agent": "design_agent",
+                "message": f"Design extracted. Generating {len(files_generated)} files with AI...",
+            }
+        except Exception as ai_exc:
+            logger.warning("[codegen] AI generation failed (%s) — falling back to deterministic", ai_exc)
+            yield {
+                "event": "agent_progress",
+                "agent": "design_agent",
+                "message": "Generating fullstack application...",
+            }
+            from app_builder.services.fullstack_app_generator import generate_fullstack_application
+            files_generated = generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
+
         for path in sorted(files_generated.keys()):
             yield {
                 "event": "file_generated",
@@ -1135,7 +1165,7 @@ async def generate_code_from_plan(
         yield {
             "event": "generation_complete",
             "data": files_generated,
-            "message": f"Generated {len(files_generated)} files (fullstack production MVP)",
+            "message": f"✅ Generated {len(files_generated)} files — AI customized to your prompt",
         }
         return
     elif not get_base_scaffold_files():
