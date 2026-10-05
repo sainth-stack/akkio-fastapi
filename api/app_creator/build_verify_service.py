@@ -138,12 +138,49 @@ def _pick_files_for_fix(files: Dict[str, str], build_log: str) -> Dict[str, str]
         if path.endswith((".js", ".jsx", ".ts", ".tsx", ".css", ".json", ".env")):
             priority.append(path)
     out: Dict[str, str] = {}
-    for path in priority[:14]:
+    for path in priority[:20]:
         if path in files:
             out[path] = files[path]
     if "frontend/package.json" not in out and "frontend/package.json" in files:
         out["frontend/package.json"] = files["frontend/package.json"]
     return out
+
+
+def extract_error_files(build_output: str, project_root: str) -> Dict[str, str]:
+    """
+    Parse build error output for file paths and read those files fully from disk.
+    Handles TypeScript errors, ESLint errors, and Vite build errors.
+
+    Patterns matched:
+      src/pages/Foo.tsx(45,12)   — TypeScript
+      src/pages/Foo.tsx:45:12    — ESLint / Vite
+      src/pages/Foo.tsx           — plain reference
+
+    Returns {relative_key: content} where relative_key matches the in-memory files
+    dict convention, e.g. 'frontend/src/pages/Foo.tsx'.
+    """
+    result: Dict[str, str] = {}
+    # Match src/… paths for .ts/.tsx/.js/.jsx files
+    pattern = re.compile(r'\b(src/[^\s:()\'\"]+\.(?:tsx?|jsx?))')
+    found_paths: set = set()
+    for m in pattern.finditer(build_output):
+        found_paths.add(m.group(1))
+
+    for rel in found_paths:
+        # Try project_root/frontend/src/… first (most common layout)
+        disk_path = os.path.join(project_root, "frontend", rel)
+        if not os.path.isfile(disk_path):
+            # Fall back to project_root/src/…
+            disk_path = os.path.join(project_root, rel)
+        if os.path.isfile(disk_path):
+            try:
+                with open(disk_path, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+                full_rel = f"frontend/{rel}"
+                result[full_rel] = content
+            except Exception:
+                pass
+    return result
 
 
 _DEFAULT_EXPORT_LINE = "\n// Dual export — supports both named and default import styles\nexport default apiFetch;\n"
@@ -179,23 +216,63 @@ def _deterministic_build_fix(files: Dict[str, str], build_log: str, project_root
     return updated
 
 
-async def _llm_fix_build(files: Dict[str, str], build_log: str, user_email: Optional[str]) -> Dict[str, str]:
-    """Ask LLM to patch files to fix the build log."""
+async def _llm_fix_build(
+    files: Dict[str, str],
+    build_log: str,
+    user_email: Optional[str],
+    error_files: Optional[Dict[str, str]] = None,
+    failed_attempts: Optional[list] = None,
+) -> Dict[str, str]:
+    """Ask LLM to patch files to fix the build log.
+
+    Args:
+        files: full in-memory project file dict
+        build_log: combined stdout/stderr from the failed build
+        user_email: used to select the right LLM
+        error_files: {path: content} of files specifically mentioned in the error output
+        failed_attempts: list of (error_before_fix, error_after_fix) tuples from prior rounds
+    """
     subset = _pick_files_for_fix(files, build_log)
     snippets = []
     for path, content in subset.items():
-        snippets.append(f"--- {path} ---\n{content[:4000]}")
+        # Skip files already included in error_files to avoid duplication
+        if error_files and path in error_files:
+            continue
+        file_limit = 16000 if len(content) < 30000 else 16000
+        snippets.append(f"--- {path} ---\n{content[:file_limit]}")
 
-    prompt = f"""You are fixing a Vite + React + TypeScript + MUI project that failed `npm run build`.
-The bundler is Vite (NOT Create React App / react-scripts). Do NOT suggest craco, ajv-keywords, or NODE_OPTIONS hacks — those are webpack/CRA-only.
+    # Build the error-specific files section (highest priority)
+    error_files_section = ""
+    if error_files:
+        ef_snippets = []
+        for path, content in error_files.items():
+            ef_snippets.append(f"--- {path} (CONTAINS ERROR) ---\n{content}")
+        error_files_section = "\n## FILES WITH ERRORS (read these carefully)\n" + "\n\n".join(ef_snippets)
 
-BUILD LOG (last lines):
+    # Build the failed-attempts section so LLM doesn't repeat what didn't work
+    failed_section = ""
+    if failed_attempts:
+        lines = []
+        for i, (old_err, new_err) in enumerate(failed_attempts, 1):
+            lines.append(
+                f"### Attempt {i} — did NOT fix the build\n"
+                f"Error before fix:\n```\n{old_err[-800:]}\n```\n"
+                f"Error after fix (still broken):\n```\n{new_err[-800:]}\n```"
+            )
+        failed_section = "\n## PREVIOUS FIX ATTEMPTS THAT FAILED (do not repeat these)\n" + "\n\n".join(lines)
+
+    prompt = f"""You are fixing a TypeScript/React build error. Be surgical — only change what is broken.
+The bundler is Vite (NOT Create React App / react-scripts). Do NOT suggest craco, ajv-keywords, or NODE_OPTIONS hacks.
+
+## BUILD ERROR
 ```
 {build_log[-6500:]}
 ```
+{error_files_section}
 
-CURRENT FILES:
+## ALL PROJECT FILES (for context)
 {chr(10).join(snippets)}
+{failed_section}
 
 Rules:
 1. Fix TypeScript type errors, missing imports, or wrong export styles shown in the log.
@@ -203,8 +280,9 @@ Rules:
 3. If the error mentions a missing module: add the correct named import, do NOT add CRA/webpack dependencies.
 4. If vite.config.ts is missing: create one with `defineConfig({{ plugins: [react()] }})`.
 5. Fix syntax/import errors in source files shown in the log.
-6. Return ONLY changed files as valid JSON: {{"files": {{"path/to/file": "full file content"}}}}
-7. Do not truncate files — return complete file contents for each changed path."""
+6. Do NOT rewrite files that don't have errors — only output files that must change.
+7. Return ONLY changed files as valid JSON: {{"files": {{"path/to/file": "full file content"}}}}
+8. Do not truncate files — return complete file contents for each changed path."""
 
     llm = get_llm_for_user(user_email, temperature=0.15)
     resp = await llm.ainvoke(prompt)
@@ -265,6 +343,9 @@ async def verify_build_and_fix(
     file_writer(project_name, GeneratedFiles(files=files))
 
     last_log = ""
+    failed_attempts: list = []          # list of (error_before_fix, error_after_fix)
+    error_before_fix: str = ""          # captured just before each fix round
+
     for attempt in range(1, max_attempts + 1):
         await emit(
             "build_start",
@@ -281,6 +362,12 @@ async def verify_build_and_fix(
         if static_dir and not err:
             await emit("build_success", "Frontend build verified successfully.")
             return files, True, last_log
+
+        current_error = last_log
+
+        # Record the outcome of the previous fix attempt so the LLM can learn from it
+        if attempt > 1 and error_before_fix:
+            failed_attempts.append((error_before_fix, current_error))
 
         await emit(
             "build_failed",
@@ -300,9 +387,20 @@ async def verify_build_and_fix(
         try:
             project_root = resolve_project_root(project_name)
             # 1. Deterministic fixes first (fast, reliable for known patterns)
-            files = _deterministic_build_fix(files, last_log or (err or ""), project_root)
-            # 2. LLM fixes for anything deterministic didn't catch
-            files = await _llm_fix_build(files, last_log or (err or ""), user_email)
+            files = _deterministic_build_fix(files, current_error, project_root)
+            # 2. Extract the specific files the error references so the LLM can read them fully
+            error_files = extract_error_files(current_error, project_root)
+            if error_files:
+                await emit("build_fix_attempt", f"Error localised to: {', '.join(error_files.keys())}")
+            # 3. LLM fixes — pass error-specific files and history of failed attempts
+            error_before_fix = current_error
+            files = await _llm_fix_build(
+                files,
+                current_error,
+                user_email,
+                error_files=error_files or None,
+                failed_attempts=failed_attempts or None,
+            )
             file_writer(project_name, GeneratedFiles(files=files))
         except Exception as fix_err:
             logger.warning("[build_verify] LLM fix failed: %s", fix_err)

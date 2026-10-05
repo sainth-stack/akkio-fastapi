@@ -66,10 +66,14 @@ Generate a complete, production-quality page that feels handcrafted — not gene
 
 ═══ APP CONTEXT ═══
 App: {title}
+App domain: {domain}
 What this app does: {requirement}
 
 Key product requirements:
 {prd_summary}
+
+Generate pages that are specific and functional for the "{domain}" domain.
+Include domain-appropriate data, terminology, UI patterns, and realistic sample values.
 
 ═══ PAGE TO BUILD ═══
 Page: {page_name}
@@ -83,6 +87,7 @@ Related API endpoints for this page:
 
 Other pages in the app (for navigation links): {all_pages}
 
+{actual_api_spec_section}
 ═══ DESIGN SYSTEM ═══
 Primary: {primary}
 Primary Dark: {primary_dark}
@@ -114,6 +119,17 @@ Style: {style}
 - Responsive layout using Grid2 or Stack
 - Typography hierarchy: h4 for title, h6 for sections, body2 for labels
 - At least 60-80 lines of JSX — no stub components
+- Every component must be FULLY FUNCTIONAL with real state management (useState, useQuery)
+- Forms must have validation and submit handlers that call the API
+- Tables must handle loading states (MUI Skeleton or CircularProgress)
+- Error states must be handled with user-friendly messages (no console.log in UI)
+- All buttons must have onClick handlers that do real things
+- Navigation links must use react-router-dom useNavigate with correct paths
+- No placeholder text like 'TODO', 'Coming soon', 'Lorem ipsum'
+- No disabled buttons without explanation
+- Data must flow: fetch from API → display in UI → user can interact → update sent to API
+- Use MUI Alert for success/error notifications after form submissions
+- Every page must have a proper page title (Typography variant='h4' or h5)
 
 Export default function {page_name}(). No markdown, no explanation, just the code.'''
 
@@ -189,7 +205,11 @@ BACKEND_GENERATION_PROMPT = '''You are a senior Python/FastAPI developer. Genera
 
 App: {title}
 Domain: {requirement}
+App type/domain: {app_domain}
 PRD: {prd}
+
+Generate backend code that is tailored specifically for a "{app_domain}" application.
+Use domain-appropriate models, endpoints, seed data, and business logic.
 
 Database tables from architecture:
 {tables_json}
@@ -221,6 +241,14 @@ Generate a complete FastAPI routes.py with:
 6. from auth import get_current_user
 7. from database import Base, SessionLocal, engine, get_db
 8. router = APIRouter() — main.py includes it with prefix="/api"
+9. Every endpoint listed in the architecture MUST be implemented
+10. All CRUD operations must be complete (not just GET, include POST/PUT/DELETE)
+11. Response models must use consistent field names across all endpoints
+12. Include proper HTTP status codes (201 for created, 404 for not found, 400 for bad request)
+13. Seed data must be realistic and substantial (at least 10-20 records per entity)
+14. All endpoints must have correct resource-prefixed paths (already enforced above)
+15. Include error handling: try/except with HTTPException for all database operations
+16. Use consistent ID fields: always 'id' (not 'userId', 'itemId', etc.)
 
 Return ONLY the complete routes.py. Python 3.10 compatible. No markdown fences.'''
 
@@ -251,6 +279,12 @@ Important rules:
 - All prices in INR (₹) if e-commerce
 - Use realistic domain-specific field names
 - No imports needed — pure TypeScript
+- Generate at least 15-25 mock records per entity
+- Use realistic domain-specific data (real-sounding names, realistic values, proper date ranges)
+- All IDs must be unique integers starting from 1
+- All foreign key IDs must reference valid parent IDs
+- Status fields should have variety (mix of active/inactive, pending/approved/rejected, etc.)
+- Include edge cases: some items with optional fields null, some with max values
 
 Return ONLY the TypeScript code. No markdown fences.'''
 
@@ -371,6 +405,9 @@ async def generate_page_with_ai(
     requirement: str = "",
     prd: str = "",
     all_pages: Optional[List[Tuple[str, str]]] = None,
+    domain: str = "general",
+    actual_api_spec: str = "",
+    existing_content: str = None,
 ) -> Optional[str]:
     """Use LLM to generate a fully custom MUI TypeScript page component with full app context."""
     if llm is None:
@@ -434,14 +471,25 @@ async def generate_page_with_ai(
         lines = [l.strip() for l in prd.split("\n") if l.strip().startswith(("- ", "* ", "•")) or "##" in l]
         prd_summary = "\n".join(lines[:15]) or prd[:600]
 
+    # Build actual API spec section if provided
+    actual_api_spec_section = ""
+    if actual_api_spec:
+        actual_api_spec_section = (
+            "═══ ACTUAL BACKEND API (generated, use these exact paths) ═══\n"
+            + actual_api_spec
+            + "\n\nIMPORTANT: Only call endpoints listed above. Use exact paths. Do NOT invent new endpoints.\n"
+        )
+
     prompt = PAGE_GENERATION_PROMPT.format(
         title=title,
+        domain=domain,
         requirement=(requirement or title)[:600],
         prd_summary=prd_summary[:800],
         page_name=page_name,
         page_description=page_description,
         screen_spec=screen_spec[:600],
         api_endpoints="\n".join(api_endpoints) or f"GET /api/{page_lower.replace('page','')}",
+        actual_api_spec_section=actual_api_spec_section,
         all_pages=pages_nav,
         primary=colors.get("primary", "#1565C0"),
         primary_dark=colors.get("primary_dark", "#0D47A1"),
@@ -453,6 +501,24 @@ async def generate_page_with_ai(
         muted=colors.get("muted", "#757575"),
         style=colors.get("style", "corporate"),
     )
+
+    # ── When modifying an existing page, append the existing code so LLM preserves it ──
+    if existing_content and len(existing_content) > 50:
+        prompt += (
+            "\n\n═══ EXISTING PAGE CODE (PRESERVE WHAT WORKS) ═══\n"
+            "The page already has the following implementation. "
+            "Your job is to MODIFY it to address the user's request "
+            "while preserving all existing functionality, logic, and structure "
+            "that is NOT related to the change.\n\n"
+            f"User's change request: {page_description}\n\n"
+            "EXISTING CODE:\n"
+            f"{existing_content[:6000]}{'...' if len(existing_content) > 6000 else ''}\n\n"
+            "INSTRUCTIONS:\n"
+            "- Make ONLY the changes needed for the user request\n"
+            "- Keep all existing imports, state, handlers, and JSX structure intact\n"
+            "- Do not remove functionality that wasn't part of the change request\n"
+            "- Output the COMPLETE updated file"
+        )
 
     try:
         resp = await llm.ainvoke(prompt)
@@ -553,6 +619,7 @@ async def generate_backend_with_ai(
     architecture: Dict[str, Any],
     llm=None,
     requirement: str = "",
+    domain: str = "general",
 ) -> Optional[str]:
     """Use LLM to generate a domain-aware FastAPI routes.py with seed data matching the domain."""
     if llm is None:
@@ -568,6 +635,7 @@ async def generate_backend_with_ai(
     prompt = BACKEND_GENERATION_PROMPT.format(
         title=title,
         requirement=(requirement or title)[:400],
+        app_domain=domain,
         prd=(prd or "")[:3000],
         tables_json=tables_json,
     )
@@ -980,6 +1048,135 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requireme
     return "\n".join(lines) + "\n"
 
 
+def _extract_actual_api_spec(backend_code: str) -> str:
+    """
+    Parse generated routes.py to extract actual endpoint paths, methods, and response models.
+    Returns a short spec string to pass back to page generators so they use real paths.
+    """
+    if not backend_code:
+        return ""
+    lines: List[str] = []
+    # Match @router.METHOD("path") or @app.METHOD("path") with optional response_model
+    route_pattern = re.compile(
+        r'@(?:router|app)\.(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']'
+        r'(?:[^)]*response_model\s*=\s*(\w+))?',
+        re.IGNORECASE,
+    )
+    for m in route_pattern.finditer(backend_code):
+        method = m.group(1).upper()
+        path = m.group(2)
+        response_model = m.group(3) or ""
+        # Prepend /api if not already there (routes.py paths are usually without /api prefix
+        # since main.py adds prefix="/api")
+        display_path = path if path.startswith("/api") else f"/api{path}"
+        entry = f"{method} {display_path}"
+        if response_model:
+            entry += f"  → {response_model}"
+        lines.append(entry)
+    if not lines:
+        return ""
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: List[str] = []
+    for l in lines:
+        if l not in seen:
+            seen.add(l)
+            unique.append(l)
+    return "\n".join(unique[:40])
+
+
+async def _fix_api_consistency(files: Dict[str, str], llm=None) -> Dict[str, str]:
+    """
+    Post-generation consistency check:
+    1. Extract all apiFetch / fetch calls from frontend files
+    2. Extract all route paths from backend/routes.py or backend/main.py
+    3. Find mismatches (frontend calls a path not present in backend)
+    4. If mismatches found, ask LLM to add the missing routes to backend
+    Returns the (possibly updated) files dict. Never raises — on any error returns files unchanged.
+    """
+    if llm is None:
+        return files
+
+    try:
+        # ── Collect frontend API calls ────────────────────────────────────────
+        frontend_calls: set = set()
+        api_call_pattern = re.compile(
+            r'''apiFetch\s*(?:<[^>]*>)?\s*\(\s*[`'"]((?:/api)?/[^`'"?#\s]+)[`'"]''',
+            re.MULTILINE,
+        )
+        fetch_pattern = re.compile(
+            r'''fetch\s*\(\s*[`'"]((?:/api)/[^`'"?#\s]+)[`'"]''',
+            re.MULTILINE,
+        )
+        for path, content in files.items():
+            if not path.startswith("frontend/") or not path.endswith((".ts", ".tsx")):
+                continue
+            for m in api_call_pattern.finditer(content):
+                # normalise: strip trailing /{id} style segments for matching
+                endpoint = re.sub(r"/\{[^}]+\}$", "/{id}", m.group(1))
+                frontend_calls.add(endpoint)
+            for m in fetch_pattern.finditer(content):
+                endpoint = re.sub(r"/\{[^}]+\}$", "/{id}", m.group(1))
+                frontend_calls.add(endpoint)
+
+        # ── Collect backend routes ────────────────────────────────────────────
+        backend_key = "backend/routes.py"
+        backend_content = files.get(backend_key) or files.get("backend/main.py") or ""
+        if not backend_content:
+            return files
+
+        backend_routes: set = set()
+        route_pat = re.compile(
+            r'@(?:router|app)\.(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+            re.IGNORECASE,
+        )
+        for m in route_pat.finditer(backend_content):
+            raw = m.group(2)
+            # Normalise to /api-prefixed path
+            normalized = raw if raw.startswith("/api") else f"/api{raw}"
+            normalized = re.sub(r"/\{[^}]+\}$", "/{id}", normalized)
+            backend_routes.add(normalized)
+
+        # ── Find mismatches ───────────────────────────────────────────────────
+        missing = sorted(
+            fc for fc in frontend_calls
+            if fc not in backend_routes
+            and "/auth/" not in fc  # auth is expected to already be there
+            and fc not in ("/api/dashboard", "/api/stats")  # generic paths OK
+        )
+
+        if not missing:
+            logger.info("[consistency] ✓ No API mismatches found")
+            return files
+
+        logger.warning("[consistency] Frontend calls %d routes not in backend: %s", len(missing), missing)
+
+        # Limit how many we ask LLM to add to avoid bloating the prompt
+        missing_to_fix = missing[:10]
+        missing_list = "\n".join(f"- {r}" for r in missing_to_fix)
+        prompt = (
+            "The following frontend API calls have no matching backend routes.\n"
+            "Add the missing routes to the FastAPI routes.py below.\n"
+            "Keep all existing routes intact. Only append the new ones at the end.\n\n"
+            f"Missing routes:\n{missing_list}\n\n"
+            "Current backend/routes.py:\n"
+            f"{backend_content[:6000]}\n\n"
+            "Return ONLY the complete updated routes.py. No markdown fences. Python 3.10 compatible."
+        )
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        updated = _extract_code_from_llm(text)
+        if updated and len(updated) > len(backend_content) * 0.8 and ("@router" in updated or "APIRouter" in updated):
+            files[backend_key] = updated
+            logger.info("[consistency] ✓ Backend updated with %d missing routes", len(missing_to_fix))
+        else:
+            logger.warning("[consistency] LLM consistency fix returned invalid/short code — skipping")
+    except Exception as exc:
+        logger.warning("[consistency] _fix_api_consistency failed (non-fatal): %s", exc)
+
+    return files
+
+
 async def generate_fullstack_app_with_ai(
     requirement: str,
     prd: str,
@@ -992,9 +1189,11 @@ async def generate_fullstack_app_with_ai(
     Main entry point: generates a complete fullstack app using LLM.
     1. Extracts design tokens from prompt (colors, style)
     2. Extracts page list from architecture/PRD
-    3. Generates each page with LLM in parallel
-    4. Generates backend routes with LLM
-    5. Assembles the full file set
+    3. Generates backend FIRST (so we know real API paths/shapes)
+    4. Extracts actual API spec from generated backend
+    5. Generates all pages in parallel (with real API spec injected)
+    6. Assembles file set using ACTUALLY generated pages for routing
+    7. Runs API consistency check to patch any mismatched routes
     """
     from app_builder.services.fullstack_codegen import get_fullstack_scaffold_files
     from app_builder.services.fullstack_frontend_generator import theme_from_tokens, build_theme_ts, _auth_ts
@@ -1011,6 +1210,18 @@ async def generate_fullstack_app_with_ai(
         except Exception as e:
             logger.warning("[ai-gen] No LLM available: %s — falling back to deterministic", e)
             return generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
+
+    # ── Step 0: Detect app domain ─────────────────────────────────────────────
+    try:
+        from app_builder.services.fullstack_app_generator import _classify_with_llm, _keyword_classify
+        detected_domain = await _classify_with_llm(requirement, prd) or _keyword_classify(requirement, prd)
+    except Exception:
+        try:
+            from app_builder.services.fullstack_app_generator import _keyword_classify
+            detected_domain = _keyword_classify(requirement, prd)
+        except Exception:
+            detected_domain = "generic"
+    logger.info("[ai-gen] Detected domain: %s", detected_domain)
 
     # ── Step 1: Extract design tokens with AI ────────────────────────────────
     try:
@@ -1043,25 +1254,42 @@ async def generate_fullstack_app_with_ai(
 
     logger.info("[ai-gen] Pages to generate: %s", [p[0] for p in pages])
 
-    # ── Step 3: Generate ALL files in parallel (pages + layout + login + backend) ──
-    logger.info("[ai-gen] Generating %d pages + layout + login + backend in parallel...", len(pages))
+    # ── Step 3a: Generate backend FIRST so pages know the actual API shape ────
+    logger.info("[ai-gen] Generating backend first to extract real API spec...")
+    ai_routes: Any = None
+    actual_api_spec = ""
+    try:
+        ai_routes = await generate_backend_with_ai(
+            title, prd, architecture or {}, llm,
+            requirement=requirement, domain=detected_domain,
+        )
+        if isinstance(ai_routes, str) and ai_routes:
+            actual_api_spec = _extract_actual_api_spec(ai_routes)
+            logger.info("[ai-gen] Extracted %d backend routes for page context",
+                        actual_api_spec.count("\n") + 1 if actual_api_spec else 0)
+    except Exception as _be:
+        logger.warning("[ai-gen] Backend-first generation failed: %s — continuing without spec", _be)
+
+    # ── Step 3b: Generate pages in parallel (now with real API spec) ──────────
+    logger.info("[ai-gen] Generating %d pages + layout + login + mock in parallel...", len(pages))
 
     async def gen_page(page_name: str, desc: str) -> Tuple[str, Optional[str]]:
         code = await generate_page_with_ai(
             page_name, desc, title, colors, architecture or {}, llm,
             requirement=requirement, prd=prd, all_pages=pages,
+            domain=detected_domain,
+            actual_api_spec=actual_api_spec,
         )
         return page_name, code
 
-    # Run everything in parallel — true Lovable-style parallel generation
+    # Run layout, login, mock, and all pages in parallel — backend is already done
     page_tasks = [gen_page(name, desc) for name, desc in pages]
-    layout_task  = generate_layout_with_ai(title, pages, colors, requirement, llm)
-    login_task   = generate_login_with_ai(title, colors, requirement, llm)
-    backend_task = generate_backend_with_ai(title, prd, architecture or {}, llm, requirement=requirement)
-    mock_task    = generate_mock_data_with_ai(title, requirement, prd, pages, llm)
+    layout_task = generate_layout_with_ai(title, pages, colors, requirement, llm)
+    login_task  = generate_login_with_ai(title, colors, requirement, llm)
+    mock_task   = generate_mock_data_with_ai(title, requirement, prd, pages, llm)
 
     all_results = await asyncio.gather(
-        *page_tasks, layout_task, login_task, backend_task, mock_task,
+        *page_tasks, layout_task, login_task, mock_task,
         return_exceptions=True,
     )
 
@@ -1069,8 +1297,7 @@ async def generate_fullstack_app_with_ai(
     page_results = all_results[:n_pages]
     ai_layout    = all_results[n_pages]
     ai_login     = all_results[n_pages + 1]
-    ai_routes    = all_results[n_pages + 2]
-    ai_mock      = all_results[n_pages + 3]
+    ai_mock      = all_results[n_pages + 2]
 
     # ── Step 4: Assemble file set ─────────────────────────────────────────────
     files = dict(get_fullstack_scaffold_files())
@@ -1078,7 +1305,6 @@ async def generate_fullstack_app_with_ai(
     # Always-present infrastructure files
     files["frontend/src/theme.ts"] = build_theme_ts(colors)
     files["frontend/src/auth.ts"] = _auth_ts()
-    files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(pages)
     files.pop("frontend/src/layout/AppShell.tsx", None)
 
     # mock.ts — LLM-generated with domain-specific data; fallback to template
@@ -1089,7 +1315,7 @@ async def generate_fullstack_app_with_ai(
         logger.warning("[ai-gen] mock.ts LLM failed — using domain-aware template fallback")
         files["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(pages, title, requirement=requirement, prd=prd)
 
-    # AppLayout — LLM-generated, fallback to template
+    # AppLayout — LLM-generated, fallback to template (use planned page list for now; refined below)
     if isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300:
         files["frontend/src/layout/AppLayout.tsx"] = ai_layout
         logger.info("[ai-gen] ✓ AppLayout from LLM")
@@ -1125,13 +1351,38 @@ async def generate_fullstack_app_with_ai(
         logger.warning("[ai-gen] Fallback for pages: %s", failed_pages)
         _add_fallback_pages(files, failed_pages, colors, architecture or {})
 
-    # Backend routes — LLM-generated, fallback to deterministic
+    # Backend routes — use backend generated in Step 3a; fallback to deterministic
     if isinstance(ai_routes, str) and ai_routes and len(ai_routes) > 300:
         files["backend/routes.py"] = ai_routes
-        logger.info("[ai-gen] ✓ routes.py from LLM")
+        logger.info("[ai-gen] ✓ routes.py from LLM (pre-generated)")
     else:
         logger.warning("[ai-gen] Backend LLM failed — using deterministic fallback")
         _add_fallback_backend(files, title, architecture or {})
+
+    # ── Step 5: Derive ACTUAL page list from generated files and rebuild routing ──
+    actual_page_keys = sorted(
+        k for k in files
+        if k.startswith("frontend/src/pages/") and k.endswith(".tsx")
+    )
+    actual_pages: List[Tuple[str, str]] = []
+    for key in actual_page_keys:
+        page_file_name = key.split("/")[-1].replace(".tsx", "")
+        # Find the original description if available
+        orig_desc = next((desc for name, desc in pages if name == page_file_name), page_file_name)
+        actual_pages.append((page_file_name, orig_desc))
+
+    # Rebuild App.tsx with the actual pages (not the planned list)
+    files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(actual_pages)
+    logger.info("[ai-gen] App.tsx built from %d actual pages", len(actual_pages))
+
+    # Rebuild AppLayout if it was template-generated (LLM-generated already has correct nav)
+    if not (isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300):
+        files["frontend/src/layout/AppLayout.tsx"] = _build_app_layout_tsx(title, actual_pages, colors)
+        logger.info("[ai-gen] AppLayout rebuilt from actual page list (%d pages)", len(actual_pages))
+
+    # ── Step 6: Post-generation API consistency check ─────────────────────────
+    logger.info("[ai-gen] Running API consistency check...")
+    files = await _fix_api_consistency(files, llm)
 
     logger.info(
         "[ai-gen] Complete | pages=%d/%d AI-generated | total_files=%d",

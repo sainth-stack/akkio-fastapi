@@ -4,6 +4,7 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 from llm_helper import get_llm_for_user
+from app_builder.services.surgical_patch import apply_surgical_patch
 
 
 async def tailor_template_to_requirement(
@@ -182,6 +183,12 @@ _UPDATE_CLASSIFIER_PROMPT = """You are a software architect. Classify what kind 
 
 User request: "{request}"
 
+## EXISTING PAGES IN THIS APP
+{pages_list}
+
+## PROJECT FILES
+{file_tree}
+
 Respond with ONLY a JSON object:
 {{
   "type": "theme_only | add_page | modify_page | full_regen",
@@ -198,16 +205,32 @@ Classification rules:
   "make it pharma/food/medical/...", changing the core product/data type, 
   "data should be X", "products should be X", major restructuring
 
-Important: If the user is changing the DOMAIN or PRODUCT TYPE of the app → always "full_regen"
-Examples of full_regen: "make it pharma", "products should be medicines", 
+Important:
+- Use the EXISTING PAGES list above to correctly identify which page(s) the user is referring to
+- If user says "fix the dashboard" → look for a page with "Dashboard" in its name in the list
+- If user says "update the products page" → look for "ProductsPage" or "ProductPage" in the list
+- Always populate pages_affected using the exact page names from the EXISTING PAGES list
+- If the user is changing the DOMAIN or PRODUCT TYPE of the app → always "full_regen"
+Examples of full_regen: "make it pharma", "products should be medicines",
 "change to food delivery", "create hospital management system"
 
 Return ONLY valid JSON."""
 
 
-async def _classify_update(user_request: str, llm) -> Dict[str, Any]:
+async def _classify_update(
+    user_request: str,
+    llm,
+    existing_pages: List[str] = None,
+    project_tree: List[str] = None,
+) -> Dict[str, Any]:
     """Use LLM to classify update scope — avoids unnecessary full regeneration."""
-    prompt = _UPDATE_CLASSIFIER_PROMPT.format(request=user_request)
+    pages_list = "\n".join(f"- {p}" for p in (existing_pages or [])) or "(no pages found)"
+    file_tree = "\n".join(f"- {f}" for f in (project_tree or [])) or "(no files found)"
+    prompt = _UPDATE_CLASSIFIER_PROMPT.format(
+        request=user_request,
+        pages_list=pages_list,
+        file_tree=file_tree,
+    )
     try:
         resp = await llm.ainvoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
@@ -216,7 +239,40 @@ async def _classify_update(user_request: str, llm) -> Dict[str, Any]:
             try:
                 data = json.loads(m.group(0))
                 update_type = data.get("type", "full_regen")
-                print(f"[update-classifier] type={update_type} | {data.get('reason','')}")
+                pages_affected = data.get("pages_affected") or []
+
+                # ── If modify_page but no pages identified, infer them ───────
+                if update_type == "modify_page" and not pages_affected and existing_pages:
+                    req_lower = user_request.lower()
+
+                    # Step 1: fuzzy string matching against page base names
+                    for page in existing_pages:
+                        page_base = page.replace("Page", "").lower()
+                        if page_base and (page_base in req_lower or page.lower() in req_lower):
+                            pages_affected.append(page)
+
+                    # Step 2: if still empty, ask LLM to infer
+                    if not pages_affected:
+                        infer_prompt = (
+                            f'Given this user request: "{user_request}"\n'
+                            f"And these existing page names: {existing_pages}\n"
+                            "Which page(s) is the user most likely referring to?\n"
+                            'Return ONLY a JSON array of page names: ["PageName1"]\n'
+                            "If unclear, return the single most likely page."
+                        )
+                        try:
+                            infer_resp = await llm.ainvoke(infer_prompt)
+                            infer_text = infer_resp.content if hasattr(infer_resp, "content") else str(infer_resp)
+                            arr_match = re.search(r'\[[\s\S]*?\]', infer_text)
+                            if arr_match:
+                                pages_affected = json.loads(arr_match.group(0))
+                                print(f"[update-classifier] inferred pages via LLM: {pages_affected}")
+                        except Exception as ie:
+                            print(f"[update-classifier] page inference failed: {ie}")
+
+                    data["pages_affected"] = pages_affected
+
+                print(f"[update-classifier] type={update_type} | pages={pages_affected} | {data.get('reason','')}")
                 return data
             except Exception:
                 pass
@@ -224,6 +280,67 @@ async def _classify_update(user_request: str, llm) -> Dict[str, Any]:
         print(f"[update-classifier] failed: {e}")
     # Default: full_regen to be safe
     return {"type": "full_regen", "scope": "unknown", "pages_affected": [], "reason": "classification failed"}
+
+
+async def _maybe_update_backend_routes(
+    project_root: str,
+    page_name: str,
+    page_code: str,
+    llm,
+) -> Optional[Tuple[str, str]]:
+    """
+    Check if a new page calls API endpoints that don't yet exist in the backend.
+    Returns (backend_rel_path, updated_content) if changes are needed, else None.
+    """
+    # Find the backend file to update
+    backend_candidates = [
+        ("backend/routes.py", os.path.join(project_root, "backend", "routes.py")),
+        ("backend/main.py", os.path.join(project_root, "backend", "main.py")),
+    ]
+    backend_rel_path: Optional[str] = None
+    backend_content: Optional[str] = None
+    for rel, abs_path in backend_candidates:
+        if os.path.exists(abs_path):
+            backend_rel_path = rel
+            try:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as _fh:
+                    backend_content = _fh.read()
+            except Exception as _e:
+                print(f"[add_page] Could not read {abs_path}: {_e}")
+            break
+
+    if not backend_rel_path or not backend_content:
+        print(f"[add_page] Backend file not found — skipping route update")
+        return None
+
+    prompt = (
+        f'You are a FastAPI backend developer.\n'
+        f'A new frontend page "{page_name}" was just added with this code:\n\n'
+        f'```tsx\n{page_code[:3000]}{"..." if len(page_code) > 3000 else ""}\n```\n\n'
+        f"Current backend file ({backend_rel_path}):\n"
+        f'```python\n{backend_content[:4000]}{"..." if len(backend_content) > 4000 else ""}\n```\n\n'
+        "Does this new page call any API endpoints (via apiFetch, fetch, axios, etc.) "
+        "that do NOT already exist in the current backend?\n"
+        "If YES: Add ONLY the missing endpoints to the backend. "
+        "Return the COMPLETE updated Python file (no markdown, no explanation).\n"
+        'If NO: Return exactly the string "NO_CHANGE".'
+    )
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+        if text.startswith("NO_CHANGE"):
+            print(f"[add_page] Backend routes: no new endpoints needed")
+            return None
+        # Strip markdown fences if present
+        code_match = re.search(r"```(?:python)?\n([\s\S]*?)\n```", text)
+        if code_match:
+            text = code_match.group(1).strip()
+        if text and len(text) > 100 and "def " in text:
+            print(f"[add_page] Backend updated with new routes for {page_name} ({len(text)} chars)")
+            return backend_rel_path, text
+    except Exception as _e:
+        print(f"[add_page] Backend route update failed: {_e}")
+    return None
 
 
 async def update_code_from_chat(
@@ -291,7 +408,8 @@ async def update_code_from_chat(
                         rel = os.path.relpath(os.path.join(root, fn), project_root)
                         try:
                             with open(os.path.join(root, fn), 'r', encoding='utf-8', errors='replace') as fh:
-                                disk_files[rel.replace('\\', '/')] = fh.read(4000)
+                                _raw = fh.read()
+                                disk_files[rel.replace('\\', '/')] = _raw if len(_raw) < 50000 else _raw[:15000]
                         except Exception:
                             pass
         except Exception:
@@ -320,7 +438,19 @@ async def update_code_from_chat(
                     "message": "🧠 Analysing what needs to change...",
                 }))
 
-            update_classification = await _classify_update(user_request, llm)
+            # Extract existing page names and file tree from disk for the classifier
+            _existing_pages: List[str] = [
+                os.path.splitext(os.path.basename(p))[0]
+                for p in sorted(disk_files)
+                if p.startswith("frontend/src/pages/") and p.endswith(".tsx")
+            ]
+            _project_tree: List[str] = sorted(disk_files.keys())
+
+            update_classification = await _classify_update(
+                user_request, llm,
+                existing_pages=_existing_pages,
+                project_tree=_project_tree,
+            )
             update_type = update_classification.get("type", "full_regen")
 
             # ── Pre-check: only do full_regen if user EXPLICITLY asked for it ─
@@ -441,6 +571,31 @@ async def update_code_from_chat(
                         if not any(name == page_comp for name, _ in all_pages):
                             all_pages.append((page_comp, ""))
 
+                        # ── Update backend routes if the new page needs new endpoints ──
+                        if websocket:
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "event": "agent_progress",
+                                    "agent": "update_code_agent",
+                                    "message": f"🔗 Checking if {page_comp} needs new backend routes...",
+                                }))
+                            except Exception:
+                                pass
+                        backend_result = await _maybe_update_backend_routes(
+                            project_root, page_comp, page_code, llm
+                        )
+                        if backend_result:
+                            backend_rel, backend_updated = backend_result
+                            new_files[backend_rel] = backend_updated
+                            # Write backend file to disk immediately
+                            _bp = os.path.join(project_root, backend_rel)
+                            try:
+                                with open(_bp, "w", encoding="utf-8") as _bfh:
+                                    _bfh.write(backend_updated)
+                                print(f"[add_page] Wrote updated backend: {backend_rel}")
+                            except Exception as _bwe:
+                                print(f"[add_page] Could not write backend {backend_rel}: {_bwe}")
+
                 # Regenerate App.tsx (router) and AppLayout.tsx (sidebar) to include the new page
                 new_files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(all_pages)
                 layout_code = await generate_layout_with_ai(
@@ -488,8 +643,25 @@ async def update_code_from_chat(
                 ]
 
                 if not pages_to_update:
-                    # Fallback: use all non-login pages
-                    pages_to_update = [name for name, _ in all_pages_on_disk]
+                    # Fallback: never blindly update ALL pages.
+                    # If there's only one page, update it; otherwise bail out gracefully.
+                    non_login = [name for name, _ in all_pages_on_disk]
+                    if len(non_login) == 1:
+                        pages_to_update = non_login
+                        print(f"[modify_page] Single page found — updating {non_login[0]}")
+                    else:
+                        print(f"[modify_page] Could not identify page to update — skipping to avoid touching all pages")
+                        return {
+                            "status": "error",
+                            "analysis": "Could not determine which page to update from your request. Please mention the page name explicitly (e.g. 'fix the Dashboard page').",
+                            "updated_files": [],
+                            "updated_code_dict": {},
+                            "updated_prd": current_prd,
+                            "updated_architecture": current_architecture,
+                            "merged_design_tokens": merged_tokens,
+                            "update_type": update_type,
+                            "changes": [],
+                        }
 
                 for raw_name in pages_to_update:
                     page_comp = raw_name if raw_name.endswith("Page") else raw_name + "Page"
@@ -515,16 +687,27 @@ async def update_code_from_chat(
                             await websocket.send_text(json.dumps({
                                 "event": "agent_progress",
                                 "agent": "update_code_agent",
-                                "message": f"⚙️ Regenerating {page_comp}...",
+                                "message": f"⚙️ Updating {page_comp} (preserving existing code)...",
                             }))
                         except Exception:
                             pass
+
+                    # ── Read existing page content so we preserve prior customizations ──
+                    existing_page_content: Optional[str] = None
+                    full_disk_path = os.path.join(project_root, disk_path)
+                    try:
+                        with open(full_disk_path, "r", encoding="utf-8", errors="replace") as _fh:
+                            existing_page_content = _fh.read()
+                        print(f"[modify_page] Read existing {disk_path} ({len(existing_page_content)} chars)")
+                    except Exception as _re:
+                        print(f"[modify_page] Could not read existing {disk_path}: {_re}")
 
                     page_code = await generate_page_with_ai(
                         page_comp, user_request, title, colors, current_architecture, llm,
                         requirement=original_requirement or update_spec,
                         prd=current_prd,
                         all_pages=all_pages_on_disk,
+                        existing_content=existing_page_content,
                     )
                     if page_code:
                         new_files[f"frontend/src/pages/{page_comp}.tsx"] = page_code
@@ -630,7 +813,13 @@ async def update_code_from_chat(
     if not files_context:
         return {"status": "error", "message": "No source files found in project directory."}
 
-    files_list = "\n".join(f"  - {p}" for p in sorted(files_context.keys()))
+    def _fmt_file_entry(path: str, content: str) -> str:
+        first_line = (content.split('\n', 1)[0] or '').strip()[:80]
+        size = len(content.encode('utf-8'))
+        suffix = f" — {first_line}" if first_line else ""
+        return f"  - {path} ({size} bytes){suffix}"
+
+    files_list = "\n".join(_fmt_file_entry(p, files_context[p]) for p in sorted(files_context.keys()))
 
     context_block = f"""
 ### Current Specification
@@ -659,7 +848,7 @@ Project: "{project_name}"
 User's Request:
 "{user_request}"
 
-All project files:
+All project files (path, size in bytes, first line / export summary):
 {files_list}
 
 Your job: Decide which files need to be CREATED or MODIFIED to fulfill the request.
@@ -768,9 +957,9 @@ File to create: {rel_path}
 
 Other relevant files for context:
 """
-            # Add a few related files as context
-            related = [(p, c) for p, c in files_context.items()
-                       if p != rel_path and len(c) < 3000][:4]
+            # Add a few related files as context (up to 15 KB each)
+            related = [(p, c if len(c) < 50000 else c[:15000]) for p, c in files_context.items()
+                       if p != rel_path][:4]
             for rp, rc in related:
                 file_prompt += f"\n--- {rp} ---\n{rc}\n"
 
@@ -782,6 +971,34 @@ Respond ONLY with a JSON object:
   "content": "COMPLETE file content"
 }}"""
         else:
+            # ── Try surgical SEARCH/REPLACE patch first ───────────────────────
+            surgical_content, surgical_ok = await apply_surgical_patch(
+                existing_content=existing_content,
+                user_request=f"{user_request}\nWhat to change: {reason}",
+                file_path=rel_path,
+                llm_client=llm,
+                context=context_block,
+            )
+            if surgical_ok and surgical_content:
+                _fp_on_disk = os.path.join(project_root, rel_path)
+                os.makedirs(os.path.dirname(_fp_on_disk), exist_ok=True)
+                with open(_fp_on_disk, "w", encoding="utf-8") as _f:
+                    _f.write(surgical_content)
+                applied_changes.append(rel_path)
+                updated_code_dict[rel_path] = surgical_content
+                all_analyses.append(f"• {rel_path}: surgical patch applied")
+                if websocket:
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "event": "agent_progress",
+                            "agent": "update_code_agent",
+                            "message": f"✂️ Surgically patched {rel_path}"
+                        }))
+                    except Exception:
+                        pass
+                continue  # skip full-rewrite for this file
+
+            # Surgical patch failed — fall back to full-rewrite prompt
             file_prompt = f"""You are an expert developer updating a file in project "{project_name}".
 
 User's Request: "{user_request}"

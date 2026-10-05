@@ -471,7 +471,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 files,
                 user_email,
                 on_event=_emit_backend_event,
-                max_attempts=int(os.environ.get("CODEGEN_BACKEND_FIX_ATTEMPTS", "3")),
+                max_attempts=int(os.environ.get("CODEGEN_BACKEND_FIX_ATTEMPTS", "5")),
             )
             file_writer(project_name, GeneratedFiles(files=files))
             if not backend_ok:
@@ -553,7 +553,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 files,
                 user_email,
                 on_event=_emit_build_event,
-                max_attempts=int(os.environ.get("CODEGEN_BUILD_FIX_ATTEMPTS", "3")),
+                max_attempts=int(os.environ.get("CODEGEN_BUILD_FIX_ATTEMPTS", "5")),
             )
             file_writer(project_name, GeneratedFiles(files=files))
             if not build_ok:

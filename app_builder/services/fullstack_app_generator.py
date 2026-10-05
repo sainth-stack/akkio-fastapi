@@ -1,6 +1,7 @@
 """Production fullstack app generator — complete MUI + FastAPI MVP from PRD/architecture."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, Optional
 
@@ -17,16 +18,113 @@ from app_builder.services.fullstack_ecommerce_generator import (
     ecommerce_backend_files,
     is_ecommerce_domain,
 )
+from app_builder.services.fullstack_anomaly_generator import (
+    anomaly_detection_frontend_files,
+    anomaly_detection_backend_files,
+    is_anomaly_detection_domain,
+)
+
+logger = logging.getLogger("app_builder")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LLM App-type Classifier
+# ──────────────────────────────────────────────────────────────────────────────
+
+APP_TYPE_CLASSIFIER_PROMPT = """Classify the following app requirement into exactly one app type.
+
+Requirement:
+{requirement}
+
+PRD summary (first 500 chars):
+{prd_summary}
+
+Return EXACTLY one label from this list (nothing else):
+ecommerce | doc_chat | anomaly_detection | analytics_dashboard | crm | inventory | hr_onboarding | finance | quality | generic
+
+Classification rules:
+- ecommerce: shopping cart, products, checkout, orders, add to cart, online store
+- doc_chat: document upload, PDF chat, knowledge base Q&A, chat over documents
+- anomaly_detection: anomaly detection, outlier detection, metric monitoring, threshold alerts, z-score, time-series anomaly
+- analytics_dashboard: business intelligence, BI dashboard, KPI reporting, data analytics, visualization
+- crm: CRM, customers, leads, sales pipeline, customer service, contacts
+- inventory: inventory management, stock levels, warehouse, supply chain, SKU
+- hr_onboarding: HR management, employee onboarding, payroll, leave management, workforce
+- finance: financial management, accounting, invoices, expenses, budgets, cash flow
+- quality: supplier quality, incoming material, CAPA, defect rate, inspection, QMS
+- generic: anything that doesn't clearly fit the above categories
+
+Return ONLY the single label with no punctuation, no explanation."""
 
 
-def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
+async def _classify_with_llm(requirement: str, prd: str = "") -> Optional[str]:
+    """Use a fast LLM call to classify the app type. Returns None on any failure."""
+    try:
+        from llm_helper import get_llm_for_user
+        llm = get_llm_for_user(None, temperature=0.1)
+    except Exception:
+        return None
+    prompt = APP_TYPE_CLASSIFIER_PROMPT.format(
+        requirement=(requirement or "")[:1000],
+        prd_summary=(prd or "")[:500],
+    )
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = (resp.content if hasattr(resp, "content") else str(resp)).strip().lower()
+        label = text.split()[0].rstrip(".,;:") if text.split() else ""
+        valid = {
+            "ecommerce", "doc_chat", "anomaly_detection", "analytics_dashboard",
+            "crm", "inventory", "hr_onboarding", "finance", "quality", "generic",
+        }
+        if label in valid:
+            logger.info("[classify] LLM classified app as: %s", label)
+            return label
+        logger.debug("[classify] LLM returned unrecognised label %r — ignoring", label)
+    except Exception as exc:
+        logger.debug("[classify] LLM classification failed: %s", exc)
+    return None
+
+
+def _keyword_classify(requirement: str, prd: str = "", uiux: str = "") -> str:
+    """Pure keyword-based app-type classification (fast, deterministic fallback)."""
     if is_doc_chat_domain(requirement, prd, uiux):
         return "doc_chat"
     if is_ecommerce_domain(requirement, prd, uiux):
         return "ecommerce"
+    if is_anomaly_detection_domain(requirement, prd, uiux):
+        return "anomaly_detection"
     if is_quality_domain(requirement, prd, uiux):
         return "quality"
     return "generic"
+
+
+def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
+    """Classify app type using LLM (with keyword fallback).
+
+    Runs the async LLM classifier in an isolated thread so this sync function
+    can be called from any context (event loop or plain thread).
+    Falls back to keyword matching on any error or timeout.
+    """
+    try:
+        import asyncio
+        import concurrent.futures
+
+        def _run_async() -> Optional[str]:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_classify_with_llm(requirement, prd))
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_async)
+            result = future.result(timeout=8)
+            if result:
+                return result
+    except Exception as exc:
+        logger.debug("[resolve_app_mode] LLM classify unavailable (%s) — using keywords", exc)
+
+    return _keyword_classify(requirement, prd, uiux)
 
 
 def is_quality_domain(requirement: str, prd: str = "", uiux: str = "") -> bool:
@@ -60,6 +158,8 @@ def extract_app_title(requirement: str, prd: str = "") -> str:
             return "Document Upload & Chat"
         if is_ecommerce_domain(requirement, prd):
             return "E-Commerce Shopping Cart"
+        if is_anomaly_detection_domain(requirement, prd):
+            return "Anomaly Detection Platform"
         return "Enterprise Application"
     return first[:90] if first else "Enterprise Application"
 
@@ -103,6 +203,21 @@ def generate_fullstack_application(
             "frontend/src/pages/InspectionPage.tsx",
             "frontend/src/pages/CapaPage.tsx",
             "frontend/src/pages/ReportsPage.tsx",
+            "frontend/src/pages/AIAssistantPage.tsx",
+            "backend/risk_engine.py",
+        ):
+            files.pop(stale, None)
+    elif mode == "anomaly_detection":
+        files.update(anomaly_detection_frontend_files(title, colors, requirement=requirement, prd=prd))
+        files.update(anomaly_detection_backend_files(title, requirement=requirement, prd=prd))
+        files["backend/requirements.txt"] = _anomaly_requirements()
+        for stale in (
+            "frontend/src/pages/DashboardPage.tsx",
+            "frontend/src/pages/ResourceListPage.tsx",
+            "frontend/src/pages/SupplierDetailPage.tsx",
+            "frontend/src/pages/LotDetailPage.tsx",
+            "frontend/src/pages/InspectionPage.tsx",
+            "frontend/src/pages/CapaPage.tsx",
             "frontend/src/pages/AIAssistantPage.tsx",
             "backend/risk_engine.py",
         ):
@@ -176,7 +291,7 @@ def fill_missing_fullstack_files(
     generated = generate_fullstack_application(requirement, prd, uiux, architecture, design_tokens)
     mode = resolve_app_mode(requirement, prd, uiux)
 
-    if mode in ("doc_chat", "ecommerce"):
+    if mode in ("doc_chat", "ecommerce", "anomaly_detection"):
         from app_builder.services.fullstack_codegen import FULLSTACK_FROZEN
         for path, content in generated.items():
             if path.endswith(".jsx") or path.endswith("app.css"):
@@ -263,6 +378,16 @@ python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
 alembic
+pytest
+httpx
+"""
+
+
+def _anomaly_requirements() -> str:
+    return """fastapi
+uvicorn
+pydantic
+python-dotenv
 pytest
 httpx
 """

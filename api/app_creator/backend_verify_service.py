@@ -419,7 +419,7 @@ async def _llm_fix_backend(
     from llm_helper import get_llm_for_user
 
     subset = _pick_backend_files_for_fix(files, error_log)
-    snippets = [f"--- {path} ---\n{content[:4500]}" for path, content in subset.items()]
+    snippets = [f"--- {path} ---\n{content[:12000]}" for path, content in subset.items()]
 
     prompt = f"""You are fixing a generated FastAPI backend that failed to start or respond to API smoke tests.
 
