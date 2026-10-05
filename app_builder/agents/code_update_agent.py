@@ -239,125 +239,36 @@ async def update_code_from_chat(
     builder_kind: str = "",
 ) -> Dict[str, Any]:
     """
-    Spec-driven code update:
-    Step 0: Update PRD based on user request.
-    Step 1: Update Architecture based on updated PRD.
-    Step 2: Planning — identify which files need to change.
-    Step 3: Surgical Re-generation — update files.
+    Code-only update: classify the request, then surgically update only what's needed.
+    PRD and architecture are used as read-only context — they are NOT regenerated.
+    Step 1: Classify update type (theme_only / add_page / modify_page / full_regen).
+    Step 2: Extract design intent (colors/theme).
+    Step 3: Surgical code generation — only regenerate what's needed.
     """
     print(f"\n{'='*60}")
-    print(f"Spec-driven code update for: {project_name}")
+    print(f"Code update for: {project_name}")
     print(f"Request: {user_request}")
     print(f"{'='*60}")
 
     llm = get_llm_for_user(None, temperature=0.15)
-    updated_prd = prd
-    updated_architecture = architecture or {}
+    # Use stored PRD and architecture as context only — do NOT update them
+    current_prd = prd
+    current_architecture = architecture or {}
 
     if websocket:
         try:
             await websocket.send_text(json.dumps({
                 "event": "agent_start",
                 "agent": "update_code_agent",
-                "message": "Step 1/4: Analyzing and updating specification (PRD)..."
+                "message": "Analyzing your request..."
             }))
         except Exception:
             pass
 
-    # ── STEP 0: Update PRD ────────────────────────────────────────────────────
-    prd_update_prompt = f"""You are a product owner. Update the existing PRD to incorporate the user's new request.
-    
-Existing PRD:
-{prd}
-
-User Request:
-{user_request}
-
-Respond with the COMPLETE UPDATED PRD in Markdown format. Keep the same structure:
-1. Product Overview
-2. Business Requirements (FR/NFR)
-3. Core Features
-4. Process Flows
-
-Output ONLY the Markdown content."""
-
-    try:
-        prd_resp = await llm.ainvoke(prd_update_prompt)
-        updated_prd = prd_resp.content if hasattr(prd_resp, 'content') else str(prd_resp)
-        if websocket:
-            await websocket.send_text(json.dumps({
-                "event": "prd_updated",
-                "data": updated_prd
-            }))
-            await websocket.send_text(json.dumps({
-                "event": "agent_progress",
-                "agent": "update_code_agent",
-                "message": "PRD updated successfully."
-            }))
-    except Exception as e:
-        print(f"PRD update failed: {e}")
-
-    # ── STEP 1: Update Architecture ───────────────────────────────────────────
-    if websocket:
-        await websocket.send_text(json.dumps({
-            "event": "agent_progress",
-            "agent": "update_code_agent",
-            "message": "Step 2/4: Updating system architecture design..."
-        }))
-
-    arch_update_prompt = f"""You are a system architect. Update the existing architecture JSON to reflect the changes in the updated PRD.
-
-Existing Architecture:
-{json.dumps(updated_architecture, indent=2)}
-
-Updated PRD:
-{updated_prd}
-
-User Request:
-{user_request}
-
-Rules:
-1. Preserve existing tables, columns, and components unless they need modification.
-2. Add new tables, columns, or components required by the update.
-3. Stay consistent with SQLite/SQLAlchemy and the current tech stack.
-4. Python 3.13 compatibility. Use Pydantic v2 (model_config, .model_dump()).
-5. Use dynamic backend URL: env vars first, then derive from window.location (same host + :5001) for deployment.
-
-Respond ONLY with a valid JSON object matching the architecture schema."""
-
-    try:
-        arch_resp = await llm.ainvoke(arch_update_prompt)
-        arch_text = arch_resp.content if hasattr(arch_resp, 'content') else str(arch_resp)
-        
-        # Parse JSON
-        obj_match = re.search(r'\{[\s\S]*\}', arch_text)
-        if obj_match:
-            try:
-                updated_architecture = json.loads(obj_match.group(0))
-            except json.JSONDecodeError:
-                try:
-                    from json_repair import repair_json
-                    updated_architecture = json.loads(repair_json(obj_match.group(0)))
-                except Exception:
-                    pass  # keep old architecture if parsing fails
-        
-        if websocket:
-            await websocket.send_text(json.dumps({
-                "event": "architecture_updated",
-                "data": updated_architecture
-            }))
-            await websocket.send_text(json.dumps({
-                "event": "agent_progress",
-                "agent": "update_code_agent",
-                "message": "Architecture updated successfully."
-            }))
-    except Exception as e:
-        print(f"Architecture update failed: {e}")
-
     combined_spec = "\n".join([
         original_requirement or "",
         user_request or "",
-        updated_prd or "",
+        current_prd or "",
         prd or "",
     ])
     try:
@@ -393,6 +304,11 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 generate_fullstack_app_with_ai,
                 generate_layout_with_ai,
                 generate_login_with_ai,
+                generate_page_with_ai,
+                _build_app_tsx_for_pages,
+                _build_app_layout_tsx,
+                _build_login_page_tsx,
+                _page_name_to_path,
             )
             from app_builder.services.fullstack_frontend_generator import build_theme_ts
 
@@ -407,6 +323,17 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
             update_classification = await _classify_update(user_request, llm)
             update_type = update_classification.get("type", "full_regen")
 
+            # ── Pre-check: only do full_regen if user EXPLICITLY asked for it ─
+            _EXPLICIT_REGEN_WORDS = {
+                "rebuild", "regenerate", "start over", "redo", "start fresh",
+                "from scratch", "make new", "recreate",
+            }
+            req_lower = user_request.lower()
+            if update_type == "full_regen" and not any(w in req_lower for w in _EXPLICIT_REGEN_WORDS):
+                print(f"[update-classifier] Downgrading full_regen → modify_page (no explicit rebuild keyword in request)")
+                update_type = "modify_page"
+                update_classification["type"] = "modify_page"
+
             # ── Step 2: Extract design intent with LLM ────────────────────────
             if websocket:
                 await websocket.send_text(json.dumps({
@@ -417,7 +344,7 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
 
             merged_tokens = await _extract_design_intent_with_llm(user_request, design_tokens, llm)
             merged_uiux = "\n".join(filter(None, [uiux, _color_uiux_from_tokens(merged_tokens)]))
-            update_spec = "\n".join(filter(None, [user_request, updated_prd]))
+            update_spec = "\n".join(filter(None, [user_request, current_prd]))
             primary = (merged_tokens.get("colors") or {}).get("primary", "")
 
             if websocket:
@@ -428,6 +355,9 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 }))
 
             new_files: Dict[str, str] = {}
+            colors = (merged_tokens.get("colors") or merged_tokens)
+            from app_builder.services.fullstack_app_generator import extract_app_title
+            title = extract_app_title(original_requirement or update_spec, current_prd)
 
             # ── Step 3: Smart update — only regenerate what's needed ──────────
             if update_type == "theme_only":
@@ -440,10 +370,6 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                         "message": "⚡ Theme update — regenerating theme, layout and login page...",
                     }))
 
-                colors = (merged_tokens.get("colors") or merged_tokens)
-                from app_builder.services.fullstack_app_generator import extract_app_title
-                title = extract_app_title(original_requirement or update_spec, updated_prd)
-
                 # Extract pages from disk for layout/routing
                 pages_from_disk = [
                     (os.path.splitext(os.path.basename(p))[0], "")
@@ -453,7 +379,6 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 ]
 
                 # Generate theme, layout, login in parallel (not all pages)
-                from app_builder.services.fullstack_ai_generator import _build_app_layout_tsx, _build_login_page_tsx
                 theme_ts = build_theme_ts(colors)
                 layout_code, login_code = await asyncio.gather(
                     generate_layout_with_ai(title, pages_from_disk, colors, original_requirement or update_spec, llm),
@@ -470,8 +395,160 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                     else _build_login_page_tsx(title, colors)
                 )
 
+            elif update_type == "add_page":
+                # Surgical: generate ONLY the new page + update App.tsx + AppLayout
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "update_code_agent",
+                        "message": "➕ Adding new page — generating page component + updating router...",
+                    }))
+
+                pages_to_add = update_classification.get("pages_affected") or []
+
+                # Collect existing pages from disk (for router + sidebar)
+                all_pages: List[Tuple[str, str]] = [
+                    (os.path.splitext(os.path.basename(p))[0], "")
+                    for p in sorted(disk_files)
+                    if p.startswith("frontend/src/pages/") and p.endswith(".tsx")
+                    and "LoginPage" not in p
+                ]
+
+                for raw_name in pages_to_add:
+                    # Normalize to PascalCase + "Page" suffix
+                    page_comp = raw_name if raw_name.endswith("Page") else raw_name + "Page"
+                    if not page_comp[0].isupper():
+                        page_comp = page_comp[0].upper() + page_comp[1:]
+
+                    if websocket:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "event": "agent_progress",
+                                "agent": "update_code_agent",
+                                "message": f"⚙️ Generating {page_comp}...",
+                            }))
+                        except Exception:
+                            pass
+
+                    page_code = await generate_page_with_ai(
+                        page_comp, user_request, title, colors, current_architecture, llm,
+                        requirement=original_requirement or update_spec,
+                        prd=current_prd,
+                        all_pages=all_pages,
+                    )
+                    if page_code:
+                        new_files[f"frontend/src/pages/{page_comp}.tsx"] = page_code
+                        if not any(name == page_comp for name, _ in all_pages):
+                            all_pages.append((page_comp, ""))
+
+                # Regenerate App.tsx (router) and AppLayout.tsx (sidebar) to include the new page
+                new_files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(all_pages)
+                layout_code = await generate_layout_with_ai(
+                    title, all_pages, colors, original_requirement or update_spec, llm
+                )
+                new_files["frontend/src/layout/AppLayout.tsx"] = (
+                    layout_code if (layout_code and len(layout_code) > 300)
+                    else _build_app_layout_tsx(title, all_pages, colors)
+                )
+
+                # Write files directly — don't call post_process which would fill/overwrite other pages
+                if new_files:
+                    file_writer(project_name, GeneratedFiles(files=new_files))
+
+                file_list = sorted(new_files.keys())
+                n = len(file_list)
+                return {
+                    "status": "success",
+                    "analysis": f"New page added. {n} files updated (page + router + layout).",
+                    "updated_files": file_list,
+                    "updated_code_dict": new_files,
+                    "updated_prd": current_prd,
+                    "updated_architecture": current_architecture,
+                    "merged_design_tokens": merged_tokens,
+                    "update_type": update_type,
+                    "changes": [{"file": k, "action": "updated"} for k in file_list[:60]],
+                }
+
+            elif update_type == "modify_page":
+                # Surgical: regenerate only the page(s) the user's message refers to
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "update_code_agent",
+                        "message": "✏️ Updating code — regenerating affected page(s) only...",
+                    }))
+
+                pages_to_update = update_classification.get("pages_affected") or []
+
+                all_pages_on_disk: List[Tuple[str, str]] = [
+                    (os.path.splitext(os.path.basename(p))[0], "")
+                    for p in sorted(disk_files)
+                    if p.startswith("frontend/src/pages/") and p.endswith(".tsx")
+                    and "LoginPage" not in p
+                ]
+
+                if not pages_to_update:
+                    # Fallback: use all non-login pages
+                    pages_to_update = [name for name, _ in all_pages_on_disk]
+
+                for raw_name in pages_to_update:
+                    page_comp = raw_name if raw_name.endswith("Page") else raw_name + "Page"
+                    if not page_comp[0].isupper():
+                        page_comp = page_comp[0].upper() + page_comp[1:]
+
+                    # Verify it exists on disk (fuzzy match if needed)
+                    disk_path = f"frontend/src/pages/{page_comp}.tsx"
+                    if disk_path not in disk_files:
+                        candidates = [
+                            p for p in disk_files
+                            if p.startswith("frontend/src/pages/") and raw_name.lower() in p.lower()
+                        ]
+                        if candidates:
+                            disk_path = candidates[0]
+                            page_comp = os.path.splitext(os.path.basename(disk_path))[0]
+                        else:
+                            print(f"[modify_page] Skipping {page_comp} — not found on disk")
+                            continue
+
+                    if websocket:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "event": "agent_progress",
+                                "agent": "update_code_agent",
+                                "message": f"⚙️ Regenerating {page_comp}...",
+                            }))
+                        except Exception:
+                            pass
+
+                    page_code = await generate_page_with_ai(
+                        page_comp, user_request, title, colors, current_architecture, llm,
+                        requirement=original_requirement or update_spec,
+                        prd=current_prd,
+                        all_pages=all_pages_on_disk,
+                    )
+                    if page_code:
+                        new_files[f"frontend/src/pages/{page_comp}.tsx"] = page_code
+
+                # Write files directly — don't call post_process which would fill/overwrite other pages
+                if new_files:
+                    file_writer(project_name, GeneratedFiles(files=new_files))
+
+                file_list = sorted(new_files.keys())
+                n = len(file_list)
+                return {
+                    "status": "success",
+                    "analysis": f"Page logic updated. {n} page(s) regenerated.",
+                    "updated_files": file_list,
+                    "updated_code_dict": new_files,
+                    "updated_prd": current_prd,
+                    "updated_architecture": current_architecture,
+                    "merged_design_tokens": merged_tokens,
+                    "update_type": update_type,
+                    "changes": [{"file": k, "action": "updated"} for k in file_list[:60]],
+                }
+
             else:
-                # Full AI regen for add_page / modify_page / full_regen
+                # full_regen: user explicitly requested a full rebuild
                 if websocket:
                     await websocket.send_text(json.dumps({
                         "event": "agent_progress",
@@ -480,13 +557,13 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                     }))
                 try:
                     new_files = await generate_fullstack_app_with_ai(
-                        update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens, llm,
+                        update_spec, current_prd, merged_uiux, current_architecture, merged_tokens, llm,
                     )
                 except Exception as ai_exc:
                     print(f"[update_code] AI regen failed ({ai_exc}) — deterministic fallback")
                     from app_builder.services.fullstack_app_generator import generate_fullstack_application
                     new_files = generate_fullstack_application(
-                        update_spec, updated_prd, merged_uiux, updated_architecture, merged_tokens,
+                        update_spec, current_prd, merged_uiux, current_architecture, merged_tokens,
                     )
 
             if new_files:
@@ -494,7 +571,7 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 # fill_missing_fullstack_files would see 0 AI pages and overwrite them
                 # with generic deterministic pages (killing the user's actual app content).
                 _pp_req = "" if update_type == "theme_only" else update_spec
-                _pp_prd = "" if update_type == "theme_only" else updated_prd
+                _pp_prd = "" if update_type == "theme_only" else current_prd
                 new_files = post_process_fullstack_files(
                     new_files,
                     design_tokens=merged_tokens,
@@ -508,8 +585,6 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
             n = len(file_list)
             summary = {
                 "theme_only": f"Theme updated with new colors ({primary}). {n} files refreshed — no page logic changed.",
-                "add_page": f"New page added and app updated. {n} files regenerated.",
-                "modify_page": f"Page logic updated. {n} files regenerated.",
                 "full_regen": f"App fully regenerated with your request. {n} files updated.",
             }.get(update_type, f"{n} files updated.")
 
@@ -518,8 +593,8 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
                 "analysis": summary,
                 "updated_files": file_list,
                 "updated_code_dict": new_files,
-                "updated_prd": updated_prd,
-                "updated_architecture": updated_architecture,
+                "updated_prd": current_prd,
+                "updated_architecture": current_architecture,
                 "merged_design_tokens": merged_tokens,
                 "update_type": update_type,
                 "changes": [{"file": k, "action": "updated"} for k in file_list[:60]],
@@ -531,7 +606,7 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
         await websocket.send_text(json.dumps({
             "event": "agent_progress",
             "agent": "update_code_agent",
-            "message": "Step 3/4: Planning file modifications..."
+            "message": "Planning file modifications..."
         }))
 
     # ── 1. Walk project and collect ALL source files ──────────────────────────
@@ -559,11 +634,11 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
 
     context_block = f"""
 ### Current Specification
-**Updated PRD:**
-{updated_prd[:2000]}{'...' if len(updated_prd) > 2000 else ''}
+**PRD:**
+{current_prd[:2000]}{'...' if len(current_prd) > 2000 else ''}
 
-**Updated Architecture:**
-{json.dumps(updated_architecture, indent=2)[:2000]}{'...' if len(json.dumps(updated_architecture)) > 2000 else ''}
+**Architecture:**
+{json.dumps(current_architecture, indent=2)[:2000]}{'...' if len(json.dumps(current_architecture)) > 2000 else ''}
 
 **UI/UX Design (preserve unless user asks to change layout/theme):**
 {uiux[:2000] if uiux else 'Use existing app styling (app-container, card, btn, input classes).'}
@@ -581,7 +656,7 @@ Respond ONLY with a valid JSON object matching the architecture schema."""
 Project: "{project_name}"
 {context_block}
 
-User's Update Request:
+User's Request:
 "{user_request}"
 
 All project files:
@@ -638,8 +713,8 @@ Respond ONLY with a valid JSON object (no markdown):
                 "status": "error",
                 "message": "Could not determine which files to update. Please be more specific.",
                 "analysis": reasoning,
-                "updated_prd": updated_prd,
-                "updated_architecture": updated_architecture
+                "updated_prd": current_prd,
+                "updated_architecture": current_architecture
             }
 
     except Exception as e:
@@ -655,7 +730,7 @@ Respond ONLY with a valid JSON object (no markdown):
         await websocket.send_text(json.dumps({
             "event": "agent_progress",
             "agent": "update_code_agent",
-            "message": "Step 4/4: Executing code modifications..."
+            "message": "Updating code..."
         }))
 
     applied_changes = []
@@ -721,7 +796,7 @@ CURRENT COMPLETE CONTENT OF {rel_path}:
 
 TASK: Produce the COMPLETE updated content of {rel_path} that:
 1. Preserves ALL existing code, imports, functions, and logic that are NOT related to the change.
-2. Adds/modifies ONLY what the user requested, strictly following the Updated PRD and Architecture.
+2. Adds/modifies ONLY what the user requested, following the PRD and Architecture context.
 3. Is a complete, working file — not a snippet or partial update.
 
 DO NOT omit any existing code. DO NOT use "..." or placeholders. Write the full file.
@@ -799,8 +874,8 @@ You likely truncated the file. Write the FULL content."""
             "status": "error",
             "message": "No files were successfully updated.",
             "analysis": reasoning,
-            "updated_prd": updated_prd,
-            "updated_architecture": updated_architecture
+            "updated_prd": current_prd,
+            "updated_architecture": current_architecture
         }
 
     combined_analysis = reasoning + "\n\n" + "\n".join(all_analyses) if all_analyses else reasoning
@@ -810,6 +885,6 @@ You likely truncated the file. Write the FULL content."""
         "analysis": combined_analysis.strip(),
         "updated_files": applied_changes,
         "updated_code_dict": updated_code_dict,
-        "updated_prd": updated_prd,
-        "updated_architecture": updated_architecture
+        "updated_prd": current_prd,
+        "updated_architecture": current_architecture
     }

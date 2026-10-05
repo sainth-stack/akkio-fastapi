@@ -724,9 +724,7 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
         if result.get("status") == "success":
             try:
                 updated_code = result.get("updated_code_dict") or {}
-                updated_prd = result.get("updated_prd")
-                updated_architecture = result.get("updated_architecture")
-                
+
                 existing_code = {}
                 if app_record and app_record.get("generated_code_json"):
                     existing_code = app_record["generated_code_json"] or {}
@@ -734,14 +732,14 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
 
                 target_id = app_id or (app_record.get("id") if app_record else None)
                 if target_id:
+                    # Only persist generated_code_json — PRD and architecture are NOT updated
+                    # during a chat fix/update request (code-only update policy).
                     update_kwargs: dict = dict(
                         app_id=target_id,
                         user_email=app_record.get("user_email", "") if app_record else "",
                         generated_code_json=merged_code,
-                        prd=updated_prd,
-                        architecture=updated_architecture,
                     )
-                    # Persist merged design tokens if updated
+                    # Persist merged design tokens if updated (theme changes)
                     merged_tokens = result.get("merged_design_tokens")
                     if merged_tokens:
                         update_kwargs["design_tokens"] = merged_tokens
