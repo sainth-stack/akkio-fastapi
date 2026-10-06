@@ -618,7 +618,6 @@ import { Alert, Box, Button, Card, CardContent, Divider, Stack, TextField, Typog
 import InspectionTable from '../components/InspectionTable';
 import PageHeader from '../components/PageHeader';
 import { apiFetch } from '../api/client';
-import { canInspect } from '../auth';
 
 function resultFor(actual: number, lower: number, upper: number) {
   if (actual < lower || actual > upper) return 'FAIL';
@@ -643,12 +642,10 @@ export default function InspectionPage() {
       <PageHeader title="Incoming Inspection" subtitle="Record dimensional checks — PASS / WARNING / FAIL from specification limits" />
       <Card sx={{ mb: 3 }}><CardContent>
         <Alert severity="info" sx={{ mb: 2 }}>Diameter spec <strong>280 ± 0.5 mm</strong>. Example: 280.2 → PASS, 281.2 → FAIL.</Alert>
-        {canInspect() && (
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
-            <TextField size="small" label="Actual value (mm)" value={actual} onChange={(e) => setActual(e.target.value)} sx={{ minWidth: 200 }} />
-            <Button variant="contained" onClick={add}>Record inspection</Button>
-          </Stack>
-        )}
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+          <TextField size="small" label="Actual value (mm)" value={actual} onChange={(e) => setActual(e.target.value)} sx={{ minWidth: 200 }} />
+          <Button variant="contained" onClick={add}>Record inspection</Button>
+        </Stack>
       </CardContent></Card>
       <Card><CardContent>
         <Typography variant="subtitle2" sx={{ mb: 2 }}>Inspection results</Typography>
@@ -666,7 +663,6 @@ def _capa_tsx() -> str:
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Box, Button, Card, CardContent, TextField, Typography } from '@mui/material';
 import { apiFetch } from '../api/client';
-import { canDecide } from '../auth';
 
 export default function CapaPage() {
   const qc = useQueryClient();
@@ -680,12 +676,10 @@ export default function CapaPage() {
   return (
     <Box>
       <Typography variant="h5" sx={{ mb: 2 }}>CAPA</Typography>
-      {canDecide() && (
-        <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-          <TextField size="small" fullWidth label="New CAPA" value={title} onChange={(e) => setTitle(e.target.value)} />
-          <Button variant="contained" disabled={!title} onClick={() => create.mutate()}>Create</Button>
-        </Box>
-      )}
+      <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+        <TextField size="small" fullWidth label="New CAPA" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Button variant="contained" disabled={!title} onClick={() => create.mutate()}>Create</Button>
+      </Box>
       {isLoading && <Typography>Loading…</Typography>}
       {(items as any[]).map((c) => (
         <Card key={c.id} sx={{ mb: 1 }}><CardContent><Typography>{c.title}</Typography><Typography variant="caption">{c.status}</Typography></CardContent></Card>
@@ -809,10 +803,8 @@ export default function RiskScoreCard({ score, recommendation }: { score: number
 """,
         "DecisionPanel": """import { Box, Button, TextField } from '@mui/material';
 import { useState } from 'react';
-import { canDecide } from '../auth';
 export default function DecisionPanel({ onDecision }: { onDecision: (decision: string, reason: string) => void }) {
   const [reason, setReason] = useState('');
-  if (!canDecide()) return null;
   return (
     <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
       <TextField size="small" label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} sx={{ minWidth: 240 }} />

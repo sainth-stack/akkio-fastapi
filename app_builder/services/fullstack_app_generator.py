@@ -212,7 +212,8 @@ def generate_fullstack_application(
         files.update(anomaly_detection_backend_files(title, requirement=requirement, prd=prd))
         files["backend/requirements.txt"] = _anomaly_requirements()
         for stale in (
-            "frontend/src/pages/DashboardPage.tsx",
+            # NOTE: DashboardPage.tsx is intentionally NOT removed for anomaly_detection
+            # because the anomaly App.tsx imports and routes to it.
             "frontend/src/pages/ResourceListPage.tsx",
             "frontend/src/pages/SupplierDetailPage.tsx",
             "frontend/src/pages/LotDetailPage.tsx",
@@ -225,9 +226,31 @@ def generate_fullstack_application(
     elif mode == "quality":
         files.update(frontend_files(title, colors, True))
         files.update(backend_files(title, True))
+    elif mode == "inventory":
+        enriched_req = _inventory_requirements(requirement)
+        ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
+        if ai_files:
+            files.update(ai_files)
+        else:
+            files.update(frontend_files(title, colors, False))
+            files.update(backend_files(title, False))
+    elif mode in ("analytics_dashboard", "crm", "finance", "hr_onboarding"):
+        enriched_req = f"[{mode.replace('_', ' ').title()} Application] {requirement}"
+        ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
+        if ai_files:
+            files.update(ai_files)
+        else:
+            files.update(frontend_files(title, colors, False))
+            files.update(backend_files(title, False))
     else:
-        files.update(frontend_files(title, colors, False))
-        files.update(backend_files(title, False))
+        # generic or any other unrecognised mode — enrich with domain hint and use AI generator
+        enriched_req = f"[{mode.replace('_', ' ').title()} Application] {requirement}" if mode not in ("generic", "") else requirement
+        ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
+        if ai_files:
+            files.update(ai_files)
+        else:
+            files.update(frontend_files(title, colors, False))
+            files.update(backend_files(title, False))
     files.pop("frontend/src/App.jsx", None)
     files.pop("frontend/src/styles/app.css", None)
     return files
@@ -365,6 +388,53 @@ def _is_thin_shell(path: str, content: str) -> bool:
     if path.endswith("CartContext.tsx"):
         return "createContext" not in text
     return False
+
+
+def _inventory_requirements(requirement: str) -> str:
+    return f"""Supply chain and inventory management system. Features:
+    - Inventory tracking with stock levels and alerts
+    - Order management (purchase orders, sales orders)
+    - Supplier management and vendor tracking
+    - Warehouse/location management
+    - Reports and analytics on inventory turnover
+    Specific requirement: {requirement}"""
+
+
+def _run_ai_generator(
+    requirement: str,
+    prd: str,
+    uiux: str,
+    architecture: Optional[Dict[str, Any]],
+    design_tokens: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, str]]:
+    """Run the async AI generator in an isolated event loop (sync wrapper)."""
+    try:
+        from app_builder.services.fullstack_ai_generator import generate_fullstack_app_with_ai
+        import asyncio
+        import concurrent.futures
+
+        def _run() -> Dict[str, str]:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    generate_fullstack_app_with_ai(
+                        requirement=requirement,
+                        prd=prd,
+                        uiux=uiux,
+                        architecture=architecture or {},
+                        design_tokens=design_tokens,
+                    )
+                )
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            return future.result(timeout=120)
+    except Exception as exc:
+        logger.warning("[ai-fallback] AI generator failed: %s — falling back to generic shell", exc)
+        return None
 
 
 def _ecommerce_requirements() -> str:

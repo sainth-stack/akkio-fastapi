@@ -25,10 +25,10 @@ ECOMMERCE_SUPPORTING = (
 def is_ecommerce_domain(requirement: str, prd: str = "", uiux: str = "") -> bool:
     text = "\n".join([requirement or "", prd or "", uiux or ""]).lower()
     strong = sum(1 for k in ECOMMERCE_KEYWORDS if k in text)
-    if strong >= 2:
+    if strong >= 1:
         return True
     support = sum(1 for k in ECOMMERCE_SUPPORTING if k in text)
-    return strong >= 1 and support >= 3
+    return support >= 3
 
 
 # ──────────────────────────────────────────────────────────────
@@ -504,7 +504,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await apiFetch('/api/auth/register', { method: 'POST', body: JSON.stringify(form) });
-      navigate('/login', { state: { message: 'Registration successful. Please login.' } });
+      navigate('/products');
     } catch (err: any) {
       setError(err?.message || 'Registration failed');
     } finally { setLoading(false); }
@@ -532,7 +532,7 @@ export default function RegisterPage() {
             </Grid>
           </Box>
           <Typography variant="body2" sx={{ mt: 2, textAlign: 'center' }}>
-            Already have an account? <Link to="/login">Login</Link>
+            <Link to="/">Back to Home</Link>
           </Typography>
         </CardContent>
       </Card>
@@ -547,7 +547,6 @@ def _login_page_tsx(title: str) -> str:
 import { Alert, Box, Button, Card, CardContent, Container, TextField, Typography } from '@mui/material';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiFetch } from '../api/client';
-import { setAuth } from '../auth';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -567,7 +566,8 @@ export default function LoginPage() {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       });
-      setAuth(res.access_token, res.user);
+      localStorage.setItem('access_token', res.access_token);
+      localStorage.setItem('user', JSON.stringify(res.user));
       navigate('/dashboard');
     } catch (err: any) {
       setError(err?.message || 'Invalid credentials');
@@ -730,7 +730,6 @@ import AddIcon from '@mui/icons-material/Add';
 import RemoveIcon from '@mui/icons-material/Remove';
 import { Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { isLoggedIn } from '../auth';
 
 export default function CartPage() {
   const { items, removeItem, setQty, total, count } = useCart();
@@ -788,7 +787,7 @@ export default function CartPage() {
         <Box sx={{ textAlign: 'right' }}>
           <Typography variant="h5" fontWeight={700}>Total: ₹{total.toLocaleString('en-IN')}</Typography>
           <Button variant="contained" size="large" sx={{ mt: 1, px: 4 }}
-            onClick={() => isLoggedIn() ? navigate('/checkout') : navigate('/login')}>
+            onClick={() => navigate('/checkout')}>
             Checkout
           </Button>
         </Box>
@@ -804,12 +803,10 @@ def _checkout_page_tsx() -> str:
 import { Box, Button, Card, CardContent, Container, Divider, Grid, TextField, Typography } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../api/client';
-import { getUser } from '../auth';
 import { useCart } from '../context/CartContext';
 
 export default function CheckoutPage() {
   const navigate = useNavigate();
-  const user = getUser();
   const { items, total, clearCart } = useCart();
   const [shipping, setShipping] = useState({ address: '', city: '', state: '', pincode: '' });
   const [loading, setLoading] = useState(false);
@@ -844,11 +841,6 @@ export default function CheckoutPage() {
       <Typography variant="h4" fontWeight={700} sx={{ mb: 3 }}>Checkout</Typography>
       <Grid container spacing={3}>
         <Grid item xs={12} md={7}>
-          <Card sx={{ mb: 2 }}><CardContent>
-            <Typography variant="h6" fontWeight={600} sx={{ mb: 2 }}>Customer Details</Typography>
-            <Typography><strong>Name:</strong> {user?.name}</Typography>
-            <Typography><strong>Email:</strong> {user?.email}</Typography>
-          </CardContent></Card>
           <Card><CardContent>
             <Typography variant="h6" fontWeight={600} sx={{ mb: 2 }}>Shipping Address</Typography>
             {error && <Typography color="error" sx={{ mb: 1 }}>{error}</Typography>}
@@ -931,9 +923,8 @@ export default function OrderConfirmationPage() {
 def _dashboard_page_tsx() -> str:
     return r"""import { useQuery } from '@tanstack/react-query';
 import { Box, Button, Card, CardContent, Chip, Container, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from '@mui/material';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { apiFetch } from '../api/client';
-import { clearAuth, getUser } from '../auth';
 import { useCart } from '../context/CartContext';
 
 type Order = { id: number; order_number: string; total: number; status: string; created_at: string };
@@ -942,21 +933,16 @@ type Stats = { total_orders: number; pending_orders: number; total_spent: number
 const STATUS_COLOR: Record<string, any> = { Placed: 'info', Delivered: 'success', Cancelled: 'error', Processing: 'warning' };
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
-  const user = getUser();
   const { count } = useCart();
   const { data, isLoading } = useQuery({ queryKey: ['dashboard'], queryFn: () => apiFetch<Stats>('/api/dashboard') });
-
-  const handleLogout = () => { clearAuth(); navigate('/'); };
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4, flexWrap: 'wrap', gap: 2 }}>
-        <Typography variant="h4" fontWeight={700}>Welcome, {user?.name?.split(' ')[0] || 'User'}</Typography>
+        <Typography variant="h4" fontWeight={700}>My Dashboard</Typography>
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
           <Button variant="outlined" component={Link} to="/products">Shop Products</Button>
           <Button variant="outlined" component={Link} to="/cart">View Cart {count > 0 ? `(${count})` : ''}</Button>
-          <Button variant="outlined" color="error" onClick={handleLogout}>Logout</Button>
         </Box>
       </Box>
 
