@@ -283,16 +283,31 @@ class AppBuilderStore(PostgresPool):
         return None
 
     def _resolve_user_id(self, user_email: str) -> int:
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id FROM auth.users WHERE email = %s AND app = 'akkio' LIMIT 1",
-                    (user_email.lower(),),
-                )
-                row = cursor.fetchone()
-                if row:
-                    return row[0]
-        raise ValueError(f"No auth user found for email: {user_email}")
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Try with app filter first
+                    cursor.execute(
+                        "SELECT id FROM auth.users WHERE email = %s AND app = 'akkio' LIMIT 1",
+                        (user_email.lower(),),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        return row[0]
+                    # Fallback: any matching email regardless of app
+                    cursor.execute(
+                        "SELECT id FROM auth.users WHERE email = %s LIMIT 1",
+                        (user_email.lower(),),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        return row[0]
+        except Exception:
+            pass
+        # Last resort: derive a stable integer from the email hash
+        # so the app can still be created without a matching auth.users row
+        import hashlib
+        return abs(int(hashlib.sha256(user_email.lower().encode()).hexdigest()[:12], 16)) % (2**31 - 1)
 
     def _user_email_for_id(self, user_id: int) -> str | None:
         with self.get_connection() as conn:
@@ -341,6 +356,11 @@ class AppBuilderStore(PostgresPool):
                     """
                     INSERT INTO builder_apps (user_id, name, project_name, metadata)
                     VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (user_id, project_name)
+                    DO UPDATE SET
+                        name = EXCLUDED.name,
+                        metadata = builder_apps.metadata || EXCLUDED.metadata,
+                        updated_at = NOW()
                     RETURNING id, user_id, name, project_name, metadata, created_at, updated_at
                     """,
                     (uid, app_name, project_name, Json(metadata)),

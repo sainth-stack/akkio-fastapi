@@ -132,7 +132,14 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             return
 
         try:
-            assert_project_access(project_name, current)
+            assert_project_access(
+                project_name,
+                current,
+                auto_create=True,
+                app_name=request_data.get("app_name") or project_name,
+                prompt=requirement or "",
+                builder_kind=builder_kind or "fullstack",
+            )
         except HTTPException as exc:
             await websocket.send_text(json.dumps({
                 "event": "error",

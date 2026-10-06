@@ -341,7 +341,13 @@ async def execute_agents(websocket: WebSocket, session_id: str):
             return
 
         try:
-            assert_project_access(project_name, current)
+            assert_project_access(
+                project_name, current,
+                auto_create=True,
+                app_name=project_name,
+                prompt=requirement or "",
+                builder_kind="fullstack",
+            )
         except HTTPException as exc:
             await websocket.send_text(json.dumps({"event": "error", "message": exc.detail}))
             return
@@ -667,7 +673,13 @@ async def update_code_ws(websocket: WebSocket, session_id: str):
             return
 
         try:
-            assert_project_access(project_name, current)
+            assert_project_access(
+                project_name, current,
+                auto_create=True,
+                app_name=project_name,
+                prompt=user_request or "",
+                builder_kind="fullstack",
+            )
             if app_id:
                 assert_app_id_access(app_id, project_name, current)
         except HTTPException as exc:

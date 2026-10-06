@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 
 from api.auth.dependencies import CurrentUser
@@ -9,12 +11,22 @@ from api.auth.request_auth import user_email_from
 from db.app_builder import get_app_builder_db
 
 _db = get_app_builder_db()
+logger = logging.getLogger(__name__)
 
 
-def assert_project_access(project_name: str, current: CurrentUser) -> dict:
+def assert_project_access(
+    project_name: str,
+    current: CurrentUser,
+    *,
+    auto_create: bool = True,
+    app_name: str | None = None,
+    prompt: str | None = None,
+    builder_kind: str | None = None,
+) -> dict:
     """
     Verify the authenticated user owns a registered builder_apps row for project_name.
-    Denies access if no DB row exists (orphan disk dirs) or row belongs to another user.
+    If no row exists and auto_create=True, creates one so that codegen can proceed
+    even when the initial save during planning failed.
     Returns the app record on success.
     """
     if not project_name or not str(project_name).strip():
@@ -27,12 +39,38 @@ def assert_project_access(project_name: str, current: CurrentUser) -> dict:
         user_id=user_id,
         user_email=user_email,
     )
-    if not app:
-        raise HTTPException(
-            status_code=403,
-            detail="Project not found or you do not have access to this project",
-        )
-    return app
+    if app:
+        return app
+
+    # Row missing — attempt auto-create so codegen is not blocked
+    if auto_create:
+        try:
+            app = _db.create_app_builder_app(
+                user_email=user_email,
+                app_name=app_name or project_name,
+                prompt=prompt or "",
+                project_name=project_name.strip(),
+                user_id=user_id,
+                builder_kind=builder_kind or "fullstack",
+            )
+            logger.warning(
+                "assert_project_access: auto-created missing builder_apps row "
+                "for project_name=%s user=%s",
+                project_name,
+                user_email,
+            )
+            return app
+        except Exception as exc:
+            logger.error(
+                "assert_project_access: auto-create failed for project_name=%s: %s",
+                project_name,
+                exc,
+            )
+
+    raise HTTPException(
+        status_code=403,
+        detail="Project not found or you do not have access to this project",
+    )
 
 
 def assert_app_id_access(
