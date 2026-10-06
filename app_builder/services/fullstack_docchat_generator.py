@@ -4,8 +4,6 @@ from __future__ import annotations
 from typing import Dict
 
 from app_builder.services.fullstack_frontend_generator import (
-    _auth_ts,
-    _login_tsx,
     _page_header_tsx,
     _shell_tsx,
     build_theme_ts,
@@ -45,10 +43,8 @@ def doc_chat_frontend_files(title: str, colors: Dict[str, str]) -> Dict[str, str
     )
     return {
         "frontend/src/theme.ts": build_theme_ts(colors),
-        "frontend/src/auth.ts": _auth_ts(),
         "frontend/src/App.tsx": _doc_app_tsx(),
         "frontend/src/layout/AppShell.tsx": shell,
-        "frontend/src/pages/LoginPage.tsx": _login_tsx(title),
         "frontend/src/pages/UploadPage.tsx": _upload_page_tsx(),
         "frontend/src/pages/ChatPage.tsx": _chat_page_tsx(),
         "frontend/src/components/PageHeader.tsx": _page_header_tsx(),
@@ -74,21 +70,13 @@ def doc_chat_backend_files(title: str) -> Dict[str, str]:
 def _doc_app_tsx() -> str:
     return """import { Navigate, Route, Routes } from 'react-router-dom';
 import AppShell from './layout/AppShell';
-import LoginPage from './pages/LoginPage';
 import UploadPage from './pages/UploadPage';
 import ChatPage from './pages/ChatPage';
-import { getToken } from './auth';
-
-function Protected({ children }: { children: JSX.Element }) {
-  if (!getToken()) return <Navigate to="/login" replace />;
-  return children;
-}
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route element={<Protected><AppShell /></Protected>}>
+      <Route element={<AppShell />}>
         <Route path="/" element={<Navigate to="/upload" replace />} />
         <Route path="/upload" element={<UploadPage />} />
         <Route path="/chat" element={<ChatPage />} />
@@ -110,7 +98,6 @@ import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
 import PageHeader from '../components/PageHeader';
 import DocumentList from '../components/DocumentList';
 import { apiFetch, getApiBase } from '../api/client';
-import { getToken } from '../auth';
 
 type Doc = { id: number; filename: string; size: number; status: string; uploaded_at?: string };
 
@@ -127,10 +114,8 @@ export default function UploadPage() {
       const base = getApiBase();
       const form = new FormData();
       form.append('file', file);
-      const token = getToken();
       const res = await fetch(`${base}/api/documents/upload`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
       });
       if (!res.ok) {

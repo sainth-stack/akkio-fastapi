@@ -80,6 +80,10 @@ You must analyze the requirements and output a JSON architecture decision in thi
       }}
     ]
   }},
+  "screens": [
+    {{"name": "<ScreenName>", "description": "<what this screen shows and what user can do>"}},
+    {{"name": "<ScreenName>", "description": "<what this screen shows and what user can do>"}}
+  ],
   "deployment": {{
     "containerization": "Docker"
   }},
@@ -96,6 +100,12 @@ CRITICAL RULES:
 3. **Use Tailwind CSS for styling**. 
 4. **Use Plain React State + LocalStorage**. NEVER use Zustand, Redux, or any external state manager.
 5. Output ONLY the JSON, nothing else.
+6. The 'screens' array MUST contain pages that directly correspond to what the user asked for.
+   For example, if user asked for 'anomaly detection', screens should be: Dashboard, AnomalyFeed, AlertConfig, Reports.
+   If user asked for 'inventory management', screens should be: Dashboard, Inventory, Orders, Suppliers, Reports.
+   Do NOT include a Login screen — apps should be publicly accessible.
+   Screen names must be descriptive and app-specific (not generic 'Page 1', 'Page 2').
+   Include a 'screens' array in your JSON output with objects: {{"name": "<ScreenName>", "description": "<purpose>"}}.
 """
 
     from app_builder.services.fullstack_stack import is_fullstack, architecture_system_addendum, lock_architecture

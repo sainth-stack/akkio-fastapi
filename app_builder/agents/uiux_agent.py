@@ -15,6 +15,9 @@ async def stream_uiux_generation(
 Your task is to design a PREMIUM, MODERN, and HIGHLY POLISHED interface based on the PRD.
 The goal is to wow the user with a "Silicon Valley" standard design (think Stripe, Linear, Vercel).
 
+Do NOT describe a login page or authentication flow. Focus on the actual app functionality the user described.
+Each screen description should explain what data is shown and what the user can do — directly related to the app's purpose.
+
 **DESIGN AESTHETICS:**
 1. **Premium & Clean**: Use generous whitespace, subtle borders, and soft shadows. Avoid "box-in-a-box" layouts.
 2. **Modern Typography**: Use clean sans-serif fonts (Inter, SF Pro). clear hierarchy with weights (Medium/Semibold for headings, Regular for body).

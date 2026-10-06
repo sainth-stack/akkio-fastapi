@@ -42,6 +42,9 @@ async def stream_prd_generation(
 Your task is to create a CONCISE and EFFECTIVE PRD with perfect structure and formatting.
 Use clean Markdown so the document displays correctly. Avoid unnecessary details.
 
+IMPORTANT: The 'Key Features' and 'User Stories' sections MUST directly reflect what the user described in their prompt.
+Do not add features the user didn't ask for. Do not include authentication/login unless the user explicitly mentioned it.
+
 You MUST follow this exact structure. Use these exact headings and spacing:
 
 # 1. Product Overview

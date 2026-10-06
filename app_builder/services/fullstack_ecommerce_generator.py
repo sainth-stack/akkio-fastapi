@@ -197,13 +197,11 @@ def ecommerce_frontend_files(
     safe = title.replace("\\", "\\\\").replace("'", "\\'")
     return {
         "frontend/src/theme.ts": build_theme_ts(colors),
-        "frontend/src/auth.ts": _ecommerce_auth_ts(),
         "frontend/src/App.tsx": _app_tsx(),
         "frontend/src/context/CartContext.tsx": _cart_context_tsx(),
         "frontend/src/layout/Navbar.tsx": _navbar_tsx(safe),
         "frontend/src/pages/HomePage.tsx": _home_page_tsx(hero_title, hero_subtitle),
         "frontend/src/pages/RegisterPage.tsx": _register_page_tsx(),
-        "frontend/src/pages/LoginPage.tsx": _login_page_tsx(safe),
         "frontend/src/pages/ProductsPage.tsx": _products_page_tsx(),
         "frontend/src/pages/ProductDetailPage.tsx": _product_detail_page_tsx(),
         "frontend/src/pages/CartPage.tsx": _cart_page_tsx(),
@@ -269,18 +267,12 @@ import { CartProvider } from './context/CartContext';
 import Navbar from './layout/Navbar';
 import HomePage from './pages/HomePage';
 import RegisterPage from './pages/RegisterPage';
-import LoginPage from './pages/LoginPage';
 import ProductsPage from './pages/ProductsPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import CartPage from './pages/CartPage';
 import CheckoutPage from './pages/CheckoutPage';
 import OrderConfirmationPage from './pages/OrderConfirmationPage';
 import DashboardPage from './pages/DashboardPage';
-import { isLoggedIn } from './auth';
-
-function PrivateRoute({ children }: { children: JSX.Element }) {
-  return isLoggedIn() ? children : <Navigate to="/login" replace />;
-}
 
 export default function App() {
   return (
@@ -289,13 +281,12 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/register" element={<RegisterPage />} />
-        <Route path="/login" element={<LoginPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/products/:id" element={<ProductDetailPage />} />
         <Route path="/cart" element={<CartPage />} />
-        <Route path="/checkout" element={<PrivateRoute><CheckoutPage /></PrivateRoute>} />
-        <Route path="/order-confirmation" element={<PrivateRoute><OrderConfirmationPage /></PrivateRoute>} />
-        <Route path="/dashboard" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+        <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/order-confirmation" element={<OrderConfirmationPage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </CartProvider>
@@ -376,15 +367,11 @@ def _navbar_tsx(title: str) -> str:
     safe = title.replace("'", "\\'")
     return r"""import { AppBar, Badge, Box, Button, Toolbar, Typography } from '@mui/material';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { clearAuth, getUser, isLoggedIn } from '../auth';
 
 export default function Navbar() {
   const { count } = useCart();
-  const navigate = useNavigate();
-  const user = getUser();
-  const handleLogout = () => { clearAuth(); navigate('/'); };
   return (
     <AppBar position="sticky" elevation={0} sx={{ borderBottom: 1, borderColor: 'divider' }}>
       <Toolbar sx={{ gap: 2 }}>
@@ -398,17 +385,8 @@ export default function Navbar() {
         }>
           Cart{count > 0 ? ` (${count})` : ''}
         </Button>
-        {isLoggedIn() ? (
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <Button color="inherit" component={Link} to="/dashboard">{user?.name || 'Account'}</Button>
-            <Button variant="outlined" color="inherit" size="small" onClick={handleLogout}>Logout</Button>
-          </Box>
-        ) : (
-          <Box sx={{ display: 'flex', gap: 1 }}>
-            <Button color="inherit" component={Link} to="/login">Login</Button>
-            <Button variant="outlined" color="inherit" size="small" component={Link} to="/register">Register</Button>
-          </Box>
-        )}
+        <Button color="inherit" component={Link} to="/dashboard">My Account</Button>
+        <Button variant="outlined" color="inherit" size="small" component={Link} to="/register">Register</Button>
       </Toolbar>
     </AppBar>
   );

@@ -73,7 +73,6 @@ def anomaly_detection_frontend_files(
         "frontend/src/pages/ReportsPage.tsx": _reports_tsx(primary, primary_dark, secondary, bg, surface, text_color, muted),
         "frontend/src/App.tsx": _app_tsx(),
         "frontend/src/layout/AppLayout.tsx": _app_layout_tsx(primary, primary_dark, bg, surface, text_color, muted, safe_title),
-        "frontend/src/pages/LoginPage.tsx": _login_tsx(primary, primary_dark, bg, surface),
         "frontend/src/api/mock.ts": _mock_ts(safe_title),
     }
 
@@ -98,28 +97,22 @@ def _app_tsx() -> str:
     return """\
 import { Navigate, Route, Routes } from 'react-router-dom';
 import AppLayout from './layout/AppLayout';
-import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import AnomalyFeedPage from './pages/AnomalyFeedPage';
 import AlertConfigPage from './pages/AlertConfigPage';
 import ReportsPage from './pages/ReportsPage';
-import { isLoggedIn } from './auth';
-
-function PrivateRoute({ children }: { children: JSX.Element }) {
-  return isLoggedIn() ? children : <Navigate to="/login" replace />;
-}
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
       <Route element={<AppLayout />}>
-        <Route path="/" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
-        <Route path="/anomalies" element={<PrivateRoute><AnomalyFeedPage /></PrivateRoute>} />
-        <Route path="/alerts" element={<PrivateRoute><AlertConfigPage /></PrivateRoute>} />
-        <Route path="/reports" element={<PrivateRoute><ReportsPage /></PrivateRoute>} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/anomalies" element={<AnomalyFeedPage />} />
+        <Route path="/alerts" element={<AlertConfigPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
 }
@@ -128,17 +121,16 @@ export default function App() {
 
 def _app_layout_tsx(primary: str, primary_dark: str, bg: str, surface: str, text_color: str, muted: str, safe_title: str) -> str:
     code = """\
-import { AppBar, Box, Chip, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Toolbar, Typography } from '@mui/material';
+import { AppBar, Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Toolbar, Typography } from '@mui/material';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import AssessmentIcon from '@mui/icons-material/Assessment';
-import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
-import { clearAuth, getUser } from '../auth';
+import { Outlet, Link, useLocation } from 'react-router-dom';
 
 const DRAWER_W = 240;
 const NAV = [
-  { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
+  { path: '/dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
   { path: '/anomalies', label: 'Anomaly Feed', icon: <BugReportIcon /> },
   { path: '/alerts', label: 'Alert Config', icon: <NotificationsActiveIcon /> },
   { path: '/reports', label: 'Reports', icon: <AssessmentIcon /> },
@@ -146,8 +138,6 @@ const NAV = [
 
 export default function AppLayout() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const user = getUser();
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'COLOR_BG' }}>
       <Drawer
@@ -195,13 +185,7 @@ export default function AppLayout() {
           sx={{ bgcolor: 'COLOR_SURFACE', color: 'COLOR_TEXT', borderBottom: '1px solid #e0e0e0', zIndex: 1 }}
         >
           <Toolbar sx={{ justifyContent: 'flex-end', gap: 2 }}>
-            <Typography variant="body2" sx={{ color: 'COLOR_MUTED' }}>{user?.name || user?.email || 'User'}</Typography>
-            <Chip
-              label="Logout"
-              size="small"
-              onClick={() => { clearAuth(); navigate('/login'); }}
-              sx={{ cursor: 'pointer' }}
-            />
+            <Typography variant="h6" fontWeight={700} sx={{ color: 'COLOR_TEXT' }}>Anomaly Detection</Typography>
           </Toolbar>
         </AppBar>
         <Box component="main" sx={{ flex: 1, p: 3 }}>

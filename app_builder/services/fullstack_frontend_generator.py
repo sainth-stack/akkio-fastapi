@@ -67,7 +67,6 @@ def frontend_files(title: str, colors: Dict[str, str], quality: bool) -> Dict[st
         "frontend/src/App.tsx": _app_tsx(quality),
         "frontend/src/layout/AppShell.tsx": _shell_tsx(title, nav),
         "frontend/src/components/PageHeader.tsx": _page_header_tsx(),
-        "frontend/src/pages/LoginPage.tsx": _login_tsx(title),
         "frontend/src/pages/DashboardPage.tsx": _dashboard_tsx(),
         "frontend/src/pages/ResourceListPage.tsx": _resource_list_tsx(),
         "frontend/src/pages/SupplierDetailPage.tsx": _supplier_detail_tsx(),
@@ -88,7 +87,6 @@ def frontend_files(title: str, colors: Dict[str, str], quality: bool) -> Dict[st
         "frontend/src/components/DefectChart.tsx": _small_component("DefectChart"),
         "frontend/src/components/AIChatPanel.tsx": _small_component("AIChatPanel"),
         "frontend/src/api/mock.ts": _mock_ts(),
-        "frontend/src/auth.ts": _auth_ts(),
     }
     return files
 
@@ -230,7 +228,6 @@ def _app_tsx(quality: bool) -> str:
         <Route path="reports" element={<ReportsPage />} />"""
     return """import { Navigate, Route, Routes } from 'react-router-dom';
 import AppShell from './layout/AppShell';
-import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import ResourceListPage from './pages/ResourceListPage';
 import SupplierDetailPage from './pages/SupplierDetailPage';
@@ -239,18 +236,11 @@ import InspectionPage from './pages/InspectionPage';
 import CapaPage from './pages/CapaPage';
 import ReportsPage from './pages/ReportsPage';
 import AIAssistantPage from './pages/AIAssistantPage';
-import { getToken } from './auth';
-
-function Protected({ children }: { children: JSX.Element }) {
-  if (!getToken()) return <Navigate to="/login" replace />;
-  return children;
-}
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route element={<Protected><AppShell /></Protected>}>
+      <Route element={<AppShell />}>
         <Route path="/" element={<DashboardPage />} />""" + extra + """
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -293,9 +283,8 @@ export default function PageHeader({ title, subtitle, crumbs }: Props) {
 def _shell_tsx(title: str, nav: List[Tuple[str, str]]) -> str:
     nav_js = ",\n  ".join("{ to: '%s', label: '%s' }" % (p, l.replace("'", "\\'")) for p, l in nav)
     safe = title.replace("\\", "\\\\").replace("'", "\\'")
-    raw = """import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { AppBar, Box, Button, Chip, Drawer, List, ListItemButton, ListItemText, Toolbar, Typography } from '@mui/material';
-import { clearAuth, getRole } from '../auth';
+    raw = """import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { AppBar, Box, Drawer, List, ListItemButton, ListItemText, Toolbar, Typography } from '@mui/material';
 import { tokens } from '../theme';
 
 const DRAWER_WIDTH = 272;
@@ -311,8 +300,6 @@ function navSelected(pathname: string, to: string) {
 
 export default function AppShell() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const role = getRole();
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
       <Drawer
@@ -344,8 +331,6 @@ export default function AppShell() {
         <AppBar position="sticky" elevation={0} sx={{ zIndex: 1100 }}>
           <Toolbar sx={{ gap: 2, minHeight: 64 }}>
             <Typography variant="h6" sx={{ flex: 1, fontWeight: 700, color: 'text.primary' }}>__APP_TITLE__</Typography>
-            <Chip size="small" label={role} color="primary" variant="outlined" sx={{ fontWeight: 600 }} />
-            <Button variant="outlined" size="small" color="primary" onClick={() => { clearAuth(); navigate('/login'); }}>Logout</Button>
           </Toolbar>
         </AppBar>
         <Box component="main" sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, maxWidth: 1440, width: '100%', mx: 'auto' }}>

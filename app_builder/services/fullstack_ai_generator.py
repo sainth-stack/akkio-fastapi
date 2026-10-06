@@ -140,8 +140,22 @@ App: {title}
 User requirement: {requirement}
 Style: {style}
 
-Pages to show in sidebar:
+The sidebar navigation MUST include exactly these pages (and no others):
 {pages_list}
+
+Each nav item label should be user-friendly (no 'Page' suffix — 'Dashboard' not 'DashboardPage').
+Icons should match the page purpose (import from @mui/icons-material):
+- Dashboard / Overview / Home → DashboardIcon or BarChartIcon
+- Products / Inventory / Items → InventoryIcon
+- Users / Customers / Members / Employees → PeopleIcon
+- Orders / Purchases / Transactions → ShoppingCartIcon
+- Reports / Analytics / Statistics → AnalyticsIcon
+- Settings / Config / Preferences → SettingsIcon
+- Anomalies / Alerts / Warnings / Notifications → WarningAmberIcon or NotificationsIcon
+- Messages / Chat / Communication → ChatIcon
+- Suppliers / Vendors → LocalShippingIcon
+- Finance / Billing / Payments → AccountBalanceIcon
+- For any other page: use a sensible matching icon
 
 Design system:
 Primary: {primary} (sidebar background)
@@ -153,13 +167,14 @@ Background: {background}
 
 Rules:
 - Sidebar: fixed left, 240px wide, bg={primary}, white text and icons
-- Top bar: app title + user avatar/menu
+- Top bar: app title only (NO login/logout button, NO user session display)
 - Content area: bg={background}, right of sidebar, fills screen
 - Use Drawer (permanent variant) for sidebar
-- Icons from @mui/icons-material — pick appropriate icons per page name
+- Show icon + label for each nav item
 - Active route highlighted with slightly lighter bg
 - useNavigate + useLocation for routing and active state
 - Export default function AppLayout() with <Outlet /> for content
+- Do NOT add any login, logout, or authentication-related UI elements
 
 Structure:
 ```
@@ -228,27 +243,22 @@ Generate a complete FastAPI routes.py with:
    BAD:  @router.get("/{item_id}")  ← this matches EVERYTHING
    GOOD: @router.get("/products/{product_id}")  ← resource-specific
 
-4. Auth endpoints:
-   - POST /api/auth/login    → returns access_token + user
-   - POST /api/auth/register → creates user
-
-5. Seed 10 realistic records matching the DOMAIN on startup:
+4. Seed 10 realistic records matching the DOMAIN on startup:
    - Pharma ecommerce: Paracetamol 500mg ₹45, Amoxicillin 250mg ₹120, Vitamin C 1000mg ₹85...
    - Food delivery: Paneer Tikka ₹180, Chicken Biryani ₹220...
    - Fashion: Blue Denim Jeans M ₹899, White Cotton Shirt L ₹599...
    - ALWAYS match the actual domain, never use generic item data
 
-6. from auth import get_current_user
-7. from database import Base, SessionLocal, engine, get_db
-8. router = APIRouter() — main.py includes it with prefix="/api"
-9. Every endpoint listed in the architecture MUST be implemented
-10. All CRUD operations must be complete (not just GET, include POST/PUT/DELETE)
-11. Response models must use consistent field names across all endpoints
-12. Include proper HTTP status codes (201 for created, 404 for not found, 400 for bad request)
-13. Seed data must be realistic and substantial (at least 10-20 records per entity)
-14. All endpoints must have correct resource-prefixed paths (already enforced above)
-15. Include error handling: try/except with HTTPException for all database operations
-16. Use consistent ID fields: always 'id' (not 'userId', 'itemId', etc.)
+5. from database import Base, SessionLocal, engine, get_db
+6. router = APIRouter() — main.py includes it with prefix="/api"
+7. Every endpoint listed in the architecture MUST be implemented
+8. All CRUD operations must be complete (not just GET, include POST/PUT/DELETE)
+9. Response models must use consistent field names across all endpoints
+10. Include proper HTTP status codes (201 for created, 404 for not found, 400 for bad request)
+11. Seed data must be realistic and substantial (at least 10-20 records per entity)
+12. All endpoints must have correct resource-prefixed paths (already enforced above)
+13. Include error handling: try/except with HTTPException for all database operations
+14. Use consistent ID fields: always 'id' (not 'userId', 'itemId', etc.)
 
 Return ONLY the complete routes.py. Python 3.10 compatible. No markdown fences.'''
 
@@ -738,6 +748,70 @@ def _extract_pages_from_architecture(
     return result[:12]  # max 12 pages
 
 
+async def _extract_pages_from_requirement(requirement: str, llm=None) -> List[Tuple[str, str]]:
+    """
+    Use LLM to extract logical pages from the user's raw requirement text.
+    Returns list of (PageComponentName, description) tuples.
+    Falls back gracefully to an empty list on any failure.
+    """
+    if llm is None:
+        try:
+            from llm_helper import get_llm_for_user
+            llm = get_llm_for_user(None, temperature=0.1)
+        except Exception:
+            return []
+
+    prompt = f"""Given this app description, list the main pages/screens this app should have.
+
+App description: {requirement}
+
+Respond with ONLY a JSON array:
+[
+  {{"name": "DashboardPage", "description": "Main overview with key metrics"}},
+  {{"name": "ProductsPage", "description": "Browse and manage products"}}
+]
+
+Rules:
+- 3-8 pages max
+- Names must be PascalCase ending with 'Page'
+- Match exactly what the user described — don't add generic pages they didn't ask for
+- First page should be the most important/main page
+- Do NOT include LoginPage"""
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        # Strip markdown fences
+        text = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.M)
+        text = re.sub(r'```\s*$', '', text, flags=re.M)
+        # Find JSON array
+        m = re.search(r'\[[\s\S]*\]', text)
+        if not m:
+            return []
+        items = json.loads(m.group(0))
+        if not isinstance(items, list):
+            return []
+        result: List[Tuple[str, str]] = []
+        seen: set = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            desc = str(item.get("description") or name).strip()
+            if not name or name.lower() in seen:
+                continue
+            # Enforce PascalCase + Page suffix
+            if not name.endswith("Page") and not name.endswith("View"):
+                name += "Page"
+            seen.add(name.lower())
+            result.append((name, desc[:400]))
+        logger.info("[req-pages] Extracted %d pages from requirement via LLM", len(result))
+        return result[:8]
+    except Exception as e:
+        logger.warning("[req-pages] _extract_pages_from_requirement failed: %s", e)
+        return []
+
+
 def _to_page_component_name(name: str) -> str:
     """Convert 'Login Page' → 'LoginPage', 'Product List' → 'ProductListPage'."""
     # Remove special chars, title-case each word
@@ -749,29 +823,66 @@ def _to_page_component_name(name: str) -> str:
     return result
 
 
-def _build_app_tsx_for_pages(pages: List[Tuple[str, str]], has_auth: bool = True) -> str:
-    """Generate App.tsx routing for a list of pages."""
+def _build_app_tsx_for_pages(pages: List[Tuple[str, str]], has_auth: bool = False) -> str:
+    """Generate App.tsx routing for a list of pages.
+
+    has_auth=False (default): plain routes with no login, no PrivateRoute, no /login route.
+    has_auth=True: legacy auth path retained for backward compatibility.
+
+    Fix 4: `/` redirects to the FIRST content page (priority: Dashboard/Home/Overview → else first page).
+    """
     imports = []
     routes = []
 
-    # Auth always first
     if has_auth:
         imports.append("import LoginPage from './pages/LoginPage';")
+
+    # ── Determine landing page with priority: Dashboard/Home/Overview → else first ──
+    _preferred_landing = {"dashboardpage", "homepage", "overviewpage", "mainpage"}
+    landing_page: Optional[str] = None
+    # First pass: preferred names
+    for page_name, _ in pages:
+        if page_name == "LoginPage":
+            continue
+        if page_name.lower() in _preferred_landing:
+            landing_page = page_name
+            break
+    # Second pass: fallback to first non-login page
+    if landing_page is None:
+        for page_name, _ in pages:
+            if page_name != "LoginPage":
+                landing_page = page_name
+                break
+
+    landing_path = _page_name_to_path(landing_page) if landing_page else "/"
 
     for page_name, _ in pages:
         if page_name == "LoginPage":
             continue
         imports.append(f"import {page_name} from './pages/{page_name}';")
         route_path = _page_name_to_path(page_name)
-        if page_name == "DashboardPage" or page_name == "HomePage":
-            routes.insert(0, f'        <Route path="{route_path}" element={{<PrivateRoute><{page_name} /></PrivateRoute>}} />')
+
+        if has_auth:
+            entry = f'        <Route path="{route_path}" element={{<PrivateRoute><{page_name} /></PrivateRoute>}} />'
         else:
-            routes.append(f'        <Route path="{route_path}" element={{<PrivateRoute><{page_name} /></PrivateRoute>}} />')
+            entry = f'        <Route path="{route_path}" element={{<{page_name} />}} />'
+
+        # Dashboard/Home gets inserted first so it appears at top of route list
+        if page_name == landing_page and landing_path == "/":
+            routes.insert(0, entry)
+        else:
+            routes.append(entry)
 
     imports_str = "\n".join(imports)
     routes_str = "\n".join(routes)
 
-    return f"""import {{ Navigate, Route, Routes }} from 'react-router-dom';
+    # Build explicit "/" → landing_path redirect only when landing page doesn't own "/"
+    root_redirect_line = ""
+    if landing_path != "/":
+        root_redirect_line = f'\n      <Route path="/" element={{<Navigate to="{landing_path}" replace />}} />'
+
+    if has_auth:
+        return f"""import {{ Navigate, Route, Routes }} from 'react-router-dom';
 import AppLayout from './layout/AppLayout';
 {imports_str}
 import {{ isLoggedIn }} from './auth';
@@ -783,11 +894,27 @@ function PrivateRoute({{ children }}: {{ children: JSX.Element }}) {{
 export default function App() {{
   return (
     <Routes>
-      <Route path="/login" element={{<LoginPage />}} />
+      <Route path="/login" element={{<LoginPage />}} />{root_redirect_line}
       <Route element={{<AppLayout />}}>
 {routes_str}
       </Route>
-      <Route path="*" element={{<Navigate to="/" replace />}} />
+      <Route path="*" element={{<Navigate to="{landing_path}" replace />}} />
+    </Routes>
+  );
+}}
+"""
+    else:
+        return f"""import {{ Navigate, Route, Routes }} from 'react-router-dom';
+import AppLayout from './layout/AppLayout';
+{imports_str}
+
+export default function App() {{
+  return (
+    <Routes>{root_redirect_line}
+      <Route element={{<AppLayout />}}>
+{routes_str}
+      </Route>
+      <Route path="*" element={{<Navigate to="{landing_path}" replace />}} />
     </Routes>
   );
 }}
@@ -826,15 +953,12 @@ def _build_app_layout_tsx(title: str, pages: List[Tuple[str, str]], colors: Dict
 
     # Use string template to avoid brace escaping issues
     tpl = (
-        "import { AppBar, Box, Drawer, List, ListItemButton, ListItemText, Toolbar, Typography, Chip } from '@mui/material';\n"
-        "import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';\n"
-        "import { clearAuth, getUser } from '../auth';\n\n"
+        "import { AppBar, Box, Drawer, List, ListItemButton, ListItemText, Toolbar, Typography } from '@mui/material';\n"
+        "import { Outlet, Link, useLocation } from 'react-router-dom';\n\n"
         "const DRAWER = 240;\n"
         "const NAV = [\n__NAV__\n];\n\n"
         "export default function AppLayout() {\n"
         "  const location = useLocation();\n"
-        "  const navigate = useNavigate();\n"
-        "  const user = getUser();\n"
         "  return (\n"
         "    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: '__BG__' }}>\n"
         "      <Drawer variant=\"permanent\" sx={{ width: DRAWER, flexShrink: 0, '& .MuiDrawer-paper': { width: DRAWER, boxSizing: 'border-box', bgcolor: '__PRIMARY__', color: '#fff' } }}>\n"
@@ -855,9 +979,8 @@ def _build_app_layout_tsx(title: str, pages: List[Tuple[str, str]], colors: Dict
         "      </Drawer>\n"
         "      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>\n"
         "        <AppBar position=\"sticky\" elevation={0} sx={{ bgcolor: '__SURFACE__', color: '__TEXT__', borderBottom: '1px solid #e0e0e0', zIndex: 1 }}>\n"
-        "          <Toolbar sx={{ justifyContent: 'flex-end', gap: 2 }}>\n"
-        "            <Typography variant=\"body2\" color=\"__MUTED__\">{user?.name || user?.email || 'User'}</Typography>\n"
-        "            <Chip label=\"Logout\" size=\"small\" onClick={() => { clearAuth(); navigate('/login'); }} sx={{ cursor: 'pointer' }} />\n"
+        "          <Toolbar>\n"
+        "            <Typography variant=\"body2\" color=\"__MUTED__\">__TITLE__</Typography>\n"
         "          </Toolbar>\n"
         "        </AppBar>\n"
         "        <Box component=\"main\" sx={{ flex: 1, p: 3 }}>\n"
@@ -1196,7 +1319,7 @@ async def generate_fullstack_app_with_ai(
     7. Runs API consistency check to patch any mismatched routes
     """
     from app_builder.services.fullstack_codegen import get_fullstack_scaffold_files
-    from app_builder.services.fullstack_frontend_generator import theme_from_tokens, build_theme_ts, _auth_ts
+    from app_builder.services.fullstack_frontend_generator import theme_from_tokens, build_theme_ts
     from app_builder.services.fullstack_app_generator import extract_app_title
     from app_builder.services.fullstack_app_generator import generate_fullstack_application
 
@@ -1245,12 +1368,32 @@ async def generate_fullstack_app_with_ai(
     # ── Step 2: Extract pages from architecture/PRD ───────────────────────────
     pages = _extract_pages_from_architecture(architecture or {}, prd, requirement)
 
-    # Ensure we always have login + dashboard
+    # Fix 1: If architecture produced fewer than 3 pages, fall back to LLM-based
+    # extraction directly from the raw requirement text (smarter page extraction).
+    if len(pages) < 3:
+        logger.info(
+            "[ai-gen] Only %d pages from architecture/PRD — trying LLM requirement extraction",
+            len(pages),
+        )
+        try:
+            req_pages = await _extract_pages_from_requirement(requirement, llm)
+            if req_pages:
+                # Merge: start with requirement-derived pages, append any non-duplicate
+                # pages that were already extracted from architecture/PRD.
+                existing_names_lower = {p[0].lower() for p in req_pages}
+                merged = list(req_pages)
+                for name, desc in pages:
+                    if name.lower() not in existing_names_lower:
+                        merged.append((name, desc))
+                pages = merged[:12]
+                logger.info("[ai-gen] Requirement-extracted pages: %s", [p[0] for p in pages])
+        except Exception as _re:
+            logger.warning("[ai-gen] Requirement page extraction failed: %s", _re)
+
+    # Ensure we always have a dashboard/home page
     page_names = [p[0] for p in pages]
-    if not any("login" in n.lower() or "signin" in n.lower() for n in page_names):
-        pages.insert(0, ("LoginPage", "User authentication with email and password"))
     if not any("dashboard" in n.lower() or "home" in n.lower() for n in page_names):
-        pages.insert(1, ("DashboardPage", "Main dashboard with key metrics and overview"))
+        pages.insert(0, ("DashboardPage", "Main dashboard with key metrics and overview"))
 
     logger.info("[ai-gen] Pages to generate: %s", [p[0] for p in pages])
 
@@ -1282,29 +1425,26 @@ async def generate_fullstack_app_with_ai(
         )
         return page_name, code
 
-    # Run layout, login, mock, and all pages in parallel — backend is already done
+    # Run layout, mock, and all pages in parallel — backend is already done
     page_tasks = [gen_page(name, desc) for name, desc in pages]
     layout_task = generate_layout_with_ai(title, pages, colors, requirement, llm)
-    login_task  = generate_login_with_ai(title, colors, requirement, llm)
     mock_task   = generate_mock_data_with_ai(title, requirement, prd, pages, llm)
 
     all_results = await asyncio.gather(
-        *page_tasks, layout_task, login_task, mock_task,
+        *page_tasks, layout_task, mock_task,
         return_exceptions=True,
     )
 
     n_pages      = len(page_tasks)
     page_results = all_results[:n_pages]
     ai_layout    = all_results[n_pages]
-    ai_login     = all_results[n_pages + 1]
-    ai_mock      = all_results[n_pages + 2]
+    ai_mock      = all_results[n_pages + 1]
 
     # ── Step 4: Assemble file set ─────────────────────────────────────────────
     files = dict(get_fullstack_scaffold_files())
 
     # Always-present infrastructure files
     files["frontend/src/theme.ts"] = build_theme_ts(colors)
-    files["frontend/src/auth.ts"] = _auth_ts()
     files.pop("frontend/src/layout/AppShell.tsx", None)
 
     # mock.ts — LLM-generated with domain-specific data; fallback to template
@@ -1322,14 +1462,6 @@ async def generate_fullstack_app_with_ai(
     else:
         logger.warning("[ai-gen] AppLayout LLM failed — using template fallback")
         files["frontend/src/layout/AppLayout.tsx"] = _build_app_layout_tsx(title, pages, colors)
-
-    # LoginPage — LLM-generated, fallback to template
-    if isinstance(ai_login, str) and ai_login and len(ai_login) > 300:
-        files["frontend/src/pages/LoginPage.tsx"] = ai_login
-        logger.info("[ai-gen] ✓ LoginPage from LLM")
-    else:
-        logger.warning("[ai-gen] LoginPage LLM failed — using template fallback")
-        files["frontend/src/pages/LoginPage.tsx"] = _build_login_page_tsx(title, colors)
 
     # AI-generated page files
     successful_pages = 0
@@ -1372,8 +1504,8 @@ async def generate_fullstack_app_with_ai(
         actual_pages.append((page_file_name, orig_desc))
 
     # Rebuild App.tsx with the actual pages (not the planned list)
-    files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(actual_pages)
-    logger.info("[ai-gen] App.tsx built from %d actual pages", len(actual_pages))
+    files["frontend/src/App.tsx"] = _build_app_tsx_for_pages(actual_pages, has_auth=False)
+    logger.info("[ai-gen] App.tsx built from %d actual pages (no auth)", len(actual_pages))
 
     # Rebuild AppLayout if it was template-generated (LLM-generated already has correct nav)
     if not (isinstance(ai_layout, str) and ai_layout and len(ai_layout) > 300):

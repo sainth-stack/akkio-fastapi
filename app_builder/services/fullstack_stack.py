@@ -23,12 +23,11 @@ LOCKED_BACKEND = {
     "orm": "SQLAlchemy",
     "database": "PostgreSQL",
     "api_style": "REST",
-    "auth": "JWT",
 }
 
 STACK_SUMMARY = """LOCKED TECH STACK (do not deviate):
 Frontend: React, TypeScript, Vite, Material UI, React Router, TanStack Query, Recharts.
-Backend: Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL, REST APIs, JWT authentication.
+Backend: Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL, REST APIs.
 Architecture layers: React Frontend → FastAPI REST API → Service Layer → PostgreSQL → AI/Risk services.
 Frontend must work end-to-end even if the backend is down, using a mock API layer."""
 
@@ -61,7 +60,6 @@ def lock_architecture(architecture: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "orm": "SQLAlchemy",
             "database": "PostgreSQL",
             "api_style": "REST",
-            "auth": "JWT",
         }
     )
     arch["frontend_structure"] = frontend
@@ -113,11 +111,9 @@ For fullstack enterprise apps you MUST also include:
 - REST endpoints with method, path, request, response, roles.
 # 7. Data Model
 - Tables, PKs, FKs, indexes, timestamps, constraints.
-# 8. Roles & Permissions
-- ADMIN, QUALITY_MANAGER / manager, INSPECTOR / operator, VIEWER (or roles from the prompt).
-# 9. Quality Requirements
+# 8. Quality Requirements
 - Loading, empty, error states; pagination; search; filters; audit; mock fallback if APIs fail.
-# 10. Deliverables
+# 9. Deliverables
 - Frontend, backend, Postgres schema, migrations, seed data, docker-compose, .env.example, README, tests.
 
 Extract colors, density, and industry UI tone from the prompt. Do not invent a different tech stack.
@@ -156,7 +152,6 @@ Architecture JSON MUST lock:
 - backend_structure.framework = FastAPI
 - backend_structure.database = PostgreSQL
 - backend_structure.orm = SQLAlchemy
-- backend_structure.auth = JWT
 
 Also include:
 - screens[] with path, name, required API endpoints, mock fixtures
@@ -181,9 +176,9 @@ CODEGEN RULES:
 3. Use TanStack Query for server state. Charts use Recharts.
 4. Theme (palette, typography, spacing) MUST come from the UI/UX color palette / design tokens. Apply via MUI createTheme in frontend/src/theme.ts.
 5. API client (frontend/src/api/client.ts) MUST catch network/4xx/5xx and fall back to frontend/src/api/mock.ts so every screen still works.
-6. Backend is FastAPI + SQLAlchemy + Pydantic + JWT. PostgreSQL via DATABASE_URL. SQLite fallback only if DATABASE_URL unset (for preview).
+6. Backend is FastAPI + SQLAlchemy + Pydantic. PostgreSQL via DATABASE_URL. SQLite fallback only if DATABASE_URL unset (for preview).
 7. Implement all listed REST endpoints. Validate input. Swagger via FastAPI. Audit log writes for mutations.
 8. Include docker-compose.yml, .env.example, README, seed.py, and Alembic migration stub.
 9. Do not ship mock-only screens. Wire every screen to the API client (which itself uses mocks as fallback).
-10. Roles: implement login/logout JWT and hide actions the role cannot perform.
+10. Do NOT add login, logout, or JWT auth to pages or the layout.
 """
