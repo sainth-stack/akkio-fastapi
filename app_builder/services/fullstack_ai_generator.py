@@ -662,6 +662,78 @@ async def generate_backend_with_ai(
     return None
 
 
+def _default_seed_data(domain: str = "general") -> Dict[str, Any]:
+    """Return a minimal seed_data.json dict with non-zero demo KPIs for the dynamic router fallback."""
+    kpis: Dict[str, Any] = {
+        "total_lots": 142,
+        "pending_inspections": 23,
+        "released": 98,
+        "held": 12,
+        "rejected": 9,
+        "open_capa": 7,
+        "incoming_lots": 18,
+        "total_items": 3420,
+        "low_stock_alerts": 14,
+        "total_orders": 287,
+        "pending_orders": 34,
+        "total_suppliers": 67,
+    }
+    return {
+        "kpis": kpis,
+        "dashboard/kpis": kpis,
+        "dashboard/stats": kpis,
+        "stats": kpis,
+    }
+
+
+async def _generate_seed_json(
+    mock_ts_content: str,
+    domain: str = "general",
+    llm=None,
+) -> Optional[str]:
+    """Convert mock.ts TypeScript data to a seed_data.json string via LLM.
+
+    Returns a JSON string (for writing to backend/seed_data.json) or None on failure.
+    The file is later read by the dynamic router to serve realistic data in preview mode.
+    """
+    if not mock_ts_content or not mock_ts_content.strip():
+        return None
+    if llm is None:
+        try:
+            from llm_helper import get_llm_for_user
+            llm = get_llm_for_user(None, temperature=0.1)
+        except Exception:
+            return None
+
+    prompt = (
+        "You are a data engineer. Convert the following TypeScript mock data file into a valid JSON object "
+        "that can be used as a seed data file for a REST API backend.\n\n"
+        "Rules:\n"
+        "1. Extract ALL data arrays into top-level keys using their collection name (e.g. 'products', 'users', 'orders').\n"
+        "2. Extract any KPI/stats/dashboard values into a 'kpis' key AND a 'dashboard/kpis' key (same object).\n"
+        "3. If the mock file has counters or summary numbers, include them in 'kpis'.\n"
+        "4. Array items must be plain JSON objects (no TypeScript types, no Date constructors, no undefined).\n"
+        "5. Return ONLY valid JSON. No markdown fences, no explanation, no trailing commas.\n\n"
+        f"TypeScript mock.ts (domain: {domain}):\n"
+        f"{mock_ts_content[:5000]}\n"
+    )
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        obj = _extract_json_from_llm(text)
+        if obj and isinstance(obj, dict):
+            # Ensure dashboard/kpis alias always exists
+            if "kpis" in obj and "dashboard/kpis" not in obj:
+                obj["dashboard/kpis"] = obj["kpis"]
+            if "dashboard/kpis" in obj and "kpis" not in obj:
+                obj["kpis"] = obj["dashboard/kpis"]
+            return json.dumps(obj, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("[ai-gen] _generate_seed_json failed: %s", e)
+    return None
+
+
 async def generate_mock_data_with_ai(
     title: str,
     requirement: str,
@@ -1095,9 +1167,6 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requireme
         "// All API calls fall back here when backend is unreachable.",
         *product_seed_lines,
         "const USERS = [",
-        f"// Auto-generated mock API — {title}",
-        "// All API calls fall back here when backend is unreachable.",
-        "const USERS = [",
         "  { id: 1, email: 'admin@example.com', password: 'admin123', name: 'Admin User', role: 'ADMIN' },",
         "  { id: 2, email: 'user@example.com', password: 'user123', name: 'Demo User', role: 'USER' },",
         "];",
@@ -1106,6 +1175,28 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requireme
         # Pre-seed products with domain data so /api/products returns correct items
         "if (typeof _domainProducts !== 'undefined') { _store['products'] = [..._domainProducts]; }",
         "",
+        "// Exact-path overrides for endpoints that don't map 1-to-1 to a collection.",
+        "// /api/dashboard/kpis, /api/stats, /api/metrics etc. are returned directly.",
+        "const _ENDPOINTS: Record<string, unknown> = {",
+        "  '/api/dashboard/kpis': {",
+        "    total_lots: 142, pending_inspections: 23, released: 98, held: 12, rejected: 9,",
+        "    open_capa: 7, incoming_lots: 18, total_items: 3420, low_stock_alerts: 14,",
+        "    on_time_delivery_rate: 94.2, inventory_turnover: 8.3,",
+        "    total_orders: 287, pending_orders: 34, total_suppliers: 67, active_suppliers: 54,",
+        "  },",
+        "  '/api/dashboard': {",
+        "    total_sales: 284500, orders_today: 47, active_users: 1284, revenue: 284500,",
+        "    growth_rate: 12.4, conversion_rate: 3.8,",
+        "    total_lots: 142, pending_inspections: 23, released: 98, held: 12, rejected: 9,",
+        "    open_capa: 7,",
+        "    total: 1284, active: 987, pending: 142, completed: 1089,",
+        "    trend: [60, 72, 80, 85, 91, 94, 100, 110, 118, 128],",
+        "  },",
+        "  '/api/stats': { total: 1284, active: 987, pending: 142, completed: 1089 },",
+        "  '/api/metrics': { total: 500, anomalies: 23, alerts: 7, score: 94.2 },",
+        "  '/api/reports/summary': { total_anomalies: 156, mttd_minutes: 4.2, anomaly_rate: 3.1 },",
+        "};",
+        "",
         "function ok<T>(data: T): Promise<T> { return Promise.resolve(data); }",
         "function err(msg: string): Promise<never> { return Promise.reject(new Error(msg)); }",
         "",
@@ -1113,6 +1204,14 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requireme
         "  const method = (options.method || 'GET').toUpperCase();",
         "  const clean = path.replace(/^\\/api\\//, '').replace(/\\?.*$/, '');",
         "  const parts = clean.split('/').filter(Boolean);",
+        "",
+        "  // Exact-path overrides (GET only) — checked before collection routing.",
+        "  if (method === 'GET') {",
+        "    const pathNoQuery = path.split('?')[0];",
+        "    if (Object.prototype.hasOwnProperty.call(_ENDPOINTS, pathNoQuery)) {",
+        "      return _ENDPOINTS[pathNoQuery] as T;",
+        "    }",
+        "  }",
         "",
         "  // Auth",
         "  if (clean === 'auth/login' && method === 'POST') {",
@@ -1127,8 +1226,10 @@ def _build_mock_ts_for_pages(pages: List[Tuple[str, str]], title: str, requireme
         "    return ok({ ok: true }) as T;",
         "  }",
         "",
+        "  // Generic dashboard / stats fallback (when path didn't match exact override above)",
         "  if ((clean === 'dashboard' || clean === 'stats') && method === 'GET') {",
-        "    return ok({ total: 128, active: 94, pending: 22, completed: 12,",
+        "    return ok({ total: 1284, active: 987, pending: 142, completed: 1089,",
+        "      total_sales: 284500, orders_today: 47, revenue: 284500, growth_rate: 12.4,",
         "      trend: [60, 72, 80, 85, 91, 94, 100, 110, 118, 128],",
         "      recent: _store.items.slice(-5).reverse() }) as T;",
         "  }",
@@ -1515,6 +1616,26 @@ async def generate_fullstack_app_with_ai(
     # ── Step 6: Post-generation API consistency check ─────────────────────────
     logger.info("[ai-gen] Running API consistency check...")
     files = await _fix_api_consistency(files, llm)
+
+    # ── Step 7: Write backend/seed_data.json for dynamic router fallback ──────
+    # This lets the dynamic router serve realistic data when previewing the app,
+    # so dashboards never show zeros.
+    mock_content = files.get("frontend/src/api/mock.ts", "")
+    try:
+        seed_json = await _generate_seed_json(mock_content, detected_domain, llm)
+        if seed_json:
+            files["backend/seed_data.json"] = seed_json
+            logger.info("[ai-gen] ✓ backend/seed_data.json written from mock.ts")
+        else:
+            files["backend/seed_data.json"] = json.dumps(
+                _default_seed_data(detected_domain), indent=2, ensure_ascii=False
+            )
+            logger.info("[ai-gen] backend/seed_data.json: using default demo fallback")
+    except Exception as _seed_exc:
+        logger.warning("[ai-gen] seed_data.json generation failed, using defaults: %s", _seed_exc)
+        files["backend/seed_data.json"] = json.dumps(
+            _default_seed_data(detected_domain), indent=2, ensure_ascii=False
+        )
 
     logger.info(
         "[ai-gen] Complete | pages=%d/%d AI-generated | total_files=%d",

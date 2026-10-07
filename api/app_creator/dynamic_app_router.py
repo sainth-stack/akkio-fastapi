@@ -366,18 +366,77 @@ async def list_collection(
         conn.close()
 
 
+_DEMO_KPIS: Dict[str, Any] = {
+    "total_lots": 142,
+    "pending_inspections": 23,
+    "released": 98,
+    "held": 12,
+    "rejected": 9,
+    "open_capa": 7,
+    "incoming_lots": 18,
+    "total_items": 3420,
+    "low_stock_alerts": 14,
+    "total_orders": 287,
+    "pending_orders": 34,
+    "total_suppliers": 67,
+}
+
+_KPI_SUBPATHS = frozenset({"kpis", "stats", "summary", "overview", "metrics", "counters"})
+
+
+def _load_seed_data(project_id: str) -> Dict[str, Any]:
+    """Load backend/seed_data.json for a project if it exists; returns empty dict otherwise."""
+    try:
+        project_root = resolve_project_root(project_id)
+        seed_file = os.path.join(project_root, "backend", "seed_data.json")
+        if os.path.exists(seed_file):
+            with open(seed_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("[dynamic_app] could not load seed_data.json for %s: %s", project_id, e)
+    return {}
+
+
 @router.get("/{project_id}/{collection}/{item_id}")
 async def get_item(
     project_id: str,
     collection: str,
-    item_id: int,
+    item_id: str,
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
-    """Get one item by id."""
+    """Get one item by id, or handle named sub-resource endpoints (e.g. dashboard/kpis)."""
     assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # ── Sub-resource path (e.g. /dashboard/kpis, /reports/summary) ────────────
+    if not item_id.lstrip("-").isdigit():
+        subpath = item_id.lower()
+        compound_key = f"{collection}/{subpath}"
+
+        # 1. Try seed_data.json
+        seed = _load_seed_data(project_id)
+        if compound_key in seed:
+            return JSONResponse(content=seed[compound_key])
+        if subpath in seed:
+            return JSONResponse(content=seed[subpath])
+
+        # 2. KPI/stats fallback — return demo data so dashboards never show zeros
+        if subpath in _KPI_SUBPATHS or collection in ("dashboard", "metrics", "stats", "analytics"):
+            kpi_data = seed.get("kpis") or seed.get("dashboard/kpis") or _DEMO_KPIS
+            logger.info(
+                "[dynamic_app] serving demo KPIs for %s/%s/%s (seed_data absent)",
+                project_id, collection, item_id,
+            )
+            return JSONResponse(content=kpi_data)
+
+        # 3. Unknown sub-resource — 404
+        raise HTTPException(status_code=404, detail=f"Sub-resource '{collection}/{item_id}' not found")
+
+    # ── Integer DB lookup (original behaviour) ─────────────────────────────────
+    int_id = int(item_id)
     config = _ensure_collection_registered(config, collection)
     tables = config.get("tables") or []
     if collection not in tables:
@@ -385,7 +444,7 @@ async def get_item(
     conn = _get_connection(project_id, config)
     try:
         def _op(c):
-            cursor = c.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (item_id,))
+            cursor = c.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (int_id,))
             return cursor.fetchone()
 
         row = _execute_with_schema_heal(conn, project_id, config, collection, _op)
@@ -458,12 +517,15 @@ async def create_item(
 async def update_item(
     project_id: str,
     collection: str,
-    item_id: int,
+    item_id: str,
     request: Request,
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Update item by id."""
     assert_project_access(project_id, current)
+    if not item_id.lstrip("-").isdigit():
+        raise HTTPException(status_code=400, detail=f"Invalid item id: {item_id}")
+    int_id = int(item_id)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -480,13 +542,13 @@ async def update_item(
     conn = _get_connection(project_id, config, extra_cols=extra)
     try:
         set_clause = ",".join(f'"{c}" = ?' for c in cols)
-        vals = [body[k] for k in cols] + [item_id]
+        vals = [body[k] for k in cols] + [int_id]
         conn.execute(
             f'UPDATE "{collection}" SET {set_clause} WHERE id = ?',
             vals,
         )
         conn.commit()
-        cursor = conn.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (item_id,))
+        cursor = conn.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (int_id,))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
@@ -501,7 +563,7 @@ async def update_item(
 async def patch_item(
     project_id: str,
     collection: str,
-    item_id: int,
+    item_id: str,
     request: Request,
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
@@ -513,11 +575,14 @@ async def patch_item(
 async def delete_item(
     project_id: str,
     collection: str,
-    item_id: int,
+    item_id: str,
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Delete item by id."""
     assert_project_access(project_id, current)
+    if not item_id.lstrip("-").isdigit():
+        raise HTTPException(status_code=400, detail=f"Invalid item id: {item_id}")
+    int_id = int(item_id)
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -528,7 +593,7 @@ async def delete_item(
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
     conn = _get_connection(project_id, config)
     try:
-        conn.execute(f'DELETE FROM "{collection}" WHERE id = ?', (item_id,))
+        conn.execute(f'DELETE FROM "{collection}" WHERE id = ?', (int_id,))
         conn.commit()
         return JSONResponse(content={"status": "deleted"})
     except sqlite3.OperationalError as e:

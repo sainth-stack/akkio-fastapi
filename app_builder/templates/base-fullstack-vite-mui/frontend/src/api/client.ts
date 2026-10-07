@@ -22,6 +22,28 @@ export function getApiBase(): string {
   return `${protocol}//${hostname}:${apiPort}`;
 }
 
+/**
+ * Build a full URL from a base and a path, handling the preview case where
+ * the base already contains /api/apps/{id}. In that case the path supplied
+ * by callers like `/api/dashboard/kpis` must have its leading `/api` stripped
+ * to avoid a double `/api` segment, e.g.:
+ *   base  = /api/apps/myapp
+ *   path  = /api/dashboard/kpis
+ *   → URL = /api/apps/myapp/dashboard/kpis   ✓  (not /api/apps/myapp/api/…)
+ */
+function buildUrl(base: string, path: string): string {
+  const normalizedBase = base.replace(/\/$/, '');
+  let normalizedPath = path.startsWith('/') ? path : '/' + path;
+
+  // When the base is a preview proxy path (/api/apps/{id}), strip the
+  // redundant /api prefix that page code naturally prefixes to its paths.
+  if (normalizedBase.includes('/api/apps/') && normalizedPath.startsWith('/api/')) {
+    normalizedPath = normalizedPath.slice(4); // remove leading '/api'
+  }
+
+  return normalizedBase + normalizedPath;
+}
+
 function parseApiError(text: string, status: number): string {
   if (!text) return `HTTP ${status}`;
   try {
@@ -35,7 +57,7 @@ function parseApiError(text: string, status: number): string {
 
 export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const base = getApiBase();
-  let url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  let url = path.startsWith('http') ? path : buildUrl(base, path);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),

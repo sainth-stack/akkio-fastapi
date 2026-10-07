@@ -191,7 +191,7 @@ User request: "{request}"
 
 Respond with ONLY a JSON object:
 {{
-  "type": "theme_only | add_page | modify_page | full_regen",
+  "type": "theme_only | add_page | modify_page | full_regen | synthetic_data",
   "scope": "brief description of what changes",
   "pages_affected": ["PageName1", "PageName2"],
   "reason": "one sentence explanation"
@@ -201,6 +201,7 @@ Classification rules:
 - "theme_only": ONLY if user asks to change colors, theme, style, fonts, dark mode, or brand look with NO data/feature changes
 - "add_page": user wants a new page/screen/section added to an existing app
 - "modify_page": user wants specific page(s) functionality or content changed (but same domain)
+- "synthetic_data": user asks to generate/create/add/populate dummy data, fake data, synthetic data, sample data, mock data, test data, seed data, or says the app is showing zeros/no data/empty
 - "full_regen": ANY of these → domain change (electronics → pharma, fashion → healthcare), 
   "make it pharma/food/medical/...", changing the core product/data type, 
   "data should be X", "products should be X", major restructuring
@@ -211,6 +212,8 @@ Important:
 - If user says "update the products page" → look for "ProductsPage" or "ProductPage" in the list
 - Always populate pages_affected using the exact page names from the EXISTING PAGES list
 - If the user is changing the DOMAIN or PRODUCT TYPE of the app → always "full_regen"
+Examples of synthetic_data: "create dummy data", "add sample data", "populate with fake data",
+"generate synthetic data", "add test data", "showing zeros fix it", "no data showing"
 Examples of full_regen: "make it pharma", "products should be medicines",
 "change to food delivery", "create hospital management system"
 
@@ -453,12 +456,24 @@ async def update_code_from_chat(
             )
             update_type = update_classification.get("type", "full_regen")
 
+            # ── Pre-check: synthetic data keywords override classifier ────────
+            _SYNTHETIC_DATA_KEYWORDS = {
+                "synthetic data", "dummy data", "fake data", "sample data",
+                "mock data", "test data", "seed data", "populate data",
+                "generate data", "create data", "add data", "showing zeros",
+                "no data", "empty data", "showing 0", "all zeros", "all zero",
+                "populate with", "fill with data", "add some data",
+            }
+            req_lower = user_request.lower()
+            if any(kw in req_lower for kw in _SYNTHETIC_DATA_KEYWORDS):
+                update_type = "synthetic_data"
+                update_classification["type"] = "synthetic_data"
+
             # ── Pre-check: only do full_regen if user EXPLICITLY asked for it ─
             _EXPLICIT_REGEN_WORDS = {
                 "rebuild", "regenerate", "start over", "redo", "start fresh",
                 "from scratch", "make new", "recreate",
             }
-            req_lower = user_request.lower()
             if update_type == "full_regen" and not any(w in req_lower for w in _EXPLICIT_REGEN_WORDS):
                 print(f"[update-classifier] Downgrading full_regen → modify_page (no explicit rebuild keyword in request)")
                 update_type = "modify_page"
@@ -622,6 +637,136 @@ async def update_code_from_chat(
                     "merged_design_tokens": merged_tokens,
                     "update_type": update_type,
                     "changes": [{"file": k, "action": "updated"} for k in file_list[:60]],
+                }
+
+            elif update_type == "synthetic_data":
+                # Generate realistic domain-specific data and update mock.ts + seed_data.json
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_progress",
+                        "agent": "update_code_agent",
+                        "message": "🗄️ Generating realistic synthetic data for your app...",
+                    }))
+
+                # Build context: existing pages + backend routes for the LLM
+                existing_pages_list = "\n".join(f"- {p}" for p in _existing_pages) or "(none)"
+                existing_backend = ""
+                for backend_key in ("backend/main.py", "backend/routes.py"):
+                    bp = os.path.join(project_root, backend_key)
+                    if os.path.exists(bp):
+                        try:
+                            with open(bp, "r", encoding="utf-8") as _bh:
+                                existing_backend = _bh.read()[:6000]
+                            break
+                        except Exception:
+                            pass
+
+                _SYNTH_DATA_PROMPT = f"""You are a data engineer. Generate realistic, domain-specific synthetic data for a web application.
+
+APP TITLE: {title}
+APP REQUIREMENT: {(original_requirement or current_prd or user_request)[:1000]}
+
+PAGES IN APP:
+{existing_pages_list}
+
+EXISTING BACKEND ROUTES (extract the API paths from this):
+{existing_backend[:3000] if existing_backend else '(not available)'}
+
+USER REQUEST: {user_request}
+
+Generate TWO things:
+
+1. A TypeScript mock.ts file with realistic data for ALL API endpoints used by the pages above.
+   - At least 15-25 records per entity (products, orders, users, etc.)
+   - Use domain-appropriate field names and realistic values
+   - Include a `_ENDPOINTS` map for exact paths like `/api/dashboard/kpis`, `/api/stats`, etc. with non-zero realistic numbers
+   - Format: export const _ENDPOINTS: Record<string, unknown> = {{ ... }}; export const _store: Record<string, unknown[]> = {{ ... }};
+   - The mockFetch function should check _ENDPOINTS first (exact path match), then _store (collection match)
+
+2. A seed_data.json with the same data in JSON format for server-side use.
+   Format: {{ "kpis": {{...}}, "entities": {{ "products": [...], "orders": [...], ... }} }}
+
+Output format (use these exact markers):
+===MOCK_TS_START===
+(complete mock.ts TypeScript file)
+===MOCK_TS_END===
+
+===SEED_JSON_START===
+(complete seed_data.json)
+===SEED_JSON_END===
+
+Make the data realistic and substantial. No placeholder values. No zeros for meaningful metrics."""
+
+                try:
+                    _synth_response = await llm.ainvoke(_SYNTH_DATA_PROMPT)
+                    _synth_raw = _synth_response.content if hasattr(_synth_response, "content") else str(_synth_response)
+
+                    # Parse mock.ts
+                    _mock_ts = None
+                    if "===MOCK_TS_START===" in _synth_raw and "===MOCK_TS_END===" in _synth_raw:
+                        _mock_ts = _synth_raw.split("===MOCK_TS_START===")[1].split("===MOCK_TS_END===")[0].strip()
+
+                    # Parse seed_data.json
+                    _seed_json = None
+                    if "===SEED_JSON_START===" in _synth_raw and "===SEED_JSON_END===" in _synth_raw:
+                        _seed_json = _synth_raw.split("===SEED_JSON_START===")[1].split("===SEED_JSON_END===")[0].strip()
+
+                    if _mock_ts and len(_mock_ts) > 100:
+                        new_files["frontend/src/api/mock.ts"] = _mock_ts
+                        if websocket:
+                            await websocket.send_text(json.dumps({
+                                "event": "agent_progress",
+                                "agent": "update_code_agent",
+                                "message": "✅ mock.ts updated with realistic data",
+                            }))
+
+                    if _seed_json and len(_seed_json) > 10:
+                        # Validate JSON
+                        try:
+                            json.loads(_seed_json)
+                            new_files["backend/seed_data.json"] = _seed_json
+                            if websocket:
+                                await websocket.send_text(json.dumps({
+                                    "event": "agent_progress",
+                                    "agent": "update_code_agent",
+                                    "message": "✅ seed_data.json written — backend will serve realistic data",
+                                }))
+                        except json.JSONDecodeError:
+                            pass
+
+                    if not new_files:
+                        raise ValueError("LLM did not produce usable data output")
+
+                except Exception as _synth_err:
+                    print(f"[synthetic_data] LLM generation failed: {_synth_err}. Using domain defaults.")
+                    # Fallback: write a generic but non-zero seed_data.json
+                    from app_builder.services.fullstack_ai_generator import _default_seed_data
+                    _detected_domain = title.lower()
+                    _fallback_seed = _default_seed_data(_detected_domain)
+                    new_files["backend/seed_data.json"] = json.dumps(_fallback_seed, indent=2)
+
+                # Write files directly (skip post_process which may overwrite pages)
+                if new_files:
+                    file_writer(project_name, GeneratedFiles(files=new_files))
+
+                file_list = sorted(new_files.keys())
+                if websocket:
+                    await websocket.send_text(json.dumps({
+                        "event": "agent_complete",
+                        "agent": "update_code_agent",
+                        "message": f"🎉 Synthetic data generated! {len(file_list)} file(s) updated. Refresh the app to see realistic data.",
+                    }))
+
+                return {
+                    "status": "success",
+                    "analysis": f"Synthetic data generated for '{title}'. Updated {len(file_list)} file(s) with domain-specific realistic data. Refresh the app preview to see the changes.",
+                    "updated_files": file_list,
+                    "updated_code_dict": new_files,
+                    "updated_prd": current_prd,
+                    "updated_architecture": current_architecture,
+                    "merged_design_tokens": merged_tokens,
+                    "update_type": "synthetic_data",
+                    "changes": [{"file": k, "action": "updated"} for k in file_list],
                 }
 
             elif update_type == "modify_page":

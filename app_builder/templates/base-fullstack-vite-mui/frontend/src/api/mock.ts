@@ -6,6 +6,52 @@ type Json = Record<string, unknown>;
 
 const now = () => new Date().toISOString();
 
+/**
+ * Exact-path overrides — checked BEFORE the generic collection routing.
+ * Add entries here for endpoints whose path doesn't map 1-to-1 to a
+ * collection name (e.g. nested routes like /api/dashboard/kpis).
+ * Keys must be the raw path as passed to mockFetch (e.g. '/api/dashboard/kpis').
+ */
+const MOCK_ENDPOINTS: Record<string, Json> = {
+  // Supply-chain / quality / inventory KPIs
+  '/api/dashboard/kpis': {
+    total_lots: 142,
+    pending_inspections: 23,
+    released: 98,
+    held: 12,
+    rejected: 9,
+    open_capa: 7,
+    incoming_lots: 18,
+    total_items: 3420,
+    low_stock_alerts: 14,
+    on_time_delivery_rate: 94.2,
+    inventory_turnover: 8.3,
+    total_orders: 287,
+    pending_orders: 34,
+    total_suppliers: 67,
+    active_suppliers: 54,
+  },
+  // General dashboard summary
+  '/api/dashboard': {
+    total_sales: 284500,
+    orders_today: 47,
+    active_users: 1284,
+    revenue: 284500,
+    growth_rate: 12.4,
+    conversion_rate: 3.8,
+    total_lots: 142,
+    pending_inspections: 23,
+    released: 98,
+    held: 12,
+    rejected: 9,
+    open_capa: 7,
+    trend: [60, 72, 80, 85, 91, 94, 100, 110, 118, 128],
+  },
+  '/api/stats': { total: 1284, active: 987, pending: 142, completed: 1089 },
+  '/api/metrics': { total: 500, anomalies: 23, alerts: 7, score: 94.2 },
+  '/api/reports/summary': { total_anomalies: 156, mttd_minutes: 4.2, anomaly_rate: 3.1 },
+};
+
 const MOCK_TABLES: Record<string, Json[]> = {
   dashboard: [
     {
@@ -15,6 +61,12 @@ const MOCK_TABLES: Record<string, Json[]> = {
       held: 24,
       rejected: 16,
       open_capa: 9,
+      total_sales: 284500,
+      orders_today: 47,
+      active_users: 1284,
+      revenue: 284500,
+      growth_rate: 12.4,
+      conversion_rate: 3.8,
     },
   ],
   suppliers: [
@@ -39,6 +91,16 @@ function collectionFromPath(path: string): { key: string; id?: string } {
 
 export async function mockFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase();
+
+  // Exact-path overrides take priority for GET requests.
+  // Strip query string for matching.
+  if (method === 'GET') {
+    const pathNoQuery = path.split('?')[0];
+    if (Object.prototype.hasOwnProperty.call(MOCK_ENDPOINTS, pathNoQuery)) {
+      return MOCK_ENDPOINTS[pathNoQuery] as T;
+    }
+  }
+
   const { key, id } = collectionFromPath(path);
   if (!MOCK_TABLES[key]) MOCK_TABLES[key] = [];
   const rows = MOCK_TABLES[key];
