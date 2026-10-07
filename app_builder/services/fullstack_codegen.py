@@ -82,11 +82,12 @@ def apply_theme_tokens(
 _DEFAULT_EXPORT_PATCH = "\n// Export as default so both import styles work\nexport default apiFetch;\n"
 
 def ensure_mock_client(files: Dict[str, str]) -> Dict[str, str]:
+    scaffold = get_fullstack_scaffold_files()
+    # Always ship latest client (mock fallback + empty-payload guard)
+    if "frontend/src/api/client.ts" in scaffold:
+        files["frontend/src/api/client.ts"] = scaffold["frontend/src/api/client.ts"]
     client = files.get("frontend/src/api/client.ts") or files.get("frontend/src/api/client.js") or ""
     if "mockFetch" not in client:
-        scaffold = get_fullstack_scaffold_files()
-        if "frontend/src/api/client.ts" in scaffold:
-            files["frontend/src/api/client.ts"] = scaffold["frontend/src/api/client.ts"]
         if "frontend/src/api/mock.ts" in scaffold and "frontend/src/api/mock.ts" not in files:
             files["frontend/src/api/mock.ts"] = scaffold["frontend/src/api/mock.ts"]
     if "frontend/src/api/mock.ts" not in files:
@@ -222,6 +223,64 @@ def _fix_apifetch_imports(files: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
+def ensure_default_preview_data(
+    files: Dict[str, str],
+    requirement: str = "",
+    prd: str = "",
+    project_name: str = "",
+) -> Dict[str, str]:
+    """Every app gets non-zero demo seed + mock data by default (no user prompt required)."""
+    import json
+
+    from app_builder.services.demo_api_data import (
+        build_default_seed,
+        project_looks_like_anomaly_from_files,
+    )
+
+    out = dict(files or {})
+    pid = project_name or ""
+    seed = build_default_seed(out, requirement=requirement, prd=prd, project_id=pid)
+    out["backend/seed_data.json"] = json.dumps(seed, indent=2, ensure_ascii=False)
+
+    if project_looks_like_anomaly_from_files(out):
+        from app_builder.services.fullstack_anomaly_generator import _mock_ts
+
+        title = "Anomaly Detection"
+        for path in ("frontend/src/pages/DashboardPage.tsx", "frontend/src/App.tsx"):
+            content = out.get(path, "")
+            if "CNC" in content or "Lathe" in content or "lathe" in content:
+                title = "CNC Lathe Monitoring"
+                break
+        out["frontend/src/api/mock.ts"] = _mock_ts(title)
+    else:
+        mock = out.get("frontend/src/api/mock.ts", "")
+        needs_mock = (
+            not mock
+            or "_ENDPOINTS" not in mock
+            or "total_lots: 0" in mock
+            or "pending_inspections: 0," in mock and "released: 0" in mock
+        )
+        if needs_mock:
+            pages: List[Tuple[str, str]] = []
+            for p in sorted(out.keys()):
+                if p.startswith("frontend/src/pages/") and p.endswith(".tsx"):
+                    name = os.path.basename(p).replace(".tsx", "")
+                    pages.append((name, ""))
+            if not pages:
+                pages = [("DashboardPage", "Overview")]
+            from app_builder.services.fullstack_ai_generator import _build_mock_ts_for_pages
+
+            out["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(
+                pages, title="App", requirement=requirement, prd=prd
+            )
+    return out
+
+
+def ensure_anomaly_preview_data(files: Dict[str, str]) -> Dict[str, str]:
+    """Backward-compatible alias."""
+    return ensure_default_preview_data(files)
+
+
 def post_process_fullstack_files(
     files: Dict[str, str],
     design_tokens: Optional[Dict[str, Any]] = None,
@@ -247,6 +306,7 @@ def post_process_fullstack_files(
     out = _fix_apifetch_imports(out)
     out.pop("frontend/src/App.jsx", None)
     out.pop("frontend/src/styles/app.css", None)
+    out = ensure_default_preview_data(out, requirement=requirement, prd=prd)
     return out
 
 

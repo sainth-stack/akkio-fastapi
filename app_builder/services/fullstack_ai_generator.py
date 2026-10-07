@@ -663,27 +663,14 @@ async def generate_backend_with_ai(
 
 
 def _default_seed_data(domain: str = "general") -> Dict[str, Any]:
-    """Return a minimal seed_data.json dict with non-zero demo KPIs for the dynamic router fallback."""
-    kpis: Dict[str, Any] = {
-        "total_lots": 142,
-        "pending_inspections": 23,
-        "released": 98,
-        "held": 12,
-        "rejected": 9,
-        "open_capa": 7,
-        "incoming_lots": 18,
-        "total_items": 3420,
-        "low_stock_alerts": 14,
-        "total_orders": 287,
-        "pending_orders": 34,
-        "total_suppliers": 67,
-    }
-    return {
-        "kpis": kpis,
-        "dashboard/kpis": kpis,
-        "dashboard/stats": kpis,
-        "stats": kpis,
-    }
+    """Return seed_data.json with non-zero demo data for the dynamic router fallback."""
+    from app_builder.services.demo_api_data import build_default_seed
+
+    files: Dict[str, Any] = {}
+    if domain and "anomaly" in str(domain).lower():
+        from app_builder.services.demo_api_data import anomaly_seed_data
+        return anomaly_seed_data(domain)
+    return build_default_seed(files, requirement=str(domain or ""), prd="", project_id="")
 
 
 async def _generate_seed_json(
@@ -1636,6 +1623,9 @@ async def generate_fullstack_app_with_ai(
         files["backend/seed_data.json"] = json.dumps(
             _default_seed_data(detected_domain), indent=2, ensure_ascii=False
         )
+
+    from app_builder.services.fullstack_codegen import ensure_default_preview_data
+    files = ensure_default_preview_data(files, requirement=requirement, prd=prd or "")
 
     logger.info(
         "[ai-gen] Complete | pages=%d/%d AI-generated | total_files=%d",

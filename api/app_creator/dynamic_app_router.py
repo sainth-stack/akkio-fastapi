@@ -19,6 +19,14 @@ from api.app_creator.project_access import assert_project_access
 
 from app_builder.services.project_config import get_project_config
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from app_builder.services.demo_api_data import (
+    anomaly_dashboard_payload,
+    anomaly_reports_summary,
+    default_dashboard_for_project,
+    resolve_special_collection,
+    resolve_special_subresource,
+    supply_chain_dashboard_kpis,
+)
 
 logger = logging.getLogger("app_builder")
 
@@ -345,6 +353,11 @@ async def list_collection(
 ):
     """List all items in collection."""
     assert_project_access(project_id, current)
+    seed = _load_seed_data(project_id)
+    special = resolve_special_collection(collection, seed, project_id=project_id)
+    if special is not None:
+        return JSONResponse(content=special)
+
     config = get_project_config(project_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -384,6 +397,14 @@ _DEMO_KPIS: Dict[str, Any] = {
 _KPI_SUBPATHS = frozenset({"kpis", "stats", "summary", "overview", "metrics", "counters"})
 
 
+def _project_has_anomaly_ui(project_id: str) -> bool:
+    try:
+        root = resolve_project_root(project_id)
+        return os.path.exists(os.path.join(root, "frontend/src/pages/AnomalyFeedPage.tsx"))
+    except Exception:
+        return False
+
+
 def _load_seed_data(project_id: str) -> Dict[str, Any]:
     """Load backend/seed_data.json for a project if it exists; returns empty dict otherwise."""
     try:
@@ -416,8 +437,11 @@ async def get_item(
         subpath = item_id.lower()
         compound_key = f"{collection}/{subpath}"
 
-        # 1. Try seed_data.json
+        # 1. Try seed_data.json + domain-aware demo payloads
         seed = _load_seed_data(project_id)
+        sub_payload = resolve_special_subresource(collection, subpath, seed)
+        if sub_payload is not None:
+            return JSONResponse(content=sub_payload)
         if compound_key in seed:
             return JSONResponse(content=seed[compound_key])
         if subpath in seed:
@@ -425,7 +449,15 @@ async def get_item(
 
         # 2. KPI/stats fallback — return demo data so dashboards never show zeros
         if subpath in _KPI_SUBPATHS or collection in ("dashboard", "metrics", "stats", "analytics"):
-            kpi_data = seed.get("kpis") or seed.get("dashboard/kpis") or _DEMO_KPIS
+            kpi_data = (
+                seed.get("kpis")
+                or seed.get("dashboard/kpis")
+                or (
+                    default_dashboard_for_project(project_id, seed)
+                    if _project_has_anomaly_ui(project_id)
+                    else supply_chain_dashboard_kpis(project_id)
+                )
+            )
             logger.info(
                 "[dynamic_app] serving demo KPIs for %s/%s/%s (seed_data absent)",
                 project_id, collection, item_id,

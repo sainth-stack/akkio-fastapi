@@ -44,6 +44,48 @@ function buildUrl(base: string, path: string): string {
   return normalizedBase + normalizedPath;
 }
 
+/** True when live API returned JSON that would render as empty KPIs / no chart data. */
+function isUsableApiPayload(path: string, data: unknown): boolean {
+  if (data == null || typeof data !== 'object') return false;
+  const p = path.split('?')[0].toLowerCase();
+  const d = data as Record<string, unknown>;
+
+  const pathNorm = p.split('?')[0];
+  const isDashboardRoot =
+    pathNorm === '/api/dashboard' ||
+    (pathNorm.endsWith('/dashboard') && !pathNorm.includes('kpis'));
+
+  if (p.includes('dashboard')) {
+    const metrics = d.metrics;
+    if (Array.isArray(metrics)) return metrics.length > 0;
+    // Anomaly dashboards call GET /api/dashboard and need a metrics[] time series.
+    if (isDashboardRoot && ('total_lots' in d || 'pending_inspections' in d)) {
+      return false;
+    }
+    const numericKeys = [
+      'total_lots', 'pending_inspections', 'released', 'held', 'rejected', 'open_capa',
+      'incoming_lots', 'total_anomalies_today', 'active_alerts', 'metrics_monitored',
+      'total_sales', 'revenue', 'orders_today', 'total', 'active', 'pending',
+    ];
+    const present = numericKeys.filter((k) => k in d);
+    if (present.length === 0) return Object.keys(d).length > 2;
+    return present.some((k) => {
+      const v = d[k];
+      return typeof v === 'number' && v !== 0;
+    });
+  }
+
+  if (p.includes('anomalies') && Array.isArray(d.items)) {
+    return d.items.length > 0;
+  }
+
+  if (Array.isArray(data)) {
+    return data.length > 0;
+  }
+
+  return true;
+}
+
 function parseApiError(text: string, status: number): string {
   if (!text) return `HTTP ${status}`;
   try {
@@ -75,7 +117,13 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
       throw new Error(parseApiError(text, res.status));
     }
     const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) return res.json() as Promise<T>;
+    if (ct.includes('application/json')) {
+      const data = await res.json();
+      if (!isUsableApiPayload(path, data)) {
+        return mockFetch<T>(path, options);
+      }
+      return data as T;
+    }
     return (await res.text()) as T;
   } catch (err) {
     return mockFetch<T>(path, options);
