@@ -236,13 +236,20 @@ def ensure_default_preview_data(
         build_default_seed,
         project_looks_like_anomaly_from_files,
     )
+    from app_builder.services.sample_report_ui_codegen import ensure_sample_reports_ui
+    from app_builder.services.supply_chain_demo_data import (
+        looks_like_supply_chain,
+        supply_chain_mock_ts,
+    )
 
     out = dict(files or {})
     pid = project_name or ""
     seed = build_default_seed(out, requirement=requirement, prd=prd, project_id=pid)
     out["backend/seed_data.json"] = json.dumps(seed, indent=2, ensure_ascii=False)
 
-    if project_looks_like_anomaly_from_files(out):
+    if looks_like_supply_chain(requirement, prd, out):
+        out["frontend/src/api/mock.ts"] = supply_chain_mock_ts(pid)
+    elif project_looks_like_anomaly_from_files(out, requirement=requirement, prd=prd):
         from app_builder.services.fullstack_anomaly_generator import _mock_ts
 
         title = "Anomaly Detection"
@@ -273,6 +280,7 @@ def ensure_default_preview_data(
             out["frontend/src/api/mock.ts"] = _build_mock_ts_for_pages(
                 pages, title="App", requirement=requirement, prd=prd
             )
+    out = ensure_sample_reports_ui(out)
     return out
 
 
@@ -287,6 +295,7 @@ def post_process_fullstack_files(
     uiux: str = "",
     requirement: str = "",
     prd: str = "",
+    project_name: str = "",
 ) -> Dict[str, str]:
     """Post-process for fullstack apps — fills missing/stale pages, regenerates theme, never CRA-merges."""
     from api.app_creator.backend_verify_service import apply_deterministic_backend_fixes
@@ -306,7 +315,9 @@ def post_process_fullstack_files(
     out = _fix_apifetch_imports(out)
     out.pop("frontend/src/App.jsx", None)
     out.pop("frontend/src/styles/app.css", None)
-    out = ensure_default_preview_data(out, requirement=requirement, prd=prd)
+    out = ensure_default_preview_data(
+        out, requirement=requirement, prd=prd, project_name=project_name
+    )
     return out
 
 

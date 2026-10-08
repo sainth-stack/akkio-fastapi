@@ -424,6 +424,7 @@ async def get_item(
     project_id: str,
     collection: str,
     item_id: str,
+    request: Request,
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Get one item by id, or handle named sub-resource endpoints (e.g. dashboard/kpis)."""
@@ -439,6 +440,15 @@ async def get_item(
 
         # 1. Try seed_data.json + domain-aware demo payloads
         seed = _load_seed_data(project_id)
+        if collection == "reports" and subpath == "template":
+            from app_builder.services.sample_report_templates import resolve_reports_template_payload
+
+            template_id = request.query_params.get("template_id")
+            return JSONResponse(
+                content=resolve_reports_template_payload(
+                    seed, template_id=template_id, project_id=project_id
+                )
+            )
         sub_payload = resolve_special_subresource(collection, subpath, seed)
         if sub_payload is not None:
             return JSONResponse(content=sub_payload)

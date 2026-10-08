@@ -1141,6 +1141,7 @@ async def generate_code_from_plan(
     llm,
     uiux: str = "",
     builder_kind: str = "",
+    project_name: str = "",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Generate domain code from App Spec into the generic Vite+FastAPI shell."""
     import os
@@ -1184,6 +1185,7 @@ async def generate_code_from_plan(
 
             files_generated = await generate_fullstack_app_with_ai(
                 requirement, prd, uiux, architecture, design_tokens,
+                project_name=project_name,
             )
             yield {
                 "event": "agent_progress",

@@ -337,6 +337,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     files, architecture, template_name=template_name, uiux=uiux,
                     requirement=requirement, prd=prd, app_spec=app_spec,
                     design_tokens=design_tokens,
+                    project_name=project_name,
                 )
                 files, validation_errors = ensure_valid_codegen_output(
                     files, architecture, uiux=uiux,
@@ -385,6 +386,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                         files, architecture, template_name=template_name, uiux=uiux,
                         requirement=requirement, prd=prd, app_spec=app_spec,
                         design_tokens=design_tokens,
+                        project_name=project_name,
                     )
                     files, validation_errors = ensure_valid_codegen_output(
                         files, architecture, uiux=uiux,

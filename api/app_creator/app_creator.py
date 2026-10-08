@@ -365,6 +365,45 @@ async def download_project(project_name: str, current: CurrentUser = Depends(res
     )
 
 
+@router.get("/projects/{project_name}/sample-report-template")
+async def get_sample_report_template(
+    project_name: str,
+    template_id: str | None = None,
+    current: CurrentUser = Depends(resolve_user),
+):
+    """Sample report template document for App Builder UI (all app domains)."""
+    _assert_project_access(project_name, current)
+    from app_builder.services.sample_report_templates import build_sample_report_for_project
+
+    return build_sample_report_for_project(project_name, template_id=template_id)
+
+
+@router.get("/projects/{project_name}/sample-data.xlsx")
+async def download_sample_data(project_name: str, current: CurrentUser = Depends(resolve_user)):
+    """Download demo/synthetic seed data as Excel (materials, POs, alerts, reports)."""
+    _assert_project_access(project_name, current)
+    from app_builder.services.sample_data_export import build_sample_data_xlsx
+    from starlette.background import BackgroundTask
+
+    try:
+        xlsx_path = build_sample_data_xlsx(project_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not build sample data export: {e}") from e
+
+    def cleanup(path: str):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    return FileResponse(
+        path=xlsx_path,
+        filename=f"{project_name}_sample_data.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(cleanup, xlsx_path),
+    )
+
+
 def _resolve_frontend_dir(project_root: str, frontend_sub: str):
     """Resolve frontend directory: may be project_root/frontend, nested client, or project_root (single app). Returns path or None."""
     frontend_dir = os.path.join(project_root, frontend_sub)

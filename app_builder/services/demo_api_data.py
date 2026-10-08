@@ -178,8 +178,29 @@ def _dashboard_payload_usable(payload: Dict[str, Any]) -> bool:
 
 
 def default_dashboard_for_project(project_id: str, seed: Dict[str, Any]) -> Dict[str, Any]:
+    dash = seed.get("dashboard")
+    if isinstance(dash, dict) and _dashboard_payload_usable(dash):
+        return dash
     if _project_looks_like_anomaly(project_id, seed):
         return anomaly_dashboard_payload(project_id)
+    from app_builder.services.supply_chain_demo_data import supply_chain_seed_data
+
+    if seed.get("materials") or (isinstance(dash, dict) and "total_inventory_value" in dash):
+        return supply_chain_seed_data(project_id).get("dashboard") or dash
+    if project_id:
+        try:
+            from app_builder.services.runtime_paths import resolve_project_root
+            import os
+
+            meta_path = os.path.join(resolve_project_root(project_id), "backend", "seed_data.json")
+            if os.path.isfile(meta_path):
+                import json
+                with open(meta_path, "r", encoding="utf-8") as fh:
+                    disk_seed = json.load(fh)
+                if disk_seed.get("materials"):
+                    return disk_seed.get("dashboard") or supply_chain_seed_data(project_id)["dashboard"]
+        except Exception:
+            pass
     return {**generic_app_dashboard(project_id), **supply_chain_dashboard_kpis(project_id)}
 
 
@@ -190,13 +211,25 @@ def build_default_seed(
     project_id: str = "",
 ) -> Dict[str, Any]:
     """Default seed_data.json for every generated app (preview + dynamic API)."""
-    if project_looks_like_anomaly_from_files(files) or (
-        requirement and any(w in requirement.lower() for w in ("anomaly", "cnc", "lathe", "monitor", "sensor"))
+    from app_builder.services.supply_chain_demo_data import looks_like_supply_chain, supply_chain_seed_data
+
+    from app_builder.services.sample_report_templates import enrich_seed_with_report_templates
+
+    if looks_like_supply_chain(requirement, prd, files):
+        return enrich_seed_with_report_templates(
+            supply_chain_seed_data(project_id), requirement, prd, files, project_id
+        )
+    if project_looks_like_anomaly_from_files(files, requirement=requirement, prd=prd) or (
+        requirement and any(w in requirement.lower() for w in ("cnc", "lathe"))
+        and "inventory" not in requirement.lower()
+        and "supply chain" not in requirement.lower()
     ):
-        return anomaly_seed_data(project_id)
+        return enrich_seed_with_report_templates(
+            anomaly_seed_data(project_id), requirement, prd, files, project_id
+        )
     dash = default_dashboard_for_project(project_id, {})
     kpis = supply_chain_dashboard_kpis(project_id)
-    return {
+    base = {
         "dashboard": dash,
         "kpis": {**kpis, **{k: dash[k] for k in dash if k not in kpis}},
         "dashboard/kpis": kpis,
@@ -205,11 +238,23 @@ def build_default_seed(
         "thresholds": anomaly_thresholds_list(),
         "reports/summary": anomaly_reports_summary(),
     }
+    return enrich_seed_with_report_templates(base, requirement, prd, files, project_id)
 
 
-def project_looks_like_anomaly_from_files(files: Dict[str, str]) -> bool:
+def project_looks_like_anomaly_from_files(
+    files: Dict[str, str],
+    requirement: str = "",
+    prd: str = "",
+) -> bool:
+    from app_builder.services.supply_chain_demo_data import looks_like_supply_chain
+
+    if looks_like_supply_chain(requirement, prd, files):
+        return False
     for path in files:
         if path.endswith("AnomalyFeedPage.tsx") or path.endswith("AlertConfigPage.tsx"):
+            # Inventory apps may include an alert feed without being CNC anomaly apps
+            if looks_like_supply_chain(requirement, prd, files):
+                return False
             return True
     dash = files.get("frontend/src/pages/DashboardPage.tsx", "")
     if "metrics_monitored" in dash or "total_anomalies_today" in dash:
@@ -239,6 +284,16 @@ def resolve_special_collection(collection: str, seed: Dict[str, Any], project_id
         return seed.get("alerts") or {"items": [], "total": 0}
     if key == "metrics":
         return seed.get("metrics") or anomaly_thresholds_list()
+    from app_builder.services.supply_chain_demo_data import supply_chain_collection_fallback
+
+    inv_collections = {
+        "materials", "inventory", "inventory_levels", "suppliers", "purchase_orders",
+        "purchase-orders", "warehouses", "goods_receipts", "replenishment", "consumption_trends",
+    }
+    if key in inv_collections or key.replace("-", "_") in inv_collections:
+        if key in seed:
+            return seed[key] if isinstance(seed[key], dict) else {"items": seed[key], "total": len(seed[key])}
+        return supply_chain_collection_fallback(collection, project_id)
     return None
 
 
@@ -250,6 +305,18 @@ def resolve_special_subresource(collection: str, subpath: str, seed: Dict[str, A
         return seed[subpath]
     if collection == "reports" and subpath == "summary":
         return seed.get("reports/summary") or anomaly_reports_summary()
+    if collection == "reports" and subpath in ("template", "templates"):
+        from app_builder.services.sample_report_templates import resolve_reports_template_payload
+
+        if subpath == "templates":
+            stored = seed.get("reports/templates")
+            if isinstance(stored, dict):
+                return stored
+            from app_builder.services.sample_report_templates import detect_report_domain, template_catalog
+
+            domain = detect_report_domain("", "", None, seed)
+            return {"domain": domain, "templates": template_catalog(domain)}
+        return resolve_reports_template_payload(seed, project_id="")
     if subpath in ("kpis", "stats", "summary", "overview", "metrics", "counters"):
         if _project_looks_like_anomaly("", seed):
             return anomaly_dashboard_payload("")

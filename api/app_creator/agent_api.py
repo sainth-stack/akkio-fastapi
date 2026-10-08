@@ -229,7 +229,9 @@ async def execute_code_generator_agent(
         files_dict = {}
         codegen_error = None
         async for event in generate_code_from_plan(
-            requirement, prd, plan, architecture, llm, uiux, builder_kind=builder_kind or "",
+            requirement, prd, plan, architecture, llm, uiux,
+            builder_kind=builder_kind or "",
+            project_name=project_name or "",
         ):
             if event["event"] == "generation_start":
                 await websocket.send_text(json.dumps({

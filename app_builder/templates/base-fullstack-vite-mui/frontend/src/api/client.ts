@@ -66,6 +66,8 @@ function isUsableApiPayload(path: string, data: unknown): boolean {
       'total_lots', 'pending_inspections', 'released', 'held', 'rejected', 'open_capa',
       'incoming_lots', 'total_anomalies_today', 'active_alerts', 'metrics_monitored',
       'total_sales', 'revenue', 'orders_today', 'total', 'active', 'pending',
+      'total_skus', 'total_inventory_value', 'low_stock_alerts', 'stockout_risk_count',
+      'open_purchase_orders', 'inventory_turnover', 'supplier_on_time_pct',
     ];
     const present = numericKeys.filter((k) => k in d);
     if (present.length === 0) return Object.keys(d).length > 2;

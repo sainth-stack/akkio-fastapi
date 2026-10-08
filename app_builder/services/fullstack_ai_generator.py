@@ -1395,6 +1395,7 @@ async def generate_fullstack_app_with_ai(
     architecture: Dict[str, Any],
     design_tokens: Optional[Dict[str, Any]] = None,
     llm=None,
+    project_name: str = "",
 ) -> Dict[str, str]:
     """
     Main entry point: generates a complete fullstack app using LLM.
@@ -1625,7 +1626,9 @@ async def generate_fullstack_app_with_ai(
         )
 
     from app_builder.services.fullstack_codegen import ensure_default_preview_data
-    files = ensure_default_preview_data(files, requirement=requirement, prd=prd or "")
+    files = ensure_default_preview_data(
+        files, requirement=requirement, prd=prd or "", project_name=project_name
+    )
 
     logger.info(
         "[ai-gen] Complete | pages=%d/%d AI-generated | total_files=%d",
