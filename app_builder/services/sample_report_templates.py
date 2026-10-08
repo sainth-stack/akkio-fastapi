@@ -21,6 +21,24 @@ from app_builder.services.supply_chain_demo_data import (
 
 TemplateMeta = Dict[str, str]
 
+GENERIC_TEMPLATES: List[TemplateMeta] = [
+    {
+        "id": "summary_report_v1",
+        "title": "Summary report",
+        "subtitle": "Key metrics at the top + breakdown table",
+    },
+    {
+        "id": "detail_table_v1",
+        "title": "Detail table",
+        "subtitle": "One row per record (line items)",
+    },
+]
+
+UNIVERSAL_HINT = (
+    "Two standard report layouts for any industry. "
+    "Use Download synthetic data (Excel) for rows and columns in the same shape."
+)
+
 
 def detect_report_domain(
     requirement: str = "",
@@ -56,31 +74,137 @@ def detect_report_domain(
     return "generic"
 
 
-def template_catalog(domain: str) -> List[TemplateMeta]:
-    catalogs: Dict[str, List[TemplateMeta]] = {
-        "supply_chain": [
-            {"id": "inventory_operations_summary_v1", "title": "Inventory Operations Summary", "subtitle": "KPIs, aging buckets, and category turnover"},
-            {"id": "inventory_aging_excess_v1", "title": "Inventory Aging & Excess", "subtitle": "Value by age bucket and excess exposure"},
-            {"id": "inventory_value_turnover_v1", "title": "Value & Turnover", "subtitle": "Inventory value and turns by material category"},
-        ],
-        "anomaly": [
-            {"id": "anomaly_operations_summary_v1", "title": "Anomaly Operations Summary", "subtitle": "Detections, MTTD, and severity mix"},
-            {"id": "anomaly_metric_breakdown_v1", "title": "Metric Breakdown", "subtitle": "Top contributing signals and daily trend"},
-        ],
-        "ecommerce": [
-            {"id": "ecommerce_sales_summary_v1", "title": "Sales & Orders Summary", "subtitle": "Revenue, conversion, and order funnel"},
-            {"id": "ecommerce_product_performance_v1", "title": "Product Performance", "subtitle": "Top SKUs and category mix"},
-        ],
-        "analytics": [
-            {"id": "analytics_pipeline_summary_v1", "title": "Pipeline Summary", "subtitle": "Stages, win rate, and forecast"},
-            {"id": "analytics_revenue_forecast_v1", "title": "Revenue Forecast", "subtitle": "Monthly trend and growth drivers"},
-        ],
-        "generic": [
-            {"id": "operations_summary_v1", "title": "Operations Summary", "subtitle": "Core KPIs and activity snapshot"},
-            {"id": "activity_snapshot_v1", "title": "Activity Snapshot", "subtitle": "Recent items and status breakdown"},
-        ],
+def template_catalog(domain: str = "") -> List[TemplateMeta]:
+    """Always two generic templates — domain only affects demo data fill."""
+    return list(GENERIC_TEMPLATES)
+
+
+def _flatten_items(data: Any) -> List[Dict[str, Any]]:
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return [dict(x) for x in data["items"] if isinstance(x, dict)]
+    if isinstance(data, list):
+        return [dict(x) for x in data if isinstance(x, dict)]
+    return []
+
+
+def _primary_detail_rows(seed: Dict[str, Any], project_id: str) -> Tuple[List[Dict[str, Any]], str]:
+    """First tabular collection in seed for detail-table template."""
+    priority = (
+        "materials", "anomalies", "products", "orders", "purchase_orders",
+        "suppliers", "alerts", "items", "records",
+    )
+    for key in priority:
+        rows = _flatten_items(seed.get(key))
+        if rows:
+            return rows, key
+    for key, val in seed.items():
+        if key in ("dashboard", "kpis", "reports/template", "reports/templates") or "/" in key:
+            continue
+        rows = _flatten_items(val)
+        if rows:
+            return rows, str(key)
+    dash = seed.get("dashboard") if isinstance(seed.get("dashboard"), dict) else generic_app_dashboard(project_id)
+    return [
+        {"metric": k.replace("_", " ").title(), "value": v}
+        for k, v in dash.items()
+        if not isinstance(v, (list, dict))
+    ][:12], "metrics"
+
+
+def _breakdown_rows(seed: Dict[str, Any], domain: str) -> Tuple[str, List[str], List[List[Any]]]:
+    summary = seed.get("reports/summary") if isinstance(seed.get("reports/summary"), dict) else {}
+    if domain == "supply_chain":
+        aging = summary.get("inventory_aging") or []
+        if aging:
+            return (
+                "Breakdown",
+                ["Bucket", "Value", "Percent"],
+                [[r.get("bucket"), r.get("value"), f"{r.get('pct')}%"] for r in aging],
+            )
+        turnover = summary.get("turnover_by_category") or []
+        if turnover:
+            return (
+                "Breakdown",
+                ["Category", "Turns"],
+                [[r.get("category"), r.get("turns")] for r in turnover],
+            )
+    if domain == "anomaly":
+        rep = summary or anomaly_reports_summary()
+        by_sev = rep.get("by_severity") or []
+        if by_sev:
+            return (
+                "Breakdown",
+                ["Severity", "Count"],
+                [[r.get("name"), r.get("value")] for r in by_sev],
+            )
+    dash = seed.get("dashboard") if isinstance(seed.get("dashboard"), dict) else {}
+    pairs = [[k.replace("_", " ").title(), v] for k, v in dash.items() if not isinstance(v, (list, dict))]
+    if pairs:
+        return "Breakdown", ["Metric", "Value"], pairs[:10]
+    return "Breakdown", ["Metric", "Value"], [["Total", dash.get("total", 0)]]
+
+
+def _kpis_from_context(seed: Dict[str, Any], project_id: str, domain: str) -> List[Dict[str, str]]:
+    if domain == "supply_chain":
+        sc = seed if seed.get("dashboard") else supply_chain_seed_data(project_id)
+        dash = sc.get("dashboard") or {}
+        materials = _flatten_items(sc.get("materials"))
+        return [
+            {"label": "SKUs", "value": str(dash.get("total_skus", len(materials)))},
+            {"label": "Inventory value", "value": f"${int(dash.get('total_inventory_value', 0)):,}"},
+            {"label": "Low-stock alerts", "value": str(dash.get("low_stock_alerts", 0))},
+            {"label": "Turnover", "value": f"{dash.get('inventory_turnover', 0)}×"},
+        ]
+    if domain == "anomaly":
+        dash = seed.get("dashboard") if isinstance(seed.get("dashboard"), dict) else anomaly_dashboard_payload(project_id)
+        rep = seed.get("reports/summary") or anomaly_reports_summary()
+        return [
+            {"label": "Anomalies today", "value": str(dash.get("total_anomalies_today", rep.get("total_anomalies", 0)))},
+            {"label": "Active alerts", "value": str(dash.get("active_alerts", 0))},
+            {"label": "Metrics", "value": str(dash.get("metrics_monitored", 0))},
+            {"label": "MTTD (min)", "value": str(rep.get("mttd_minutes", 4.7))},
+        ]
+    dash = seed.get("dashboard") if isinstance(seed.get("dashboard"), dict) else generic_app_dashboard(project_id)
+    return [
+        {"label": "Total", "value": str(dash.get("total", dash.get("total_items", 0)))},
+        {"label": "Active", "value": str(dash.get("active", 0))},
+        {"label": "Pending", "value": str(dash.get("pending", 0))},
+        {"label": "Revenue", "value": f"${int(dash.get('revenue', dash.get('total_sales', 0))):,}"},
+    ]
+
+
+def _table_from_rows(title: str, rows: List[Dict[str, Any]], max_cols: int = 8) -> Dict[str, Any]:
+    if not rows:
+        return {"type": "table", "title": title, "columns": ["Column"], "rows": [["—"]]}
+    cols = list(rows[0].keys())[:max_cols]
+    return {
+        "type": "table",
+        "title": title,
+        "columns": [c.replace("_", " ").title() for c in cols],
+        "rows": [[r.get(c) for c in cols] for r in rows[:50]],
     }
-    return catalogs.get(domain, catalogs["generic"])
+
+
+def build_synthetic_export_sheets(
+    seed: Dict[str, Any],
+    project_id: str = "",
+    requirement: str = "",
+    prd: str = "",
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Excel sheets: KPIs (Label/Value) + Detail rows + Breakdown — matches generic templates."""
+    domain = detect_report_domain(requirement, prd, None, seed)
+    kpis = _kpis_from_context(seed, project_id, domain)
+    detail_rows, _ = _primary_detail_rows(seed, project_id)
+    b_title, b_cols, b_rows = _breakdown_rows(seed, domain)
+    breakdown_dicts = [
+        dict(zip(b_cols, row))
+        for row in b_rows
+    ]
+    return {
+        "KPIs": [{"Label": k["label"], "Value": k["value"]} for k in kpis],
+        "Detail": detail_rows,
+        "Breakdown": breakdown_dicts,
+    }
 
 
 def _org_line(domain: str) -> str:
@@ -94,13 +218,7 @@ def _org_line(domain: str) -> str:
 
 
 def _hint_line(domain: str) -> str:
-    return {
-        "supply_chain": "Sample report layouts for inventory apps — always render with demo data in preview and on the Reports page.",
-        "anomaly": "Sample anomaly report layouts — demonstration data for dashboards and alert workflows.",
-        "ecommerce": "Sample commerce report layouts — orders, revenue, and product performance with demo data.",
-        "analytics": "Sample analytics report layouts — pipeline and revenue views with demonstration data.",
-        "generic": "Sample report layouts ship with every generated app and always use demonstration data.",
-    }.get(domain, "Sample report layouts with demonstration data.")
+    return UNIVERSAL_HINT
 
 
 def _supply_chain_document(template_id: str, project_id: str, seed: Dict[str, Any]) -> Dict[str, Any]:
@@ -321,7 +439,7 @@ def _wrap_document(
     exports: List[Dict[str, str]],
 ) -> Dict[str, Any]:
     now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    catalog = template_catalog(domain)
+    catalog = template_catalog()
     return {
         "domain": domain,
         "organization": _org_line(domain),
@@ -349,18 +467,33 @@ def build_sample_report_document(
     seed = seed or {}
     if not domain or domain == "auto":
         domain = detect_report_domain(requirement, prd, files, seed)
-    catalog = template_catalog(domain)
-    tid = template_id or (catalog[0]["id"] if catalog else "operations_summary_v1")
+    catalog = template_catalog()
+    tid = template_id or catalog[0]["id"]
     if not any(t["id"] == tid for t in catalog):
         tid = catalog[0]["id"]
-    builders = {
-        "supply_chain": _supply_chain_document,
-        "anomaly": _anomaly_document,
-        "ecommerce": _ecommerce_document,
-        "analytics": _analytics_document,
-        "generic": _generic_document,
-    }
-    return builders.get(domain, _generic_document)(tid, project_id, seed)
+    meta = next(t for t in catalog if t["id"] == tid)
+    kpis = _kpis_from_context(seed, project_id, domain)
+    detail_rows, collection = _primary_detail_rows(seed, project_id)
+    b_title, b_cols, b_rows = _breakdown_rows(seed, domain)
+    sections: List[Dict[str, Any]] = []
+    exports = [{"label": "Download detail (CSV)", "path": f"/api/{collection.replace('_', '-')}", "filename": "detail.csv"}]
+
+    if tid == "summary_report_v1":
+        sections.append({
+            "type": "table",
+            "title": b_title,
+            "columns": b_cols,
+            "rows": b_rows,
+        })
+    else:
+        sections.append(_table_from_rows("Detail records", detail_rows))
+        sections.append({
+            "type": "callout",
+            "title": "Row count",
+            "body": f"{len(detail_rows)} synthetic records · columns match the Excel Detail sheet.",
+        })
+
+    return _wrap_document(domain, meta, kpis, sections, exports)
 
 
 def enrich_seed_with_report_templates(
@@ -373,10 +506,11 @@ def enrich_seed_with_report_templates(
     """Attach reports/templates + default reports/template payload to seed_data.json."""
     out = dict(seed or {})
     domain = detect_report_domain(requirement, prd, files, out)
-    catalog = template_catalog(domain)
+    catalog = template_catalog()
     doc = build_sample_report_document(domain, catalog[0]["id"], project_id, out, requirement, prd, files)
     out["reports/templates"] = {"templates": catalog, "domain": domain}
     out["reports/template"] = doc
+    out["sample_export"] = build_synthetic_export_sheets(out, project_id, requirement, prd)
     return out
 
 
