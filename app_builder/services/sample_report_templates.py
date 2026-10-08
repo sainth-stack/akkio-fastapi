@@ -87,6 +87,30 @@ def _flatten_items(data: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _scalar_cell(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False) if value else ""
+    return str(value)
+
+
+def _normalize_export_rows(rows: List[Dict[str, Any]], max_cols: int = 16, max_rows: int = 500) -> List[Dict[str, Any]]:
+    """Flatten nested values so Excel gets consistent columns."""
+    if not rows:
+        return [
+            {"record_id": 1, "name": "Sample record A", "status": "Active", "value": 100},
+            {"record_id": 2, "name": "Sample record B", "status": "Pending", "value": 250},
+        ]
+    keys: List[str] = []
+    for row in rows[:50]:
+        for k in row:
+            if k not in keys:
+                keys.append(k)
+    keys = keys[:max_cols]
+    return [{k: _scalar_cell(r.get(k)) for k in keys} for r in rows[:max_rows]]
+
+
 def _primary_detail_rows(seed: Dict[str, Any], project_id: str) -> Tuple[List[Dict[str, Any]], str]:
     """First tabular collection in seed for detail-table template."""
     priority = (
@@ -195,11 +219,11 @@ def build_synthetic_export_sheets(
     domain = detect_report_domain(requirement, prd, None, seed)
     kpis = _kpis_from_context(seed, project_id, domain)
     detail_rows, _ = _primary_detail_rows(seed, project_id)
+    detail_rows = _normalize_export_rows(detail_rows)
     b_title, b_cols, b_rows = _breakdown_rows(seed, domain)
-    breakdown_dicts = [
-        dict(zip(b_cols, row))
-        for row in b_rows
-    ]
+    breakdown_dicts = [dict(zip(b_cols, row)) for row in b_rows]
+    if not breakdown_dicts:
+        breakdown_dicts = [{"Metric": k["label"], "Value": k["value"]} for k in kpis]
     return {
         "KPIs": [{"Label": k["label"], "Value": k["value"]} for k in kpis],
         "Detail": detail_rows,

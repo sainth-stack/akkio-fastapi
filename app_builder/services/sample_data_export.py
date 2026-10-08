@@ -44,14 +44,21 @@ def build_sample_data_xlsx(project_name: str) -> str:
     fd, path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)
 
+    sheet_order = ("KPIs", "Detail", "Breakdown")
+
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         wrote = False
-        for sheet_name, rows in sheets.items():
+        ordered = [name for name in sheet_order if name in sheets] + [
+            k for k in sheets if k not in sheet_order
+        ]
+        for sheet_name in ordered:
+            rows = sheets.get(sheet_name)
             if not isinstance(rows, list) or not rows:
                 continue
             if not all(isinstance(r, dict) for r in rows):
                 continue
-            pd.DataFrame(rows).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            df = pd.DataFrame(rows)
+            df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
             wrote = True
         if not wrote:
             pd.DataFrame([{"Label": "Sample", "Value": "No data"}]).to_excel(
