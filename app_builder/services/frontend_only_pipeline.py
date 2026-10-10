@@ -150,7 +150,7 @@ async def run_pipeline(
     if skip_before <= 4:
         if metrics: metrics.stage_start("S5")
         await _emit_stage_start(on_event, "S5", "Router & Nav", 5, total)
-        s5_files = _run_s5_deterministic(legacy_bp, blueprint_json)
+        s5_files = _run_s5_deterministic(legacy_bp, blueprint_json, generated_files=files)
         files.update(s5_files)
         await _emit_stage_done(on_event, "S5", "Router & Nav", s5_files)
         if metrics: metrics.stage_end("S5")
@@ -257,7 +257,7 @@ def generate_frontend_only_app(
                 requirement,
             )
             s2 = _run_s2_deterministic(legacy_bp, plan_json.get("design_tokens"))
-            s5 = _run_s5_deterministic(legacy_bp, plan_json.get("blueprint") or {})
+            s5 = _run_s5_deterministic(legacy_bp, plan_json.get("blueprint") or {}, generated_files=files_result)
             template = _load_template_files()
             files_result = {**template, **s2, **s5}
             return
@@ -286,7 +286,7 @@ def generate_frontend_only_app(
                 requirement,
             )
             s2 = _run_s2_deterministic(legacy_bp, (plan_json or {}).get("design_tokens"))
-            s5 = _run_s5_deterministic(legacy_bp, (plan_json or {}).get("blueprint") or {})
+            s5 = _run_s5_deterministic(legacy_bp, (plan_json or {}).get("blueprint") or {}, generated_files=files_result)
             template = _load_template_files()
             files_result = {**template, **s2, **s5}
 
@@ -406,8 +406,14 @@ async def _run_s4_pages(
 def _run_s5_deterministic(
     legacy_bp: Dict,
     blueprint_json: Dict,
+    generated_files: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """S5: Deterministic App.tsx, router, package.json."""
+    """S5: Deterministic App.tsx, router, package.json.
+
+    Generates App.tsx from blueprint pages. Falls back to scanning `generated_files`
+    for actual *.tsx page files so App.tsx is ALWAYS correct even when blueprint_json
+    has incomplete routes/pages data.
+    """
     from app_builder.services.deterministic_generator import generate_from_blueprint
 
     # Merge blueprint_json routes into legacy_bp pages list
@@ -416,6 +422,11 @@ def _run_s5_deterministic(
         if merged_pages:
             legacy_bp = dict(legacy_bp)
             legacy_bp["pages"] = merged_pages
+
+    # If pages still empty, rebuild from actual generated files on disk
+    if not legacy_bp.get("pages") and generated_files:
+        legacy_bp = dict(legacy_bp)
+        legacy_bp["pages"] = _pages_from_files(generated_files)
 
     return generate_from_blueprint(legacy_bp)
 
@@ -725,6 +736,51 @@ def _generate_default_page_stubs(blueprint_json: Dict) -> Dict[str, str]:
         name = page["name"]
         stubs[f"frontend/src/pages/{name}.tsx"] = _fallback_page(name, page["nav_label"])
     return stubs
+
+
+def _pages_from_files(files: Dict[str, str]) -> List[Dict]:
+    """
+    Derive a legacy pages list by scanning the files dict for *.tsx page files.
+    Called as a fallback when blueprint_json has no usable routes/pages.
+    """
+    import re as _re
+
+    PAGE_RE = _re.compile(r"frontend/src/pages/([A-Za-z0-9_]+Page)\.tsx$")
+    ICON_MAP = {
+        "Dashboard": "Dashboard", "Main": "Dashboard", "Home": "Home",
+        "Contacts": "People", "Deals": "Handshake", "Leads": "PersonAdd",
+        "Activities": "Event", "Calendar": "CalendarToday",
+        "Reports": "BarChart", "Analytics": "Analytics",
+        "Settings": "Settings", "Profile": "AccountCircle",
+        "Users": "Group", "Teams": "Groups",
+        "Products": "Inventory", "Inventory": "Warehouse",
+        "Orders": "ShoppingCart", "Billing": "CreditCard",
+        "Tickets": "ConfirmationNumber", "Support": "HeadsetMic",
+        "Courses": "School", "Students": "School",
+        "Events": "Event", "Venues": "LocationOn",
+    }
+
+    pages = []
+    seen = set()
+    for path in sorted(files.keys()):
+        m = PAGE_RE.match(path)
+        if not m:
+            continue
+        name = m.group(1)
+        if name == "DemoPage" or name in seen:
+            continue
+        seen.add(name)
+        base = name.replace("Page", "")
+        slug = base.lower()
+        route_path = "/" if base in ("Dashboard", "Main", "Home") else f"/{slug}"
+        pages.append({
+            "name": name,
+            "path": route_path,
+            "nav_label": base,
+            "icon": ICON_MAP.get(base, "Article"),
+            "description": f"{base} page",
+        })
+    return pages
 
 
 def _extract_export_names(content: str) -> List[str]:

@@ -470,42 +470,77 @@ def _fallback_types(entities: List[Dict[str, Any]]) -> str:
 
 def _fallback_mock(entities: List[str], domain: str) -> str:
     """Generate minimal mock/index.ts without LLM."""
-    lines = [
-        "import { useState, useEffect } from 'react';",
-        "",
-        "export function useMockStore<T extends { id: string }>(key: string, initial: T[]) {",
-        "  const [items, setItems] = useState<T[]>(initial);",
-        "  const add = (item: Omit<T, 'id'>) => setItems(p => [...p, { ...item, id: String(Date.now()) } as T]);",
-        "  const update = (id: string, patch: Partial<T>) => setItems(p => p.map(x => x.id === id ? { ...x, ...patch } : x));",
-        "  const remove = (id: string) => setItems(p => p.filter(x => x.id !== id));",
-        "  return { items, add, update, remove };",
-        "}",
-        "",
-        "export const mockKpis = [",
-        "  { label: 'Total', value: '1,234', trend: { value: 12, label: 'vs last month' } },",
-        "  { label: 'Active', value: '987', trend: { value: 5, label: 'vs last month' } },",
-        "  { label: 'Pending', value: '247', trend: { value: -3, label: 'vs last month' } },",
-        "  { label: 'Done', value: '456', trend: { value: 8, label: 'vs last month' } },",
-        "];",
-        "",
-        "export const mockChartData = Array.from({ length: 12 }, (_, i) => ({",
-        "  name: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][i],",
-        "  value: Math.floor(Math.random() * 400 + 100),",
-        "  previous: Math.floor(Math.random() * 400 + 80),",
-        "}));",
-        "",
-    ]
+    entity_lines: List[str] = []
     for ent in (entities or []):
-        lower = ent.lower()
-        lines += [
-            f"export const mock{ent} = [",
+        entity_lines += [
+            f"export const mock{ent}s = [",
             f"  {{ id: '1', name: '{ent} Alpha', status: 'active', createdAt: '2026-01-10' }},",
             f"  {{ id: '2', name: '{ent} Beta', status: 'inactive', createdAt: '2026-02-15' }},",
             f"  {{ id: '3', name: '{ent} Gamma', status: 'active', createdAt: '2026-03-20' }},",
             "] as any[];",
             "",
         ]
-    return "\n".join(lines)
+    entity_block = "\n".join(entity_lines)
+
+    return f"""\
+import {{ useState, useEffect, useCallback }} from 'react';
+
+// ---------------------------------------------------------------------------
+// useMockStore — generic CRUD hook with localStorage persistence
+// ---------------------------------------------------------------------------
+
+export interface MockStoreResult<T> {{
+  data: T[];
+  loading: boolean;
+  error: string | null;
+  add: (item: T) => void;
+  update: (id: string, patch: Partial<T>) => void;
+  remove: (id: string) => void;
+}}
+
+export function useMockStore<T extends {{ id: string }}>(
+  key: string = 'mock_store',
+  seed: T[] = []
+): MockStoreResult<T> {{
+  const storageKey = `akkio_mock_${{key}}`;
+  const [data, setData] = useState<T[]>(() => {{
+    try {{
+      const raw = localStorage.getItem(storageKey);
+      if (raw) return JSON.parse(raw) as T[];
+    }} catch {{}}
+    return seed;
+  }});
+  const [loading] = useState(false);
+  const [error] = useState<string | null>(null);
+
+  useEffect(() => {{
+    try {{ localStorage.setItem(storageKey, JSON.stringify(data)); }} catch {{}}
+  }}, [data, storageKey]);
+
+  const add = useCallback((item: T) => setData(p => [...p, item]), []);
+  const update = useCallback((id: string, patch: Partial<T>) => {{
+    setData(p => p.map(x => x.id === id ? {{ ...x, ...patch }} : x));
+  }}, []);
+  const remove = useCallback((id: string) => setData(p => p.filter(x => x.id !== id)), []);
+
+  return {{ data, loading, error, add, update, remove }};
+}}
+
+export const mockKpis = [
+  {{ label: 'Total', value: '1,234', trend: {{ value: 12, label: 'vs last month' }} }},
+  {{ label: 'Active', value: '987', trend: {{ value: 5, label: 'vs last month' }} }},
+  {{ label: 'Pending', value: '247', trend: {{ value: -3, label: 'vs last month' }} }},
+  {{ label: 'Done', value: '456', trend: {{ value: 8, label: 'vs last month' }} }},
+];
+
+export const mockChartData = Array.from({{ length: 12 }}, (_, i) => ({{
+  name: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][i],
+  value: Math.floor(Math.random() * 400 + 100),
+  previous: Math.floor(Math.random() * 400 + 80),
+}}));
+
+{entity_block}
+"""
 
 
 def _fallback_page(page_name: str, nav_label: str) -> str:

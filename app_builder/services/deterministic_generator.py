@@ -64,6 +64,30 @@ def _build_app_tsx(pages: List[Dict[str, Any]], app_name: str) -> str:
         """)
 
 
+def _build_demo_app_tsx(app_name: str) -> str:
+    """Fallback App.tsx used when no pages are available yet."""
+    return textwrap.dedent(f"""\
+        import {{ Routes, Route }} from 'react-router-dom';
+        import AppShell from './components/ui/AppShell';
+        import DemoPage from './pages/DemoPage';
+
+        const NAV_ITEMS = [
+          {{ label: 'Home', path: '/', icon: 'Dashboard' }},
+        ];
+
+        export default function App() {{
+          return (
+            <Routes>
+              <Route element={{<AppShell navItems={{NAV_ITEMS}} appName={{"{app_name}"}} />}}>
+                <Route path="/" element={{<DemoPage />}} />
+                <Route path="*" element={{<DemoPage />}} />
+              </Route>
+            </Routes>
+          );
+        }}
+        """)
+
+
 # ---------------------------------------------------------------------------
 # theme/tokens.ts — design tokens from blueprint
 # ---------------------------------------------------------------------------
@@ -274,9 +298,8 @@ def generate_from_blueprint(blueprint: Dict[str, Any]) -> Dict[str, str]:
 
     files: Dict[str, str] = {}
 
-    # 1. App.tsx — route tree
-    if pages:
-        files["frontend/src/App.tsx"] = _build_app_tsx(pages, app_name)
+    # 1. App.tsx — route tree (always write; fallback to DemoPage if no pages)
+    files["frontend/src/App.tsx"] = _build_app_tsx(pages, app_name) if pages else _build_demo_app_tsx(app_name)
 
     # 2. Design tokens
     files["frontend/src/theme/tokens.ts"] = _build_tokens_ts(blueprint)
