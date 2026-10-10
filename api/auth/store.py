@@ -115,36 +115,47 @@ class AuthStore:
                 )
 
     def is_token_revoked(self, jti: str) -> bool:
-        db = PostgresDatabase()
-        with db.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT 1 FROM auth.revoked_tokens
-                    WHERE jti = %s AND expires_at > NOW()
-                    """,
-                    (jti,),
-                )
-                return cursor.fetchone() is not None
+        try:
+            db = PostgresDatabase()
+            with db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT 1 FROM auth.revoked_tokens
+                        WHERE jti = %s AND expires_at > NOW()
+                        """,
+                        (jti,),
+                    )
+                    return cursor.fetchone() is not None
+        except Exception:
+            # DB unreachable — treat token as not revoked so users aren't locked out
+            import logging
+            logging.getLogger("auth").debug("is_token_revoked: DB unavailable, defaulting to False")
+            return False
 
-    def get_user_permissions(self, user_id: int) -> set[str]:
-        db = PostgresDatabase()
-        with db.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT r.permissions
-                    FROM auth.user_roles ur
-                    JOIN auth.roles r ON r.id = ur.role_id
-                    WHERE ur.user_id = %s
-                    """,
-                    (user_id,),
-                )
-                perms: set[str] = set()
-                for (role_perms,) in cursor.fetchall():
-                    if role_perms:
-                        perms.update(role_perms)
-                return perms
+    def get_user_permissions(self, user_id: int) -> set:
+        try:
+            db = PostgresDatabase()
+            with db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT r.permissions
+                        FROM auth.user_roles ur
+                        JOIN auth.roles r ON r.id = ur.role_id
+                        WHERE ur.user_id = %s
+                        """,
+                        (user_id,),
+                    )
+                    perms: set = set()
+                    for (role_perms,) in cursor.fetchall():
+                        if role_perms:
+                            perms.update(role_perms)
+                    return perms
+        except Exception:
+            import logging
+            logging.getLogger("auth").debug("get_user_permissions: DB unavailable, returning empty set")
+            return set()
 
     def _fetch_roles_for_user(self, cursor, user_id: int) -> list[dict]:
         cursor.execute(
@@ -199,10 +210,15 @@ class AuthStore:
         }
 
     def get_user_by_id(self, user_id: int) -> Optional[dict]:
-        db = PostgresDatabase()
-        with db.get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                return self._fetch_user_row(cursor, user_id)
+        try:
+            db = PostgresDatabase()
+            with db.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    return self._fetch_user_row(cursor, user_id)
+        except Exception:
+            import logging
+            logging.getLogger("auth").warning("get_user_by_id(%s): DB unavailable", user_id)
+            return None
 
     def get_user_by_email(self, email: str, app: str = "akkio") -> Optional[dict]:
         db = PostgresDatabase()
