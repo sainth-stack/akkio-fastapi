@@ -316,8 +316,13 @@ You are a React engineer. Generate ONLY shared domain-specific sub-components
 that are needed by multiple pages (e.g. StatusBadge, DealCard, PipelineBar).
 DO NOT re-implement anything already in the kit (AppShell, DataTable, etc.).
 
-Rules:
-1. Each component goes in src/components/shared/{ComponentName}.tsx
+Rules (STRICT):
+1. Each component goes in src/components/shared/{ComponentName}.tsx ONLY.
+   DO NOT generate ANY of these — they are frozen template files and must NOT be created or modified:
+   - src/components/ui/index.ts  (the barrel export — DO NOT TOUCH)
+   - src/main.tsx
+   - vite.config.ts
+   - tsconfig.json
 2. Import ONLY from '@mui/material', '@mui/icons-material', '../ui', '../../types', 'react'.
 3. If no shared components are genuinely needed, return exactly: NONE
 4. RETURN each file as:
@@ -463,6 +468,22 @@ def _strip_fences(text: str) -> str:
 # File block parser (for S3 multi-file response)
 # ---------------------------------------------------------------------------
 
+# Paths the LLM must NEVER overwrite — template infrastructure files
+_FROZEN_FO_PATHS: frozenset = frozenset({
+    "frontend/src/components/ui/index.ts",
+    "frontend/src/main.tsx",
+    "frontend/vite.config.ts",
+    "frontend/tsconfig.json",
+    "frontend/index.html",
+    "frontend/src/vite-env.d.ts",
+    "frontend/src/theme/index.ts",
+})
+
+
+def _is_frozen_fo_path(path: str) -> bool:
+    return path.replace("\\", "/").lstrip("/") in _FROZEN_FO_PATHS
+
+
 def _parse_file_blocks(content: str, prefix: str = "") -> Dict[str, str]:
     """
     Parse a response containing multiple file blocks:
@@ -483,6 +504,12 @@ def _parse_file_blocks(content: str, prefix: str = "") -> Dict[str, str]:
             # Normalize path to start with 'frontend/src/components/shared/'
             fname = os.path.basename(path)
             path = f"frontend/src/components/shared/{fname}"
+        # Never overwrite frozen template infrastructure files
+        if _is_frozen_fo_path(path):
+            logger.warning(
+                "[fo_stage_agents] LLM tried to overwrite frozen path %s — skipped", path
+            )
+            continue
         files[path] = file_content
     return files
 

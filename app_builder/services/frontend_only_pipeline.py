@@ -87,7 +87,7 @@ async def run_pipeline(
         if metrics: metrics.stage_start("S1")
         await _emit_stage_start(on_event, "S1", "Types & Mock Data", 1, total)
         s1_files = await _run_s1(blueprint_json, prd_json, design_tokens_json, llm, on_event)
-        files.update(s1_files)
+        files.update(_drop_frozen(s1_files))
         await _verify_and_fix_stage(
             "S1", project_name, files, s1_files, llm, on_event,
             types_content=s1_files.get("frontend/src/types/index.ts", ""),
@@ -105,6 +105,10 @@ async def run_pipeline(
         # Load template scaffold (frozen infrastructure files)
         template_files = _load_template_files()
         merged = {**template_files, **files, **s2_files}
+        # Always restore frozen template infrastructure paths (never allow LLM overwrite)
+        for frozen_path in _FROZEN_FO_PATHS:
+            if frozen_path in template_files:
+                merged[frozen_path] = template_files[frozen_path]
         files = merged
         await _emit_stage_done(on_event, "S2", "Theme & Layout", s2_files)
         if metrics: metrics.stage_end("S2")
@@ -116,7 +120,7 @@ async def run_pipeline(
         types_content = files.get("frontend/src/types/index.ts", "")
         s3_files = await _run_s3(blueprint_json, types_content, llm, on_event)
         if s3_files:
-            files.update(s3_files)
+            files.update(_drop_frozen(s3_files))
             await _verify_and_fix_stage(
                 "S3", project_name, files, s3_files, llm, on_event,
                 types_content=types_content,
@@ -142,7 +146,7 @@ async def run_pipeline(
             s4_files = fix_frontend_only_pages(s4_files)
         except Exception as _pp_err:
             logger.warning("[pipeline/S4] post-process skipped: %s", _pp_err)
-        files.update(s4_files)
+        files.update(_drop_frozen(s4_files))
         await _verify_and_fix_stage(
             "S4", project_name, files, s4_files, llm, on_event,
             types_content=types_content,
@@ -157,7 +161,7 @@ async def run_pipeline(
         if metrics: metrics.stage_start("S5")
         await _emit_stage_start(on_event, "S5", "Router & Nav", 5, total)
         s5_files = _run_s5_deterministic(legacy_bp, blueprint_json, generated_files=files)
-        files.update(s5_files)
+        files.update(_drop_frozen(s5_files))
         await _emit_stage_done(on_event, "S5", "Router & Nav", s5_files)
         if metrics: metrics.stage_end("S5")
 
@@ -787,6 +791,35 @@ def _pages_from_files(files: Dict[str, str]) -> List[Dict]:
             "description": f"{base} page",
         })
     return pages
+
+
+# ---------------------------------------------------------------------------
+# Frozen path guard — template infrastructure files must never be overwritten
+# ---------------------------------------------------------------------------
+
+_FROZEN_FO_PATHS: frozenset = frozenset({
+    "frontend/src/components/ui/index.ts",
+    "frontend/src/main.tsx",
+    "frontend/vite.config.ts",
+    "frontend/tsconfig.json",
+    "frontend/index.html",
+    "frontend/src/vite-env.d.ts",
+    "frontend/src/theme/index.ts",
+})
+
+
+def _drop_frozen(files: Dict[str, str]) -> Dict[str, str]:
+    """Remove any frozen template paths from a generated file dict."""
+    out = {}
+    for path, content in files.items():
+        norm = path.replace("\\", "/").lstrip("/")
+        if norm in _FROZEN_FO_PATHS:
+            logger.warning(
+                "[frontend_only] LLM-generated file '%s' is frozen — discarding", path
+            )
+        else:
+            out[path] = content
+    return out
 
 
 def _extract_export_names(content: str) -> List[str]:
