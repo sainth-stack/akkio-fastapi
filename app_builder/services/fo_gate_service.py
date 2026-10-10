@@ -77,6 +77,19 @@ async def run_gate(
     Run the full build + Playwright gate.
     Returns GateResult.passed=True only if all routes pass.
     """
+    from app_builder.services.frontend_only_template_guard import (
+        TEMPLATE_NAME,
+        restore_and_sync_ui_kit,
+    )
+
+    files, restored = restore_and_sync_ui_kit(project_name, files)
+    if restored:
+        await _emit(on_event, {
+            "event": "pipeline_log",
+            "agent": "template_guard",
+            "message": f"Restored {restored} file(s) from template {TEMPLATE_NAME} (UI kit + frozen infra)",
+        })
+
     project_root = project_write_root(project_name)
     frontend_dir = os.path.join(project_root, "frontend")
 
@@ -241,7 +254,25 @@ async def gate_with_fix(
         if not failure and "vite build failed" in (result.error or ""):
             build_err = result.error or result.build_log[-600:]
             offending_file = _extract_offending_file_from_build_error(build_err, files)
-            if offending_file and llm:
+
+            # Never LLM-fix frozen UI kit — restore from template and rebuild once
+            if _is_ui_kit_build_failure(build_err, offending_file):
+                from app_builder.services.frontend_only_template_guard import restore_and_sync_ui_kit
+                files, n = restore_and_sync_ui_kit(project_name, files)
+                await _emit(on_event, {
+                    "event": "pipeline_log",
+                    "agent": "template_guard",
+                    "message": (
+                        f"Build failed due to UI kit barrel/import — restored {n} template file(s) and retrying build"
+                    ),
+                })
+                result = await run_gate(project_name, files, blueprint_json, on_event, metrics)
+                if result.passed:
+                    break
+                build_err = result.error or result.build_log[-600:]
+                offending_file = _extract_offending_file_from_build_error(build_err, files)
+
+            if offending_file and llm and not _is_ui_kit_build_failure(build_err, offending_file):
                 await _emit(on_event, {
                     "event": "agent_start", "agent": f"gate_fix_{attempt}",
                     "message": f"Gate build fix attempt {attempt}: {offending_file}",
@@ -554,6 +585,19 @@ def _extract_build_error(build_log: str) -> str:
     return build_log[:300]
 
 
+def _is_ui_kit_build_failure(build_error: str, offending_file: Optional[str]) -> bool:
+    from app_builder.services.frontend_only_template_guard import is_ui_kit_path
+
+    if offending_file and is_ui_kit_path(offending_file):
+        return True
+    err = (build_error or "").lower()
+    if "components/ui/index.ts" in err or "components/ui/index" in err:
+        return True
+    if "could not resolve" in err and "linechart" in err:
+        return True
+    return False
+
+
 def _extract_offending_file_from_build_error(
     build_error: str,
     files: Dict[str, str],
@@ -566,6 +610,7 @@ def _extract_offending_file_from_build_error(
     # Vite error format: "Failed to resolve import 'X' from 'path/to/file.tsx'"
     # or "path/to/file.tsx:line:col: error"
     for pattern in [
+        r"file:\s*[^\s]*/(frontend/src/[^\s:]+\.tsx?)",
         r"from ['\"]([^'\"]*\.tsx?)['\"]",
         r"(frontend/src/[^\s:'\"]+\.tsx?)",
         r"(src/[^\s:'\"]+\.tsx?)",

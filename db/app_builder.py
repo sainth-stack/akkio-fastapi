@@ -175,8 +175,9 @@ _METADATA_FIELDS = (
     "design_system_md",
     "llm_model",
     "builder_kind",
-    "track",           # "legacy" | "frontend_only" — generation track
+    "track",           # "legacy" | "frontend_only" | "json_spec" — generation track
     "plan_json",       # structured JSON contracts (PRDPlan/UXPlan/DesignTokenSchema/Blueprint)
+    "app_spec_json",   # AppSpec v1 for json_spec renderer apps
 )
 
 
@@ -513,8 +514,9 @@ class AppBuilderStore(PostgresPool):
         design_system_md: Optional[str] = None,
         llm_model: Optional[str] = None,
         builder_kind: Optional[str] = None,
-        track: Optional[str] = None,          # "legacy" | "frontend_only"
+        track: Optional[str] = None,          # "legacy" | "frontend_only" | "json_spec"
         plan_json: Optional[dict] = None,     # structured JSON planning contracts
+        app_spec_json: Optional[dict] = None,
     ) -> int:
         self.init_schema()
         existing = self.get_app_builder_app(app_id, user_email=user_email, user_id=user_id)
@@ -548,6 +550,7 @@ class AppBuilderStore(PostgresPool):
             "builder_kind": builder_kind,
             "track": track,
             "plan_json": plan_json,
+            "app_spec_json": app_spec_json,
         }
         key_map = {"app_name": "name"}
         name_val = app_name

@@ -257,6 +257,34 @@ async def get_job(session_id: str, current: CurrentUser = Depends(resolve_user))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/apps/{app_id}/spec")
+async def get_app_spec(app_id: str, current: CurrentUser = Depends(resolve_user)):
+    """AppSpec JSON for the shared JSON renderer (used by /spec-app/{id} preview)."""
+    try:
+        app = db.get_app_builder_app(
+            app_id, user_email=user_email_from(current), user_id=current.id or None
+        )
+        if not app:
+            raise HTTPException(status_code=404, detail="App not found")
+        spec = app.get("app_spec_json")
+        if not spec:
+            files = app.get("generated_code_json") or {}
+            raw = files.get("app_spec.json")
+            if isinstance(raw, str):
+                import json as _json
+                try:
+                    spec = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    spec = None
+        if not spec:
+            raise HTTPException(status_code=404, detail="AppSpec not found for this app")
+        return {"status": "success", "app_spec": spec, "track": app.get("track")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/apps/{app_id}/code")
 async def get_app_code(app_id: str, current: CurrentUser = Depends(resolve_user)):
     try:

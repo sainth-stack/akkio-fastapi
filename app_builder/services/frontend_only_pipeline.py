@@ -62,6 +62,19 @@ async def run_pipeline(
     uiux_json = (plan_json or {}).get("uiux")
     design_tokens_json = (plan_json or {}).get("design_tokens")
     prd_json = (plan_json or {}).get("prd")
+    domain = blueprint_json.get("domain") or "generic"
+
+    await on_event({
+        "event": "pipeline_log",
+        "agent": "frontend_only",
+        "message": f"Track: frontend_only | Template: {_TEMPLATE_NAME} | Domain: {domain}",
+    })
+    logger.info(
+        "[frontend_only] start | template=%s domain=%s project=%s",
+        _TEMPLATE_NAME,
+        domain,
+        project_name,
+    )
 
     # Derive legacy Blueprint dict for deterministic generator
     legacy_bp = _plan_json_to_legacy_blueprint(blueprint_json, design_tokens_json, requirement)
@@ -105,11 +118,10 @@ async def run_pipeline(
         # Load template scaffold (frozen infrastructure files)
         template_files = _load_template_files()
         merged = {**template_files, **files, **s2_files}
-        # Always restore frozen template infrastructure paths (never allow LLM overwrite)
-        for frozen_path in _FROZEN_FO_PATHS:
-            if frozen_path in template_files:
-                merged[frozen_path] = template_files[frozen_path]
-        files = merged
+        from app_builder.services.frontend_only_template_guard import restore_template_ui_kit
+
+        files, kit_n = restore_template_ui_kit(merged)
+        logger.info("[frontend_only] S2 restored %d UI kit / frozen file(s)", kit_n)
         await _emit_stage_done(on_event, "S2", "Theme & Layout", s2_files)
         if metrics: metrics.stage_end("S2")
 
@@ -171,6 +183,7 @@ async def run_pipeline(
     await _run_s6_verify(project_name, files, on_event)
 
     # ── Optional Playwright gate (frontend_only) ──────────────────────────────
+    gate_result = None
     try:
         from app_builder.services.fo_gate_service import gate_with_fix
         types_content = files.get("frontend/src/types/index.ts", "")
@@ -199,8 +212,13 @@ async def run_pipeline(
                 pass
     except ImportError:
         pass  # gate service not installed — skip silently
-    except Exception as _gate_err:
-        logger.warning("[frontend_only] gate error (non-fatal): %s", _gate_err)
+
+    if gate_result is not None and not gate_result.passed:
+        err_msg = gate_result.error or "Gate build or smoke test failed"
+        await _emit_stage_done(on_event, "S6", "Final Verification", {})
+        if metrics:
+            metrics.stage_end("S6")
+        raise RuntimeError(f"Gate build failed: {err_msg}")
 
     await _emit_stage_done(on_event, "S6", "Final Verification", {})
     if metrics: metrics.stage_end("S6")
@@ -213,6 +231,12 @@ async def run_pipeline(
                 metrics.save_to_db(db, user_email=user_email, uid=uid)
         except Exception:
             pass
+
+    from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+
+    files, kit_n = ensure_frontend_only_kit(files, project_name=project_name)
+    if kit_n:
+        logger.info("[frontend_only] final kit restore | files=%d", kit_n)
 
     return files
 

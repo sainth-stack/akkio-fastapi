@@ -3,8 +3,8 @@ Unit tests for the frontend-only track routing.
 
 Verifies:
   1. resolve_track() returns "legacy"        for STATIC_DOMAINS
-  2. resolve_track() returns "frontend_only" for all other domains
-  3. resolve_app_mode() routes "build a CRM app" → "frontend_only" track
+  2. resolve_track() returns "json_app" for all other domains
+  3. resolve_app_mode() routes "build a CRM app" → "json_app" track
   4. resolve_app_mode() routes "online store" / ecommerce → "legacy" track
   5. STATIC_DOMAINS contains exactly the three expected domains
   6. generate_frontend_only_app() returns at least the scaffold files
@@ -59,34 +59,34 @@ class TestTrackRouting(unittest.TestCase):
     def test_anomaly_detection_is_legacy(self):
         self.assertEqual(self.resolve_track("anomaly_detection"), "legacy")
 
-    # ── resolve_track() — frontend_only ─────────────────────────────────────
+    # ── resolve_track() — json_app ─────────────────────────────────────────
 
-    def test_crm_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("crm"), "frontend_only")
+    def test_crm_is_json_app(self):
+        self.assertEqual(self.resolve_track("crm"), "json_app")
 
-    def test_analytics_dashboard_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("analytics_dashboard"), "frontend_only")
+    def test_analytics_dashboard_is_json_app(self):
+        self.assertEqual(self.resolve_track("analytics_dashboard"), "json_app")
 
-    def test_inventory_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("inventory"), "frontend_only")
+    def test_inventory_is_json_app(self):
+        self.assertEqual(self.resolve_track("inventory"), "json_app")
 
-    def test_finance_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("finance"), "frontend_only")
+    def test_finance_is_json_app(self):
+        self.assertEqual(self.resolve_track("finance"), "json_app")
 
-    def test_hr_onboarding_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("hr_onboarding"), "frontend_only")
+    def test_hr_onboarding_is_json_app(self):
+        self.assertEqual(self.resolve_track("hr_onboarding"), "json_app")
 
-    def test_quality_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("quality"), "frontend_only")
+    def test_quality_is_json_app(self):
+        self.assertEqual(self.resolve_track("quality"), "json_app")
 
-    def test_generic_is_frontend_only(self):
-        self.assertEqual(self.resolve_track("generic"), "frontend_only")
+    def test_generic_is_json_app(self):
+        self.assertEqual(self.resolve_track("generic"), "json_app")
 
-    def test_unknown_domain_is_frontend_only(self):
-        """Any unrecognised domain label falls through to frontend_only."""
-        self.assertEqual(self.resolve_track("calculator"), "frontend_only")
-        self.assertEqual(self.resolve_track("todo"), "frontend_only")
-        self.assertEqual(self.resolve_track(""), "frontend_only")
+    def test_unknown_domain_is_json_app(self):
+        """Any unrecognised domain label falls through to json_app."""
+        self.assertEqual(self.resolve_track("calculator"), "json_app")
+        self.assertEqual(self.resolve_track("todo"), "json_app")
+        self.assertEqual(self.resolve_track(""), "json_app")
 
 
 class TestClassifierRouting(unittest.TestCase):
@@ -121,22 +121,22 @@ class TestClassifierRouting(unittest.TestCase):
         track = self._track_for("anomaly detection and outlier alerting on time series metrics")
         self.assertEqual(track, "legacy")
 
-    # "build a CRM" → crm → frontend_only
-    def test_crm_routes_to_frontend_only(self):
+    # "build a CRM" → crm → json_app
+    def test_crm_routes_to_json_app(self):
         track = self._track_for("Build a CRM for managing sales leads and customer contacts")
-        self.assertEqual(track, "frontend_only")
+        self.assertEqual(track, "json_app")
 
-    def test_analytics_dashboard_routes_to_frontend_only(self):
+    def test_analytics_dashboard_routes_to_json_app(self):
         track = self._track_for("analytics dashboard with KPI reporting and business intelligence")
-        self.assertEqual(track, "frontend_only")
+        self.assertEqual(track, "json_app")
 
-    def test_calculator_routes_to_frontend_only(self):
+    def test_calculator_routes_to_json_app(self):
         track = self._track_for("Simple calculator app")
-        self.assertEqual(track, "frontend_only")
+        self.assertEqual(track, "json_app")
 
-    def test_generic_app_routes_to_frontend_only(self):
+    def test_generic_app_routes_to_json_app(self):
         track = self._track_for("A to-do list manager")
-        self.assertEqual(track, "frontend_only")
+        self.assertEqual(track, "json_app")
 
 
 class TestDeterministicGenerator(unittest.TestCase):
@@ -208,9 +208,8 @@ class TestDeterministicGenerator(unittest.TestCase):
         self.assertIn("frontend/src/mock/index.ts", result)
 
 
-class TestFrontendOnlyPipeline(unittest.TestCase):
-    """Smoke tests for generate_frontend_only_app().
-    Only runs if the base-frontend-vite-mui template is present on disk."""
+class TestJsonAppGenerator(unittest.TestCase):
+    """Smoke tests for generate_json_app_files() (json_app track)."""
 
     def setUp(self):
         import os
@@ -228,35 +227,33 @@ class TestFrontendOnlyPipeline(unittest.TestCase):
     def test_generate_returns_files(self):
         if not self._template_available:
             self.skipTest("template not present")
-        from app_builder.services.frontend_only_pipeline import generate_frontend_only_app
-        result = generate_frontend_only_app(
+        from app_builder.services.json_app_generator import generate_json_app_files
+        result = generate_json_app_files(
             requirement="Build a simple CRM dashboard",
             prd="",
             uiux="",
-            architecture=None,
-            design_tokens=None,
-            domain="crm",
+            plan_json=None,
         )
         self.assertIsInstance(result, dict)
         self.assertGreater(len(result), 0)
 
-    def test_generate_contains_main_tsx(self):
+    def test_generate_contains_app_definition_and_renderer(self):
         if not self._template_available:
             self.skipTest("template not present")
-        from app_builder.services.frontend_only_pipeline import generate_frontend_only_app
-        result = generate_frontend_only_app(
+        from app_builder.services.json_app_generator import generate_json_app_files
+        result = generate_json_app_files(
             requirement="Build a simple CRM dashboard",
-            domain="crm",
         )
-        self.assertIn("frontend/src/main.tsx", result)
+        self.assertIn("frontend/src/config/app-definition.json", result)
+        self.assertIn("frontend/src/renderer/PageRenderer.tsx", result)
+        self.assertIn("frontend/src/App.tsx", result)
 
     def test_generate_contains_no_backend_files(self):
         if not self._template_available:
             self.skipTest("template not present")
-        from app_builder.services.frontend_only_pipeline import generate_frontend_only_app
-        result = generate_frontend_only_app(
+        from app_builder.services.json_app_generator import generate_json_app_files
+        result = generate_json_app_files(
             requirement="Build a finance tracker",
-            domain="finance",
         )
         backend_files = [k for k in result if k.startswith("backend/")]
         self.assertEqual(

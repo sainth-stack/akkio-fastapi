@@ -118,7 +118,7 @@ async def _run_frontend_only_pipeline(
     except Exception as exc:
         print(f"[codegen_api/fo] pipeline error: {exc}", file=sys.stderr)
         await on_event({
-            "event": "agent_error",
+            "event": "error",
             "agent": "fo_pipeline",
             "message": str(exc),
         })
@@ -326,23 +326,46 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             "message": "Starting code generation..."
         }))
 
-        # ── Frontend-only track: run the 6-stage pipeline ────────────────────
-        if _track == "frontend_only":
-            files = await _run_frontend_only_pipeline(
-                websocket=websocket,
-                session_id=session_id,
+        # ── JSON app track: template + app-definition.json (no LLM TSX) ─────
+        if _track == "json_app":
+            _ja_domain = None
+            if plan_json_req and (plan_json_req.get("blueprint") or {}).get("domain"):
+                _ja_domain = plan_json_req["blueprint"]["domain"]
+            elif _domain:
+                _ja_domain = _domain
+            await websocket.send_text(json.dumps({
+                "event": "pipeline_log",
+                "agent": "codegen",
+                "message": (
+                    "Track: json_app | Template: base-frontend-vite-mui"
+                    f"{f' | Domain: {_ja_domain}' if _ja_domain else ''}"
+                    " | Rendering from AppDefinition JSON (no page code generation)."
+                ),
+            }))
+
+            from app_builder.services.json_app_generator import run_json_app_codegen
+
+            async def _json_on_event(data: dict) -> None:
+                try:
+                    await websocket.send_text(json.dumps(data))
+                except Exception:
+                    pass
+
+            merged_plan = dict(plan_json_req or {})
+            if design_tokens and not merged_plan.get("design_tokens"):
+                merged_plan["design_tokens"] = design_tokens
+
+            files = await run_json_app_codegen(
                 requirement=requirement,
-                plan_json=plan_json_req,
-                design_tokens=design_tokens,
+                plan_json=merged_plan,
                 project_name=project_name,
-                app_id=app_id,
-                user_email=user_email,
-                uid=uid,
-                model_name=model_name,
-                resume_stage=resume_stage,
+                on_event=_json_on_event,
+                prd=prd,
+                uiux=uiux,
             )
+
             if not files:
-                _err = "Frontend-only pipeline produced no files"
+                _err = "JSON app generation produced no files"
                 if app_id and user_email:
                     db.update_app_builder_app(
                         app_id=app_id, user_email=user_email, user_id=uid,
@@ -388,23 +411,26 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             return
 
         # ── Legacy track: validation + backend verify + build verify ─────────
-        if _track != "frontend_only":
-          await websocket.send_text(json.dumps({
-            "event": "agent_start",
-            "agent": "validation_agent",
-            "message": "Validating generated code and checking dependencies..."
-          }))
-        touch_job(
-            session_id,
-            app_id=app_id,
-            job_type="codegen",
-            status="running",
-            step="validation_agent",
-        )
+        _light_track = _track in ("frontend_only", "json_app")
+
+        if not _light_track:
+            await websocket.send_text(json.dumps({
+                "event": "agent_start",
+                "agent": "validation_agent",
+                "message": "Validating generated code and checking dependencies..."
+            }))
+            touch_job(
+                session_id,
+                app_id=app_id,
+                job_type="codegen",
+                status="running",
+                step="validation_agent",
+            )
 
         template_name = "base-fullstack-vite-mui" if fullstack else "base-vite-fastapi"
 
-        try:
+        if not _light_track:
+          try:
             from app_builder.services.app_spec_service import build_app_spec
             from app_builder.services.fullstack_codegen import (
                 apply_theme_tokens,
@@ -549,7 +575,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     "agent": "validation_agent",
                     "message": "Validation complete. Dependencies verified."
                 }))
-        except Exception as val_err:
+          except Exception as val_err:
             err = f"Validation failed: {val_err}"
             print(f"[codegen_api] {err}", file=sys.stderr)
             if app_id and user_email:
@@ -576,6 +602,23 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             }))
             await websocket.send_text(json.dumps({"event": "error", "message": err}))
             return
+        else:
+            from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+
+            files, _ = ensure_frontend_only_kit(files, project_name=project_name)
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "validation_agent",
+                "message": (
+                    "Validation skipped — json_app uses a fixed template and "
+                    "app-definition.json (no generated page TSX)."
+                ),
+            }))
+            await websocket.send_text(json.dumps({
+                "event": "agent_complete",
+                "agent": "backend_verify_agent",
+                "message": "Backend verify skipped (frontend-only json_app track).",
+            }))
 
         async def _emit_verify_progress(agent: str, message: str):
             if not message:
@@ -595,7 +638,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             await _emit_verify_progress("build_verify_agent", msg)
 
         verify_backend = os.environ.get("CODEGEN_VERIFY_BACKEND", "true").lower() not in ("0", "false", "no")
-        if verify_backend and "backend/main.py" in files:
+        if not _light_track and verify_backend and "backend/main.py" in files:
             await websocket.send_text(json.dumps({
                 "event": "agent_start",
                 "agent": "backend_verify_agent",
@@ -668,7 +711,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     "agent": "backend_verify_agent",
                     "message": "Backend verified — uvicorn started and sample API calls succeeded.",
                 }))
-        elif verify_backend:
+        elif not _light_track and verify_backend:
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
                 "agent": "backend_verify_agent",
@@ -740,7 +783,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "message": "Build verify skipped (CODEGEN_VERIFY_BUILD=false).",
             }))
 
-        if fullstack:
+        if fullstack and not _light_track:
             from app_builder.services.fullstack_codegen import run_screen_qa as _run_screen_qa
             await websocket.send_text(json.dumps({
                 "event": "agent_start",
@@ -800,6 +843,16 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         if app_id and user_email:
             try:
+                plan_json_to_save = plan_json_req if _track in ("frontend_only", "json_app") else None
+                if _track == "json_app" and plan_json_to_save is not None:
+                    raw_def = files.get("frontend/src/config/app-definition.json")
+                    if raw_def:
+                        try:
+                            merged = dict(plan_json_to_save)
+                            merged["app_definition"] = json.loads(raw_def)
+                            plan_json_to_save = merged
+                        except json.JSONDecodeError:
+                            pass
                 # Use the already-resolved track (detected above, not re-computed here)
                 db.update_app_builder_app(
                     app_id=app_id,
@@ -813,7 +866,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     preview_url=frontend_url,
                     live_url=frontend_url,
                     track=_track,
-                    plan_json=plan_json_req if _track == "frontend_only" else None,
+                    plan_json=plan_json_to_save,
                 )
                 try:
                     from api.app_creator.deployment_api import register_local_preview
@@ -847,9 +900,14 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "message": f"Code generation completed but DB store failed: {store_err}"
             }))
 
+        _complete_msg = (
+            "App ready — template rendered from app-definition.json. Open Preview to use your app."
+            if _track == "json_app"
+            else "App ready — backend verified, frontend built. Open Preview to use your SaaS app."
+        )
         await websocket.send_text(json.dumps({
             "event": "codegen_complete",
-            "message": "App ready — backend verified, frontend built. Open Preview to use your SaaS app.",
+            "message": _complete_msg,
             "data": {
                 "project_name": project_name,
                 "files_count": len(files),

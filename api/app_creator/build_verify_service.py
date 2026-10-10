@@ -214,6 +214,17 @@ def _deterministic_build_fix(files: Dict[str, str], build_log: str, project_root
                     f.write(_DEFAULT_EXPORT_LINE)
                 logger.info("[build-fix] Patched client.ts on disk")
 
+    # ── Fix: broken components/ui/index.ts chart barrel (LLM sometimes corrupts this) ──
+    if "could not resolve" in log_lower and "linechart" in log_lower:
+        try:
+            from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+
+            updated, n = ensure_frontend_only_kit(updated, project_name=project_name)
+            if n:
+                logger.info("[build-fix] Restored UI kit (%d files) after LineChart resolve error", n)
+        except Exception as exc:
+            logger.warning("[build-fix] UI kit restore failed: %s", exc)
+
     return updated
 
 
@@ -306,9 +317,25 @@ Rules:
             return files
 
     updated = dict(files)
+    try:
+        from app_builder.services.frontend_only_template_guard import is_ui_kit_path
+    except ImportError:
+        is_ui_kit_path = lambda _p: False  # type: ignore
+
     for path, content in (data.get("files") or {}).items():
         if isinstance(content, str) and content.strip():
+            if is_ui_kit_path(path):
+                logger.warning("[build-fix] Ignoring LLM patch to frozen UI path %s", path)
+                continue
             updated[path] = content
+
+    try:
+        from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+
+        updated, _ = ensure_frontend_only_kit(updated)
+    except Exception:
+        pass
+
     from app_builder.services.code_post_process import _is_vite_project
     if not _is_vite_project(updated):
         patch_package_json_in_files(updated)
@@ -349,6 +376,19 @@ async def verify_build_and_fix(
         ensure_cra_build_env_file(files)
     else:
         files.pop("frontend/craco.config.js", None)
+
+    try:
+        from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+
+        files, kit_n = ensure_frontend_only_kit(files, project_name=project_name)
+        if kit_n:
+            await emit(
+                "agent_progress",
+                f"Frontend-only: restored {kit_n} UI kit file(s) from base-frontend-vite-mui before build",
+                agent="build_verify_agent",
+            )
+    except Exception as guard_exc:
+        logger.warning("[build_verify] FO template guard skipped: %s", guard_exc)
 
     file_writer(project_name, GeneratedFiles(files=files))
 
@@ -411,6 +451,11 @@ async def verify_build_and_fix(
                 error_files=error_files or None,
                 failed_attempts=failed_attempts or None,
             )
+            try:
+                from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+                files, _ = ensure_frontend_only_kit(files, project_name=project_name)
+            except Exception:
+                pass
             file_writer(project_name, GeneratedFiles(files=files))
         except Exception as fix_err:
             logger.warning("[build_verify] LLM fix failed: %s", fix_err)

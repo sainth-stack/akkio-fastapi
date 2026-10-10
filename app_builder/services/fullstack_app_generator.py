@@ -40,9 +40,9 @@ def resolve_track(domain: str) -> str:
 
     Returns:
         "legacy"         – existing fullstack backend+frontend pipeline
-        "frontend_only"  – new Lovable-style SPA with mock data, no backend
+        "json_app"  – JSON app definition + base-frontend-vite-mui renderer (no LLM TSX)
     """
-    return "legacy" if domain in STATIC_DOMAINS else "frontend_only"
+    return "legacy" if domain in STATIC_DOMAINS else "json_app"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM App-type Classifier
@@ -194,43 +194,26 @@ def generate_fullstack_application(
     colors = theme_from_tokens(design_tokens, uiux=uiux)
     mode = resolve_app_mode(requirement, prd, uiux)
 
-    # ── New frontend-only track ────────────────────────────────────────────
-    # All domains NOT in STATIC_DOMAINS are handled by the Lovable-style
-    # frontend-only pipeline (no FastAPI backend, no SQLite, mock data only).
+    # ── JSON app track (template renderer + app-definition.json) ───────────
     if mode not in STATIC_DOMAINS:
-        logger.info("[generator] domain=%s → frontend_only track", mode)
-        try:
-            from app_builder.services.frontend_only_pipeline import generate_frontend_only_app
-            fo_files = generate_frontend_only_app(
-                requirement=requirement,
-                prd=prd,
-                uiux=uiux,
-                architecture=architecture,
-                design_tokens=design_tokens,
-                domain=mode,
-            )
-            if fo_files:
-                return fo_files
-        except Exception as _fe_exc:
-            logger.warning(
-                "[generator] frontend_only pipeline failed (%s) — falling back to AI generator",
-                _fe_exc,
-            )
-        # Fallback: AI-driven generation (same as the existing inventory/crm/generic path)
-        enriched = (
-            f"[{mode.replace('_', ' ').title()} Application] {requirement}"
-            if mode not in ("generic", "")
-            else requirement
+        logger.info("[generator] domain=%s → json_app track", mode)
+        from app_builder.services.json_app_generator import generate_json_app_files
+
+        plan_json = {
+            "design_tokens": design_tokens,
+            "blueprint": {"domain": mode, "app_name": title},
+        }
+        if architecture and isinstance(architecture, dict):
+            plan_json["blueprint"] = {**plan_json["blueprint"], **architecture}
+        fo_files = generate_json_app_files(
+            requirement=requirement,
+            prd=prd,
+            uiux=uiux,
+            plan_json=plan_json,
+            app_name=title,
         )
-        ai_files = _run_ai_generator(enriched, prd, uiux, architecture, design_tokens)
-        if ai_files:
-            files.update(ai_files)
-        else:
-            files.update(frontend_files(title, colors, False))
-            files.update(backend_files(title, False))
-        files.pop("frontend/src/App.jsx", None)
-        files.pop("frontend/src/styles/app.css", None)
-        return files
+        if fo_files:
+            return fo_files
     # ── Legacy static-domain track ─────────────────────────────────────────
     if mode == "doc_chat":
         files.update(doc_chat_frontend_files(title, colors))
