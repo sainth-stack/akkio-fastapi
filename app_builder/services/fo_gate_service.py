@@ -97,11 +97,13 @@ async def run_gate(
         metrics.stage_end("gate_build")
 
     if not build_ok:
+        # Extract the meaningful error lines (not the Rollup stack trace tail)
+        actionable = _extract_build_error(build_log)
         await _emit(on_event, {
             "event": "agent_error", "agent": "gate_build",
-            "message": f"Gate build failed: {build_log[-400:]}",
+            "message": f"Gate build failed: {actionable}",
         })
-        return GateResult(passed=False, build_log=build_log, error="vite build failed")
+        return GateResult(passed=False, build_log=build_log, error=f"vite build failed: {actionable}")
 
     await _emit(on_event, {
         "event": "agent_complete", "agent": "gate_build",
@@ -206,7 +208,27 @@ async def gate_with_fix(
     """
     Run gate; if it fails, apply a targeted fix and re-gate (max MAX_GATE_FIX_ATTEMPTS).
     Returns (final_files, final_gate_result).
+
+    Fix strategy:
+    1. First attempt: apply deterministic fix_frontend_only_pages (no LLM needed)
+    2. Subsequent attempts: LLM-based page fix for the failing route
     """
+    # ── Attempt 0: deterministic pre-fix before first gate ───────────────────
+    try:
+        from app_builder.services.code_post_process import fix_frontend_only_pages
+        from app_builder.services.file_writer import write_single_file_to_disk
+        from app_builder.services.runtime_paths import project_write_root as _pwr
+        patched = fix_frontend_only_pages(files)
+        changed = {k: v for k, v in patched.items() if v != files.get(k)}
+        if changed:
+            project_root = _pwr(project_name)
+            for rel_path, content in changed.items():
+                write_single_file_to_disk(project_root, rel_path, content)
+            files.update(changed)
+            logger.info("[gate_with_fix] applied deterministic pre-fix to %d page(s)", len(changed))
+    except Exception as _pre_err:
+        logger.debug("[gate_with_fix] pre-fix skipped: %s", _pre_err)
+
     result = await run_gate(project_name, files, blueprint_json, on_event, metrics)
 
     for attempt in range(1, MAX_GATE_FIX_ATTEMPTS + 1):
@@ -214,6 +236,40 @@ async def gate_with_fix(
             break
 
         failure = result.first_failure
+
+        # ── Build failure (no routes tested) ─────────────────────────────────
+        if not failure and "vite build failed" in (result.error or ""):
+            build_err = result.error or result.build_log[-600:]
+            offending_file = _extract_offending_file_from_build_error(build_err, files)
+            if offending_file and llm:
+                await _emit(on_event, {
+                    "event": "agent_start", "agent": f"gate_fix_{attempt}",
+                    "message": f"Gate build fix attempt {attempt}: {offending_file}",
+                })
+                file_content = files.get(offending_file, "")
+                fixed = await _fix_file_for_build_error(
+                    file_path=offending_file,
+                    file_content=file_content,
+                    build_error=build_err,
+                    types_content=types_content,
+                    mock_exports=mock_exports,
+                    llm=llm,
+                )
+                if fixed:
+                    from app_builder.services.verify_service import is_complete_file
+                    from app_builder.services.file_writer import write_single_file_to_disk
+                    from app_builder.services.runtime_paths import project_write_root as _pwr
+                    if is_complete_file(fixed):
+                        files[offending_file] = fixed
+                        write_single_file_to_disk(_pwr(project_name), offending_file, fixed)
+                        result = await run_gate(project_name, files, blueprint_json, on_event, metrics)
+                await _emit(on_event, {
+                    "event": "agent_complete" if result.passed else "agent_error",
+                    "agent": f"gate_fix_{attempt}",
+                    "message": f"Gate build fix {'succeeded' if result.passed else 'still failing'}",
+                })
+            break
+
         if not failure:
             break
 
@@ -244,9 +300,10 @@ async def gate_with_fix(
         if fixed:
             from app_builder.services.verify_service import is_complete_file
             from app_builder.services.file_writer import write_single_file_to_disk
+            from app_builder.services.runtime_paths import project_write_root as _pwr
             if is_complete_file(fixed):
                 files[page_key] = fixed
-                project_root = project_write_root(project_name)
+                project_root = _pwr(project_name)
                 write_single_file_to_disk(project_root, page_key, fixed)
                 if metrics:
                     metrics.record_fix_attempt("gate", attempt, page_key, True)
@@ -462,6 +519,97 @@ Rules:
    '../components/ui', '../types', '../mock'.
 
 Return ONLY the corrected file content. No markdown fences."""
+
+
+# ---------------------------------------------------------------------------
+# Build error helpers
+# ---------------------------------------------------------------------------
+
+def _extract_build_error(build_log: str) -> str:
+    """
+    Extract the actionable error message from a Vite/Rollup build log.
+    The log ends with a stack trace; the meaningful error is near the top.
+    """
+    lines = build_log.splitlines()
+    # Look for the key error patterns Vite/Rollup emits
+    patterns = [
+        r"error during build",
+        r"Could not resolve",
+        r"Failed to resolve import",
+        r"is not exported by",
+        r"Cannot find module",
+        r"SyntaxError",
+        r"ReferenceError",
+        r"\[vite\]",
+        r"\[plugin:",
+    ]
+    import re as _re
+    for i, line in enumerate(lines):
+        for pat in patterns:
+            if _re.search(pat, line, _re.IGNORECASE):
+                # Return this line + up to 3 following lines for context
+                snippet = "\n".join(lines[i : i + 4]).strip()
+                return snippet[:500]
+    # Fallback: first 300 chars
+    return build_log[:300]
+
+
+def _extract_offending_file_from_build_error(
+    build_error: str,
+    files: Dict[str, str],
+) -> Optional[str]:
+    """
+    Try to extract which source file caused the build error.
+    Looks for paths like 'frontend/src/pages/DashboardPage.tsx'.
+    """
+    import re as _re
+    # Vite error format: "Failed to resolve import 'X' from 'path/to/file.tsx'"
+    # or "path/to/file.tsx:line:col: error"
+    for pattern in [
+        r"from ['\"]([^'\"]*\.tsx?)['\"]",
+        r"(frontend/src/[^\s:'\"]+\.tsx?)",
+        r"(src/[^\s:'\"]+\.tsx?)",
+    ]:
+        for m in _re.finditer(pattern, build_error):
+            path = m.group(1)
+            # Normalize to frontend/ prefix
+            if not path.startswith("frontend/"):
+                path = "frontend/" + path.lstrip("/")
+            if path in files:
+                return path
+    # If no match, check all page files for the most common bad import patterns
+    import re as _re
+    for file_path, content in files.items():
+        if not (file_path.startswith("frontend/src/pages/") and file_path.endswith(".tsx")):
+            continue
+        # Check for invalid imports
+        for bad in [
+            r"from '\.\.\/components\/ui\/charts\/",   # direct chart sub-path import
+            r"import\s+\w+\s+from\s+'\.\./components/shared/\w+'",  # invented shared component
+            r"from 'recharts'",    # raw recharts import (not from kit)
+        ]:
+            if _re.search(bad, content):
+                return file_path
+    return None
+
+
+async def _fix_file_for_build_error(
+    file_path: str,
+    file_content: str,
+    build_error: str,
+    types_content: str,
+    mock_exports: List[str],
+    llm: Any,
+) -> Optional[str]:
+    """LLM fix for a file causing a Vite build error."""
+    from app_builder.services.fo_stage_agents import fix_file
+    error_info = {
+        "error": build_error[:600],
+        "offending_file": file_path,
+        "file_content": file_content,
+        "all_errors": [build_error[:600]],
+    }
+    return await fix_file(error_info, types_content, mock_exports, llm)
 
 
 async def _fix_page_for_gate(

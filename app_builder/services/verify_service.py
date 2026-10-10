@@ -227,8 +227,23 @@ def _check_file_imports(
         default_name = m.group(2)  # default import
         source = m.group(3)
 
-        # Only check relative imports
+        # ── Catch bad absolute imports (known Rollup-breaking patterns) ────────
         if not source.startswith("."):
+            # Direct recharts imports in page files are invalid (use kit wrappers)
+            if source == "recharts" and file_path.startswith("frontend/src/pages/"):
+                errors.append(
+                    f"{file_path}: direct 'recharts' import in page — "
+                    "use chart components from '../components/ui' instead"
+                )
+            continue
+
+        # ── Catch direct chart sub-path imports ────────────────────────────────
+        if re.search(r"/ui/charts/(LineChart|BarChart|PieChart)", source):
+            errors.append(
+                f"{file_path}: direct chart sub-path import '{source}' — "
+                "use '../components/ui' barrel import instead"
+            )
+            # Don't resolve further — it will resolve but usage pattern will be wrong
             continue
 
         # Resolve the import path relative to the importing file
