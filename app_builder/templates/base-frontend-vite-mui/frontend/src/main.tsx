@@ -12,12 +12,24 @@ const queryClient = new QueryClient({
   },
 });
 
+// When served under /app/{project_id}/ the static server injects
+// window.__AKKIO_BASE_PATH__ = '/app/{project_id}'.
+// BrowserRouter needs this as `basename` so route matching works correctly.
+declare global {
+  interface Window {
+    __AKKIO_BASE_PATH__?: string;
+    __AKKIO_API_BASE__?: string;
+    __AKKIO_ACCESS_TOKEN__?: string;
+  }
+}
+const basename: string = window.__AKKIO_BASE_PATH__ || '/';
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={appTheme}>
         <CssBaseline />
-        <BrowserRouter>
+        <BrowserRouter basename={basename}>
           <App />
         </BrowserRouter>
       </ThemeProvider>

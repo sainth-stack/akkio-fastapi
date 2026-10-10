@@ -30,62 +30,75 @@ from typing import Any, Dict, List
 # ---------------------------------------------------------------------------
 
 def _build_app_tsx(pages: List[Dict[str, Any]], app_name: str) -> str:
-    imports = []
-    route_lines = []
+    # Deduplicate pages by path (keep first occurrence)
+    seen_paths: set = set()
+    deduped = []
     for page in pages:
-        name = page["name"]
-        path = page["path"]
-        imports.append(f"import {name} from './pages/{name}';")
-        route_lines.append(f"        <Route path=\"{path}\" element={{<{name} />}} />")
+        if page["path"] not in seen_paths:
+            seen_paths.add(page["path"])
+            deduped.append(page)
+    pages = deduped
 
-    nav_items_json = json.dumps(
+    import_lines = "\n".join(
+        "import {} from './pages/{}';".format(p["name"], p["name"])
+        for p in pages
+    )
+    nav_items = json.dumps(
         [{"label": p["nav_label"], "path": p["path"], "icon": p["icon"]} for p in pages],
         indent=2,
     )
-    imports_str = "\n".join(imports)
-    routes_str = "\n".join(route_lines)
+    route_lines = "\n".join(
+        "        <Route path=\"{}\" element={{<{} />}} />".format(p["path"], p["name"])
+        for p in pages
+    )
+    safe_name = app_name.replace('"', '\\"')
+    index_component = pages[0]["name"] if pages else "DemoPage"
 
-    return textwrap.dedent(f"""\
-        import {{ Routes, Route }} from 'react-router-dom';
-        import AppShell from './components/ui/AppShell';
-        {imports_str}
-
-        const NAV_ITEMS = {nav_items_json};
-
-        export default function App() {{
-          return (
-            <Routes>
-              <Route element={{<AppShell navItems={{NAV_ITEMS}} appName={{"{app_name}"}} />}}>
-        {routes_str}
-              </Route>
-            </Routes>
-          );
-        }}
-        """)
+    lines = [
+        "import { Routes, Route } from 'react-router-dom';",
+        "import AppShell from './components/ui/AppShell';",
+        import_lines,
+        "",
+        "const NAV_ITEMS = {};".format(nav_items),
+        "",
+        "export default function App() {",
+        "  return (",
+        "    <Routes>",
+        '      <Route element={<AppShell navItems={NAV_ITEMS} appName="' + safe_name + '" />}>',
+        route_lines,
+        '        <Route path="*" element={<' + index_component + " />} />",
+        "      </Route>",
+        "    </Routes>",
+        "  );",
+        "}",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _build_demo_app_tsx(app_name: str) -> str:
     """Fallback App.tsx used when no pages are available yet."""
-    return textwrap.dedent(f"""\
-        import {{ Routes, Route }} from 'react-router-dom';
-        import AppShell from './components/ui/AppShell';
-        import DemoPage from './pages/DemoPage';
-
-        const NAV_ITEMS = [
-          {{ label: 'Home', path: '/', icon: 'Dashboard' }},
-        ];
-
-        export default function App() {{
-          return (
-            <Routes>
-              <Route element={{<AppShell navItems={{NAV_ITEMS}} appName={{"{app_name}"}} />}}>
-                <Route path="/" element={{<DemoPage />}} />
-                <Route path="*" element={{<DemoPage />}} />
-              </Route>
-            </Routes>
-          );
-        }}
-        """)
+    safe_name = app_name.replace('"', '\\"')
+    return (
+        "import { Routes, Route } from 'react-router-dom';\n"
+        "import AppShell from './components/ui/AppShell';\n"
+        "import DemoPage from './pages/DemoPage';\n"
+        "\n"
+        "const NAV_ITEMS = [\n"
+        '  { label: "Home", path: "/", icon: "Dashboard" },\n'
+        "];\n"
+        "\n"
+        "export default function App() {\n"
+        "  return (\n"
+        "    <Routes>\n"
+        '      <Route element={<AppShell navItems={NAV_ITEMS} appName="' + safe_name + '" />}>\n'
+        '        <Route path="/" element={<DemoPage />} />\n'
+        '        <Route path="*" element={<DemoPage />} />\n'
+        "      </Route>\n"
+        "    </Routes>\n"
+        "  );\n"
+        "}\n"
+    )
 
 
 # ---------------------------------------------------------------------------

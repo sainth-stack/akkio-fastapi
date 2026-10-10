@@ -92,6 +92,7 @@ def run_frontend_build(project_name: str, install: bool = True) -> Tuple[Optiona
 
         build_env = os.environ.copy()
         build_env["PUBLIC_URL"] = f"/app/{project_name}"
+        build_env["VITE_BASE_PATH"] = f"/app/{project_name}/"  # for Vite apps
         from api.app_creator.cra_npm_patch import CRA_BUILD_ENV
         for key, val in CRA_BUILD_ENV.items():
             build_env.setdefault(key, val)

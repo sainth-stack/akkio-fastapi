@@ -256,6 +256,7 @@ def _build_frontend(
         # PUBLIC_URL ensures CRA/Vite build asset paths match /app/{project_id} base path
         build_env = os.environ.copy()
         build_env["PUBLIC_URL"] = f"/app/{project_name}"
+        build_env["VITE_BASE_PATH"] = f"/app/{project_name}/"  # for Vite apps
         for key, val in CRA_BUILD_ENV.items():
             build_env.setdefault(key, val)
         r = subprocess.run(

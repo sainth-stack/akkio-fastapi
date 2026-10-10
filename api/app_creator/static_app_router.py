@@ -55,7 +55,9 @@ def _inject_preview_auth(html_content: str, access_token: Optional[str], project
     scripts = []
     if project_id:
         api_base = f"/api/apps/{project_id}"
+        app_base = f"/app/{project_id}"
         scripts.append(f"window.__AKKIO_API_BASE__ = {json.dumps(api_base)};")
+        scripts.append(f"window.__AKKIO_BASE_PATH__ = {json.dumps(app_base)};")
     if access_token and access_token.strip():
         token_js = json.dumps(access_token.strip())
         scripts.append(f"window.__AKKIO_ACCESS_TOKEN__ = {token_js};")
