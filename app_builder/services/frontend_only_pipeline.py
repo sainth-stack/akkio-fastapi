@@ -136,6 +136,12 @@ async def run_pipeline(
             blueprint_json, uiux_json, design_tokens_json,
             types_content, mock_exports, llm, on_event,
         )
+        # Deterministic post-processing: fix common chart prop mistakes before tsc verify
+        try:
+            from app_builder.services.code_post_process import fix_frontend_only_pages
+            s4_files = fix_frontend_only_pages(s4_files)
+        except Exception as _pp_err:
+            logger.warning("[pipeline/S4] post-process skipped: %s", _pp_err)
         files.update(s4_files)
         await _verify_and_fix_stage(
             "S4", project_name, files, s4_files, llm, on_event,

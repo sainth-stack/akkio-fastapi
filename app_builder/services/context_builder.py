@@ -75,19 +75,35 @@ KIT_SIGNATURES: Dict[str, str] = {
         "<Tabs tabs={TabDef[]} />\n"
         "// TabDef: { label: string; content: ReactNode }"
     ),
+    # CHART COMPONENTS — all are default exports re-exported from '../components/ui' barrel.
+    # CRITICAL: use named import { LineChart } from '../components/ui' — NOT a default import.
+    # CRITICAL: use EXACTLY these prop names — any other prop names will cause a TypeScript error.
     "LineChart": (
-        "<LineChart data={Array<{name:string;[k:string]:any}>} "
-        "lines={Array<{key:string;label:string;color?:string}>} "
-        "xKey?={string} />"
+        "// import { LineChart } from '../components/ui';\n"
+        "<LineChart\n"
+        "  data={Array<Record<string,unknown>>}  // e.g. [{name:'Jan', value:100}, ...]\n"
+        "  series={Array<{dataKey:string; color?:string; name?:string}>}  // REQUIRED — NOT 'lines'\n"
+        "  xAxisKey?={string}  // default='name' — NOT 'xKey'\n"
+        "  height?={number}\n"
+        "/>"
     ),
     "BarChart": (
-        "<BarChart data={Array<{name:string;[k:string]:any}>} "
-        "bars={Array<{key:string;label:string;color?:string}>} "
-        "xKey?={string} horizontal?={boolean} />"
+        "// import { BarChart } from '../components/ui';\n"
+        "<BarChart\n"
+        "  data={Array<Record<string,unknown>>}  // e.g. [{name:'Q1', revenue:500}, ...]\n"
+        "  series={Array<{dataKey:string; color?:string; name?:string}>}  // REQUIRED — NOT 'bars'\n"
+        "  xAxisKey?={string}  // default='name' — NOT 'xKey'\n"
+        "  height?={number}\n"
+        "  layout?='horizontal'|'vertical'\n"
+        "/>"
     ),
     "PieChart": (
-        "<PieChart data={Array<{name:string;value:number;color?:string}>} "
-        "donut?={boolean} />"
+        "// import { PieChart } from '../components/ui';\n"
+        "<PieChart\n"
+        "  data={Array<{name:string; value:number; color?:string}>}  // REQUIRED shape\n"
+        "  height?={number}\n"
+        "  innerRadius?={number}  // >0 for donut — NOT 'donut'\n"
+        "/>"
     ),
     "StatusChip": "<StatusChip status={string} />",
 }
@@ -201,6 +217,10 @@ def build_page_context(
     for always in ("AppShell", "PageHeader", "EmptyState", "LoadingState", "ErrorState"):
         if always not in kit_sigs:
             kit_sigs[always] = KIT_SIGNATURES[always]
+    # Always include chart signatures — LLM needs exact prop names to avoid breaking builds
+    for chart in ("LineChart", "BarChart", "PieChart"):
+        if chart not in kit_sigs:
+            kit_sigs[chart] = KIT_SIGNATURES[chart]
 
     # 4. Relevant types — only what this page uses
     used_entities = page_spec.get("uses_entities") or []

@@ -104,39 +104,56 @@ You are a data engineer. Generate a single file: src/mock/index.ts.
 
 Rules (STRICT):
 1. Import ONLY from '../types' (use the types provided).
-2. For each entity, export `const mock{Entity}: {Entity}[] = [...]` with 15-30 realistic rows.
+2. For each entity, export `const mock{Entity}s: {Entity}[] = [...]` with 15-30 realistic rows.
 3. Data must be domain-realistic (real names, dates, amounts, statuses — not "Item 1").
 4. Consistent IDs: use '1','2',... strings; cross-entity relations must reference valid IDs.
 5. Export `mockKpis: KpiItem[]` (4 items) and `mockChartData` (12-month series).
-6. Export `useMockStore` hook (copy the pattern below EXACTLY):
+6. Export `useMockStore` hook — copy the pattern below EXACTLY (do NOT change return shape):
 
 ```typescript
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+
+export interface MockStoreResult<T> {
+  data: T[];
+  loading: boolean;
+  error: string | null;
+  add: (item: T) => void;
+  update: (id: string, patch: Partial<T>) => void;
+  remove: (id: string) => void;
+}
 
 export function useMockStore<T extends { id: string }>(
-  key: string,
-  initial: T[]
-) {
-  const [items, setItems] = useState<T[]>(() => {
+  key: string = 'mock_store',
+  seed: T[] = []
+): MockStoreResult<T> {
+  const storageKey = `akkio_mock_${key}`;
+  const [data, setData] = useState<T[]>(() => {
     try {
-      const stored = localStorage.getItem(`mock_${key}`);
-      return stored ? (JSON.parse(stored) as T[]) : initial;
-    } catch { return initial; }
+      const raw = localStorage.getItem(storageKey);
+      if (raw) return JSON.parse(raw) as T[];
+    } catch {}
+    return seed;
   });
+  const [loading] = useState(false);
+  const [error] = useState<string | null>(null);
+
   useEffect(() => {
-    localStorage.setItem(`mock_${key}`, JSON.stringify(items));
-  }, [items, key]);
+    try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+  }, [data, storageKey]);
 
-  const add = (item: Omit<T, 'id'>): void =>
-    setItems(p => [...p, { ...item, id: String(Date.now()) } as T]);
-  const update = (id: string, patch: Partial<T>): void =>
-    setItems(p => p.map(x => (x.id === id ? { ...x, ...patch } : x)));
-  const remove = (id: string): void =>
-    setItems(p => p.filter(x => x.id !== id));
+  const add = useCallback((item: T) => setData(p => [...p, item]), []);
+  const update = useCallback((id: string, patch: Partial<T>) => {
+    setData(p => p.map(x => x.id === id ? { ...x, ...patch } : x));
+  }, []);
+  const remove = useCallback((id: string) => setData(p => p.filter(x => x.id !== id)), []);
 
-  return { items, add, update, remove };
+  return { data, loading, error, add, update, remove };
 }
 ```
+
+CRITICAL: The hook MUST return `{ data, loading, error, add, update, remove }`.
+Pages destructure it as: `const { data: items, loading, error, add, update, remove } = useMockStore(...)`.
+DO NOT rename `data` to `items` in the return value.
 
 7. RETURN ONLY the complete TypeScript file. No markdown, no explanation."""
 
@@ -189,22 +206,33 @@ Rules (STRICT):
    - 'react-router-dom' (useNavigate, Link)
    - '@mui/material' (Box, Typography, Grid, Stack, Chip, IconButton, Tooltip, etc.)
    - '@mui/icons-material' (specific icon names)
-   - '../components/ui' (kit components — use ONLY the signatures provided)
+   - '../components/ui' (ALL kit components including LineChart/BarChart/PieChart — ALWAYS named import)
    - '../types' (entity interfaces — use ONLY the types provided)
    - '../mock' (mock exports — use ONLY the names provided)
    DO NOT invent new package names, component names, or type names.
-3. Handle all 3 states explicitly:
+   DO NOT import from '../components/ui/charts/...' (use the barrel '../components/ui').
+3. CHART COMPONENTS — read the signatures VERY carefully:
+   a. Import as NAMED export: `import { LineChart, BarChart, PieChart } from '../components/ui';`
+   b. LineChart/BarChart both require a `series` prop (array of {dataKey, color?, name?}).
+      DO NOT use `lines=`, `bars=`, `dataKey=`, `color=` or `xKey=` as top-level props.
+      Correct: <LineChart data={chartData} series={[{ dataKey: 'value', color: '#1976d2', name: 'Revenue' }]} xAxisKey="month" />
+      WRONG:   <LineChart data={chartData} dataKey="value" color="#1976d2" xKey="month" />
+   c. PieChart requires `data` with shape {name:string, value:number, color?:string}[].
+      DO NOT use `nameKey=` or `dataKey=` props on PieChart.
+4. Handle all 3 states explicitly:
    - Loading: wrap content with a loading check using <LoadingState />
    - Empty: show <EmptyState /> when the list is empty
    - Error: wrap with error boundary or inline check using <ErrorState />
-4. For list/table screens: use <DataTable> with typed columns.
-5. For add/edit operations: use <Modal> wrapping a form with <FormField> components.
-6. For delete operations: use <ConfirmDialog> with destructive=true.
-7. Show success/error feedback with <Toast>.
-8. For charts: use the chart kit components with the mock chart data.
-9. Use useMockStore for mutations (add/edit/delete).
-10. The file must be complete — no TODO comments, no placeholder sections.
-11. Use MUI sx props for styling — never hardcode hex colors.
+5. For list/table screens: use <DataTable> with typed columns.
+6. For add/edit operations: use <Modal> wrapping a form with <FormField> components.
+7. For delete operations: use <ConfirmDialog> with destructive=true.
+8. Show success/error feedback with <Toast>.
+9. For charts: use the chart kit components with the mock chart data. Follow the exact signatures.
+10. Use useMockStore for mutations (add/edit/delete).
+   Destructure as: `const { data: items, loading, add, update, remove } = useMockStore('key', mockData);`
+   The hook returns `{ data, loading, error, add, update, remove }` — NOT `{ items, ... }`.
+11. The file must be complete — no TODO comments, no placeholder sections.
+12. Use MUI sx props for styling — never hardcode hex colors.
 
 RETURN ONLY the complete TypeScript file. No markdown fences, no explanation."""
 
@@ -348,7 +376,23 @@ Rules:
 3. Do not truncate — the file must be complete (all exports preserved).
 4. Do not add any markdown fences or explanation.
 5. Only change what is needed to fix the errors.
-6. If an imported name doesn't exist, use an alternative from the available exports."""
+6. If an imported name doesn't exist, use an alternative from the available exports.
+
+CHART COMPONENT REFERENCE (from '../components/ui' barrel — always named import):
+- LineChart: <LineChart data={rows} series={[{dataKey:'value', color:'#1976d2', name:'Label'}]} xAxisKey="name" />
+  Props: data (Record<string,unknown>[]), series (required!), xAxisKey?, height?
+  WRONG props: lines, bars, dataKey, color, xKey — DO NOT USE THESE
+
+- BarChart: <BarChart data={rows} series={[{dataKey:'value', color:'#1976d2'}]} xAxisKey="name" />
+  Props: data (Record<string,unknown>[]), series (required!), xAxisKey?, height?, layout?
+  WRONG props: lines, bars, dataKey, color, xKey — DO NOT USE THESE
+
+- PieChart: <PieChart data={[{name:'A', value:10, color:'#1976d2'}]} />
+  Props: data ({name,value,color?}[]), height?, innerRadius?, outerRadius?
+  WRONG props: nameKey, dataKey, donut — DO NOT USE THESE
+
+Import charts: import { LineChart, BarChart, PieChart } from '../components/ui';
+DO NOT import from '../components/ui/charts/...' directly."""
 
 
 async def fix_file(

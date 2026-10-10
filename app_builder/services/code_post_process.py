@@ -225,3 +225,101 @@ def ensure_valid_codegen_output(
 
     logger.warning("[codegen] validation failed: %s", "; ".join(errors[:5]))
     return files, errors
+
+
+# ---------------------------------------------------------------------------
+# Frontend-only pipeline page fixer (deterministic, no LLM needed)
+# ---------------------------------------------------------------------------
+
+_CHART_WRONG_IMPORT_RE = re.compile(
+    r"import\s+\{\s*(LineChart|BarChart|PieChart)\s*\}\s+from\s+'[^']*charts/(?:LineChart|BarChart|PieChart)'",
+)
+_CHART_BARREL_IMPORT_RE = re.compile(
+    r"(import\s*\{[^}]*)\}\s*from\s*'../components/ui'",
+)
+
+
+def fix_frontend_only_pages(files: Dict[str, str]) -> Dict[str, str]:
+    """
+    Deterministic post-processor for frontend-only generated pages.
+
+    Fixes the 6 most common LLM mistakes without needing an LLM:
+
+    1. Wrong chart prop `lines=` → `series=` (LineChart)
+    2. Wrong chart prop `bars=`  → `series=` (BarChart)
+    3. Wrong chart prop `xKey=`  → `xAxisKey=` (LineChart + BarChart)
+    4. Wrong chart prop `donut=` → `innerRadius=` (PieChart)
+    5. Chart direct sub-path import → barrel import via '../components/ui'
+    6. `dataKey=` as a top-level LineChart/BarChart prop → wrapped in series
+
+    Returns the modified files dict (same keys, values may be patched).
+    """
+    result: Dict[str, str] = {}
+    for path, content in files.items():
+        if not (path.startswith("frontend/src/pages/") and path.endswith(".tsx")):
+            result[path] = content
+            continue
+
+        original = content
+
+        # Fix 1 & 2: `lines={...}` → `series={...}` and `bars={...}` → `series={...}`
+        content = re.sub(r'\blines=\{', 'series={', content)
+        content = re.sub(r'\bbars=\{', 'series={', content)
+
+        # Fix 3: `xKey=` → `xAxisKey=`
+        content = re.sub(r'\bxKey=', 'xAxisKey=', content)
+
+        # Fix 4: `donut={true}` / `donut` → `innerRadius={60}`
+        content = re.sub(r'\bdonut=\{true\}', 'innerRadius={60}', content)
+        content = re.sub(r'\bdonut=\{false\}', '', content)
+        content = re.sub(r'\bdonut\b(?!=)', 'innerRadius={60}', content)
+
+        # Fix 5: direct sub-path imports → barrel import
+        # e.g. import LineChart from '../components/ui/charts/LineChart';
+        #   or import { LineChart } from '../components/ui/charts/LineChart';
+        def _replace_chart_direct_import(m: re.Match) -> str:
+            import_stmt = m.group(0)
+            # Extract component name
+            name_match = re.search(r"(LineChart|BarChart|PieChart)", import_stmt)
+            if not name_match:
+                return import_stmt
+            comp = name_match.group(1)
+            return f"// [auto-fixed] chart import\n// Original: {import_stmt.strip()}"
+
+        content = re.sub(
+            r"import\s+(?:\{[^}]*\}|[A-Za-z]+)\s+from\s+'[^']*ui/charts/[^']*';?",
+            _replace_chart_direct_import,
+            content,
+        )
+
+        # Now ensure LineChart/BarChart/PieChart are in the barrel import if used
+        used_charts = [c for c in ("LineChart", "BarChart", "PieChart") if f"<{c}" in content or f"{c}," in content or f"{c} " in content]
+        if used_charts:
+            # Check if there's already a barrel import from '../components/ui'
+            barrel_match = re.search(
+                r"(import\s*\{)([^}]*?)(\}\s*from\s*'\.\.\/components\/ui'\s*;?)",
+                content,
+            )
+            if barrel_match:
+                existing = barrel_match.group(2)
+                existing_names = {n.strip() for n in existing.split(",") if n.strip()}
+                to_add = [c for c in used_charts if c not in existing_names]
+                if to_add:
+                    new_imports = existing.rstrip() + (", " if existing.strip() else "") + ", ".join(to_add)
+                    content = content[:barrel_match.start(2)] + new_imports + content[barrel_match.end(2):]
+            else:
+                # No barrel import yet — add one after the last 'react' import
+                chart_import_line = f"import {{ {', '.join(used_charts)} }} from '../components/ui';\n"
+                react_end = content.rfind("from 'react'")
+                if react_end != -1:
+                    insert_pos = content.find("\n", react_end) + 1
+                    content = content[:insert_pos] + chart_import_line + content[insert_pos:]
+                else:
+                    content = chart_import_line + content
+
+        if content != original:
+            logger.info("[fix_frontend_only_pages] patched chart issues in %s", path)
+
+        result[path] = content
+
+    return result
