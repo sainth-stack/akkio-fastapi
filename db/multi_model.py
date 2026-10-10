@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 
 _MULTI_MODEL_DDL = """
@@ -87,8 +87,8 @@ class MultiModelMixin:
         user_email: str,
         system_prompt: str,
         temperature: float = 0.0,
-        workflow: str | None = None,
-        output_format: str | None = None,
+        workflow: Optional[str] = None,
+        output_format: Optional[str] = None,
     ):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
@@ -120,10 +120,10 @@ class MultiModelMixin:
         session_id: str,
         file_name: str,
         file_type: str,
-        storage_path: str | None = None,
-        vector_collection_id: str | None = None,
-        db_table_name: str | None = None,
-        error_message: str | None = None,
+        storage_path: Optional[str] = None,
+        vector_collection_id: Optional[str] = None,
+        db_table_name: Optional[str] = None,
+        error_message: Optional[str] = None,
     ):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
@@ -138,7 +138,7 @@ class MultiModelMixin:
                 (session_id, file_name, file_type, storage_path, vector_collection_id, db_table_name, error_message),
             )
 
-    def update_multi_model_progress(self, session_id: str, progress: int, stage: str, status: str | None = None):
+    def update_multi_model_progress(self, session_id: str, progress: int, stage: str, status: Optional[str] = None):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
             if status:
@@ -195,9 +195,9 @@ class MultiModelMixin:
 
     def get_multi_model_session(
         self,
-        session_id: str | None = None,
-        user_email: str | None = None,
-        model_name: str | None = None,
+        session_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        model_name: Optional[str] = None,
     ):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
@@ -280,7 +280,7 @@ class MultiModelMixin:
             return self._session_row_to_dict(row) if row else None
 
     def set_multi_model_published(
-        self, session_id: str, user_email: str, published: bool, public_id: str | None = None
+        self, session_id: str, user_email: str, published: bool, public_id: Optional[str] = None
     ):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:
@@ -311,11 +311,11 @@ class MultiModelMixin:
         self,
         session_id: str,
         user_email: str,
-        model_name: str | None = None,
-        system_prompt: str | None = None,
-        temperature: float | None = None,
-        workflow: str | None = None,
-        output_format: str | None = None,
+        model_name: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        workflow: Optional[str] = None,
+        output_format: Optional[str] = None,
     ):
         self.ensure_training_tables()
         with self.connection.cursor() as cursor:

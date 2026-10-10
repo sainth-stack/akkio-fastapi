@@ -1,3 +1,9 @@
+"""
+UIUX Agent — streams UI/UX design generation.
+
+For the frontend-only track this module also emits a validated UXPlan JSON
+(event: "uiux_json") after the markdown stream finishes.
+"""
 from typing import List, Dict, Any, AsyncGenerator, Optional
 import json
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -7,6 +13,8 @@ async def stream_uiux_generation(
     prd: str,
     llm,
     builder_kind: Optional[str] = None,
+    track: Optional[str] = None,
+    prd_json: Optional[Dict] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streams UI/UX design generation.
@@ -107,3 +115,88 @@ Requirement:
         "event": "uiux_complete",
         "data": full_response
     }
+
+    # ── Frontend-only track: extract structured UXPlan JSON ────────────────
+    if track == "frontend_only":
+        try:
+            yield {"event": "uiux_json_start", "message": "Extracting structured UX plan…"}
+            ux_json_data = await _emit_uiux_json(requirement, full_response, prd_json, llm)
+            if ux_json_data:
+                yield {"event": "uiux_json", "data": ux_json_data}
+            else:
+                yield {"event": "uiux_json_error", "message": "Structured UX plan extraction failed"}
+        except Exception as _uje:
+            yield {"event": "uiux_json_error", "message": str(_uje)}
+    # ───────────────────────────────────────────────────────────────────────
+
+
+# =============================================================================
+# Frontend-only track: structured UXPlan extraction
+# =============================================================================
+
+_UIUX_JSON_SYSTEM = """\
+You are a UX architect. Extract a structured UXPlan JSON from the UX design document below.
+Return ONLY a valid JSON object — no markdown, no explanation — matching this schema:
+
+{
+  "screens": [
+    {
+      "screen_id": "S001",
+      "layout": "dashboard|table|form|kanban|calendar|detail|split",
+      "sections": ["section description 1", "section description 2"],
+      "components_from_kit": ["AppShell", "StatCard", "DataTable"],
+      "states": {
+        "empty": "what user sees when no data",
+        "loading": "spinner in content area",
+        "error": "inline error with retry button"
+      },
+      "actions": ["primary action 1", "secondary action 2"],
+      "navigation": "where main nav links go from this screen"
+    }
+  ]
+}
+
+Kit components available (use ONLY these names):
+AppShell, PageHeader, Button, Card, StatCard, DataTable, FormField, Modal,
+ConfirmDialog, Toast, EmptyState, LoadingState, ErrorState, Tabs,
+LineChart, BarChart, PieChart, StatusChip
+
+Rules:
+- screen_id must match S001, S002, … from the PRD
+- components_from_kit: list 2-6 components actually needed
+- layout: pick the best single-word descriptor
+- states: provide concrete copy for all three (empty/loading/error)"""
+
+
+async def _emit_uiux_json(
+    requirement: str,
+    full_uiux: str,
+    prd_json: Optional[Dict],
+    llm: Any,
+) -> Optional[Dict]:
+    from app_builder.agents.structured_output import extract_validated
+    from app_builder.schemas.frontend_plan import UXPlan
+
+    screens_ctx = ""
+    if prd_json and prd_json.get("screens"):
+        screens_ctx = "Screens from PRD:\n" + "\n".join(
+            f"- {s['id']}: {s['name']} — {s['purpose']}"
+            for s in prd_json["screens"]
+        ) + "\n\n"
+
+    user_prompt = (
+        f"{screens_ctx}"
+        f"UX Design Document:\n\n{full_uiux}"
+    )
+
+    model = await extract_validated(
+        llm=llm,
+        system_prompt=_UIUX_JSON_SYSTEM,
+        user_prompt=user_prompt,
+        schema=UXPlan,
+        max_retries=2,
+        context_label="uiux_json",
+    )
+    if model is not None:
+        return model.dict()
+    return None

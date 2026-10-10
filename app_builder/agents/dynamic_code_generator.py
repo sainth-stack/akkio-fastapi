@@ -549,7 +549,7 @@ def _fix_sqlalchemy_uuid_imports(files: Dict[str, str]) -> None:
 
 def _fix_python39_type_hints_content(content: str) -> str:
     """
-    Generated backends run on Python 3.9 in verify/runtime — `str | None` needs Optional[str].
+    Generated backends run on Python 3.9 in verify/runtime — `Optional[str]` needs Optional[str].
     """
     if "|" not in content:
         return content
@@ -594,7 +594,7 @@ def _fix_python39_type_hints_content(content: str) -> str:
 def _fix_backend_pydantic_and_common(files: Dict[str, str]) -> None:
     """
     Fix common backend issues so generated apps run end-to-end without errors.
-    - Python 3.9: X | None -> Optional[X]
+    - Python 3.9: Optional[X] -> Optional[X]
     - Pydantic v2: orm_mode -> from_attributes, .dict() -> .model_dump()
     - PostgreSQL-only types when using SQLite: JSONB -> JSON, etc.
     """

@@ -180,7 +180,7 @@ def merge_llm_into_base(
 
 
 def normalize_architecture_for_codegen(
-    architecture: Dict[str, Any] | None,
+    architecture: Optional[Dict[str, Any]],
     api_contract: Any = None,
 ) -> Dict[str, Any]:
     arch: Dict[str, Any] = dict(architecture or {})
@@ -198,7 +198,7 @@ def normalize_architecture_for_codegen(
     return arch
 
 
-def extract_api_contract(architecture: Dict[str, Any] | None, requirement: str = "", prd: str = "") -> Dict[str, Any]:
+def extract_api_contract(architecture: Optional[Dict[str, Any]], requirement: str = "", prd: str = "") -> Dict[str, Any]:
     """Backward-compatible wrapper — prefer build_app_spec()."""
     spec = build_app_spec(requirement, architecture, prd)
     return {
@@ -229,9 +229,61 @@ def detect_template(requirement: str) -> Optional[str]:
     return BASE_TEMPLATE_NAME
 
 
-def get_template_code_files(template_name: str | None = None) -> Optional[Dict[str, str]]:
+def get_template_code_files(template_name: Optional[str] = None) -> Optional[Dict[str, str]]:
     return get_base_scaffold_files()
 
 
-def load_template(template_name: str | None = None) -> Optional[Dict[str, Any]]:
+def load_template(template_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     return load_base_config()
+
+
+# ---------------------------------------------------------------------------
+# Track-aware scaffold loader
+# ---------------------------------------------------------------------------
+
+_FRONTEND_ONLY_TEMPLATE_NAME = "base-frontend-vite-mui"
+_FRONTEND_ONLY_DIR = os.path.join(TEMPLATES_BASE, _FRONTEND_ONLY_TEMPLATE_NAME)
+
+
+def get_scaffold_files_by_track(track: str) -> Dict[str, str]:
+    """Load the appropriate scaffold template based on the generation track.
+
+    Args:
+        track: "legacy" loads base-vite-fastapi (existing behaviour).
+               "frontend_only" loads base-frontend-vite-mui (new Lovable-style track).
+               Any other value falls back to "legacy".
+
+    Returns:
+        Dict mapping relative file paths to file contents.
+    """
+    if track == "frontend_only":
+        if not os.path.isdir(_FRONTEND_ONLY_DIR):
+            logger.error(
+                "[scaffold] frontend_only template missing at %s — falling back to legacy",
+                _FRONTEND_ONLY_DIR,
+            )
+            return get_base_scaffold_files()
+
+        files: Dict[str, str] = {}
+        exclude_dirs = {"__pycache__", "node_modules", ".git", "dist", "build"}
+        for root, dirs, filenames in os.walk(_FRONTEND_ONLY_DIR):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]
+            rel_root = os.path.relpath(root, _FRONTEND_ONLY_DIR)
+            for fn in filenames:
+                if fn.endswith(".pyc") or fn == "base.json":
+                    continue
+                rel_path = os.path.join(rel_root, fn) if rel_root != "." else fn
+                rel_path = rel_path.replace("\\", "/")
+                if not rel_path.startswith("frontend/"):
+                    continue
+                full = os.path.join(root, fn)
+                try:
+                    with open(full, "r", encoding="utf-8") as fh:
+                        files[rel_path] = fh.read()
+                except OSError:
+                    pass
+        logger.info("[scaffold] loaded frontend_only base-frontend-vite-mui | files=%d", len(files))
+        return files
+
+    # Default: legacy fullstack scaffold
+    return get_base_scaffold_files()

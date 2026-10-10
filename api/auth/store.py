@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import HTTPException
 from psycopg2.extras import RealDictCursor
@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_revoked_tokens_expires_at ON {AUTH_SCHEMA}.r
 """
 
 
-def _serialize_org(row: dict | None) -> dict | None:
+def _serialize_org(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
     return {
@@ -159,7 +159,7 @@ class AuthStore:
         )
         return [_serialize_role(dict(row)) for row in cursor.fetchall()]
 
-    def _fetch_user_row(self, cursor, user_id: int) -> dict | None:
+    def _fetch_user_row(self, cursor, user_id: int) -> Optional[dict]:
         cursor.execute(
             """
             SELECT u.id, u.name, u.email, u.username, u.app, u.organization_id,
@@ -198,13 +198,13 @@ class AuthStore:
             "updated_at": data["updated_at"],
         }
 
-    def get_user_by_id(self, user_id: int) -> dict | None:
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 return self._fetch_user_row(cursor, user_id)
 
-    def get_user_by_email(self, email: str, app: str = "akkio") -> dict | None:
+    def get_user_by_email(self, email: str, app: str = "akkio") -> Optional[dict]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -217,7 +217,7 @@ class AuthStore:
                     return None
                 return self._fetch_user_row(cursor, row["id"])
 
-    def get_user_credentials(self, email: str, app: str = "akkio") -> dict | None:
+    def get_user_credentials(self, email: str, app: str = "akkio") -> Optional[dict]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -256,12 +256,12 @@ class AuthStore:
         *,
         name: str,
         email: str,
-        password_hash: str | None,
-        username: str | None,
+        password_hash: Optional[str],
+        username: Optional[str],
         app: str,
-        organization_id: int | None,
+        organization_id: Optional[int],
         role_ids: list[int],
-        google_id: str | None = None,
+        google_id: Optional[str] = None,
     ) -> dict:
         db = PostgresDatabase()
         email = email.lower()
@@ -297,8 +297,8 @@ class AuthStore:
         name: str,
         google_id: str,
         app: str = "akkio",
-        default_organization_id: int | None = None,
-        default_role_ids: list[int] | None = None,
+        default_organization_id: Optional[int] = None,
+        default_role_ids: Optional[list[int]] = None,
     ) -> dict:
         db = PostgresDatabase()
         email = email.lower()
@@ -349,7 +349,7 @@ class AuthStore:
                 )
                 return [dict(row) for row in cursor.fetchall()]
 
-    def get_organization(self, org_id: int) -> dict | None:
+    def get_organization(self, org_id: int) -> Optional[dict]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -363,7 +363,7 @@ class AuthStore:
                 row = cursor.fetchone()
                 return dict(row) if row else None
 
-    def create_organization(self, name: str, description: str | None) -> dict:
+    def create_organization(self, name: str, description: Optional[str]) -> dict:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -377,7 +377,7 @@ class AuthStore:
                 )
                 return dict(cursor.fetchone())
 
-    def update_organization(self, org_id: int, updates: dict[str, Any]) -> dict | None:
+    def update_organization(self, org_id: int, updates: dict[str, Any]) -> Optional[dict]:
         fields = []
         values: list[Any] = []
         for key in ("name", "description"):
@@ -423,7 +423,7 @@ class AuthStore:
                 )
                 return [_serialize_role(dict(row)) for row in cursor.fetchall()]
 
-    def get_role(self, role_id: int) -> dict | None:
+    def get_role(self, role_id: int) -> Optional[dict]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -456,7 +456,7 @@ class AuthStore:
                     raise
                 return _serialize_role(dict(cursor.fetchone()))
 
-    def update_role(self, role_id: int, updates: dict[str, Any]) -> dict | None:
+    def update_role(self, role_id: int, updates: dict[str, Any]) -> Optional[dict]:
         fields = []
         values: list[Any] = []
         if "name" in updates and updates["name"] is not None:
@@ -500,7 +500,7 @@ class AuthStore:
                 user_ids = [row["id"] for row in cursor.fetchall()]
                 return [self._fetch_user_row(cursor, uid) for uid in user_ids]
 
-    def update_user(self, user_id: int, updates: dict[str, Any]) -> dict | None:
+    def update_user(self, user_id: int, updates: dict[str, Any]) -> Optional[dict]:
         fields = []
         values: list[Any] = []
         column_map = {
@@ -557,7 +557,7 @@ class AuthStore:
                 cursor.execute("DELETE FROM auth.users WHERE id = %s", (user_id,))
                 return cursor.rowcount > 0
 
-    def get_default_org_and_admin_role(self) -> tuple[int | None, int | None]:
+    def get_default_org_and_admin_role(self) -> tuple[Optional[int], Optional[int]]:
         db = PostgresDatabase()
         with db.get_connection() as conn:
             with conn.cursor() as cursor:

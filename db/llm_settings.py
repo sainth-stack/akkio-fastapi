@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+from typing import Optional
 class LLMSettingsMixin:
     def create_llm_settings_table(self):
         self.ensure_connection()
@@ -25,7 +26,7 @@ class LLMSettingsMixin:
                 pass
 
     def save_llm_settings(
-        self, email: str, provider: str | None = None, api_key: str | None = None, model_name: str | None = None
+        self, email: str, provider: Optional[str] = None, api_key: Optional[str] = None, model_name: Optional[str] = None
     ):
         self.ensure_connection()
         with self.connection.cursor() as cursor:

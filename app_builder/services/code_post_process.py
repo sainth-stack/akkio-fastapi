@@ -48,7 +48,7 @@ def _is_vite_project(files: Dict[str, str]) -> bool:
 
 def apply_design_tokens(
     files: Dict[str, str],
-    design_tokens: Dict[str, Any] | None = None,
+    design_tokens: Optional[Dict[str, Any]] = None,
     uiux: str = "",
 ) -> None:
     """Inject complete SaaS CSS from design tokens (always overwrites LLM app.css)."""
@@ -81,7 +81,7 @@ def _ensure_llm_app_jsx(files: Dict[str, str], app_spec: Dict[str, Any]) -> None
 
 def post_process_generated_files(
     files: Dict[str, str],
-    architecture: Dict[str, Any] | None = None,
+    architecture: Optional[Dict[str, Any]] = None,
     template_name: Optional[str] = None,
     uiux: str = "",
     requirement: str = "",
@@ -151,13 +151,13 @@ def post_process_generated_files(
     return files
 
 
-def should_use_template(requirement: str, prd: str, architecture: dict | None) -> bool:
+def should_use_template(requirement: str, prd: str, architecture: Optional[dict]) -> bool:
     return True
 
 
 def validate_codegen_output(
     files: Dict[str, str],
-    architecture: Dict[str, Any] | None = None,
+    architecture: Optional[Dict[str, Any]] = None,
     requirement: str = "",
     prd: str = "",
     app_spec: Optional[Dict[str, Any]] = None,
@@ -168,7 +168,7 @@ def validate_codegen_output(
 
 def ensure_valid_codegen_output(
     files: Dict[str, str],
-    architecture: Dict[str, Any] | None = None,
+    architecture: Optional[Dict[str, Any]] = None,
     uiux: str = "",
     requirement: str = "",
     prd: str = "",

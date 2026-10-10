@@ -37,13 +37,19 @@ class GenRequest(BaseModel):
     session_id: Optional[str] = None
     model_name: Optional[str] = None
     builder_kind: Optional[str] = None
+    # Frontend-only track fields
+    track: Optional[str] = None          # "legacy" | "frontend_only"
+    domain: Optional[str] = None         # resolved domain string
+    prd_json: Optional[Dict[str, Any]] = None    # PRDPlan dict
+    uiux_json: Optional[Dict[str, Any]] = None   # UXPlan dict
+    style_json: Optional[Dict[str, Any]] = None  # DesignTokenSchema dict
 
 
 def _planning_stream(
     step: str,
     request: GenRequest,
     email: str,
-    user_id: int | None,
+    user_id: Optional[int],
     stream_fn,
     start_message: str,
 ):
@@ -139,6 +145,7 @@ async def generate_prd_step(request: GenRequest, current: CurrentUser = Depends(
             llm,
             skip_plan=True,
             builder_kind=request.builder_kind,
+            track=request.track,
         ):
             yield event
 
@@ -160,6 +167,8 @@ async def generate_uiux_step(request: GenRequest, current: CurrentUser = Depends
             request.prd or "",
             llm,
             builder_kind=request.builder_kind,
+            track=request.track,
+            prd_json=request.prd_json,
         ):
             yield event
 
@@ -182,6 +191,8 @@ async def generate_style_step(request: GenRequest, current: CurrentUser = Depend
             request.uiux or "",
             llm,
             builder_kind=request.builder_kind,
+            track=request.track,
+            prd_json=request.prd_json,
         ):
             yield event
 
@@ -206,6 +217,10 @@ async def generate_arch_step(request: GenRequest, current: CurrentUser = Depends
             request.uiux or "",
             request.design_tokens,
             builder_kind=request.builder_kind,
+            track=request.track,
+            prd_json=request.prd_json,
+            uiux_json=request.uiux_json,
+            style_json=request.style_json,
         ):
             yield event
 

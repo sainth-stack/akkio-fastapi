@@ -28,11 +28,11 @@ ALLOWED_MODELS = []  # re-exported from model_catalog — see list_available_mod
 
 
 def update_pipeline(
-    app_id: str | int | None,
-    user_email: str | None,
-    user_id: int | None,
+    app_id: str | Optional[int],
+    user_email: Optional[str],
+    user_id: Optional[int],
     status: str,
-    error: str | None = None,
+    error: Optional[str] = None,
     **metadata: Any,
 ) -> None:
     if not app_id or not user_email:
@@ -53,12 +53,12 @@ def update_pipeline(
 def touch_job(
     session_id: str,
     *,
-    app_id: str | int | None = None,
+    app_id: str | Optional[int] = None,
     job_type: str = "planning",
     status: str = "running",
-    step: str | None = None,
-    logs: str | None = None,
-    error: str | None = None,
+    step: Optional[str] = None,
+    logs: Optional[str] = None,
+    error: Optional[str] = None,
     finished: bool = False,
 ) -> None:
     if not session_id:
@@ -78,7 +78,7 @@ def touch_job(
         pass
 
 
-def public_base_url(fallback: str = "http://localhost:8000", request_base: str | None = None) -> str:
+def public_base_url(fallback: str = "http://localhost:8000", request_base: Optional[str] = None) -> str:
     import os
 
     env = (os.environ.get("PUBLIC_BASE_URL") or "").strip()

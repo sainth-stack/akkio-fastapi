@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import datetime
 import random
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _time_series(metric_id: str, base: float, spread: float, spike: float, points: int = 48) -> List[Dict[str, Any]]:
@@ -265,7 +265,7 @@ def project_looks_like_anomaly_from_files(
     return False
 
 
-def resolve_special_collection(collection: str, seed: Dict[str, Any], project_id: str = "") -> Dict[str, Any] | None:
+def resolve_special_collection(collection: str, seed: Dict[str, Any], project_id: str = "") -> Optional[Dict[str, Any]]:
     """Return payload for REST-style collections, or None if not a special API route."""
     key = collection.lower()
     if key in seed and isinstance(seed[key], dict):
@@ -297,7 +297,7 @@ def resolve_special_collection(collection: str, seed: Dict[str, Any], project_id
     return None
 
 
-def resolve_special_subresource(collection: str, subpath: str, seed: Dict[str, Any]) -> Dict[str, Any] | None:
+def resolve_special_subresource(collection: str, subpath: str, seed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     compound = f"{collection}/{subpath}"
     if compound in seed and isinstance(seed[compound], dict):
         return seed[compound]

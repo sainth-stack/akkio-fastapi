@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 import pickle
 from datetime import datetime
 
@@ -57,9 +58,9 @@ class TabularDataMixin:
         email,
         data,
         tb_name,
-        data_type: str | None = None,
-        data_subtype: str | None = None,
-        raw_bytes: bytes | None = None,
+        data_type: Optional[str] = None,
+        data_subtype: Optional[str] = None,
+        raw_bytes: Optional[bytes] = None,
     ):
         self.ensure_connection()
         self._ensure_type_columns()

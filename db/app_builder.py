@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS builder_apps (
     user_id INTEGER NOT NULL,
     name VARCHAR(255) NOT NULL,
     project_name VARCHAR(255) NOT NULL,
+    -- All app data lives in `metadata` JSONB.  Keys include:
+    --   track         TEXT   "legacy" | "frontend_only"  (added prompt-1)
+    --   plan_json     JSONB  structured planning contracts (added prompt-2)
+    --                         { prd: PRDPlan, uiux: UXPlan,
+    --                           design_tokens: DesignTokenSchema, blueprint: Blueprint }
+    -- No DDL migration needed; JSONB columns are schema-free.
     metadata JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -169,6 +175,8 @@ _METADATA_FIELDS = (
     "design_system_md",
     "llm_model",
     "builder_kind",
+    "track",           # "legacy" | "frontend_only" — generation track
+    "plan_json",       # structured JSON contracts (PRDPlan/UXPlan/DesignTokenSchema/Blueprint)
 )
 
 
@@ -180,7 +188,7 @@ def _serialize_ts(value) -> Any:
     return value
 
 
-def _app_row_to_dict(row: dict, user_email: str | None = None) -> dict:
+def _app_row_to_dict(row: dict, user_email: Optional[str] = None) -> dict:
     meta = row.get("metadata") or {}
     if isinstance(meta, str):
         try:
@@ -266,7 +274,7 @@ class AppBuilderStore(PostgresPool):
                 cursor.execute("SELECT 1 FROM builder_apps WHERE id = %s LIMIT 1", (app_id,))
                 return cursor.fetchone() is not None
 
-    def _resolve_deployment_app_id(self, app_id) -> int | None:
+    def _resolve_deployment_app_id(self, app_id) -> Optional[int]:
         """Return app_id only if it exists in builder_apps (avoids orphan FK inserts)."""
         if app_id is None:
             return None
@@ -309,7 +317,7 @@ class AppBuilderStore(PostgresPool):
         import hashlib
         return abs(int(hashlib.sha256(user_email.lower().encode()).hexdigest()[:12], 16)) % (2**31 - 1)
 
-    def _user_email_for_id(self, user_id: int) -> str | None:
+    def _user_email_for_id(self, user_id: int) -> Optional[str]:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT email FROM auth.users WHERE id = %s", (user_id,))
@@ -322,17 +330,17 @@ class AppBuilderStore(PostgresPool):
         app_name: str,
         prompt: str,
         project_name: str,
-        prd: str | None = None,
-        generated_uiux: str | None = None,
-        plan: list | None = None,
-        architecture: dict | None = None,
-        api_contract: str | None = None,
-        db_schema: str | None = None,
-        agents_state: dict | None = None,
-        generated_code_json: dict | None = None,
-        generated_files: dict | None = None,
-        user_id: int | None = None,
-        builder_kind: str | None = None,
+        prd: Optional[str] = None,
+        generated_uiux: Optional[str] = None,
+        plan: Optional[list] = None,
+        architecture: Optional[dict] = None,
+        api_contract: Optional[str] = None,
+        db_schema: Optional[str] = None,
+        agents_state: Optional[dict] = None,
+        generated_code_json: Optional[dict] = None,
+        generated_files: Optional[dict] = None,
+        user_id: Optional[int] = None,
+        builder_kind: Optional[str] = None,
     ) -> dict:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
@@ -371,8 +379,8 @@ class AppBuilderStore(PostgresPool):
     def get_user_app_builder_apps(
         self,
         user_email: str,
-        user_id: int | None = None,
-        builder_kind: str | None = None,
+        user_id: Optional[int] = None,
+        builder_kind: Optional[str] = None,
     ) -> list:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
@@ -396,9 +404,9 @@ class AppBuilderStore(PostgresPool):
     def get_app_by_project_name(
         self,
         project_name: str,
-        user_id: int | None = None,
-        user_email: str | None = None,
-    ) -> dict | None:
+        user_id: Optional[int] = None,
+        user_email: Optional[str] = None,
+    ) -> Optional[dict]:
         self.init_schema()
         if not project_name or not project_name.strip():
             return None
@@ -436,8 +444,8 @@ class AppBuilderStore(PostgresPool):
                 return _app_row_to_dict(row, email)
 
     def get_app_builder_app(
-        self, app_id, user_email: str | None = None, user_id: int | None = None
-    ) -> dict | None:
+        self, app_id, user_email: Optional[str] = None, user_id: Optional[int] = None
+    ) -> Optional[dict]:
         self.init_schema()
         try:
             aid = int(app_id)
@@ -481,31 +489,93 @@ class AppBuilderStore(PostgresPool):
         self,
         app_id,
         user_email: str,
-        app_name: str | None = None,
-        prompt: str | None = None,
-        project_name: str | None = None,
-        prd: str | None = None,
-        generated_uiux: str | None = None,
-        plan: list | None = None,
-        architecture: dict | None = None,
-        api_contract: str | None = None,
-        db_schema: str | None = None,
-        agents_state: dict | None = None,
-        generated_code_json: dict | None = None,
-        generated_files: dict | None = None,
-        pipeline_status: str | None = None,
-        pipeline_error: str | None = None,
-        build_status: str | None = None,
-        build_log: str | None = None,
-        build_error: str | None = None,
-        preview_url: str | None = None,
-        live_url: str | None = None,
-        user_id: int | None = None,
-        design_tokens: dict | None = None,
-        design_system_md: str | None = None,
-        llm_model: str | None = None,
-        builder_kind: str | None = None,
+        app_name: Optional[str] = None,
+        prompt: Optional[str] = None,
+        project_name: Optional[str] = None,
+        prd: Optional[str] = None,
+        generated_uiux: Optional[str] = None,
+        plan: Optional[list] = None,
+        architecture: Optional[dict] = None,
+        api_contract: Optional[str] = None,
+        db_schema: Optional[str] = None,
+        agents_state: Optional[dict] = None,
+        generated_code_json: Optional[dict] = None,
+        generated_files: Optional[dict] = None,
+        pipeline_status: Optional[str] = None,
+        pipeline_error: Optional[str] = None,
+        build_status: Optional[str] = None,
+        build_log: Optional[str] = None,
+        build_error: Optional[str] = None,
+        preview_url: Optional[str] = None,
+        live_url: Optional[str] = None,
+        user_id: Optional[int] = None,
+        design_tokens: Optional[dict] = None,
+        design_system_md: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        builder_kind: Optional[str] = None,
+        track: Optional[str] = None,          # "legacy" | "frontend_only"
+        plan_json: Optional[dict] = None,     # structured JSON planning contracts
     ) -> int:
+        self.init_schema()
+        existing = self.get_app_builder_app(app_id, user_email=user_email, user_id=user_id)
+        if not existing:
+            return 0
+        meta = {k: existing.get(k) for k in _METADATA_FIELDS if k in existing}
+        meta["user_email"] = user_email.lower()
+        updates = {
+            "app_name": app_name,
+            "prompt": prompt,
+            "project_name": project_name,
+            "prd": prd,
+            "generated_uiux": generated_uiux,
+            "plan": plan,
+            "architecture": architecture,
+            "api_contract": api_contract,
+            "db_schema": db_schema,
+            "agents_state": agents_state,
+            "generated_code_json": generated_code_json,
+            "generated_files": generated_files,
+            "pipeline_status": pipeline_status,
+            "pipeline_error": pipeline_error,
+            "build_status": build_status,
+            "build_log": build_log,
+            "build_error": build_error,
+            "preview_url": preview_url,
+            "live_url": live_url,
+            "design_tokens": design_tokens,
+            "design_system_md": design_system_md,
+            "llm_model": llm_model,
+            "builder_kind": builder_kind,
+            "track": track,
+            "plan_json": plan_json,
+        }
+        key_map = {"app_name": "name"}
+        name_val = app_name
+        project_val = project_name
+        for k, v in updates.items():
+            if v is not None:
+                field = key_map.get(k, k)
+                if field == "name":
+                    name_val = v
+                elif field == "project_name":
+                    project_val = v
+                else:
+                    meta[field] = v
+        uid = user_id if user_id is not None else self._resolve_user_id(user_email)
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE builder_apps
+                    SET name = COALESCE(%s, name),
+                        project_name = COALESCE(%s, project_name),
+                        metadata = %s,
+                        updated_at = NOW()
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (name_val, project_val, Json(meta), int(app_id), uid),
+                )
+                return cursor.rowcount
         self.init_schema()
         existing = self.get_app_builder_app(app_id, user_email=user_email, user_id=user_id)
         if not existing:
@@ -565,7 +635,7 @@ class AppBuilderStore(PostgresPool):
                 )
                 return cursor.rowcount
 
-    def delete_app_builder_app(self, app_id, user_email: str, user_id: int | None = None) -> int:
+    def delete_app_builder_app(self, app_id, user_email: str, user_id: Optional[int] = None) -> int:
         self.init_schema()
         uid = user_id if user_id is not None else self._resolve_user_id(user_email)
         aid = int(app_id)
@@ -584,15 +654,15 @@ class AppBuilderStore(PostgresPool):
     def create_deployment(
         self,
         app_id=None,
-        project_name: str | None = None,
-        frontend_url: str | None = None,
-        backend_url: str | None = None,
-        frontend_port: int | None = None,
-        backend_port: int | None = None,
+        project_name: Optional[str] = None,
+        frontend_url: Optional[str] = None,
+        backend_url: Optional[str] = None,
+        frontend_port: Optional[int] = None,
+        backend_port: Optional[int] = None,
         deployment_status: str = "pending",
-        error_message: str | None = None,
-        deploy_log: str | None = None,
-    ) -> dict | None:
+        error_message: Optional[str] = None,
+        deploy_log: Optional[str] = None,
+    ) -> Optional[dict]:
         self.init_schema()
         self._ensure_deployment_fk()
         app_id_int = self._resolve_deployment_app_id(app_id)
@@ -632,11 +702,11 @@ class AppBuilderStore(PostgresPool):
     def update_deployment(
         self,
         deployment_id,
-        frontend_url: str | None = None,
-        backend_url: str | None = None,
-        deployment_status: str | None = None,
-        error_message: str | None = None,
-        deploy_log: str | None = None,
+        frontend_url: Optional[str] = None,
+        backend_url: Optional[str] = None,
+        deployment_status: Optional[str] = None,
+        error_message: Optional[str] = None,
+        deploy_log: Optional[str] = None,
     ) -> int:
         self.init_schema()
         try:
@@ -675,7 +745,7 @@ class AppBuilderStore(PostgresPool):
         row["updated_at"] = _serialize_ts(row.get("updated_at"))
         return row
 
-    def get_deployment_by_app_id(self, app_id) -> dict | None:
+    def get_deployment_by_app_id(self, app_id) -> Optional[dict]:
         self.init_schema()
         try:
             aid = int(app_id)
@@ -696,7 +766,7 @@ class AppBuilderStore(PostgresPool):
                 row = cursor.fetchone()
                 return self._deployment_row(dict(row)) if row else None
 
-    def get_deployment_by_project_name(self, project_name: str) -> dict | None:
+    def get_deployment_by_project_name(self, project_name: str) -> Optional[dict]:
         self.init_schema()
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -719,8 +789,8 @@ class AppBuilderStore(PostgresPool):
         app_id=None,
         project_name: str,
         frontend_url: str,
-        backend_url: str | None = None,
-        deploy_log: str | None = None,
+        backend_url: Optional[str] = None,
+        deploy_log: Optional[str] = None,
     ) -> dict:
         """Create or update a RUNNING deployment for local preview after Run App succeeds."""
         existing = None
@@ -750,7 +820,7 @@ class AppBuilderStore(PostgresPool):
             deploy_log=log_line,
         )
 
-    def get_deployment_by_id(self, deployment_id) -> dict | None:
+    def get_deployment_by_id(self, deployment_id) -> Optional[dict]:
         self.init_schema()
         try:
             did = int(deployment_id)
@@ -796,15 +866,15 @@ class AppBuilderStore(PostgresPool):
         self,
         session_id: str,
         project_name: str,
-        requirement: str | None = None,
-        prd: str | None = None,
-        plan: list | None = None,
+        requirement: Optional[str] = None,
+        prd: Optional[str] = None,
+        plan: Optional[list] = None,
         architecture: Any = None,
-        api_contract: str | None = None,
-        db_schema: str | None = None,
-        generated_code_json: dict | None = None,
-        generated_files: dict | None = None,
-        app_id: str | None = None,
+        api_contract: Optional[str] = None,
+        db_schema: Optional[str] = None,
+        generated_code_json: Optional[dict] = None,
+        generated_files: Optional[dict] = None,
+        app_id: Optional[str] = None,
     ) -> int:
         self.init_schema()
         app_id_int = None
@@ -879,11 +949,11 @@ class AppBuilderStore(PostgresPool):
         self,
         session_id: str,
         job_type: str = "codegen",
-        app_id: int | str | None = None,
+        app_id: int | Optional[str] = None,
         status: str = "queued",
-        step: str | None = None,
-        logs: str | None = None,
-        error: str | None = None,
+        step: Optional[str] = None,
+        logs: Optional[str] = None,
+        error: Optional[str] = None,
         finished: bool = False,
     ) -> int:
         self.init_schema()
@@ -946,7 +1016,7 @@ class AppBuilderStore(PostgresPool):
                 )
                 return 1
 
-    def get_job_by_session_id(self, session_id: str) -> dict | None:
+    def get_job_by_session_id(self, session_id: str) -> Optional[dict]:
         self.init_schema()
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -963,7 +1033,7 @@ class AppBuilderStore(PostgresPool):
                     return None
                 return self._job_row_to_dict(dict(row))
 
-    def get_active_job_for_app(self, app_id) -> dict | None:
+    def get_active_job_for_app(self, app_id) -> Optional[dict]:
         """Latest in-progress job for an app (finished_at IS NULL)."""
         self.init_schema()
         try:
@@ -997,7 +1067,7 @@ class AppBuilderStore(PostgresPool):
             out[k] = _serialize_ts(out.get(k))
         return out
 
-    def get_codegen_session(self, session_id: str) -> dict | None:
+    def get_codegen_session(self, session_id: str) -> Optional[dict]:
         self.init_schema()
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:

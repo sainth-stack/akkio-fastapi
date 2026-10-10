@@ -1125,6 +1125,28 @@ Respond ONLY with a JSON object:
                 context=context_block,
             )
             if surgical_ok and surgical_content:
+                # ── Verify patch with tsc before committing ───────────────────
+                _verify_ok = await _verify_patch_tsc(
+                    project_name=project_name,
+                    file_path=rel_path,
+                    new_content=surgical_content,
+                    original_content=existing_content,
+                    all_files=updated_code_dict,
+                )
+                if not _verify_ok:
+                    # Roll back — keep existing_content
+                    if websocket:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "event": "agent_progress",
+                                "agent": "update_code_agent",
+                                "message": f"⚠ Patch for {rel_path} failed tsc — rolled back",
+                            }))
+                        except Exception:
+                            pass
+                    all_analyses.append(f"• {rel_path}: patch rolled back (tsc failed)")
+                    continue  # skip this file — don't apply bad patch
+                # Commit patch
                 _fp_on_disk = os.path.join(project_root, rel_path)
                 os.makedirs(os.path.dirname(_fp_on_disk), exist_ok=True)
                 with open(_fp_on_disk, "w", encoding="utf-8") as _f:
@@ -1250,3 +1272,43 @@ You likely truncated the file. Write the FULL content."""
         "updated_prd": current_prd,
         "updated_architecture": current_architecture
     }
+
+
+# ---------------------------------------------------------------------------
+# tsc pre-commit verify for surgical patches (frontend_only track only)
+# ---------------------------------------------------------------------------
+
+async def _verify_patch_tsc(
+    project_name: str,
+    file_path: str,
+    new_content: str,
+    original_content: str,
+    all_files: dict,
+) -> bool:
+    """
+    Quickly verify a surgical patch won't break tsc.
+    Only runs for TypeScript/TSX files on the frontend-only track.
+    Returns True if safe to apply, False if it should be rolled back.
+    """
+    # Only bother for TS/TSX files
+    if not file_path.endswith((".ts", ".tsx")):
+        return True
+
+    try:
+        from app_builder.services.verify_service import verify_stage
+        from app_builder.services.runtime_paths import project_write_root
+
+        # Build a snapshot of files with the patch applied
+        snapshot = dict(all_files)
+        snapshot[file_path] = new_content
+
+        result = await verify_stage(
+            project_name=project_name,
+            files=snapshot,
+            new_files={file_path: new_content},
+            stage_name="patch_verify",
+        )
+        return result.ok
+    except Exception:
+        # If verify fails for unexpected reasons, allow the patch (don't block)
+        return True

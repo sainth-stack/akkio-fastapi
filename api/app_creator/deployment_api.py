@@ -39,7 +39,7 @@ def _resolve_app_and_project(
     app_id: Optional[Union[int, str]],
     project_name: str,
     current: CurrentUser,
-) -> tuple[dict | None, str]:
+) -> tuple[Optional[dict], str]:
     email = user_email_from(current)
     uid = current.id if current.id else None
     app = None
@@ -58,7 +58,7 @@ def _resolve_app_and_project(
     return app, resolved_name
 
 
-def _assert_build_ready(app: dict | None, rebuild: bool) -> None:
+def _assert_build_ready(app: Optional[dict], rebuild: bool) -> None:
     if rebuild:
         return
     if not app or app.get("build_status") != "BUILD_SUCCESS":
@@ -71,7 +71,7 @@ def _assert_build_ready(app: dict | None, rebuild: bool) -> None:
         )
 
 
-def _assert_not_in_progress(deployment: dict | None) -> None:
+def _assert_not_in_progress(deployment: Optional[dict]) -> None:
     if deployment and deployment.get("deployment_status") in IN_PROGRESS_STATUSES:
         raise HTTPException(status_code=409, detail="Deployment already in progress for this app")
 
@@ -81,14 +81,14 @@ async def perform_deployment(
     app_id: Optional[Union[int, str]],
     project_name: str,
     user_email: str,
-    user_id: int | None,
+    user_id: Optional[int],
     rebuild: bool = False,
     run_tests: Optional[bool] = None,
-    public_base: str | None = None,
+    public_base: Optional[str] = None,
 ):
     log_lines: list[str] = []
 
-    def on_status(status: str, line: str, error: str | None = None) -> None:
+    def on_status(status: str, line: str, error: Optional[str] = None) -> None:
         log_lines.append(line)
         db.update_deployment(
             deployment_id=deployment_id,
@@ -152,19 +152,19 @@ async def perform_deployment(
                 pass
 
 
-def _canonical_app_url(project_name: str | None) -> str | None:
+def _canonical_app_url(project_name: Optional[str]) -> Optional[str]:
     if not project_name:
         return None
     return f"{public_base_url().rstrip('/')}/app/{project_name}"
 
 
-def _canonical_backend_url(project_name: str | None) -> str | None:
+def _canonical_backend_url(project_name: Optional[str]) -> Optional[str]:
     if not project_name:
         return None
     return f"{public_base_url().rstrip('/')}/api/apps/{project_name}"
 
 
-def _prefer_public_url(stored: str | None, canonical: str | None) -> str | None:
+def _prefer_public_url(stored: Optional[str], canonical: Optional[str]) -> Optional[str]:
     """Use canonical public URL when DB still has localhost but PUBLIC_BASE_URL is configured."""
     import os
 
@@ -178,7 +178,7 @@ def _prefer_public_url(stored: str | None, canonical: str | None) -> str | None:
     return stored
 
 
-def _deployment_payload(deployment: dict, app: dict | None = None) -> dict:
+def _deployment_payload(deployment: dict, app: Optional[dict] = None) -> dict:
     project_name = deployment.get("project_name") or (app or {}).get("project_name")
     canonical_front = _canonical_app_url(project_name)
     canonical_back = _canonical_backend_url(project_name)
@@ -221,10 +221,10 @@ def register_local_preview(
     app_id,
     project_name: str,
     frontend_url: str,
-    backend_url: str | None = None,
-    user_email: str | None = None,
-    user_id: int | None = None,
-) -> dict | None:
+    backend_url: Optional[str] = None,
+    user_email: Optional[str] = None,
+    user_id: Optional[int] = None,
+) -> Optional[dict]:
     """After Run App succeeds, register preview URL so Deploy tab shows Live."""
     try:
         deployment = db.upsert_local_deployment(

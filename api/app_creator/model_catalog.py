@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # id must match OpenAI model slug passed to ChatOpenAI
 APP_BUILDER_MODELS: List[Dict[str, Any]] = [
@@ -121,7 +121,7 @@ TIER_LABELS = {
 }
 
 
-def normalize_model_choice(model_name: str | None, fallback: str = "gpt-4o-mini") -> str:
+def normalize_model_choice(model_name: Optional[str], fallback: str = "gpt-4o-mini") -> str:
     """Return a valid catalog model id or fallback."""
     if model_name and model_name in ALLOWED_MODEL_IDS:
         return model_name

@@ -50,7 +50,7 @@ def _resolve_static_dir(project_id: str) -> Optional[str]:
     return None
 
 
-def _inject_preview_auth(html_content: str, access_token: str | None, project_id: str | None = None) -> str:
+def _inject_preview_auth(html_content: str, access_token: Optional[str], project_id: Optional[str] = None) -> str:
     """Inject JWT and API base for preview iframe."""
     scripts = []
     if project_id:
@@ -79,7 +79,7 @@ def _inject_preview_auth(html_content: str, access_token: str | None, project_id
     return script + html_content
 
 
-def _serve_index(static_dir: str, access_token: str | None = None, project_id: str | None = None):
+def _serve_index(static_dir: str, access_token: Optional[str] = None, project_id: Optional[str] = None):
     index_path = os.path.join(static_dir, "index.html")
     if not os.path.isfile(index_path):
         raise HTTPException(status_code=404, detail="index.html not found")

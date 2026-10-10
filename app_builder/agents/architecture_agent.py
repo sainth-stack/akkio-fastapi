@@ -13,6 +13,10 @@ async def stream_architecture_generation(
     uiux: str = "",
     design_tokens: Optional[Dict[str, Any]] = None,
     builder_kind: Optional[str] = None,
+    track: Optional[str] = None,
+    prd_json: Optional[Dict[str, Any]] = None,
+    uiux_json: Optional[Dict[str, Any]] = None,
+    style_json: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Dynamically generates architecture decisions using LLM based on requirement, PRD, and plan.
@@ -169,6 +173,30 @@ CRITICAL RULES:
         "data": architecture_data
     }
 
+    # ── Frontend-only track: extract Blueprint JSON + cross-validate ───────
+    if track == "frontend_only":
+        try:
+            yield {"event": "blueprint_json_start", "message": "Generating structured Blueprint…"}
+            blueprint_json_data, cv_errors = await _emit_blueprint_json(
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                architecture_data=architecture_data,
+                prd_json=prd_json,
+                uiux_json=uiux_json,
+                style_json=style_json,
+                llm=llm,
+            )
+            if blueprint_json_data:
+                if cv_errors:
+                    yield {"event": "blueprint_json_warning", "data": cv_errors}
+                yield {"event": "blueprint_json", "data": blueprint_json_data}
+            else:
+                yield {"event": "blueprint_json_error", "message": "Blueprint extraction failed"}
+        except Exception as _bje:
+            yield {"event": "blueprint_json_error", "message": str(_bje)}
+    # ───────────────────────────────────────────────────────────────────────
+
 
 def create_fallback_architecture(
     requirement: str,
@@ -307,3 +335,140 @@ def architecture_agent(plan: ProjectPlan, requirement: str = "") -> Architecture
             "frontend": ["package.json", "public/index.html", "src/index.js", "src/App.js", "src/styles.css"]
         }
     )
+
+
+# =============================================================================
+# Frontend-only track: structured Blueprint extraction + cross-validation
+# =============================================================================
+
+_BLUEPRINT_JSON_SYSTEM = """\
+You are a frontend architect. Produce a Blueprint JSON for a React SPA.
+Return ONLY valid JSON — no markdown, no explanation — matching this schema exactly:
+
+{
+  "routes": [
+    {"path": "/", "page": "DashboardPage", "screen_id": "S001"}
+  ],
+  "pages": [
+    {
+      "file": "DashboardPage",
+      "imports": ["AppShell", "StatCard", "DataTable"],
+      "uses_entities": ["Deal", "Activity"],
+      "uses_kit_components": ["AppShell", "StatCard", "DataTable"]
+    }
+  ],
+  "entities": [
+    {
+      "name": "Deal",
+      "fields": [
+        {"name": "id", "type": "string"},
+        {"name": "title", "type": "string"},
+        {"name": "amount", "type": "number"},
+        {"name": "stage", "type": "string"},
+        {"name": "createdAt", "type": "date"}
+      ]
+    }
+  ],
+  "mock_plan": [
+    {"entity": "Deal", "row_count": 20, "value_hints": ["stage: Prospecting|Proposal|Closed Won|Closed Lost"]}
+  ],
+  "nav_items": [
+    {"label": "Dashboard", "path": "/", "icon": "Dashboard"}
+  ],
+  "file_order": ["types", "mock", "theme", "layout", "shared", "pages", "app"]
+}
+
+Kit components available (use ONLY these names):
+AppShell, PageHeader, Button, Card, StatCard, DataTable, FormField, Modal,
+ConfirmDialog, Toast, EmptyState, LoadingState, ErrorState, Tabs,
+LineChart, BarChart, PieChart, StatusChip
+
+Rules:
+- routes: one entry per screen; path must be unique; / is the default
+- pages: file is the component name without .tsx; imports ⊆ kit names
+- entities: PascalCase singular; include all entities used by any page
+- mock_plan: one entry per entity; row_count 10-50; value_hints = domain-realistic
+- nav_items: icon = any MUI icon name (PascalCase, e.g. Dashboard, People, BarChart)
+- file_order: always exactly ["types","mock","theme","layout","shared","pages","app"]"""
+
+
+async def _emit_blueprint_json(
+    requirement: str,
+    prd: str,
+    uiux: str,
+    architecture_data: Any,
+    prd_json: Optional[Dict],
+    uiux_json: Optional[Dict],
+    style_json: Optional[Dict],
+    llm: Any,
+) -> tuple:
+    """
+    Returns (blueprint_dict_or_None, list_of_cross_validation_errors).
+    Applies cross-validation and one auto-repair attempt if needed.
+    """
+    from app_builder.agents.structured_output import extract_validated, call_llm_once
+    from app_builder.schemas.frontend_plan import Blueprint, cross_validate_blueprint, repair_blueprint_prompt
+
+    # Build context from prior JSON contracts
+    ctx_parts = [f"Requirement: {requirement}"]
+    if prd_json:
+        ctx_parts.append("PRD screens:\n" + "\n".join(
+            f"- {s['id']}: {s['name']} (entities: {s.get('entities', [])})"
+            for s in prd_json.get("screens", [])
+        ))
+    if uiux_json:
+        ctx_parts.append("UX per screen:\n" + "\n".join(
+            f"- {sx['screen_id']}: layout={sx['layout']}, kit={sx.get('components_from_kit', [])}"
+            for sx in uiux_json.get("screens", [])
+        ))
+
+    user_prompt = "\n\n".join(ctx_parts)
+
+    model = await extract_validated(
+        llm=llm,
+        system_prompt=_BLUEPRINT_JSON_SYSTEM,
+        user_prompt=user_prompt,
+        schema=Blueprint,
+        max_retries=2,
+        context_label="blueprint_json",
+    )
+    if model is None:
+        return None, []
+
+    # Cross-validate
+    prd_model = None
+    if prd_json:
+        try:
+            from app_builder.schemas.frontend_plan import PRDPlan
+            prd_model = PRDPlan(**prd_json)
+        except Exception:
+            pass
+
+    cv_errors = cross_validate_blueprint(model, prd=prd_model)
+
+    if cv_errors:
+        import logging
+        logging.getLogger("app_builder").warning(
+            "[blueprint_json] cross-validation failed (%d errors); attempting auto-repair", len(cv_errors)
+        )
+        repair_prompt = repair_blueprint_prompt(model.dict(), cv_errors)
+        repair_system = _BLUEPRINT_JSON_SYSTEM + "\n\nFix the blueprint to satisfy the listed errors."
+        try:
+            from app_builder.agents.structured_output import extract_validated
+            repaired = await extract_validated(
+                llm=llm,
+                system_prompt=repair_system,
+                user_prompt=repair_prompt,
+                schema=Blueprint,
+                max_retries=1,
+                context_label="blueprint_json_repair",
+            )
+            if repaired:
+                remaining = cross_validate_blueprint(repaired, prd=prd_model)
+                if len(remaining) < len(cv_errors):
+                    model = repaired
+                    cv_errors = remaining
+        except Exception:
+            pass  # keep original if repair fails
+
+    return model.dict(), cv_errors

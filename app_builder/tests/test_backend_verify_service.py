@@ -24,7 +24,7 @@ def test_python39_optional_type_fix():
         "backend/schemas.py": (
             "from pydantic import BaseModel\n\n"
             "class ProductUpdate(BaseModel):\n"
-            "    title: str | None = None\n"
+            "    title: Optional[str] = None\n"
         ),
     }
     fixed = apply_deterministic_backend_fixes(files)

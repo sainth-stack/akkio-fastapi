@@ -45,7 +45,7 @@ class HostingerDeployService:
         self,
         project_name: str,
         user_email: str,
-        user_id: int | None,
+        user_id: Optional[int],
     ) -> int:
         app = self.db.get_app_by_project_name(
             project_name, user_id=user_id, user_email=user_email
@@ -94,7 +94,7 @@ class HostingerDeployService:
         except Exception as e:
             return False, str(e)
 
-    def _health_check(self, project_name: str, public_base: str | None = None) -> tuple[bool, str]:
+    def _health_check(self, project_name: str, public_base: Optional[str] = None) -> tuple[bool, str]:
         base = public_base or public_base_url()
         url = f"{base.rstrip('/')}/app/{project_name}"
         try:
@@ -113,14 +113,14 @@ class HostingerDeployService:
         self,
         *,
         deployment_id: str,
-        app_id: str | int | None,
+        app_id: str | Optional[int],
         project_name: str,
         user_email: str,
-        user_id: int | None,
+        user_id: Optional[int],
         rebuild: bool = False,
         run_tests: Optional[bool] = None,
         on_status: Optional[StatusCallback] = None,
-        public_base: str | None = None,
+        public_base: Optional[str] = None,
     ) -> dict:
         logs: list[str] = []
         base = (public_base or public_base_url()).rstrip("/")

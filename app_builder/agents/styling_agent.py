@@ -65,6 +65,8 @@ async def stream_styling_generation(
     uiux: str,
     llm,
     builder_kind: Optional[str] = None,
+    track: Optional[str] = None,
+    prd_json: Optional[Dict] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     system_prompt = """You are a senior product designer building SaaS-grade design systems.
 Given PRD and UI/UX specs, output:
@@ -126,3 +128,89 @@ Produce the design system JSON block and complete app.css."""
 
     result = _parse_style_response(full_response, uiux)
     yield {"event": "style_complete", "data": result}
+
+    # ── Frontend-only track: extract structured DesignTokenSchema JSON ─────
+    if track == "frontend_only":
+        try:
+            yield {"event": "style_json_start", "message": "Extracting structured design tokens…"}
+            style_json_data = await _emit_style_json(requirement, full_response, result, llm)
+            if style_json_data:
+                yield {"event": "style_json", "data": style_json_data}
+            else:
+                yield {"event": "style_json_error", "message": "Structured token extraction failed"}
+        except Exception as _sje:
+            yield {"event": "style_json_error", "message": str(_sje)}
+    # ───────────────────────────────────────────────────────────────────────
+
+
+# =============================================================================
+# Frontend-only track: structured DesignTokenSchema extraction
+# =============================================================================
+
+_STYLE_JSON_SYSTEM = """\
+You are a design-systems engineer. Extract a DesignTokenSchema JSON from the style document.
+Return ONLY valid JSON — no markdown, no explanation — matching this schema:
+
+{
+  "light": {
+    "primary": "#hex",
+    "secondary": "#hex",
+    "background": "#hex",
+    "surface": "#hex",
+    "text_primary": "#hex",
+    "text_secondary": "#hex",
+    "border": "#hex",
+    "error": "#hex",
+    "warning": "#hex",
+    "success": "#hex"
+  },
+  "dark": {
+    "primary": "#hex",
+    "secondary": "#hex",
+    "background": "#hex",
+    "surface": "#hex",
+    "text_primary": "#hex",
+    "text_secondary": "#hex",
+    "border": "#hex",
+    "error": "#hex",
+    "warning": "#hex",
+    "success": "#hex"
+  },
+  "font_family": "Inter, sans-serif",
+  "border_radius": "8px",
+  "chart_palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"]
+}
+
+Rules:
+- All hex values must be valid CSS hex colors (#rrggbb)
+- Dark palette must genuinely differ from light (dark bg ~#0d1117, surfaces ~#161b22)
+- chart_palette: 5 distinct accessible colors
+- border_radius: single CSS value e.g. "6px" or "8px"
+- font_family: full CSS font stack"""
+
+
+async def _emit_style_json(
+    requirement: str,
+    full_response: str,
+    parsed_result: Dict,
+    llm: Any,
+) -> Optional[Dict]:
+    from app_builder.agents.structured_output import extract_validated
+    from app_builder.schemas.frontend_plan import DesignTokenSchema
+
+    user_prompt = (
+        f"Requirement: {requirement}\n\n"
+        f"Style document:\n\n{full_response}"
+    )
+
+    model = await extract_validated(
+        llm=llm,
+        system_prompt=_STYLE_JSON_SYSTEM,
+        user_prompt=user_prompt,
+        schema=DesignTokenSchema,
+        max_retries=2,
+        context_label="style_json",
+    )
+    if model is not None:
+        return model.dict()
+    return None

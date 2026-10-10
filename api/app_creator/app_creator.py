@@ -368,7 +368,7 @@ async def download_project(project_name: str, current: CurrentUser = Depends(res
 @router.get("/projects/{project_name}/sample-report-template")
 async def get_sample_report_template(
     project_name: str,
-    template_id: str | None = None,
+    template_id: Optional[str] = None,
     current: CurrentUser = Depends(resolve_user),
 ):
     """Sample report template document for App Builder UI (all app domains)."""

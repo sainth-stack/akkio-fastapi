@@ -478,7 +478,7 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
         api_prefix = app_spec.get("api_prefix", "/products")
         backend_rules = f"""
 2. models.py: SQLAlchemy models for ALL entities: {tables}
-3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `str | None`
+3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `Optional[str]`
 4. routes.py: APIRouter with FULL CRUD for each entity (prefix {api_prefix}). Include search/filter query params where applicable.
 """
         api_rule = (
@@ -497,7 +497,7 @@ Do NOT skip files. Do NOT use placeholders or "..." omissions.
     else:
         backend_rules = f"""
 2. models.py: SQLAlchemy models for: {", ".join(app_spec.get("mvp_tables", [])) or "primary entity"}
-3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `str | None`
+3. schemas.py: Pydantic v2 (model_config = ConfigDict(from_attributes=True)); Python 3.9 — use `from typing import Optional` and `Optional[str]`, NEVER `Optional[str]`
 4. routes.py: APIRouter prefix `{app_spec.get("api_prefix", "/items")}` with CRUD"""
         api_rule = (
             "Use `import { apiFetch } from './api/client.js'`. "

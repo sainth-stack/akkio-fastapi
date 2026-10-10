@@ -438,4 +438,7 @@ def e2b_available() -> bool:
         __import__("e2b")
     except ImportError:
         return False
-    return bool(os.environ.get("E2B_API_KEY"))
+    has_key = bool(os.environ.get("E2B_API_KEY"))
+    if not has_key:
+        logger.debug("[e2b] E2B_API_KEY not set — E2B disabled")
+    return has_key

@@ -1,0 +1,30 @@
+{
+  "name": "base-frontend-vite-mui",
+  "description": "Lovable-style frontend-only SPA scaffold: React 18 + TypeScript + Vite + MUI + Router + Recharts. No backend, no Docker. Mock data only.",
+  "stack": {
+    "framework": "React 18",
+    "language": "TypeScript",
+    "bundler": "Vite 5",
+    "ui": "MUI v6",
+    "router": "React Router v6",
+    "state": "TanStack Query v5",
+    "charts": "Recharts v2"
+  },
+  "track": "frontend_only",
+  "frozen": [
+    "frontend/package.json",
+    "frontend/vite.config.ts",
+    "frontend/tsconfig.json",
+    "frontend/index.html",
+    "frontend/src/main.tsx",
+    "frontend/src/vite-env.d.ts",
+    "frontend/src/theme/index.ts",
+    "frontend/src/components/ui"
+  ],
+  "overwritable": [
+    "frontend/src/App.tsx",
+    "frontend/src/theme/tokens.ts",
+    "frontend/src/pages",
+    "frontend/src/mock"
+  ]
+}

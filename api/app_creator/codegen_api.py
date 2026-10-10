@@ -2,7 +2,7 @@
 Code Generation API - Handles dedicated code generation WebSocket
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from typing import Dict
+from typing import Dict, Optional
 import json
 import os
 import sys
@@ -46,6 +46,86 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+# ---------------------------------------------------------------------------
+# Frontend-only pipeline helper
+# ---------------------------------------------------------------------------
+
+async def _run_frontend_only_pipeline(
+    *,
+    websocket,
+    session_id: str,
+    requirement: str,
+    plan_json: Optional[Dict],
+    design_tokens: Optional[Dict],
+    project_name: str,
+    app_id: Optional[str],
+    user_email: Optional[str],
+    uid: Optional[int],
+    model_name: Optional[str],
+    resume_stage: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Run the 6-stage frontend-only pipeline, streaming progress over WebSocket.
+    Returns the file dict on success.
+    """
+    from app_builder.services.frontend_only_pipeline import run_pipeline
+    from llm_helper import get_llm_for_user
+
+    # Merge design_tokens into plan_json if needed
+    if plan_json and design_tokens and not plan_json.get("design_tokens"):
+        plan_json = dict(plan_json)
+        plan_json["design_tokens"] = design_tokens
+
+    try:
+        llm = get_llm_for_user(
+            user_email or "system@akkio.com",
+            model_name=model_name,
+            temperature=0.4,
+            streaming=False,
+        )
+    except Exception as llm_exc:
+        print(f"[codegen_api/fo] LLM init failed: {llm_exc}", file=sys.stderr)
+        llm = None
+
+    if llm is None:
+        await websocket.send_text(json.dumps({
+            "event": "error",
+            "message": "Could not initialize LLM for frontend-only pipeline",
+        }))
+        return {}
+
+    async def on_event(data: Dict) -> None:
+        try:
+            await websocket.send_text(json.dumps(data))
+        except Exception:
+            pass
+
+    try:
+        files = await run_pipeline(
+            requirement=requirement,
+            plan_json=plan_json,
+            project_name=project_name,
+            llm=llm,
+            on_event=on_event,
+            resume_stage=resume_stage,
+            app_id=app_id,
+            user_email=user_email,
+            uid=uid,
+        )
+        return files
+    except Exception as exc:
+        print(f"[codegen_api/fo] pipeline error: {exc}", file=sys.stderr)
+        await on_event({
+            "event": "agent_error",
+            "agent": "fo_pipeline",
+            "message": str(exc),
+        })
+        return {}
+
+
+from typing import Optional, Dict
 
 
 def _persist_project_runtime(project_name: str, files: dict, architecture: dict, requirement: str, prd: str, uiux: str):
@@ -123,6 +203,9 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         model_name = request_data.get("model_name")
         design_tokens = request_data.get("design_tokens")
         builder_kind = request_data.get("builder_kind") or ""
+        # Frontend-only track fields (from Prompt 2 structured contracts)
+        plan_json_req = request_data.get("plan_json")     # structured planning contracts
+        resume_stage = request_data.get("resume_stage")   # "S1"…"S6" for retry support
 
         if not project_name:
             await websocket.send_text(json.dumps({
@@ -179,6 +262,9 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                         design_tokens = app_from_db.get("design_tokens")
                     if not builder_kind:
                         builder_kind = app_from_db.get("builder_kind") or ""
+                    # Restore plan_json from DB for frontend_only track
+                    if not plan_json_req and app_from_db.get("plan_json"):
+                        plan_json_req = app_from_db.get("plan_json")
                     architecture = normalize_architecture_for_codegen(
                         architecture or {},
                         api_contract=app_from_db.get("api_contract"),
@@ -199,6 +285,25 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         fullstack = is_fullstack(builder_kind)
         if fullstack:
             architecture = lock_architecture(architecture)
+
+        # ── Detect track ─────────────────────────────────────────────────────
+        _track = None
+        _domain = None
+        try:
+            from app_builder.services.fullstack_app_generator import resolve_app_mode, resolve_track
+            _domain = resolve_app_mode(requirement, prd, uiux)
+            _track = resolve_track(_domain)
+        except Exception:
+            pass
+
+        # Override with plan_json track if available
+        if plan_json_req and (plan_json_req.get("blueprint") or {}).get("domain"):
+            _domain = plan_json_req["blueprint"]["domain"]
+            try:
+                from app_builder.services.fullstack_app_generator import resolve_track
+                _track = resolve_track(_domain)
+            except Exception:
+                pass
 
         if app_id and user_email:
             db.update_app_builder_app(
@@ -221,18 +326,44 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             "message": "Starting code generation..."
         }))
 
-        files = await execute_code_generator_agent(
-            websocket,
-            requirement,
-            prd,
-            plan,
-            architecture,
-            project_name,
-            uiux,
-            user_email=user_email,
-            model_name=model_name,
-            builder_kind=builder_kind,
-        )
+        # ── Frontend-only track: run the 6-stage pipeline ────────────────────
+        if _track == "frontend_only":
+            files = await _run_frontend_only_pipeline(
+                websocket=websocket,
+                session_id=session_id,
+                requirement=requirement,
+                plan_json=plan_json_req,
+                design_tokens=design_tokens,
+                project_name=project_name,
+                app_id=app_id,
+                user_email=user_email,
+                uid=uid,
+                model_name=model_name,
+                resume_stage=resume_stage,
+            )
+            if not files:
+                _err = "Frontend-only pipeline produced no files"
+                if app_id and user_email:
+                    db.update_app_builder_app(
+                        app_id=app_id, user_email=user_email, user_id=uid,
+                        pipeline_status="CODEGEN_FAILED", pipeline_error=_err,
+                    )
+                await websocket.send_text(json.dumps({"event": "error", "message": _err}))
+                return
+            # Skip to final save (no backend verification needed for FO track)
+        else:
+            files = await execute_code_generator_agent(
+                websocket,
+                requirement,
+                prd,
+                plan,
+                architecture,
+                project_name,
+                uiux,
+                user_email=user_email,
+                model_name=model_name,
+                builder_kind=builder_kind,
+            )
 
         if not files:
             err = "Code generation produced no files"
@@ -256,11 +387,13 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             await websocket.send_text(json.dumps({"event": "error", "message": err}))
             return
 
-        await websocket.send_text(json.dumps({
+        # ── Legacy track: validation + backend verify + build verify ─────────
+        if _track != "frontend_only":
+          await websocket.send_text(json.dumps({
             "event": "agent_start",
             "agent": "validation_agent",
             "message": "Validating generated code and checking dependencies..."
-        }))
+          }))
         touch_job(
             session_id,
             app_id=app_id,
@@ -632,6 +765,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "agent": "screen_qa_agent",
                 "message": f"Screen QA complete — {len(passed)} present, {len(missing)} missing.",
             }))
+        # ── end legacy track verification block ──────────────────────────────
 
         store_err = None
         try:
@@ -666,6 +800,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         if app_id and user_email:
             try:
+                # Use the already-resolved track (detected above, not re-computed here)
                 db.update_app_builder_app(
                     app_id=app_id,
                     user_email=user_email,
@@ -677,6 +812,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     build_error=None,
                     preview_url=frontend_url,
                     live_url=frontend_url,
+                    track=_track,
+                    plan_json=plan_json_req if _track == "frontend_only" else None,
                 )
                 try:
                     from api.app_creator.deployment_api import register_local_preview
@@ -720,6 +857,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 "preview_url": frontend_url,
                 "backend_url": backend_url,
                 "build_status": "BUILD_SUCCESS",
+                "files_ready": True,   # signal frontend to load /tree immediately
+                "track": _track or "legacy",
             }
         }))
 

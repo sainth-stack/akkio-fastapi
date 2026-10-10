@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Optional
 import logging
 
 from fastapi import HTTPException
@@ -19,9 +20,9 @@ def assert_project_access(
     current: CurrentUser,
     *,
     auto_create: bool = True,
-    app_name: str | None = None,
-    prompt: str | None = None,
-    builder_kind: str | None = None,
+    app_name: Optional[str] = None,
+    prompt: Optional[str] = None,
+    builder_kind: Optional[str] = None,
 ) -> dict:
     """
     Verify the authenticated user owns a registered builder_apps row for project_name.
@@ -74,10 +75,10 @@ def assert_project_access(
 
 
 def assert_app_id_access(
-    app_id: str | int | None,
+    app_id: str | Optional[int],
     project_name: str,
     current: CurrentUser,
-) -> dict | None:
+) -> Optional[dict]:
     """Verify app_id belongs to the current user and matches project_name."""
     if not app_id:
         return None

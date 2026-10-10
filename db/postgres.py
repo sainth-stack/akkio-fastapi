@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 import os
 import threading
 from contextlib import contextmanager
@@ -39,7 +40,7 @@ def validate_db_config() -> None:
 
 
 class PostgresPool:
-    _pool: SimpleConnectionPool | None = None
+    _pool: Optional[SimpleConnectionPool] = None
     _pool_lock = threading.Lock()
 
     def __init__(self):

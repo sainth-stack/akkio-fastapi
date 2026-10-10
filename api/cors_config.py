@@ -1,6 +1,7 @@
 """Central CORS settings for the Akkio API."""
 from __future__ import annotations
 
+from typing import Optional
 import logging
 import os
 import re
@@ -23,7 +24,7 @@ _DEFAULT_DEV_ORIGINS = [
 ]
 
 
-def _truthy(value: str | None) -> bool:
+def _truthy(value: Optional[str]) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 

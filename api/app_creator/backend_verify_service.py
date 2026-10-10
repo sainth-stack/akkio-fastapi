@@ -435,7 +435,7 @@ Rules:
 1. Backend runs as `uvicorn main:app` from the backend/ directory — use absolute imports (from routes import router), NOT relative imports.
 2. main.py must include router from routes.py and call Base.metadata.create_all on startup if using SQLAlchemy.
 3. Use SQLite (sqlite:///./app.db) — no PostgreSQL credentials.
-4. Python 3.9: use `from typing import Optional` and `Optional[str]` — NEVER use `str | None` syntax.
+4. Python 3.9: use `from typing import Optional` and `Optional[str]` — NEVER use `Optional[str]` syntax.
 5. Pydantic v2: use model_config = ConfigDict(from_attributes=True), .model_dump() not .dict().
 6. routes.py should export `router = APIRouter(...)` matching what main.py imports.
 7. Include GET /health returning {{"status": "ok"}}.

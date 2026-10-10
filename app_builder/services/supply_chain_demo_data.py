@@ -4,12 +4,12 @@ Supply chain / inventory demo payloads and mock API for generated apps.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app_builder.services.demo_api_data import _rng_for_project
 
 
-def looks_like_supply_chain(requirement: str = "", prd: str = "", files: Dict[str, str] | None = None) -> bool:
+def looks_like_supply_chain(requirement: str = "", prd: str = "", files: Optional[Dict[str, str]] = None) -> bool:
     text = f"{requirement} {prd}".lower()
     keywords = (
         "supply chain", "inventory management", "inventory level", "stock-out", "stock out",

@@ -333,6 +333,15 @@ async def verify_build_and_fix(
         if on_event:
             await on_event(payload)
 
+    # Log build mode so it's visible in server logs
+    try:
+        from api.app_creator.e2b_sandbox_build import is_e2b_enabled
+        build_mode = "e2b-sandbox" if is_e2b_enabled() else "local"
+    except Exception:
+        build_mode = "local"
+    logger.info("[build_verify] project=%s build_mode=%s", project_name, build_mode)
+    await emit("agent_progress", f"Build mode: {build_mode}", agent="build_verify_agent")
+
     from app_builder.services.code_post_process import _is_vite_project
     if not _is_vite_project(files):
         patch_package_json_in_files(files)

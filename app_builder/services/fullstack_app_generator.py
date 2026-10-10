@@ -26,6 +26,24 @@ from app_builder.services.fullstack_anomaly_generator import (
 
 logger = logging.getLogger("app_builder")
 
+# ---------------------------------------------------------------------------
+# Track routing
+# ---------------------------------------------------------------------------
+# Domains in STATIC_DOMAINS use the existing fullstack (React + FastAPI + SQLite)
+# generators and MUST NOT be changed.  Every other domain is routed to the new
+# Lovable-style frontend-only track (React + mock data, no backend).
+STATIC_DOMAINS: frozenset = frozenset({"ecommerce", "doc_chat", "anomaly_detection"})
+
+
+def resolve_track(domain: str) -> str:
+    """Return the generation track for a classified domain.
+
+    Returns:
+        "legacy"         – existing fullstack backend+frontend pipeline
+        "frontend_only"  – new Lovable-style SPA with mock data, no backend
+    """
+    return "legacy" if domain in STATIC_DOMAINS else "frontend_only"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM App-type Classifier
 # ──────────────────────────────────────────────────────────────────────────────
@@ -175,6 +193,45 @@ def generate_fullstack_application(
     title = extract_app_title(requirement, prd)
     colors = theme_from_tokens(design_tokens, uiux=uiux)
     mode = resolve_app_mode(requirement, prd, uiux)
+
+    # ── New frontend-only track ────────────────────────────────────────────
+    # All domains NOT in STATIC_DOMAINS are handled by the Lovable-style
+    # frontend-only pipeline (no FastAPI backend, no SQLite, mock data only).
+    if mode not in STATIC_DOMAINS:
+        logger.info("[generator] domain=%s → frontend_only track", mode)
+        try:
+            from app_builder.services.frontend_only_pipeline import generate_frontend_only_app
+            fo_files = generate_frontend_only_app(
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                architecture=architecture,
+                design_tokens=design_tokens,
+                domain=mode,
+            )
+            if fo_files:
+                return fo_files
+        except Exception as _fe_exc:
+            logger.warning(
+                "[generator] frontend_only pipeline failed (%s) — falling back to AI generator",
+                _fe_exc,
+            )
+        # Fallback: AI-driven generation (same as the existing inventory/crm/generic path)
+        enriched = (
+            f"[{mode.replace('_', ' ').title()} Application] {requirement}"
+            if mode not in ("generic", "")
+            else requirement
+        )
+        ai_files = _run_ai_generator(enriched, prd, uiux, architecture, design_tokens)
+        if ai_files:
+            files.update(ai_files)
+        else:
+            files.update(frontend_files(title, colors, False))
+            files.update(backend_files(title, False))
+        files.pop("frontend/src/App.jsx", None)
+        files.pop("frontend/src/styles/app.css", None)
+        return files
+    # ── Legacy static-domain track ─────────────────────────────────────────
     if mode == "doc_chat":
         files.update(doc_chat_frontend_files(title, colors))
         files.update(doc_chat_backend_files(title))
@@ -223,28 +280,15 @@ def generate_fullstack_application(
             "backend/risk_engine.py",
         ):
             files.pop(stale, None)
-    elif mode == "quality":
-        files.update(frontend_files(title, colors, True))
-        files.update(backend_files(title, True))
-    elif mode == "inventory":
-        enriched_req = _inventory_requirements(requirement)
-        ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
-        if ai_files:
-            files.update(ai_files)
-        else:
-            files.update(frontend_files(title, colors, False))
-            files.update(backend_files(title, False))
-    elif mode in ("analytics_dashboard", "crm", "finance", "hr_onboarding"):
-        enriched_req = f"[{mode.replace('_', ' ').title()} Application] {requirement}"
-        ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
-        if ai_files:
-            files.update(ai_files)
-        else:
-            files.update(frontend_files(title, colors, False))
-            files.update(backend_files(title, False))
+    # All other domains (quality, inventory, crm, analytics_dashboard, finance,
+    # hr_onboarding, generic, …) are now handled by the frontend_only track ABOVE.
+    # This branch is kept only as a safety net if resolve_track routing changes.
     else:
-        # generic or any other unrecognised mode — enrich with domain hint and use AI generator
-        enriched_req = f"[{mode.replace('_', ' ').title()} Application] {requirement}" if mode not in ("generic", "") else requirement
+        enriched_req = (
+            f"[{mode.replace('_', ' ').title()} Application] {requirement}"
+            if mode not in ("generic", "")
+            else requirement
+        )
         ai_files = _run_ai_generator(enriched_req, prd, uiux, architecture, design_tokens)
         if ai_files:
             files.update(ai_files)

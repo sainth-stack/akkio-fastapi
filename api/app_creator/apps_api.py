@@ -50,6 +50,8 @@ class CreateAppRequest(BaseModel):
     agents_state: Optional[dict] = None
     generated_code_json: Optional[dict] = None
     builder_kind: Optional[str] = None
+    track: Optional[str] = None  # "legacy" | "frontend_only"
+    plan_json: Optional[dict] = None  # structured JSON planning contracts
 
 
 class UpdateAppRequest(BaseModel):
@@ -73,6 +75,8 @@ class UpdateAppRequest(BaseModel):
     design_system_md: Optional[str] = None
     llm_model: Optional[str] = None
     builder_kind: Optional[str] = None
+    track: Optional[str] = None  # "legacy" | "frontend_only"
+    plan_json: Optional[dict] = None  # structured JSON planning contracts
 
 
 @router.get("/models")
@@ -175,6 +179,8 @@ async def update_app(
             design_system_md=request.design_system_md,
             llm_model=request.llm_model,
             builder_kind=request.builder_kind,
+            track=request.track,
+            plan_json=request.plan_json,
         )
         if count == 0:
             raise HTTPException(status_code=404, detail="App not found")
@@ -220,6 +226,8 @@ async def get_app_status(app_id: str, current: CurrentUser = Depends(resolve_use
             "build_error": app.get("build_error"),
             "preview_url": app.get("preview_url"),
             "live_url": app.get("live_url"),
+            "track": app.get("track"),
+            "plan_json": app.get("plan_json"),
             "job": job,
         }
     except HTTPException:

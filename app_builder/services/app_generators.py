@@ -161,7 +161,7 @@ def _soften_page_bg(bg: str) -> str:
     return bg
 
 
-def build_saas_app_css(tokens: Dict[str, Any] | None = None, primary: str = "#4f46e5") -> str:
+def build_saas_app_css(tokens: Optional[Dict[str, Any]] = None, primary: str = "#4f46e5") -> str:
     """
     Premium SaaS stylesheet — injected for every generated app.
     Works with standard classes AND bare form-row/header markup from LLM output.
