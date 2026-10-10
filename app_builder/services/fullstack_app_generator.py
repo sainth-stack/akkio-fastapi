@@ -265,8 +265,28 @@ def generate_fullstack_application(
         ):
             files.pop(stale, None)
     elif mode == "anomaly_detection":
-        files.update(anomaly_detection_frontend_files(title, colors, requirement=requirement, prd=prd))
-        files.update(anomaly_detection_backend_files(title, requirement=requirement, prd=prd))
+        files.update(
+            anomaly_detection_frontend_files(
+                title,
+                colors,
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                architecture=architecture,
+                design_tokens=design_tokens,
+            )
+        )
+        files.update(
+            anomaly_detection_backend_files(
+                title,
+                requirement=requirement,
+                prd=prd,
+                colors=colors,
+                uiux=uiux,
+                architecture=architecture,
+                design_tokens=design_tokens,
+            )
+        )
         files["backend/requirements.txt"] = _anomaly_requirements()
         for stale in (
             # NOTE: DashboardPage.tsx is intentionally NOT removed for anomaly_detection
