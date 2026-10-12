@@ -4,6 +4,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Dict, Optional
 
+from app_builder.services.agent_pipeline_events import (
+    AGENT_CODING,
+    AGENT_INTEGRATION,
+    AGENT_PLANNER,
+    AGENT_STYLING,
+)
 from app_builder.services.fullstack_app_generator import generate_fullstack_application
 
 
@@ -66,33 +72,33 @@ async def run_legacy_static_codegen(
 
     await _stage(
         emit,
-        "catalog_agent",
+        AGENT_PLANNER,
         f"Analyzing your prompt and selecting the {domain_label} template{catalog_note}…",
         f"Catalog and feature set locked for {domain_label}{catalog_note}.",
     )
     await _stage(
         emit,
-        "frontend_agent",
-        "Generating React storefront / UI pages, theme, and navigation…",
-        "Frontend pages and cart shell are ready.",
+        AGENT_STYLING,
+        "Applying theme, layout shell, and design tokens…",
+        "Theme and layout ready.",
     )
     await _stage(
         emit,
-        "backend_agent",
-        "Generating FastAPI routes, models, auth, and seed data…",
-        "Backend API and database seed scripts are ready.",
+        AGENT_CODING,
+        "Generating React UI, FastAPI backend, and seed data…",
+        "Application source files generated.",
     )
     await _stage(
         emit,
-        "integration_agent",
+        AGENT_INTEGRATION,
         "Wiring frontend API client to backend with mock fallback…",
         "Integration layer connected.",
     )
 
     await emit({
         "event": "agent_start",
-        "agent": "code_generator_agent",
-        "message": f"Assembling {domain_label} application files…",
+        "agent": AGENT_CODING,
+        "message": f"Assembling {domain_label} application bundle…",
     })
 
     files = generate_fullstack_application(
@@ -105,7 +111,7 @@ async def run_legacy_static_codegen(
 
     await emit({
         "event": "agent_complete",
-        "agent": "code_generator_agent",
+        "agent": AGENT_CODING,
         "message": f"Generated {len(files)} files for {domain_label}.",
         "data": {"count": len(files), "files": list(files.keys())[:40]},
     })

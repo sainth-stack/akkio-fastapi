@@ -1,0 +1,495 @@
+{
+  "version": 1,
+  "meta": {
+    "appName": "PulsePlant",
+    "description": "Default template \u2014 all UI is driven from mock/data.json",
+    "domain": "manufacturing"
+  },
+  "theme": {
+    "primary": "#1976d2",
+    "primaryDark": "#1565c0",
+    "primaryLight": "#42a5f5",
+    "secondary": "#9c27b0",
+    "background": "#f5f7fb",
+    "surface": "#ffffff",
+    "text": "#0f172a",
+    "muted": "#64748b",
+    "danger": "#d32f2f",
+    "success": "#2e7d32",
+    "warning": "#ed6c02",
+    "info": "#0288d1",
+    "fontFamily": "Inter",
+    "chartPalette": [
+      "#1976d2",
+      "#2e7d32",
+      "#ed6c02",
+      "#9c27b0",
+      "#0288d1",
+      "#d32f2f"
+    ]
+  },
+  "navigation": [
+    {
+      "label": "Dashboard",
+      "path": "/",
+      "icon": "Dashboard",
+      "pageId": "dashboard"
+    },
+    {
+      "label": "Analytics",
+      "path": "/analytics",
+      "icon": "ShowChart",
+      "pageId": "analytics"
+    },
+    {
+      "label": "Reports",
+      "path": "/reports",
+      "icon": "Assessment",
+      "pageId": "reports"
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "subtitle": "Dashboard",
+      "blocks": [
+        {
+          "type": "kpiRow",
+          "items": [
+            {
+              "label": "OEE",
+              "valueKey": "oee",
+              "color": "primary"
+            },
+            {
+              "label": "Throughput",
+              "valueKey": "throughput",
+              "color": "success"
+            },
+            {
+              "label": "Downtime (today)",
+              "valueKey": "downtime",
+              "color": "warning"
+            },
+            {
+              "label": "Active alerts",
+              "valueKey": "active_alerts",
+              "color": "error"
+            }
+          ]
+        },
+        {
+          "type": "lineChart",
+          "title": "Dashboard \u2014 OEE trend",
+          "dataKey": "series_dashboard_trend",
+          "xAxisKey": "label",
+          "series": [
+            {
+              "dataKey": "oee",
+              "name": "OEE %",
+              "color": "#1976d2"
+            },
+            {
+              "dataKey": "target",
+              "name": "Target",
+              "color": "#94a3b8"
+            }
+          ],
+          "height": 300
+        }
+      ]
+    },
+    {
+      "id": "analytics",
+      "title": "Analytics",
+      "subtitle": "Analytics",
+      "blocks": [
+        {
+          "type": "kpiRow",
+          "items": [
+            {
+              "label": "MTBF",
+              "valueKey": "mtbf",
+              "color": "primary"
+            },
+            {
+              "label": "First-pass yield",
+              "valueKey": "first_pass_yield",
+              "color": "success"
+            },
+            {
+              "label": "Scrap rate",
+              "valueKey": "scrap_rate",
+              "color": "warning"
+            }
+          ]
+        },
+        {
+          "type": "barChart",
+          "title": "Analytics comparison",
+          "dataKey": "series_analytics_bars",
+          "xAxisKey": "label",
+          "series": [
+            {
+              "dataKey": "output",
+              "name": "Output (units)",
+              "color": "#1976d2"
+            },
+            {
+              "dataKey": "defects",
+              "name": "Defects",
+              "color": "#d32f2f"
+            }
+          ],
+          "height": 300
+        },
+        {
+          "type": "dataTable",
+          "title": "Machine performance",
+          "dataKey": "table_analytics",
+          "columns": [
+            {
+              "field": "id",
+              "header": "ID"
+            },
+            {
+              "field": "name",
+              "header": "Machine"
+            },
+            {
+              "field": "value",
+              "header": "OEE %",
+              "align": "right"
+            },
+            {
+              "field": "status",
+              "header": "Status"
+            }
+          ],
+          "searchable": true
+        }
+      ]
+    },
+    {
+      "id": "reports",
+      "title": "Reports",
+      "subtitle": "Reports",
+      "blocks": [
+        {
+          "type": "kpiRow",
+          "items": [
+            {
+              "label": "Reports (30d)",
+              "valueKey": "reports_count",
+              "color": "primary"
+            },
+            {
+              "label": "On-time delivery",
+              "valueKey": "on_time_delivery",
+              "color": "success"
+            }
+          ]
+        },
+        {
+          "type": "dataTable",
+          "title": "Report library",
+          "dataKey": "table_reports",
+          "columns": [
+            {
+              "field": "name",
+              "header": "Report"
+            },
+            {
+              "field": "period",
+              "header": "Period"
+            },
+            {
+              "field": "owner",
+              "header": "Owner"
+            },
+            {
+              "field": "status",
+              "header": "Status"
+            }
+          ],
+          "searchable": true
+        }
+      ]
+    }
+  ],
+  "mock": {
+    "oee": "84.0%",
+    "throughput": "1,180 u/h",
+    "downtime": "43 min",
+    "active_alerts": 6,
+    "series_dashboard_trend": [
+      {
+        "label": "Mon",
+        "oee": 72,
+        "target": 85
+      },
+      {
+        "label": "Tue",
+        "oee": 74,
+        "target": 85
+      },
+      {
+        "label": "Wed",
+        "oee": 76,
+        "target": 85
+      },
+      {
+        "label": "Thu",
+        "oee": 78,
+        "target": 85
+      },
+      {
+        "label": "Fri",
+        "oee": 80,
+        "target": 85
+      },
+      {
+        "label": "Sat",
+        "oee": 82,
+        "target": 85
+      }
+    ],
+    "mtbf": "120 h",
+    "first_pass_yield": "95.8%",
+    "scrap_rate": "94.2%",
+    "series_analytics_bars": [
+      {
+        "label": "W1",
+        "output": 7800,
+        "defects": 55
+      },
+      {
+        "label": "W2",
+        "output": 7980,
+        "defects": 52
+      },
+      {
+        "label": "W3",
+        "output": 8160,
+        "defects": 49
+      },
+      {
+        "label": "W4",
+        "output": 8340,
+        "defects": 46
+      },
+      {
+        "label": "W5",
+        "output": 8520,
+        "defects": 43
+      },
+      {
+        "label": "W6",
+        "output": 8700,
+        "defects": 40
+      }
+    ],
+    "table_analytics": [
+      {
+        "id": "M-01",
+        "name": "CNC Cell A",
+        "value": 91,
+        "status": "Running"
+      },
+      {
+        "id": "M-02",
+        "name": "Press Line 2",
+        "value": 78,
+        "status": "Idle"
+      },
+      {
+        "id": "M-03",
+        "name": "Assembly Robot 4",
+        "value": 89,
+        "status": "Running"
+      },
+      {
+        "id": "M-04",
+        "name": "Paint Booth",
+        "value": 0,
+        "status": "Maintenance"
+      }
+    ],
+    "reports_count": 12,
+    "on_time_delivery": "93.5%",
+    "table_reports": [
+      {
+        "id": "R-2406",
+        "name": "Weekly OEE summary",
+        "period": "Jun W2",
+        "owner": "Operations",
+        "status": "Published"
+      },
+      {
+        "id": "R-2405",
+        "name": "Scrap pareto analysis",
+        "period": "Jun W1",
+        "owner": "Quality",
+        "status": "Published"
+      },
+      {
+        "id": "R-2404",
+        "name": "Energy intensity",
+        "period": "May",
+        "owner": "Sustainability",
+        "status": "Draft"
+      }
+    ],
+    "kpis_dashboard": {
+      "oee": "84.0%",
+      "throughput": "1,180 u/h",
+      "downtime": "43 min",
+      "active_alerts": 6
+    },
+    "kpis_analytics": {
+      "mtbf": "120 h",
+      "first_pass_yield": "95.8%"
+    },
+    "kpis_reports": {
+      "on_time_delivery": "93.5%"
+    }
+  },
+  "data": {
+    "oee": "84.0%",
+    "throughput": "1,180 u/h",
+    "downtime": "43 min",
+    "active_alerts": 6,
+    "series_dashboard_trend": [
+      {
+        "label": "Mon",
+        "oee": 72,
+        "target": 85
+      },
+      {
+        "label": "Tue",
+        "oee": 74,
+        "target": 85
+      },
+      {
+        "label": "Wed",
+        "oee": 76,
+        "target": 85
+      },
+      {
+        "label": "Thu",
+        "oee": 78,
+        "target": 85
+      },
+      {
+        "label": "Fri",
+        "oee": 80,
+        "target": 85
+      },
+      {
+        "label": "Sat",
+        "oee": 82,
+        "target": 85
+      }
+    ],
+    "mtbf": "120 h",
+    "first_pass_yield": "95.8%",
+    "scrap_rate": "94.2%",
+    "series_analytics_bars": [
+      {
+        "label": "W1",
+        "output": 7800,
+        "defects": 55
+      },
+      {
+        "label": "W2",
+        "output": 7980,
+        "defects": 52
+      },
+      {
+        "label": "W3",
+        "output": 8160,
+        "defects": 49
+      },
+      {
+        "label": "W4",
+        "output": 8340,
+        "defects": 46
+      },
+      {
+        "label": "W5",
+        "output": 8520,
+        "defects": 43
+      },
+      {
+        "label": "W6",
+        "output": 8700,
+        "defects": 40
+      }
+    ],
+    "table_analytics": [
+      {
+        "id": "M-01",
+        "name": "CNC Cell A",
+        "value": 91,
+        "status": "Running"
+      },
+      {
+        "id": "M-02",
+        "name": "Press Line 2",
+        "value": 78,
+        "status": "Idle"
+      },
+      {
+        "id": "M-03",
+        "name": "Assembly Robot 4",
+        "value": 89,
+        "status": "Running"
+      },
+      {
+        "id": "M-04",
+        "name": "Paint Booth",
+        "value": 0,
+        "status": "Maintenance"
+      }
+    ],
+    "reports_count": 12,
+    "on_time_delivery": "93.5%",
+    "table_reports": [
+      {
+        "id": "R-2406",
+        "name": "Weekly OEE summary",
+        "period": "Jun W2",
+        "owner": "Operations",
+        "status": "Published"
+      },
+      {
+        "id": "R-2405",
+        "name": "Scrap pareto analysis",
+        "period": "Jun W1",
+        "owner": "Quality",
+        "status": "Published"
+      },
+      {
+        "id": "R-2404",
+        "name": "Energy intensity",
+        "period": "May",
+        "owner": "Sustainability",
+        "status": "Draft"
+      }
+    ],
+    "kpis_dashboard": {
+      "oee": "84.0%",
+      "throughput": "1,180 u/h",
+      "downtime": "43 min",
+      "active_alerts": 6
+    },
+    "kpis_analytics": {
+      "mtbf": "120 h",
+      "first_pass_yield": "95.8%"
+    },
+    "kpis_reports": {
+      "on_time_delivery": "93.5%"
+    }
+  }
+}

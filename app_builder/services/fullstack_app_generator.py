@@ -194,7 +194,7 @@ def generate_fullstack_application(
     colors = theme_from_tokens(design_tokens, uiux=uiux)
     mode = resolve_app_mode(requirement, prd, uiux)
 
-    # ── JSON app track (template renderer + app-definition.json) ───────────
+    # ── JSON app track (template renderer + mock/data.json) ────────────────
     if mode not in STATIC_DOMAINS:
         logger.info("[generator] domain=%s → json_app track", mode)
         from app_builder.services.json_app_generator import generate_json_app_files
@@ -204,13 +204,15 @@ def generate_fullstack_application(
             "blueprint": {"domain": mode, "app_name": title},
         }
         if architecture and isinstance(architecture, dict):
-            plan_json["blueprint"] = {**plan_json["blueprint"], **architecture}
+            plan_json["architecture"] = architecture
         fo_files = generate_json_app_files(
             requirement=requirement,
             prd=prd,
             uiux=uiux,
             plan_json=plan_json,
             app_name=title,
+            architecture=architecture if isinstance(architecture, dict) else None,
+            design_tokens=design_tokens,
         )
         if fo_files:
             return fo_files

@@ -26,6 +26,7 @@ from app_builder.services.project_config import get_project_config
 from api.app_creator.backend_verify_service import apply_deterministic_backend_fixes
 from api.app_creator.build_verify_service import verify_build_and_fix
 from api.app_creator.backend_verify_service import verify_backend_and_fix
+from app_builder.services.agent_pipeline_events import AGENT_INTEGRATION, AGENT_VALIDATOR
 
 router = APIRouter(prefix="/api/codegen", tags=["Code Generation"])
 
@@ -356,7 +357,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     )
                 await websocket.send_text(json.dumps({"event": "error", "message": _err}))
                 return
-        # ── JSON app track: template + app-definition.json (no LLM TSX) ─────
+        # ── JSON app track: template + mock/data.json (no LLM TSX) ───────────
         elif _track == "json_app":
             _ja_domain = None
             if plan_json_req and (plan_json_req.get("blueprint") or {}).get("domain"):
@@ -373,11 +374,21 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 ),
             }))
 
+            from app_builder.services.app_definition_generator import resolve_app_display_name
             from app_builder.services.json_app_generator import run_json_app_codegen
 
             merged_plan = dict(plan_json_req or {})
             if design_tokens and not merged_plan.get("design_tokens"):
                 merged_plan["design_tokens"] = design_tokens
+            if architecture and not merged_plan.get("architecture"):
+                merged_plan["architecture"] = architecture
+
+            display_name = resolve_app_display_name(
+                requirement=requirement or "",
+                prd=prd,
+                plan_json=merged_plan,
+                app_name=request_data.get("app_name") or project_name,
+            )
 
             files = await run_json_app_codegen(
                 requirement=requirement,
@@ -386,6 +397,9 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 on_event=_forward_ws_event,
                 prd=prd,
                 uiux=uiux,
+                architecture=architecture,
+                design_tokens=design_tokens,
+                app_name=display_name,
             )
 
             if not files:
@@ -632,16 +646,8 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             files, _ = ensure_frontend_only_kit(files, project_name=project_name)
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
-                "agent": "validation_agent",
-                "message": (
-                    "Validation skipped — json_app uses a fixed template and "
-                    "app-definition.json (no generated page TSX)."
-                ),
-            }))
-            await websocket.send_text(json.dumps({
-                "event": "agent_complete",
-                "agent": "backend_verify_agent",
-                "message": "Backend verify skipped (frontend-only json_app track).",
+                "agent": AGENT_INTEGRATION,
+                "message": "Integration check skipped (data-driven template — mock-backed UI).",
             }))
 
         async def _emit_verify_progress(agent: str, message: str):
@@ -655,17 +661,17 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
         async def _emit_backend_event(payload: dict):
             msg = payload.get("message", "")
-            await _emit_verify_progress("backend_verify_agent", msg)
+            await _emit_verify_progress(AGENT_INTEGRATION, msg)
 
         async def _emit_build_event(payload: dict):
             msg = payload.get("message", "")
-            await _emit_verify_progress("build_verify_agent", msg)
+            await _emit_verify_progress(AGENT_VALIDATOR, msg)
 
         verify_backend = os.environ.get("CODEGEN_VERIFY_BACKEND", "true").lower() not in ("0", "false", "no")
         if not _light_track and verify_backend and "backend/main.py" in files:
             await websocket.send_text(json.dumps({
                 "event": "agent_start",
-                "agent": "backend_verify_agent",
+                "agent": AGENT_INTEGRATION,
                 "message": "Verifying backend API (uvicorn + sample endpoints + auto-fix)...",
             }))
             touch_job(
@@ -724,7 +730,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     )
                     await websocket.send_text(json.dumps({
                         "event": "agent_error",
-                        "agent": "backend_verify_agent",
+                        "agent": AGENT_INTEGRATION,
                         "message": err,
                     }))
                     await websocket.send_text(json.dumps({"event": "error", "message": err}))
@@ -732,19 +738,25 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             else:
                 await websocket.send_text(json.dumps({
                     "event": "agent_complete",
-                    "agent": "backend_verify_agent",
+                    "agent": AGENT_INTEGRATION,
                     "message": "Backend verified — uvicorn started and sample API calls succeeded.",
                 }))
         elif not _light_track and verify_backend:
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
-                "agent": "backend_verify_agent",
+                "agent": AGENT_INTEGRATION,
                 "message": "Backend verify skipped (no backend/main.py).",
+            }))
+        elif _light_track:
+            await websocket.send_text(json.dumps({
+                "event": "agent_progress",
+                "agent": AGENT_VALIDATOR,
+                "message": "JSON app: skipping backend verify — frontend-only production bundle.",
             }))
 
         await websocket.send_text(json.dumps({
             "event": "agent_start",
-            "agent": "build_verify_agent",
+            "agent": AGENT_VALIDATOR,
             "message": "Verifying npm build (install + build + auto-fix)...",
         }))
         touch_job(
@@ -789,7 +801,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 )
                 await websocket.send_text(json.dumps({
                     "event": "agent_error",
-                    "agent": "build_verify_agent",
+                    "agent": AGENT_VALIDATOR,
                     "message": err,
                 }))
                 await websocket.send_text(json.dumps({"event": "error", "message": err}))
@@ -797,13 +809,13 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
-                "agent": "build_verify_agent",
+                "agent": AGENT_VALIDATOR,
                 "message": "Build verified — npm run build succeeded.",
             }))
         else:
             await websocket.send_text(json.dumps({
                 "event": "agent_complete",
-                "agent": "build_verify_agent",
+                "agent": AGENT_VALIDATOR,
                 "message": "Build verify skipped (CODEGEN_VERIFY_BUILD=false).",
             }))
 
@@ -869,7 +881,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             try:
                 plan_json_to_save = plan_json_req if _track in ("frontend_only", "json_app") else None
                 if _track == "json_app" and plan_json_to_save is not None:
-                    raw_def = files.get("frontend/src/config/app-definition.json")
+                    raw_def = files.get("frontend/src/mock/data.json")
                     if raw_def:
                         try:
                             merged = dict(plan_json_to_save)
@@ -925,7 +937,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             }))
 
         _complete_msg = (
-            "App ready — template rendered from app-definition.json. Open Preview to use your app."
+            "App ready — template rendered from mock/data.json. Open Preview to use your app."
             if _track == "json_app"
             else "App ready — backend verified, frontend built. Open Preview to use your SaaS app."
         )

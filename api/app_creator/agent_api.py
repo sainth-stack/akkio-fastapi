@@ -213,7 +213,7 @@ async def execute_code_generator_agent(
         
         await websocket.send_text(json.dumps({
             "event": "agent_start",
-            "agent": "code_generator_agent",
+            "agent": "coding_agent",
             "message": "Generating application code based on PRD and plan..."
         }))
         
@@ -236,14 +236,14 @@ async def execute_code_generator_agent(
             if event["event"] == "generation_start":
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
-                    "agent": "code_generator_agent",
+                    "agent": "coding_agent",
                     "message": event["message"]
                 }))
                 
             elif event["event"] == "agent_progress":
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
-                    "agent": "code_generator_agent",
+                    "agent": "coding_agent",
                     "message": event["message"]
                 }))
             
@@ -252,7 +252,7 @@ async def execute_code_generator_agent(
                 content = event["content"]
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
-                    "agent": "code_generator_agent",
+                    "agent": "coding_agent",
                     "message": f"Generated {filename}"
                 }))
                 files_dict[filename] = content
@@ -261,7 +261,7 @@ async def execute_code_generator_agent(
                 files_dict = event["data"]
                 await websocket.send_text(json.dumps({
                     "event": "agent_progress",
-                    "agent": "code_generator_agent",
+                    "agent": "coding_agent",
                     "message": f"Generation complete. {len(files_dict)} files generated."
                 }))
 
@@ -269,7 +269,7 @@ async def execute_code_generator_agent(
                 codegen_error = event.get("message") or event.get("error") or "Code generation failed"
                 await websocket.send_text(json.dumps({
                     "event": "agent_error",
-                    "agent": "code_generator_agent",
+                    "agent": "coding_agent",
                     "message": codegen_error,
                 }))
 
@@ -282,7 +282,7 @@ async def execute_code_generator_agent(
         count = len(files_dict)
         await websocket.send_text(json.dumps({
             "event": "agent_complete",
-            "agent": "code_generator_agent",
+            "agent": "coding_agent",
             "data": {
                 "files": list(files_dict.keys()),
                 "count": count
@@ -302,7 +302,7 @@ async def execute_code_generator_agent(
         try:
             await websocket.send_text(json.dumps({
                 "event": "agent_error",
-                "agent": "code_generator_agent",
+                "agent": "coding_agent",
                 "error": str(e)
             }))
         except (WebSocketDisconnect, RuntimeError):

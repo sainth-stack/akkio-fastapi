@@ -242,9 +242,9 @@ class TestJsonAppGenerator(unittest.TestCase):
             self.skipTest("template not present")
         from app_builder.services.json_app_generator import generate_json_app_files
         result = generate_json_app_files(
-            requirement="Build a simple CRM dashboard",
+            requirement="Build a simple CRM with dashboard, contacts, and pipeline",
         )
-        self.assertIn("frontend/src/config/app-definition.json", result)
+        self.assertIn("frontend/src/mock/data.json", result)
         self.assertIn("frontend/src/renderer/PageRenderer.tsx", result)
         self.assertIn("frontend/src/App.tsx", result)
 

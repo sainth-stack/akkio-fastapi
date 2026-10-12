@@ -21,6 +21,10 @@ from api.app_creator.pipeline_helpers import (
     touch_job,
     update_pipeline,
 )
+from app_builder.services.agent_pipeline_events import (
+    PLANNING_STEP_AGENT,
+    PLANNING_STEP_COMPLETE,
+)
 
 router = APIRouter(prefix="/api/planning", tags=["Planning"])
 
@@ -66,8 +70,17 @@ def _planning_stream(
             status="running",
             step=step,
         )
+        agent_id, agent_message = PLANNING_STEP_AGENT.get(
+            step, ("planner_agent", start_message)
+        )
         try:
             yield json.dumps({"event": "start", "message": start_message, "session_id": session_id}) + "\n"
+            yield json.dumps({
+                "event": "agent_start",
+                "agent": agent_id,
+                "message": agent_message,
+                "step": step,
+            }) + "\n"
             async for event in stream_fn():
                 if event.get("event") == complete_event:
                     update_pipeline(request.app_id, email, user_id, complete, error=None)
@@ -79,6 +92,12 @@ def _planning_stream(
                         step=step,
                         finished=True,
                     )
+                    yield json.dumps({
+                        "event": "agent_complete",
+                        "agent": agent_id,
+                        "message": PLANNING_STEP_COMPLETE.get(step, "Step complete."),
+                        "step": step,
+                    }) + "\n"
                 elif event.get("event") == "error":
                     err = event.get("message", "Planning step failed")
                     update_pipeline(request.app_id, email, user_id, failed, error=err)
@@ -91,6 +110,12 @@ def _planning_stream(
                         error=err,
                         finished=True,
                     )
+                    yield json.dumps({
+                        "event": "agent_error",
+                        "agent": agent_id,
+                        "message": err,
+                        "step": step,
+                    }) + "\n"
                 yield json.dumps(event) + "\n"
         except Exception as e:
             import traceback
@@ -107,6 +132,12 @@ def _planning_stream(
                 finished=True,
             )
             yield json.dumps({"event": "error", "message": err}) + "\n"
+            yield json.dumps({
+                "event": "agent_error",
+                "agent": agent_id,
+                "message": err,
+                "step": step,
+            }) + "\n"
 
     return event_stream()
 

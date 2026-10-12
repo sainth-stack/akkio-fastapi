@@ -127,6 +127,16 @@ async def create_app(request: CreateAppRequest, current: CurrentUser = Depends(r
             user_id=current.id or None,
             builder_kind=request.builder_kind or "app",
         )
+        if request.plan_json:
+            db.update_app_builder_app(
+                app_id=app["id"],
+                user_email=user_email_from(current),
+                user_id=current.id or None,
+                plan_json=request.plan_json,
+            )
+            app = db.get_app_builder_app(
+                app["id"], user_email=user_email_from(current), user_id=current.id or None
+            )
         return {"status": "success", "app": app, "message": "App created"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

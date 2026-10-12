@@ -8,6 +8,7 @@ from app_builder.schemas.app_definition import (
     AppDefinition,
     AppMeta,
     AppTheme,
+    BarChartBlock,
     ChartSeriesDef,
     DataTableBlock,
     KpiItemDef,
@@ -22,6 +23,46 @@ from app_builder.schemas.app_definition import (
 def _slug(s: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
     return s or "page"
+
+
+def _blueprint_domain(blueprint: Any) -> str:
+    if not isinstance(blueprint, dict):
+        return ""
+    return str(blueprint.get("selected_domain") or blueprint.get("domain") or "").lower()
+
+
+def _is_inventory_intent(text: str) -> bool:
+    return any(
+        k in text
+        for k in (
+            "inventory",
+            "supply chain",
+            "sku",
+            "warehouse",
+            "purchase order",
+            "materials / skus",
+            "supplier portal",
+            "stock replenishment",
+        )
+    )
+
+
+def _is_monitoring_analytics_intent(text: str) -> bool:
+    return any(
+        k in text
+        for k in (
+            "monitoring",
+            "analytics",
+            "oee",
+            "production",
+            "plant",
+            "factory",
+            "machine",
+            "work order",
+            "quality control",
+            "manufacturing",
+        )
+    )
 
 
 def _theme_from_tokens(design_tokens: Optional[Dict[str, Any]]) -> AppTheme:
@@ -239,6 +280,178 @@ def _default_inventory_app(app_name: str, domain: str) -> AppDefinition:
     )
 
 
+def _manufacturing_monitoring_app(app_name: str) -> AppDefinition:
+    """Dashboard + Analytics + Reports — matches Agentic Manufacturing domain prompts."""
+    mock: Dict[str, Any] = {
+        "kpis_dashboard": {
+            "oee": "87.4%",
+            "throughput": "1,240 u/h",
+            "downtime": "42 min",
+            "active_alerts": 5,
+            "scrap_rate": "0.8%",
+            "energy_per_unit": "12.4 kWh",
+        },
+        "series_oee_trend": [
+            {"shift": "Mon A", "oee": 84.2, "target": 85},
+            {"shift": "Mon B", "oee": 86.1, "target": 85},
+            {"shift": "Tue A", "oee": 88.4, "target": 85},
+            {"shift": "Tue B", "oee": 87.0, "target": 85},
+            {"shift": "Wed A", "oee": 89.2, "target": 85},
+            {"shift": "Wed B", "oee": 86.8, "target": 85},
+        ],
+        "kpis_analytics": {
+            "mtbf": "128 h",
+            "mttr": "18 min",
+            "first_pass_yield": "96.2%",
+            "planned_stops": 3,
+        },
+        "series_output_defects": [
+            {"week": "W1", "output": 8200, "defects": 62},
+            {"week": "W2", "output": 8450, "defects": 58},
+            {"week": "W3", "output": 8100, "defects": 71},
+            {"week": "W4", "output": 8720, "defects": 49},
+            {"week": "W5", "output": 8890, "defects": 44},
+            {"week": "W6", "output": 9010, "defects": 41},
+        ],
+        "table_machines": [
+            {"id": "M-01", "name": "CNC Cell A", "status": "Running", "oee": "91.2%", "alerts": 0},
+            {"id": "M-02", "name": "Press Line 2", "status": "Idle", "oee": "78.4%", "alerts": 1},
+            {"id": "M-03", "name": "Assembly Robot 4", "status": "Running", "oee": "88.9%", "alerts": 0},
+            {"id": "M-04", "name": "Paint Booth", "status": "Maintenance", "oee": "—", "alerts": 2},
+        ],
+        "table_quality_events": [
+            {"id": "Q-101", "line": "Press Line 2", "defect": "Surface scratch", "severity": "Medium", "when": "3h ago"},
+            {"id": "Q-102", "line": "CNC Cell A", "defect": "Tolerance drift", "severity": "High", "when": "5h ago"},
+            {"id": "Q-103", "line": "Assembly Robot 4", "defect": "Torque out of spec", "severity": "Low", "when": "1d ago"},
+        ],
+        "kpis_reports": {
+            "reports_generated": "24",
+            "on_time_delivery": "94.8%",
+            "cost_per_unit": "$18.42",
+        },
+        "table_report_runs": [
+            {"id": "R-2406", "name": "Weekly OEE summary", "period": "Jun W2", "owner": "Ops", "status": "Published"},
+            {"id": "R-2405", "name": "Scrap pareto", "period": "Jun W1", "owner": "Quality", "status": "Published"},
+            {"id": "R-2404", "name": "Energy intensity", "period": "May", "owner": "Sustainability", "status": "Draft"},
+        ],
+    }
+
+    nav = [
+        NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard"),
+        NavItemDef(label="Analytics", path="/analytics", icon="ShowChart", pageId="analytics"),
+        NavItemDef(label="Reports", path="/reports", icon="Assessment", pageId="reports"),
+    ]
+
+    pages = [
+        PageDef(
+            id="dashboard",
+            title="Plant dashboard",
+            subtitle="Live OEE, throughput, and alert summary",
+            blocks=[
+                KpiRowBlock(
+                    items=[
+                        KpiItemDef(label="OEE", valueKey="oee", color="primary"),
+                        KpiItemDef(label="Throughput", valueKey="throughput", color="success"),
+                        KpiItemDef(label="Downtime (today)", valueKey="downtime", color="warning"),
+                        KpiItemDef(label="Active alerts", valueKey="active_alerts", color="error"),
+                        KpiItemDef(label="Scrap rate", valueKey="scrap_rate", color="warning"),
+                        KpiItemDef(label="Energy / unit", valueKey="energy_per_unit", color="info"),
+                    ],
+                ).model_dump(),
+                LineChartBlock(
+                    title="OEE by shift",
+                    dataKey="series_oee_trend",
+                    xAxisKey="shift",
+                    series=[
+                        ChartSeriesDef(dataKey="oee", name="OEE %", color="#1976d2"),
+                        ChartSeriesDef(dataKey="target", name="Target", color="#94a3b8"),
+                    ],
+                ).model_dump(),
+            ],
+        ),
+        PageDef(
+            id="analytics",
+            title="Production analytics",
+            subtitle="Output, defects, and machine-level performance",
+            blocks=[
+                KpiRowBlock(
+                    items=[
+                        KpiItemDef(label="MTBF", valueKey="mtbf", color="primary"),
+                        KpiItemDef(label="MTTR", valueKey="mttr", color="info"),
+                        KpiItemDef(label="First-pass yield", valueKey="first_pass_yield", color="success"),
+                        KpiItemDef(label="Planned stops", valueKey="planned_stops", color="warning"),
+                    ],
+                ).model_dump(),
+                BarChartBlock(
+                    title="Weekly output vs defects",
+                    dataKey="series_output_defects",
+                    xAxisKey="week",
+                    series=[
+                        ChartSeriesDef(dataKey="output", name="Output (units)", color="#1976d2"),
+                        ChartSeriesDef(dataKey="defects", name="Defects", color="#d32f2f"),
+                    ],
+                ).model_dump(),
+                DataTableBlock(
+                    title="Machine status",
+                    dataKey="table_machines",
+                    columns=[
+                        TableColumnDef(field="id", header="ID"),
+                        TableColumnDef(field="name", header="Machine"),
+                        TableColumnDef(field="status", header="Status"),
+                        TableColumnDef(field="oee", header="OEE", align="right"),
+                        TableColumnDef(field="alerts", header="Alerts", align="right"),
+                    ],
+                ).model_dump(),
+                DataTableBlock(
+                    title="Recent quality events",
+                    dataKey="table_quality_events",
+                    columns=[
+                        TableColumnDef(field="line", header="Line"),
+                        TableColumnDef(field="defect", header="Defect"),
+                        TableColumnDef(field="severity", header="Severity"),
+                        TableColumnDef(field="when", header="When"),
+                    ],
+                ).model_dump(),
+            ],
+        ),
+        PageDef(
+            id="reports",
+            title="Reports",
+            subtitle="Published operational and quality reports",
+            blocks=[
+                KpiRowBlock(
+                    items=[
+                        KpiItemDef(label="Reports (30d)", valueKey="reports_generated", color="primary"),
+                        KpiItemDef(label="On-time delivery", valueKey="on_time_delivery", color="success"),
+                        KpiItemDef(label="Cost / unit", valueKey="cost_per_unit", color="info"),
+                    ],
+                ).model_dump(),
+                DataTableBlock(
+                    title="Report library",
+                    dataKey="table_report_runs",
+                    columns=[
+                        TableColumnDef(field="name", header="Report"),
+                        TableColumnDef(field="period", header="Period"),
+                        TableColumnDef(field="owner", header="Owner"),
+                        TableColumnDef(field="status", header="Status"),
+                    ],
+                ).model_dump(),
+            ],
+        ),
+    ]
+
+    return AppDefinition(
+        meta=AppMeta(
+            appName=app_name,
+            description="Manufacturing monitoring — dashboard, analytics, and reports",
+            domain="manufacturing",
+        ),
+        navigation=nav,
+        pages=pages,
+        mock=mock,
+    )
+
+
 def _transformer_demo_app(app_name: str) -> AppDefinition:
     mock = {
         "kpis_main": {
@@ -324,7 +537,10 @@ def compile_app_definition(
         blueprint = {}
     design_tokens = plan_json.get("design_tokens")
 
-    domain = (blueprint.get("domain") or "generic") if isinstance(blueprint, dict) else "generic"
+    selected_domain = _blueprint_domain(blueprint)
+    domain = selected_domain or (
+        (blueprint.get("domain") or "generic") if isinstance(blueprint, dict) else "generic"
+    )
     combined = "\n".join([requirement or "", prd or "", uiux or ""]).lower()
 
     name = app_name or (blueprint.get("app_name") if isinstance(blueprint, dict) else None) or "Workspace"
@@ -333,32 +549,19 @@ def compile_app_definition(
 
     if "transformer" in combined or "substation" in combined:
         app = _transformer_demo_app(name)
-    elif any(k in combined for k in ("inventory", "supply chain", "sku", "warehouse", "purchase order", "material")):
+    elif selected_domain == "manufacturing":
+        app = _manufacturing_monitoring_app(name)
+    elif selected_domain == "retail" and _is_inventory_intent(combined):
+        app = _default_inventory_app(name, "retail")
+    elif _is_inventory_intent(combined) and not _is_monitoring_analytics_intent(combined):
         app = _default_inventory_app(name, domain)
+    elif _is_monitoring_analytics_intent(combined):
+        app = _manufacturing_monitoring_app(name)
     else:
-        app = _default_inventory_app(name, domain)
+        app = _manufacturing_monitoring_app(name) if selected_domain == "manufacturing" else _default_inventory_app(
+            name, domain
+        )
 
     app.theme = _theme_from_tokens(design_tokens if isinstance(design_tokens, dict) else None)
-
-    nav_items = blueprint.get("nav_items") if isinstance(blueprint, dict) else None
-    if nav_items and isinstance(nav_items, list) and len(nav_items) >= 2:
-        navigation: List[NavItemDef] = []
-        for i, item in enumerate(nav_items):
-            if not isinstance(item, dict):
-                continue
-            label = item.get("label") or f"Page {i + 1}"
-            path = item.get("path") or ("/" if i == 0 else f"/{_slug(label)}")
-            page_id = _slug(label) if path != "/" else "dashboard"
-            navigation.append(
-                NavItemDef(
-                    label=label,
-                    path=path,
-                    icon=item.get("icon") or "Article",
-                    pageId=page_id,
-                )
-            )
-        if navigation:
-            app.navigation = navigation
-            app.meta.appName = name
 
     return app

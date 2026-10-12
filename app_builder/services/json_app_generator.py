@@ -1,4 +1,4 @@
-"""JSON-only app generation: template + app-definition.json (no LLM TSX)."""
+"""JSON-only app generation: template + mock/data.json (no LLM TSX)."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,20 @@ import os
 from typing import Any, Callable, Dict, Optional
 
 from app_builder.schemas.app_definition import AppDefinition
-from app_builder.services.app_definition_compiler import compile_app_definition
+from app_builder.services.app_definition_generator import (
+    hydrate_plan_json,
+    resolve_app_definition,
+    resolve_app_definition_sync,
+)
+from app_builder.services.template_app_data import app_data_dict_from_definition
+from app_builder.services.json_app_codegen_pipeline import (
+    run_app_definition_phase,
+    run_coding_phase,
+    run_integration_phase,
+    run_planner_phase,
+    run_styling_phase,
+    run_validator_handoff,
+)
 
 logger = logging.getLogger("app_builder")
 
@@ -49,7 +62,7 @@ def _tokens_ts_from_theme(theme: Any) -> str:
     palette = t.get("chartPalette") or []
     font = (t.get("fontFamily") or "Inter").replace("'", "\\'")
     return f"""/**
- * Design tokens — generated from AppDefinition.theme (edit app-definition.json to restyle).
+ * Design tokens — generated from AppDefinition.theme (edit mock/data.json to restyle).
  */
 export const tokens = {{
   primary:        '{t.get("primary", "#1976d2")}',
@@ -74,6 +87,25 @@ export type Tokens = typeof tokens;
 """
 
 
+def _coerce_plan_texts(
+    plan_json: Optional[Dict[str, Any]],
+    prd: str,
+    uiux: str,
+) -> tuple[str, str]:
+    prd_text = prd or ""
+    uiux_text = uiux or ""
+    if plan_json:
+        if isinstance(plan_json.get("prd"), dict):
+            prd_text = prd_text or json.dumps(plan_json["prd"])
+        elif isinstance(plan_json.get("prd"), str):
+            prd_text = prd_text or plan_json["prd"]
+        if isinstance(plan_json.get("uiux"), dict):
+            uiux_text = uiux_text or json.dumps(plan_json["uiux"])
+        elif isinstance(plan_json.get("uiux"), str):
+            uiux_text = uiux_text or plan_json["uiux"]
+    return prd_text, uiux_text
+
+
 def generate_json_app_files(
     *,
     requirement: str = "",
@@ -82,21 +114,29 @@ def generate_json_app_files(
     plan_json: Optional[Dict[str, Any]] = None,
     app_name: Optional[str] = None,
     app_definition: Optional[AppDefinition] = None,
+    architecture: Optional[Dict[str, Any]] = None,
+    design_tokens: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    """Return full frontend file map: frozen template + app-definition.json + tokens."""
-    definition = app_definition or compile_app_definition(
+    """Return full frontend file map: frozen template + mock/data.json + tokens."""
+    merged_plan = hydrate_plan_json(
+        plan_json,
+        architecture=architecture,
+        design_tokens=design_tokens,
+    )
+    prd_text, uiux_text = _coerce_plan_texts(merged_plan, prd, uiux)
+
+    definition = app_definition or resolve_app_definition_sync(
         requirement=requirement,
-        prd=prd,
-        uiux=uiux,
-        plan_json=plan_json,
+        prd=prd_text,
+        uiux=uiux_text,
+        plan_json=merged_plan,
         app_name=app_name,
     )
 
     files = load_template_frontend_files()
-    files.update(_json_renderer_sources())
 
-    files["frontend/src/config/app-definition.json"] = json.dumps(
-        definition.to_json_dict(), indent=2, ensure_ascii=False
+    files["frontend/src/mock/data.json"] = json.dumps(
+        app_data_dict_from_definition(definition), indent=2, ensure_ascii=False
     )
     files["frontend/src/theme/tokens.ts"] = _tokens_ts_from_theme(definition.theme)
 
@@ -108,7 +148,6 @@ def generate_json_app_files(
         except json.JSONDecodeError:
             pass
 
-    # Remove demo-only page from route (renderer handles all routes)
     files.pop("frontend/src/pages/DemoPage.tsx", None)
 
     logger.info(
@@ -128,354 +167,95 @@ async def run_json_app_codegen(
     on_event: Optional[Callable] = None,
     prd: str = "",
     uiux: str = "",
+    architecture: Optional[Dict[str, Any]] = None,
+    design_tokens: Optional[Dict[str, Any]] = None,
+    app_name: Optional[str] = None,
+    use_llm: bool = True,
 ) -> Dict[str, str]:
-    """Async entry for codegen WebSocket — emits progress, returns files."""
+    """Async entry for codegen WebSocket — LLM AppDefinition from PRD, then bind template."""
     async def emit(payload: Dict[str, Any]) -> None:
         if on_event:
             await on_event(payload)
 
+    merged_plan = hydrate_plan_json(
+        plan_json,
+        architecture=architecture,
+        design_tokens=design_tokens,
+    )
+    prd_text, uiux_text = _coerce_plan_texts(merged_plan, prd, uiux)
+
+    display_name = app_name or "Application"
     await emit({
         "event": "pipeline_log",
         "agent": "codegen",
-        "message": "Track: json_app | Compiling AppDefinition JSON and binding to MUI template.",
-    })
-
-    await emit({
-        "event": "agent_start",
-        "agent": "planning_agent",
-        "message": "Reading PRD, UI/UX, and architecture contracts…",
+        "message": (
+            f"Production pipeline started — json_app track | target: {display_name} | "
+            "PRD → theme → AppDefinition → template → build verify."
+        ),
     })
     await emit({
-        "event": "agent_complete",
-        "agent": "planning_agent",
-        "message": "Planning contracts loaded.",
+        "event": "generation_start",
+        "message": f"Generating production UI for {display_name}…",
     })
 
-    await emit({
-        "event": "agent_start",
-        "agent": "app_definition_agent",
-        "message": "Compiling app definition (pages, navigation, blocks, mock data)…",
-    })
-
-    prd_text = prd
-    uiux_text = uiux
-    if plan_json:
-        if isinstance(plan_json.get("prd"), dict):
-            prd_text = prd_text or json.dumps(plan_json["prd"])
-        elif isinstance(plan_json.get("prd"), str):
-            prd_text = prd_text or plan_json["prd"]
-        if isinstance(plan_json.get("uiux"), dict):
-            uiux_text = uiux_text or json.dumps(plan_json["uiux"])
-        elif isinstance(plan_json.get("uiux"), str):
-            uiux_text = uiux_text or plan_json["uiux"]
-
-    definition = compile_app_definition(
+    screens = await run_planner_phase(
+        emit,
+        app_name=display_name,
         requirement=requirement,
-        prd=prd_text,
-        uiux=uiux_text,
-        plan_json=plan_json,
+        prd_text=prd_text,
+        uiux_text=uiux_text,
+        plan_json=merged_plan,
+    )
+
+    await run_styling_phase(emit, plan_json=merged_plan, app_name=display_name)
+
+    async def _on_def_progress(msg: str) -> None:
+        await emit({"event": "agent_progress", "agent": "app_definition_agent", "message": msg})
+
+    async def _resolve() -> AppDefinition:
+        return await resolve_app_definition(
+            requirement=requirement,
+            prd=prd_text,
+            uiux=uiux_text,
+            plan_json=merged_plan,
+            app_name=app_name,
+            use_llm=use_llm,
+            on_progress=_on_def_progress,
+        )
+
+    definition = await run_app_definition_phase(
+        emit,
+        screens=screens,
+        resolve_coro=_resolve,
     )
 
     await emit({
-        "event": "agent_complete",
-        "agent": "app_definition_agent",
-        "message": f"App definition ready — {len(definition.pages)} pages, {len(definition.navigation)} nav items",
-    })
-    await emit({
         "event": "app_definition_json",
         "data": definition.to_json_dict(),
-    })
-
-    await emit({
-        "event": "agent_start",
-        "agent": "theme_agent",
-        "message": "Applying design tokens to theme and chart palette…",
-    })
-    await emit({
-        "event": "agent_complete",
-        "agent": "theme_agent",
-        "message": "Theme tokens bound to app definition.",
-    })
-
-    await emit({
-        "event": "agent_start",
-        "agent": "mock_data_agent",
-        "message": "Generating mock datasets for tables and charts…",
-    })
-    await emit({
-        "event": "agent_complete",
-        "agent": "mock_data_agent",
-        "message": f"Mock data ready ({len(definition.mock)} dataset keys).",
-    })
-
-    await emit({
-        "event": "agent_start",
-        "agent": "template_agent",
-        "message": f"Loading template {TEMPLATE_NAME} and binding JSON to UI…",
     })
 
     files = generate_json_app_files(
         requirement=requirement,
         prd=prd_text,
         uiux=uiux_text,
-        plan_json=plan_json,
+        plan_json=merged_plan,
         app_definition=definition,
+        architecture=architecture,
+        design_tokens=design_tokens,
+        app_name=app_name,
     )
 
-    await emit({
-        "event": "agent_complete",
-        "agent": "template_agent",
-        "message": f"Template ready ({len(files)} files, 1 app-definition.json)",
-    })
+    data_blob = files.get("frontend/src/mock/data.json") or ""
+    data_kb = len(data_blob.encode("utf-8")) / 1024.0
+
+    await run_coding_phase(
+        emit,
+        definition=definition,
+        file_count=len(files),
+        data_json_kb=data_kb,
+    )
+
+    await run_integration_phase(emit, definition=definition, template_name=TEMPLATE_NAME)
+    await run_validator_handoff(emit)
 
     return files
-
-
-def _json_renderer_sources() -> Dict[str, str]:
-    """Frozen JSON renderer sources (same for every app)."""
-    return {
-        "frontend/src/App.tsx": _APP_TSX,
-        "frontend/src/renderer/PageRenderer.tsx": _PAGE_RENDERER,
-        "frontend/src/renderer/useAppDefinition.ts": _USE_DEFINITION,
-        "frontend/src/renderer/BlockRenderer.tsx": _BLOCK_RENDERER,
-    }
-
-
-_APP_TSX = """\
-import { Navigate, Route, Routes } from 'react-router-dom';
-import AppShell from './components/ui/AppShell';
-import PageRenderer from './renderer/PageRenderer';
-import { useAppDefinition } from './renderer/useAppDefinition';
-
-export default function App() {
-  const { definition, loading, error } = useAppDefinition();
-
-  if (loading) {
-    return null;
-  }
-  if (error || !definition) {
-    return <div style={{ padding: 24 }}>Failed to load app definition.</div>;
-  }
-
-  const nav = definition.navigation.map((n) => ({
-    label: n.label,
-    path: n.path,
-    icon: n.icon,
-  }));
-  const defaultPath = definition.navigation[0]?.path ?? '/';
-
-  return (
-    <Routes>
-      <Route element={<AppShell navItems={nav} appName={definition.meta.appName} />}>
-        {definition.navigation.map((item) => (
-          <Route
-            key={item.pageId}
-            path={item.path}
-            element={<PageRenderer pageId={item.pageId} />}
-          />
-        ))}
-        <Route path="*" element={<Navigate to={defaultPath} replace />} />
-      </Route>
-    </Routes>
-  );
-}
-"""
-
-_USE_DEFINITION = """\
-import { useMemo } from 'react';
-import definitionJson from '../config/app-definition.json';
-
-export interface AppDefinition {
-  version: number;
-  meta: { appName: string; description: string; domain: string };
-  theme: Record<string, unknown>;
-  navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;
-  pages: Array<{ id: string; title: string; subtitle?: string; blocks: Array<Record<string, unknown>> }>;
-  mock: Record<string, unknown>;
-}
-
-export function useAppDefinition() {
-  const definition = useMemo(() => definitionJson as AppDefinition, []);
-  return { definition, loading: false, error: null as string | null };
-}
-
-export function getMockSlice(definition: AppDefinition, key: string): unknown {
-  return definition.mock?.[key];
-}
-"""
-
-_PAGE_RENDERER = """\
-import { Box, Typography } from '@mui/material';
-import BlockRenderer from './BlockRenderer';
-import { useAppDefinition } from './useAppDefinition';
-
-export default function PageRenderer({ pageId }: { pageId: string }) {
-  const { definition } = useAppDefinition();
-  const page = definition.pages.find((p) => p.id === pageId);
-
-  if (!page) {
-    return <Typography color="error">Unknown page: {pageId}</Typography>;
-  }
-
-  return (
-    <Box>
-      <Typography variant="h4" fontWeight={700} gutterBottom>
-        {page.title}
-      </Typography>
-      {page.subtitle ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          {page.subtitle}
-        </Typography>
-      ) : null}
-      {page.blocks.map((block, i) => (
-        <BlockRenderer key={`${pageId}-${i}`} block={block} definition={definition} />
-      ))}
-    </Box>
-  );
-}
-"""
-
-_BLOCK_RENDERER = """\
-import { Box, Stack, Typography } from '@mui/material';
-import {
-  BarChart,
-  DataTable,
-  LineChart,
-  PageHeader,
-  PieChart,
-  StatCard,
-} from '../components/ui';
-import type { AppDefinition } from './useAppDefinition';
-import { getMockSlice } from './useAppDefinition';
-import { tokens } from '../theme/tokens';
-
-type Block = Record<string, unknown>;
-
-function kpiValues(definition: AppDefinition, block: Block): Record<string, string | number> {
-  const keys = (block.items as Array<{ valueKey: string }> | undefined)?.map((i) => i.valueKey) ?? [];
-  const merged: Record<string, string | number> = {};
-  for (const [k, v] of Object.entries(definition.mock || {})) {
-    if (k.startsWith('kpis_') && v && typeof v === 'object' && !Array.isArray(v)) {
-      Object.assign(merged, v as Record<string, string | number>);
-    }
-  }
-  const out: Record<string, string | number> = {};
-  for (const k of keys) {
-    out[k] = merged[k] ?? '—';
-  }
-  return out;
-}
-
-export default function BlockRenderer({
-  block,
-  definition,
-}: {
-  block: Block;
-  definition: AppDefinition;
-}) {
-  const type = block.type as string;
-
-  if (type === 'kpiRow') {
-    const items = (block.items as Array<{ label: string; valueKey: string; color?: string }>) || [];
-    const values = kpiValues(definition, block);
-    return (
-      <Stack direction="row" flexWrap="wrap" gap={2} sx={{ mb: 3 }}>
-        {items.map((item) => (
-          <Box key={item.valueKey} sx={{ flex: '1 1 220px', minWidth: 200, maxWidth: 320 }}>
-            <StatCard
-              label={item.label}
-              value={values[item.valueKey] ?? '—'}
-              color={(item.color as 'primary') || 'primary'}
-            />
-          </Box>
-        ))}
-      </Stack>
-    );
-  }
-
-  if (type === 'lineChart') {
-    const data = (getMockSlice(definition, block.dataKey as string) as Record<string, unknown>[]) || [];
-    const series = (block.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
-    return (
-      <Box sx={{ mb: 3 }}>
-        {block.title ? (
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 1 }}>{block.title as string}</Typography>
-        ) : null}
-        <LineChart
-          data={data}
-          series={series.map((s, i) => ({
-            dataKey: s.dataKey,
-            name: s.name || s.dataKey,
-            color: s.color || tokens.chartPalette[i % tokens.chartPalette.length],
-          }))}
-          xAxisKey={(block.xAxisKey as string) || 'name'}
-          height={(block.height as number) || 280}
-        />
-      </Box>
-    );
-  }
-
-  if (type === 'barChart') {
-    const data = (getMockSlice(definition, block.dataKey as string) as Record<string, unknown>[]) || [];
-    const series = (block.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
-    return (
-      <Box sx={{ mb: 3 }}>
-        {block.title ? (
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 1 }}>{block.title as string}</Typography>
-        ) : null}
-        <BarChart
-          data={data}
-          series={series.map((s, i) => ({
-            dataKey: s.dataKey,
-            name: s.name || s.dataKey,
-            color: s.color || tokens.chartPalette[i % tokens.chartPalette.length],
-          }))}
-          xAxisKey={(block.xAxisKey as string) || 'name'}
-          height={(block.height as number) || 280}
-        />
-      </Box>
-    );
-  }
-
-  if (type === 'pieChart') {
-    const data = (getMockSlice(definition, block.dataKey as string) as Array<{ name: string; value: number }>) || [];
-    return (
-      <Box sx={{ mb: 3 }}>
-        {block.title ? (
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 1 }}>{block.title as string}</Typography>
-        ) : null}
-        <PieChart data={data} height={(block.height as number) || 280} />
-      </Box>
-    );
-  }
-
-  if (type === 'dataTable') {
-    const rows = (getMockSlice(definition, block.dataKey as string) as Record<string, unknown>[]) || [];
-    const columns = (block.columns as Array<{ field: string; header: string; align?: string }>) || [];
-    return (
-      <Box sx={{ mb: 3 }}>
-        {block.title ? <PageHeader title={block.title as string} /> : null}
-        <DataTable
-          columns={columns.map((c) => ({
-            field: c.field as keyof Record<string, unknown>,
-            header: c.header,
-            align: c.align as 'left' | 'center' | 'right' | undefined,
-          }))}
-          rows={rows}
-          rowKey="id"
-          searchable={Boolean(block.searchable)}
-          emptyMessage={(block.emptyMessage as string) || 'No records found'}
-        />
-      </Box>
-    );
-  }
-
-  if (type === 'text') {
-    return (
-      <Typography variant="body1" sx={{ mb: 2 }}>{block.content as string}</Typography>
-    );
-  }
-
-  return null;
-}
-"""
