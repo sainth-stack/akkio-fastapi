@@ -326,8 +326,38 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             "message": "Starting code generation..."
         }))
 
+        async def _forward_ws_event(data: dict) -> None:
+            try:
+                await websocket.send_text(json.dumps(data))
+            except Exception:
+                pass
+
+        # ── Legacy static domains (ecommerce, doc_chat, anomaly) ─────────────
+        from app_builder.services.fullstack_app_generator import STATIC_DOMAINS
+
+        if _track == "legacy" and _domain in STATIC_DOMAINS:
+            from app_builder.services.legacy_static_codegen import run_legacy_static_codegen
+
+            files = await run_legacy_static_codegen(
+                domain=_domain,
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                architecture=architecture,
+                design_tokens=design_tokens,
+                on_event=_forward_ws_event,
+            )
+            if not files:
+                _err = f"Static { _domain } generation produced no files"
+                if app_id and user_email:
+                    db.update_app_builder_app(
+                        app_id=app_id, user_email=user_email, user_id=uid,
+                        pipeline_status="CODEGEN_FAILED", pipeline_error=_err,
+                    )
+                await websocket.send_text(json.dumps({"event": "error", "message": _err}))
+                return
         # ── JSON app track: template + app-definition.json (no LLM TSX) ─────
-        if _track == "json_app":
+        elif _track == "json_app":
             _ja_domain = None
             if plan_json_req and (plan_json_req.get("blueprint") or {}).get("domain"):
                 _ja_domain = plan_json_req["blueprint"]["domain"]
@@ -345,12 +375,6 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
             from app_builder.services.json_app_generator import run_json_app_codegen
 
-            async def _json_on_event(data: dict) -> None:
-                try:
-                    await websocket.send_text(json.dumps(data))
-                except Exception:
-                    pass
-
             merged_plan = dict(plan_json_req or {})
             if design_tokens and not merged_plan.get("design_tokens"):
                 merged_plan["design_tokens"] = design_tokens
@@ -359,7 +383,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                 requirement=requirement,
                 plan_json=merged_plan,
                 project_name=project_name,
-                on_event=_json_on_event,
+                on_event=_forward_ws_event,
                 prd=prd,
                 uiux=uiux,
             )

@@ -124,16 +124,39 @@ _DOMAIN_HERO: Dict[str, Tuple[str, str]] = {
 }
 
 
-def _detect_product_domain(requirement: str = "", prd: str = "") -> str:
-    """Detect product domain from requirement/PRD text.
+def _detect_product_domain(requirement: str = "", prd: str = "", uiux: str = "") -> str:
+    """Detect product domain from requirement/PRD/UIUX text.
+
+    User requirement wins for vertical keywords (e.g. electronics vs pharmacy).
     Returns one of: pharma | food | fashion | grocery | books | electronics (default).
     """
-    text = "\n".join([requirement or "", prd or ""]).lower()
+    req = (requirement or "").lower()
 
-    pharma_keys = ("pharma", "medicine", "medicines", "drug", "drugs", "tablet", "capsule",
-                   "pharmacy", "pharmaceutical", "healthcare", "prescription", "otc", "vitamin",
-                   "supplement", "antibiotic", "paracetamol", "syrup", "medical store", "chemist")
-    if sum(1 for k in pharma_keys if k in text) >= 1:
+    electronics_keys = (
+        "electronic", "electronics", "electronicd", "gadget", "gadgets", "laptop", "laptops",
+        "smartphone", "mobile phone", "headphone", "headphones", "computer", "computers",
+        "tech store", "appliance", "appliances", "camera", "tablet", "tv", "television",
+        "smart watch", "smartwatch", "usb", "monitor", "keyboard", "mouse",
+    )
+    if any(k in req for k in electronics_keys):
+        return "electronics"
+
+    text = "\n".join([requirement or "", prd or "", uiux or ""]).lower()
+    if sum(1 for k in electronics_keys if k in text) >= 2:
+        return "electronics"
+    if any(k in req for k in electronics_keys):
+        return "electronics"
+
+    pharma_strong = (
+        "pharma", "pharmacy", "pharmaceutical", "medicine", "medicines", "drug store",
+        "prescription", "chemist", "medical store", "paracetamol", "antibiotic",
+    )
+    pharma_weak = ("drug", "drugs", "tablet", "capsule", "otc", "syrup")
+    if any(k in req for k in pharma_strong):
+        return "pharma"
+    if sum(1 for k in pharma_strong if k in text) >= 2:
+        return "pharma"
+    if sum(1 for k in (*pharma_strong, *pharma_weak) if k in text) >= 3:
         return "pharma"
 
     fashion_keys = ("fashion", "clothing", "clothes", "apparel", "garment", "dress", "shirt",
@@ -188,10 +211,11 @@ def ecommerce_frontend_files(
     colors: Dict[str, str],
     requirement: str = "",
     prd: str = "",
+    uiux: str = "",
 ) -> Dict[str, str]:
     """Generate frontend files using domain-aware products (pharma / food / fashion / etc.)."""
     from app_builder.services.fullstack_frontend_generator import build_theme_ts, _auth_ts
-    domain = _detect_product_domain(requirement, prd)
+    domain = _detect_product_domain(requirement, prd, uiux)
     products = _DOMAIN_PRODUCTS.get(domain, _DOMAIN_PRODUCTS["electronics"])
     hero_title, hero_subtitle = _DOMAIN_HERO.get(domain, _DOMAIN_HERO["electronics"])
     safe = title.replace("\\", "\\\\").replace("'", "\\'")
@@ -216,9 +240,10 @@ def ecommerce_backend_files(
     title: str,
     requirement: str = "",
     prd: str = "",
+    uiux: str = "",
 ) -> Dict[str, str]:
     """Generate backend files with domain-appropriate seed data."""
-    domain = _detect_product_domain(requirement, prd)
+    domain = _detect_product_domain(requirement, prd, uiux)
     products = _DOMAIN_PRODUCTS.get(domain, _DOMAIN_PRODUCTS["electronics"])
     safe = (title or "E-Commerce Shop").replace('"', "'")[:80]
     return {

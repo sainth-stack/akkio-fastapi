@@ -135,9 +135,26 @@ async def run_json_app_codegen(
             await on_event(payload)
 
     await emit({
+        "event": "pipeline_log",
+        "agent": "codegen",
+        "message": "Track: json_app | Compiling AppDefinition JSON and binding to MUI template.",
+    })
+
+    await emit({
+        "event": "agent_start",
+        "agent": "planning_agent",
+        "message": "Reading PRD, UI/UX, and architecture contracts…",
+    })
+    await emit({
+        "event": "agent_complete",
+        "agent": "planning_agent",
+        "message": "Planning contracts loaded.",
+    })
+
+    await emit({
         "event": "agent_start",
         "agent": "app_definition_agent",
-        "message": "Compiling app definition from your plan…",
+        "message": "Compiling app definition (pages, navigation, blocks, mock data)…",
     })
 
     prd_text = prd
@@ -167,6 +184,28 @@ async def run_json_app_codegen(
     await emit({
         "event": "app_definition_json",
         "data": definition.to_json_dict(),
+    })
+
+    await emit({
+        "event": "agent_start",
+        "agent": "theme_agent",
+        "message": "Applying design tokens to theme and chart palette…",
+    })
+    await emit({
+        "event": "agent_complete",
+        "agent": "theme_agent",
+        "message": "Theme tokens bound to app definition.",
+    })
+
+    await emit({
+        "event": "agent_start",
+        "agent": "mock_data_agent",
+        "message": "Generating mock datasets for tables and charts…",
+    })
+    await emit({
+        "event": "agent_complete",
+        "agent": "mock_data_agent",
+        "message": f"Mock data ready ({len(definition.mock)} dataset keys).",
     })
 
     await emit({
