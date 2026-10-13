@@ -2,8 +2,9 @@
   "version": 1,
   "meta": {
     "appName": "PulsePlant",
-    "description": "Default template \u2014 all UI is driven from mock/data.json",
-    "domain": "manufacturing"
+    "description": "PulsePlant \u2014 live-style operational data from data.json",
+    "domain": "manufacturing",
+    "dataSource": "static"
   },
   "theme": {
     "primary": "#1976d2",
@@ -83,7 +84,7 @@
           "type": "lineChart",
           "title": "Dashboard \u2014 OEE trend",
           "dataKey": "series_dashboard_trend",
-          "xAxisKey": "label",
+          "xAxisKey": "period",
           "series": [
             {
               "dataKey": "oee",
@@ -129,7 +130,7 @@
           "type": "barChart",
           "title": "Analytics comparison",
           "dataKey": "series_analytics_bars",
-          "xAxisKey": "label",
+          "xAxisKey": "period",
           "series": [
             {
               "dataKey": "output",
@@ -218,278 +219,369 @@
       ]
     }
   ],
-  "mock": {
-    "oee": "84.0%",
-    "throughput": "1,180 u/h",
-    "downtime": "43 min",
-    "active_alerts": 6,
-    "series_dashboard_trend": [
-      {
-        "label": "Mon",
-        "oee": 72,
-        "target": 85
-      },
-      {
-        "label": "Tue",
-        "oee": 74,
-        "target": 85
-      },
-      {
-        "label": "Wed",
-        "oee": 76,
-        "target": 85
-      },
-      {
-        "label": "Thu",
-        "oee": 78,
-        "target": 85
-      },
-      {
-        "label": "Fri",
-        "oee": 80,
-        "target": 85
-      },
-      {
-        "label": "Sat",
-        "oee": 82,
-        "target": 85
-      }
-    ],
-    "mtbf": "120 h",
-    "first_pass_yield": "95.8%",
-    "scrap_rate": "94.2%",
-    "series_analytics_bars": [
-      {
-        "label": "W1",
-        "output": 7800,
-        "defects": 55
-      },
-      {
-        "label": "W2",
-        "output": 7980,
-        "defects": 52
-      },
-      {
-        "label": "W3",
-        "output": 8160,
-        "defects": 49
-      },
-      {
-        "label": "W4",
-        "output": 8340,
-        "defects": 46
-      },
-      {
-        "label": "W5",
-        "output": 8520,
-        "defects": 43
-      },
-      {
-        "label": "W6",
-        "output": 8700,
-        "defects": 40
-      }
-    ],
-    "table_analytics": [
-      {
-        "id": "M-01",
-        "name": "CNC Cell A",
-        "value": 91,
-        "status": "Running"
-      },
-      {
-        "id": "M-02",
-        "name": "Press Line 2",
-        "value": 78,
-        "status": "Idle"
-      },
-      {
-        "id": "M-03",
-        "name": "Assembly Robot 4",
-        "value": 89,
-        "status": "Running"
-      },
-      {
-        "id": "M-04",
-        "name": "Paint Booth",
-        "value": 0,
-        "status": "Maintenance"
-      }
-    ],
-    "reports_count": 12,
-    "on_time_delivery": "93.5%",
-    "table_reports": [
-      {
-        "id": "R-2406",
-        "name": "Weekly OEE summary",
-        "period": "Jun W2",
-        "owner": "Operations",
-        "status": "Published"
-      },
-      {
-        "id": "R-2405",
-        "name": "Scrap pareto analysis",
-        "period": "Jun W1",
-        "owner": "Quality",
-        "status": "Published"
-      },
-      {
-        "id": "R-2404",
-        "name": "Energy intensity",
-        "period": "May",
-        "owner": "Sustainability",
-        "status": "Draft"
-      }
-    ],
-    "kpis_dashboard": {
-      "oee": "84.0%",
-      "throughput": "1,180 u/h",
-      "downtime": "43 min",
-      "active_alerts": 6
-    },
-    "kpis_analytics": {
-      "mtbf": "120 h",
-      "first_pass_yield": "95.8%"
-    },
-    "kpis_reports": {
-      "on_time_delivery": "93.5%"
-    }
-  },
   "data": {
-    "oee": "84.0%",
-    "throughput": "1,180 u/h",
-    "downtime": "43 min",
-    "active_alerts": 6,
     "series_dashboard_trend": [
       {
-        "label": "Mon",
-        "oee": 72,
+        "period": "2024-06-01",
+        "oee": 82.0,
         "target": 85
       },
       {
-        "label": "Tue",
-        "oee": 74,
+        "period": "2024-06-02",
+        "oee": 82.9,
         "target": 85
       },
       {
-        "label": "Wed",
-        "oee": 76,
+        "period": "2024-06-03",
+        "oee": 83.8,
         "target": 85
       },
       {
-        "label": "Thu",
-        "oee": 78,
+        "period": "2024-06-04",
+        "oee": 84.7,
         "target": 85
       },
       {
-        "label": "Fri",
-        "oee": 80,
+        "period": "2024-06-05",
+        "oee": 85.6,
         "target": 85
       },
       {
-        "label": "Sat",
-        "oee": 82,
+        "period": "2024-06-06",
+        "oee": 86.5,
+        "target": 85
+      },
+      {
+        "period": "2024-06-07",
+        "oee": 87.4,
+        "target": 85
+      },
+      {
+        "period": "2024-06-08",
+        "oee": 88.3,
+        "target": 85
+      },
+      {
+        "period": "2024-06-09",
+        "oee": 89.2,
+        "target": 85
+      },
+      {
+        "period": "2024-06-10",
+        "oee": 90.1,
+        "target": 85
+      },
+      {
+        "period": "2024-06-11",
+        "oee": 91.0,
+        "target": 85
+      },
+      {
+        "period": "2024-06-12",
+        "oee": 91.9,
         "target": 85
       }
     ],
-    "mtbf": "120 h",
-    "first_pass_yield": "95.8%",
-    "scrap_rate": "94.2%",
     "series_analytics_bars": [
       {
-        "label": "W1",
-        "output": 7800,
-        "defects": 55
+        "period": "2024-06-01",
+        "output": 7200,
+        "defects": 28
       },
       {
-        "label": "W2",
-        "output": 7980,
-        "defects": 52
+        "period": "2024-06-02",
+        "output": 7420,
+        "defects": 26
       },
       {
-        "label": "W3",
-        "output": 8160,
-        "defects": 49
+        "period": "2024-06-03",
+        "output": 7640,
+        "defects": 24
       },
       {
-        "label": "W4",
-        "output": 8340,
-        "defects": 46
+        "period": "2024-06-04",
+        "output": 7860,
+        "defects": 22
       },
       {
-        "label": "W5",
+        "period": "2024-06-05",
+        "output": 8080,
+        "defects": 20
+      },
+      {
+        "period": "2024-06-06",
+        "output": 8300,
+        "defects": 18
+      },
+      {
+        "period": "2024-06-07",
         "output": 8520,
-        "defects": 43
+        "defects": 16
       },
       {
-        "label": "W6",
-        "output": 8700,
-        "defects": 40
+        "period": "2024-06-08",
+        "output": 8740,
+        "defects": 14
+      },
+      {
+        "period": "2024-06-09",
+        "output": 8960,
+        "defects": 12
+      },
+      {
+        "period": "2024-06-10",
+        "output": 9180,
+        "defects": 10
+      },
+      {
+        "period": "2024-06-11",
+        "output": 9400,
+        "defects": 8
+      },
+      {
+        "period": "2024-06-12",
+        "output": 9620,
+        "defects": 6
       }
     ],
     "table_analytics": [
       {
-        "id": "M-01",
-        "name": "CNC Cell A",
-        "value": 91,
-        "status": "Running"
+        "id": "MET-100",
+        "name": "Load (MVA)",
+        "value": 40.0,
+        "status": "Normal"
       },
       {
-        "id": "M-02",
-        "name": "Press Line 2",
-        "value": 78,
-        "status": "Idle"
+        "id": "MET-101",
+        "name": "Oil temperature",
+        "value": 41.2,
+        "status": "Watch"
       },
       {
-        "id": "M-03",
-        "name": "Assembly Robot 4",
-        "value": 89,
-        "status": "Running"
+        "id": "MET-102",
+        "name": "Winding hot-spot",
+        "value": 42.4,
+        "status": "Normal"
       },
       {
-        "id": "M-04",
-        "name": "Paint Booth",
-        "value": 0,
-        "status": "Maintenance"
+        "id": "MET-103",
+        "name": "Tap position",
+        "value": 43.6,
+        "status": "Elevated"
+      },
+      {
+        "id": "MET-104",
+        "name": "Bushing PD",
+        "value": 44.8,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-105",
+        "name": "Cooling fan speed",
+        "value": 46.0,
+        "status": "Watch"
+      },
+      {
+        "id": "MET-106",
+        "name": "Dissolved gas (ppm)",
+        "value": 47.2,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-107",
+        "name": "Efficiency",
+        "value": 48.4,
+        "status": "Elevated"
+      },
+      {
+        "id": "MET-108",
+        "name": "Harmonic distortion",
+        "value": 49.6,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-109",
+        "name": "Vibration RMS",
+        "value": 50.8,
+        "status": "Watch"
+      },
+      {
+        "id": "MET-110",
+        "name": "Load (MVA)",
+        "value": 52.0,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-111",
+        "name": "Oil temperature",
+        "value": 53.2,
+        "status": "Elevated"
+      },
+      {
+        "id": "MET-112",
+        "name": "Winding hot-spot",
+        "value": 54.4,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-113",
+        "name": "Tap position",
+        "value": 55.6,
+        "status": "Watch"
+      },
+      {
+        "id": "MET-114",
+        "name": "Bushing PD",
+        "value": 56.8,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-115",
+        "name": "Cooling fan speed",
+        "value": 58.0,
+        "status": "Elevated"
+      },
+      {
+        "id": "MET-116",
+        "name": "Dissolved gas (ppm)",
+        "value": 59.2,
+        "status": "Normal"
+      },
+      {
+        "id": "MET-117",
+        "name": "Efficiency",
+        "value": 60.4,
+        "status": "Watch"
       }
     ],
-    "reports_count": 12,
-    "on_time_delivery": "93.5%",
     "table_reports": [
       {
-        "id": "R-2406",
-        "name": "Weekly OEE summary",
+        "name": "Weekly load profile",
         "period": "Jun W2",
         "owner": "Operations",
         "status": "Published"
       },
       {
-        "id": "R-2405",
-        "name": "Scrap pareto analysis",
+        "name": "Oil DGA trend analysis",
         "period": "Jun W1",
+        "owner": "Maintenance",
+        "status": "Published"
+      },
+      {
+        "name": "Bushing partial discharge",
+        "period": "May",
+        "owner": "Engineering",
+        "status": "Published"
+      },
+      {
+        "name": "Cooling system performance",
+        "period": "May",
+        "owner": "Sustainability",
+        "status": "Draft"
+      },
+      {
+        "name": "Tap changer operations log",
+        "period": "Apr",
+        "owner": "Maintenance",
+        "status": "Published"
+      },
+      {
+        "name": "Efficiency vs ambient temp",
+        "period": "Q2",
+        "owner": "Operations",
+        "status": "Published"
+      },
+      {
+        "name": "Alarm summary (30d)",
+        "period": "Jun",
         "owner": "Quality",
         "status": "Published"
       },
       {
-        "id": "R-2404",
-        "name": "Energy intensity",
+        "name": "Session compliance audit",
+        "period": "Jun W2",
+        "owner": "Quality",
+        "status": "Draft"
+      },
+      {
+        "name": "Weekly load profile",
+        "period": "Jun W2",
+        "owner": "Operations",
+        "status": "Draft"
+      },
+      {
+        "name": "Oil DGA trend analysis",
+        "period": "Jun W1",
+        "owner": "Maintenance",
+        "status": "Draft"
+      },
+      {
+        "name": "Bushing partial discharge",
+        "period": "May",
+        "owner": "Engineering",
+        "status": "Draft"
+      },
+      {
+        "name": "Cooling system performance",
         "period": "May",
         "owner": "Sustainability",
+        "status": "Draft"
+      },
+      {
+        "name": "Tap changer operations log",
+        "period": "Apr",
+        "owner": "Maintenance",
+        "status": "Draft"
+      },
+      {
+        "name": "Efficiency vs ambient temp",
+        "period": "Q2",
+        "owner": "Operations",
+        "status": "Draft"
+      },
+      {
+        "name": "Alarm summary (30d)",
+        "period": "Jun",
+        "owner": "Quality",
+        "status": "Draft"
+      },
+      {
+        "name": "Session compliance audit",
+        "period": "Jun W2",
+        "owner": "Quality",
+        "status": "Draft"
+      },
+      {
+        "name": "Weekly load profile",
+        "period": "Jun W2",
+        "owner": "Operations",
+        "status": "Draft"
+      },
+      {
+        "name": "Oil DGA trend analysis",
+        "period": "Jun W1",
+        "owner": "Maintenance",
         "status": "Draft"
       }
     ],
     "kpis_dashboard": {
-      "oee": "84.0%",
-      "throughput": "1,180 u/h",
-      "downtime": "43 min",
-      "active_alerts": 6
+      "oee": "87.4%",
+      "throughput": "1,240 u/h",
+      "downtime": "42 min",
+      "active_alerts": "5",
+      "scrap_rate": "0.8%",
+      "energy_per_unit": "12.4 kWh"
     },
     "kpis_analytics": {
-      "mtbf": "120 h",
-      "first_pass_yield": "95.8%"
+      "mtbf": "128 h",
+      "first_pass_yield": "96.2%",
+      "scrap_rate": "0.7%",
+      "variance": "\u00b11.1%"
     },
     "kpis_reports": {
-      "on_time_delivery": "93.5%"
+      "reports_published": "24",
+      "on_time_delivery": "94.8%",
+      "open_drafts": "3"
     }
   }
 }

@@ -36,10 +36,14 @@ def build_sample_data_xlsx(project_name: str) -> str:
     """Write KPIs + Detail + Breakdown sheets; returns temp file path."""
     import pandas as pd
 
-    seed, requirement, prd = _load_seed_and_meta(project_name)
-    sheets = seed.get("sample_export")
-    if not isinstance(sheets, dict) or not sheets:
-        sheets = build_synthetic_export_sheets(seed, project_name, requirement, prd)
+    from app_builder.services.json_app_sample_export import build_sheets_from_json_app
+
+    sheets = build_sheets_from_json_app(project_name)
+    if not sheets:
+        seed, requirement, prd = _load_seed_and_meta(project_name)
+        sheets = seed.get("sample_export")
+        if not isinstance(sheets, dict) or not sheets:
+            sheets = build_synthetic_export_sheets(seed, project_name, requirement, prd)
 
     fd, path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)

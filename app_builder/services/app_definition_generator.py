@@ -74,6 +74,20 @@ def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
         for p in parts:
             name = re.sub(r"^\d+[\).\s]+", "", p.strip())
             name = re.sub(r"\s+screen(s)?$", "", name, flags=re.I).strip()
+            # "dashboard sessions reports analytics" without commas
+            if " " in name and len(name) > 24:
+                tokens = re.findall(
+                    r"\b(dashboard|overview|home|sessions?|reports?|analytics|insights?|metrics?|settings|users?|inventory)\b",
+                    name,
+                    re.I,
+                )
+                if len(tokens) >= 2:
+                    for tok in tokens:
+                        title = tok[0].upper() + tok[1:].lower()
+                        if title.lower() == "session":
+                            title = "Sessions"
+                        out.append({"id": _slug(title), "title": title, "purpose": title})
+                    continue
             if 2 < len(name) < 48:
                 title = name[0].upper() + name[1:]
                 out.append({"id": _slug(title), "title": title, "purpose": title})
@@ -181,6 +195,29 @@ def extract_screens_from_plan(
     return screens
 
 
+def _clean_product_title(raw: str) -> str:
+    """Turn chat-style prompts into product titles."""
+    t = (raw or "").strip()
+    t = re.sub(r"^(build|create|generate|make)\s+(a|an|the|product)?\s*", "", t, flags=re.I).strip()
+    t = re.sub(r"\s+app(lication)?\s*$", "", t, flags=re.I).strip()
+    if not t:
+        return "Operations Workspace"
+    # Title-case if mostly lowercase prompt
+    if t.islower() or sum(1 for c in t if c.isupper()) < 2:
+        t = t.title()
+    t = t.replace("Monitering", "Monitoring").replace("monitering", "monitoring")
+    # Drop trailing screen lists: "Transformer Monitoring With Dashboard …"
+    t = re.sub(
+        r"\s+with\s+(dashboard|sessions?|reports?|analytics).*$",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+    if len(t) > 48:
+        t = re.sub(r"\s+with\s+.*$", "", t, flags=re.I).strip()
+    return t[:80]
+
+
 def resolve_app_display_name(
     *,
     requirement: str = "",
@@ -209,11 +246,11 @@ def resolve_app_display_name(
 
         title = extract_app_title(requirement, prd)
         if title and title != "Enterprise Application":
-            return title[:80]
+            return _clean_product_title(title)[:80]
     except ImportError:
         pass
 
-    title = _title_from_requirement(requirement, "My Application")
+    title = _clean_product_title(_title_from_requirement(requirement, "My Application"))
     return title[:80]
 
 
@@ -336,22 +373,17 @@ def _infer_blocks_for_screen(screen: Dict[str, str], index: int, total: int) -> 
 def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
     mock: Dict[str, Any] = {}
 
-    def ensure_kpi(key: str) -> None:
-        if key in mock:
-            return
-        mock[key] = "—"
-
     def ensure_series(key: str, kind: str) -> None:
         if key in mock:
             return
         if kind == "line":
             mock[key] = [
-                {"label": f"W{i+1}", "value": 70 + i * 3, "target": 85}
+                {"period": f"2024-06-{(i % 28) + 1:02d}", "value": 70 + i * 3, "target": 85}
                 for i in range(6)
             ]
         else:
             mock[key] = [
-                {"label": f"W{i+1}", "actual": 40 + i * 5, "benchmark": 50 + i * 2}
+                {"period": f"2024-06-{(i % 28) + 1:02d}", "actual": 40 + i * 5, "benchmark": 50 + i * 2}
                 for i in range(6)
             ]
 
@@ -362,7 +394,7 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not fields:
             fields = ["id", "name", "status"]
         rows = []
-        for i in range(4):
+        for i in range(18):
             row: Dict[str, Any] = {}
             for f in fields:
                 if f == "id":
@@ -380,11 +412,7 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     for block in blocks:
         btype = block.get("type")
-        if btype == "kpiRow":
-            for item in block.get("items") or []:
-                if isinstance(item, dict) and item.get("valueKey"):
-                    ensure_kpi(str(item["valueKey"]))
-        elif btype in ("lineChart", "barChart"):
+        if btype in ("lineChart", "barChart"):
             dk = block.get("dataKey")
             if dk:
                 ensure_series(str(dk), "line" if btype == "lineChart" else "bar")
@@ -393,16 +421,6 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
             cols = block.get("columns") or []
             if dk:
                 ensure_table(str(dk), cols if isinstance(cols, list) else [])
-
-    # Fill KPI keys with plausible demo values
-    for k, v in list(mock.items()):
-        if v == "—":
-            if "rate" in k or "pct" in k:
-                mock[k] = "94.2%"
-            elif "count" in k or "open" in k or k.endswith("_d"):
-                mock[k] = 12
-            else:
-                mock[k] = "1,240"
 
     return mock
 
@@ -580,8 +598,10 @@ Rules:
 - First nav item path should be "/".
 - Use block types: kpiRow, lineChart, barChart, dataTable, text only.
 - Every dataKey in blocks must have matching entries in mock (arrays for charts/tables, strings/numbers for KPI valueKeys).
-- KPI rows: use semantic valueKeys (oee, throughput) and store values in mock["kpis_<pageId>"] = { "oee": "87.4%", ... } plus scalars if needed.
-- Mock data must look like a real MVP product (realistic names, numbers, 5+ table rows, 6+ chart points).
+- KPI rows: store values only in data["kpis_<pageId>"] = { "oee": "87.4%", ... } (no duplicate flat keys).
+- Mock data must look like a real MVP product: use proper domain names (transformer units, sessions, metrics), 15+ table rows, 10+ chart points.
+- Each page's mock keys must match that page (sessions → session_data with operators; analytics → metrics; reports → report titles).
+- kpiRow: use dataKey kpis_<pageId> with semantic keys (load_mva, oil_temp, oee) not generic a/b/c.
 - Charts need series[].dataKey matching keys in mock row objects.
 - 2–8 pages typical; labels must reflect the user's domain (not generic inventory unless they asked).
 - Icons: MUI icon names like Dashboard, ShowChart, Assessment, People, Inventory, Settings.
@@ -593,7 +613,7 @@ Schema:
   "domain": string,
   "navigation": [{"label", "path", "icon", "pageId"}],
   "pages": [{"id", "title", "subtitle", "blocks": [...]}],
-  "mock": { ... }
+  "data": { ... operational datasets only — no placeholder scalars }
 }
 """
 

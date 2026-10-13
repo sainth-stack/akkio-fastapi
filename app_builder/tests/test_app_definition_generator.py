@@ -40,6 +40,23 @@ class TestAppDefinitionGenerator(unittest.TestCase):
         data = json.loads(files["frontend/src/mock/data.json"])
         nav_labels = [n["label"].lower() for n in data["navigation"]]
         self.assertIn("dashboard", nav_labels)
+        self.assertIn("data", data)
+        self.assertNotIn("mock", data)
+        self.assertNotIn('"oee": "1,240"', json.dumps(data["data"]))
+
+    def test_production_kpi_bundles_per_page(self):
+        from app_builder.services.json_app_generator import generate_json_app_files
+
+        files = generate_json_app_files(
+            requirement="manufacturing monitoring with dashboard, analytics, reports",
+            plan_json={"blueprint": {"selected_domain": "manufacturing"}},
+            app_name="PulsePlant",
+        )
+        payload = json.loads(files["frontend/src/mock/data.json"])
+        bag = payload["data"]
+        self.assertIn("kpis_dashboard", bag)
+        self.assertIn("oee", bag["kpis_dashboard"])
+        self.assertNotIn("oee", bag)
 
 
 if __name__ == "__main__":

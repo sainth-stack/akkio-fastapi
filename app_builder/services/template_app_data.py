@@ -5,11 +5,18 @@ from typing import Any, Dict
 
 
 def app_data_dict_from_definition(definition: Any) -> Dict[str, Any]:
-    """Serialize AppDefinition to mock/data.json shape (includes `data` + legacy `mock`)."""
-    raw = definition.to_json_dict() if hasattr(definition, "to_json_dict") else dict(definition)
+    """Serialize AppDefinition to data.json shape (`data` bag only — production-style payloads)."""
+    from app_builder.services.production_data_polish import app_definition_to_client_json
+
+    if hasattr(definition, "model_dump"):
+        return app_definition_to_client_json(definition)
+    raw = dict(definition)
     datasets = raw.get("data") or raw.get("mock") or {}
+    raw.pop("mock", None)
     raw["data"] = datasets
-    raw["mock"] = datasets
+    meta = dict(raw.get("meta") or {})
+    meta.setdefault("dataSource", "static")
+    raw["meta"] = meta
     return raw
 
 
@@ -25,6 +32,6 @@ def default_template_app_data() -> Dict[str, Any]:
     raw = app_data_dict_from_definition(definition)
     raw["meta"] = {
         **raw.get("meta", {}),
-        "description": "Default template — all UI is driven from mock/data.json",
+        "description": "PulsePlant — live-style operational data from data.json",
     }
     return raw

@@ -20,6 +20,11 @@ export function dataBag(definition: AppDefinition): Record<string, unknown> {
   return definition.data || definition.mock || {};
 }
 
-export function getMockSlice(definition: AppDefinition, key: string): unknown {
+export function getDataSlice(definition: AppDefinition, key: string): unknown {
   return dataBag(definition)[key];
+}
+
+/** @deprecated use getDataSlice */
+export function getMockSlice(definition: AppDefinition, key: string): unknown {
+  return getDataSlice(definition, key);
 }

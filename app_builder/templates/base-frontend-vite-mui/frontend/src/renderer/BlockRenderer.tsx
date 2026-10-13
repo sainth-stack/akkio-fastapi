@@ -32,11 +32,6 @@ function kpiValues(
   if (pageId && bag[`kpis_${pageId}`] && typeof bag[`kpis_${pageId}`] === 'object' && !Array.isArray(bag[`kpis_${pageId}`])) {
     Object.assign(merged, bag[`kpis_${pageId}`] as Record<string, string | number>);
   }
-  for (const [k, v] of Object.entries(bag)) {
-    if (k.startsWith('kpis_') && v && typeof v === 'object' && !Array.isArray(v)) {
-      Object.assign(merged, v as Record<string, string | number>);
-    }
-  }
 
   const out: Record<string, string | number> = {};
   for (const k of keys) {
