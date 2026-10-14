@@ -4,8 +4,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-MIN_TABLE_ROWS = 18
-CHART_POINTS = 12
+MIN_TABLE_ROWS = 24
+CHART_POINTS = 14
 
 _OPERATORS = ("J. Martinez", "A. Chen", "R. Patel", "S. Okafor", "L. Nguyen", "M. Dubois", "K. Weber", "T. Sato")
 _OWNERS = ("Operations", "Quality", "Maintenance", "Engineering", "Sustainability", "Plant Manager")
@@ -19,6 +19,22 @@ _METRICS = (
     "Load (MVA)", "Oil temperature", "Winding hot-spot", "Tap position", "Bushing PD",
     "Cooling fan speed", "Dissolved gas (ppm)", "Efficiency", "Harmonic distortion", "Vibration RMS",
 )
+_ALERT_MESSAGES = (
+    "Oil temperature exceeded warning threshold",
+    "Tap changer duty cycle limit approached",
+    "Cooling fan 2 vibration elevated",
+    "Partial discharge spike on phase B",
+    "Load imbalance across phases",
+    "Dissolved gas H2 above baseline",
+    "Bushing leakage current trend up",
+    "Relay self-test advisory",
+    "Ambient temperature derate active",
+    "Scheduled maintenance window overdue",
+    "Communication loss to RTU (recovered)",
+    "Harmonic distortion above limit",
+)
+_ALERT_TYPES = ("Alarm", "Warning", "Advisory", "Maintenance", "Quality", "Safety")
+
 _REPORTS = (
     ("Weekly load profile", "Jun W2", "Operations", "Published"),
     ("Oil DGA trend analysis", "Jun W1", "Maintenance", "Published"),
@@ -251,7 +267,14 @@ def _column_value(
         return ("Up", "Down", "Flat")[i % 3]
 
     if f == "type":
-        return ("Alarm", "Warning", "Info", "Maintenance")[i % 4]
+        return _ALERT_TYPES[i % len(_ALERT_TYPES)]
+
+    if f == "message":
+        return _ALERT_MESSAGES[i % len(_ALERT_MESSAGES)]
+
+    if f == "occurred_at":
+        day = (i % 28) + 1
+        return f"2024-06-{day:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z"
 
     return f"{field.replace('_', ' ').title()} {i + 1}"
 
@@ -268,6 +291,19 @@ def generate_table_rows(
     if not fields:
         fields = ["id", "name", "status"]
 
+    if "alert" in table_key.lower():
+        rows = []
+        for i in range(row_count):
+            rows.append({
+                "id": f"ALM-{4100 + i}",
+                "unit": _UNITS[i % len(_UNITS)],
+                "severity": ("Low", "Medium", "High", "Critical")[i % 4],
+                "type": _ALERT_TYPES[i % len(_ALERT_TYPES)],
+                "message": _ALERT_MESSAGES[i % len(_ALERT_MESSAGES)],
+                "occurred_at": f"2024-06-{(i % 28) + 1:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z",
+            })
+        return [{f: r.get(f) for f in fields} for r in rows]
+
     # Curated full tables for known keys
     if "session" in table_key.lower() or profile == "sessions":
         full_rows = [
@@ -277,6 +313,7 @@ def generate_table_rows(
                 "operator": _OPERATORS[i % len(_OPERATORS)],
                 "duration": f"{1 + (i % 4)}h {(10 + i * 7) % 60}m",
                 "status": ("Running", "Idle", "Warning", "Complete")[i % 4],
+                "started_at": f"2024-06-{(i % 28) + 1:02d}T08:{(i * 3) % 60:02d}:00Z",
             }
             for i in range(row_count)
         ]
@@ -318,6 +355,7 @@ def generate_table_rows(
                 "id": f"MET-{100 + i}",
                 "name": _METRICS[i % len(_METRICS)],
                 "value": round(40 + i * 1.2, 1),
+                "trend": ("Up", "Down", "Flat", "Up")[i % 4],
                 "status": ("Normal", "Watch", "Normal", "Elevated")[i % 4],
             }
             for i in range(row_count)
@@ -341,14 +379,38 @@ def generate_table_rows(
     return rows
 
 
+def generate_pie_rows(data_key: str, profile: str) -> List[Dict[str, Any]]:
+    if profile == "transformer_monitoring" or "transformer" in data_key:
+        segments = (
+            ("Thermal", 32),
+            ("Partial discharge", 18),
+            ("Cooling", 14),
+            ("Tap changer", 12),
+            ("Communication", 9),
+            ("Other", 15),
+        )
+    else:
+        segments = (
+            ("Quality", 28),
+            ("Downtime", 22),
+            ("Material", 16),
+            ("Safety", 12),
+            ("Maintenance", 14),
+            ("Other", 8),
+        )
+    return [{"name": name, "value": value} for name, value in segments]
+
+
 def generate_chart_rows(
     data_key: str,
     series_keys: List[str],
     profile: str,
     chart_type: str,
+    page_id: str = "",
 ) -> Tuple[List[Dict[str, Any]], str]:
     x_key = "period"
-    labels = [f"2024-06-{(i % 28) + 1:02d}" for i in range(CHART_POINTS)]
+    seed = sum(ord(c) for c in f"{data_key}:{page_id}") % 11
+    labels = [f"2024-06-{((i + seed) % 28) + 1:02d}" for i in range(CHART_POINTS)]
     rows: List[Dict[str, Any]] = []
 
     is_transformer = profile == "transformer_monitoring" or any(
@@ -357,24 +419,37 @@ def generate_chart_rows(
 
     for i, lab in enumerate(labels):
         row: Dict[str, Any] = {x_key: lab}
+        wave = (i + seed) % 5
         for dk in series_keys:
             dk_l = dk.lower()
-            if "target" in dk_l or "benchmark" in dk_l:
-                row[dk] = 85 if not is_transformer else 42.0
-            elif "defect" in dk_l or "alarm" in dk_l:
-                row[dk] = max(3, 28 - i * 2)
+            if "target" in dk_l or "benchmark" in dk_l or dk_l == "capacity":
+                row[dk] = 85 if dk_l == "capacity" else (42.0 if is_transformer else 88.0)
+            elif "defect" in dk_l:
+                row[dk] = max(2, 24 - i + wave)
+            elif "draft" in dk_l:
+                row[dk] = 3 + (i + wave) % 6
+            elif "published" in dk_l:
+                row[dk] = 8 + i % 5 + wave
+            elif "planned" in dk_l:
+                row[dk] = 6800 + i * 180 + seed * 40
+            elif "utilization" in dk_l:
+                row[dk] = round(72 + i * 1.1 + wave * 0.8, 1)
+            elif "yield" in dk_l:
+                row[dk] = round(94.0 + i * 0.25 + wave * 0.1, 1)
+            elif "ambient" in dk_l:
+                row[dk] = round(22 + i * 0.3, 1)
             elif "load" in dk_l or "mva" in dk_l:
-                row[dk] = round(38 + i * 0.6 + (i % 3) * 0.2, 1)
+                row[dk] = round(38 + i * 0.6 + wave * 0.25, 1)
             elif "oil" in dk_l or "temp" in dk_l:
-                row[dk] = round(58 + i * 0.4, 1)
+                row[dk] = round(58 + i * 0.4 + wave * 0.2, 1)
             elif "efficien" in dk_l:
                 row[dk] = round(96.5 + i * 0.15, 1)
             elif "oee" in dk_l:
-                row[dk] = round(82 + i * 0.9, 1)
-            elif "output" in dk_l or "actual" in dk_l or "value" in dk_l:
-                row[dk] = 7200 + i * 220
+                row[dk] = round(80 + i * 0.85 + seed * 0.15, 1)
+            elif "output" in dk_l or "actual" in dk_l:
+                row[dk] = 6800 + i * 210 + seed * 35 + wave * 50
             else:
-                row[dk] = 70 + i * 2
+                row[dk] = 68 + i * 2 + wave
         rows.append(row)
     return rows, x_key
 

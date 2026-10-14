@@ -254,120 +254,23 @@ def resolve_app_display_name(
     return title[:80]
 
 
-def _infer_blocks_for_screen(screen: Dict[str, str], index: int, total: int) -> List[Dict[str, Any]]:
-    title = (screen.get("title") or "").lower()
-    purpose = (screen.get("purpose") or "").lower()
-    ctx = f"{title} {purpose}"
-    sid = screen.get("id") or "page"
+def _infer_blocks_for_screen(
+    screen: Dict[str, str],
+    index: int,
+    total: int,
+    *,
+    domain: str = "",
+    meta_description: str = "",
+) -> List[Dict[str, Any]]:
+    from app_builder.services.page_block_templates import blocks_for_screen
 
-    is_dashboard = index == 0 or "dashboard" in ctx or "overview" in ctx
-    is_analytics = "analytic" in ctx or "insight" in ctx or "metric" in ctx
-    is_reports = "report" in ctx
-    is_table = any(k in ctx for k in ("list", "table", "catalog", "inventory", "order", "user", "contact", "ticket"))
-
-    blocks: List[Dict[str, Any]] = []
-
-    if is_dashboard:
-        blocks.append({
-            "type": "kpiRow",
-            "items": [
-                {"label": "OEE", "valueKey": "oee", "color": "primary"},
-                {"label": "Throughput", "valueKey": "throughput", "color": "success"},
-                {"label": "Downtime (today)", "valueKey": "downtime", "color": "warning"},
-                {"label": "Active alerts", "valueKey": "active_alerts", "color": "error"},
-            ],
-        })
-        blocks.append({
-            "type": "lineChart",
-            "title": f"{screen.get('title', 'Operations')} — OEE trend",
-            "dataKey": f"series_{sid}_trend",
-            "xAxisKey": "label",
-            "series": [
-                {"dataKey": "oee", "name": "OEE %", "color": "#1976d2"},
-                {"dataKey": "target", "name": "Target", "color": "#94a3b8"},
-            ],
-            "height": 300,
-        })
-        return blocks
-
-    if is_analytics:
-        blocks.append({
-            "type": "kpiRow",
-            "items": [
-                {"label": "MTBF", "valueKey": "mtbf", "color": "primary"},
-                {"label": "First-pass yield", "valueKey": "first_pass_yield", "color": "success"},
-                {"label": "Scrap rate", "valueKey": "scrap_rate", "color": "warning"},
-            ],
-        })
-        blocks.append({
-            "type": "barChart",
-            "title": f"{screen.get('title', 'Analytics')} comparison",
-            "dataKey": f"series_{sid}_bars",
-            "xAxisKey": "label",
-            "series": [
-                {"dataKey": "output", "name": "Output (units)", "color": "#1976d2"},
-                {"dataKey": "defects", "name": "Defects", "color": "#d32f2f"},
-            ],
-            "height": 300,
-        })
-        blocks.append({
-            "type": "dataTable",
-            "title": "Machine performance",
-            "dataKey": f"table_{sid}",
-            "columns": [
-                {"field": "id", "header": "ID"},
-                {"field": "name", "header": "Machine"},
-                {"field": "value", "header": "OEE %", "align": "right"},
-                {"field": "status", "header": "Status"},
-            ],
-            "searchable": True,
-        })
-        return blocks
-
-    if is_reports:
-        blocks.append({
-            "type": "kpiRow",
-            "items": [
-                {"label": "Reports (30d)", "valueKey": "reports_count", "color": "primary"},
-                {"label": "On-time delivery", "valueKey": "on_time_delivery", "color": "success"},
-            ],
-        })
-        blocks.append({
-            "type": "dataTable",
-            "title": "Report library",
-            "dataKey": f"table_{sid}",
-            "columns": [
-                {"field": "name", "header": "Report"},
-                {"field": "period", "header": "Period"},
-                {"field": "owner", "header": "Owner"},
-                {"field": "status", "header": "Status"},
-            ],
-            "searchable": True,
-        })
-        return blocks
-
-    if is_table or index > 0:
-        entity = screen.get("title") or "Records"
-        blocks.append({
-            "type": "dataTable",
-            "title": entity,
-            "dataKey": f"table_{sid}",
-            "columns": [
-                {"field": "id", "header": "ID"},
-                {"field": "name", "header": "Name"},
-                {"field": "status", "header": "Status"},
-                {"field": "updated", "header": "Updated"},
-            ],
-            "searchable": True,
-        })
-        return blocks
-
-    # Default middle page
-    blocks.append({
-        "type": "text",
-        "content": screen.get("purpose") or screen.get("title") or "",
-    })
-    return blocks
+    return blocks_for_screen(
+        screen,
+        index,
+        total,
+        domain=domain,
+        meta_description=meta_description,
+    )
 
 
 def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -421,6 +324,10 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
             cols = block.get("columns") or []
             if dk:
                 ensure_table(str(dk), cols if isinstance(cols, list) else [])
+        elif btype == "pieChart":
+            dk = block.get("dataKey")
+            if dk and dk not in mock:
+                mock[str(dk)] = []
 
     return mock
 
@@ -463,7 +370,13 @@ def build_app_definition_from_screens(
             page_id = sid
             navigation[-1].pageId = page_id
 
-        blocks = _infer_blocks_for_screen(screen, i, len(screens))
+        blocks = _infer_blocks_for_screen(
+            screen,
+            i,
+            len(screens),
+            domain=domain,
+            meta_description=description,
+        )
         mock.update(_collect_mock_keys(blocks))
         pages.append(
             PageDef(

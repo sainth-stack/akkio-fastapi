@@ -49,7 +49,7 @@ export function normalizeBlock(
     const sample = data[0];
     const xResolved = sample && xKey in sample
       ? xKey
-      : ['label', 'name', 'week', 'shift', 'hour', 'date'].find((k) => sample && k in sample) || xKey;
+      : ['period', 'label', 'name', 'week', 'shift', 'hour', 'date'].find((k) => sample && k in sample) || xKey;
 
     const dataKeys = Object.keys(sample).filter((k) => k !== xResolved);
     next.xAxisKey = xResolved;
