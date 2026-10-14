@@ -42,63 +42,18 @@ async def stream_prd_generation(
         skip_plan: If True, stops after PRD generation
     """
     
-    system_prompt = """You are a Product Requirements Document (PRD) specialist.
-Your task is to create a CONCISE and EFFECTIVE PRD with perfect structure and formatting.
-Use clean Markdown so the document displays correctly. Avoid unnecessary details.
-
-IMPORTANT: The 'Key Features' and 'User Stories' sections MUST directly reflect what the user described in their prompt.
-Do not add features the user didn't ask for. Do not include authentication/login unless the user explicitly mentioned it.
-
-You MUST follow this exact structure. Use these exact headings and spacing:
-
-# 1. Product Overview
-
-[One clear sentence about the app.]
-
-# 2. Business Requirements
-
-## 2.1 Functional Requirements (FR)
-
-- [Bullet list of functional requirements: what the system must do]
-- [One requirement per bullet; be specific and actionable]
-
-## 2.2 Non-Functional Requirements (NFR)
-
-- [Bullet list of non-functional requirements: performance, security, usability, scalability, etc.]
-- [One requirement per bullet]
-
-# 3. Core Features
-
-- [Bulleted list of essential features]
-- [One feature per bullet]
-
-# 4. Process Flows / Use Cases
-
-[For each main user flow or use case, describe briefly:]
-- **Use Case 1:** [Actor] – [Goal/Action] – [Outcome]
-- **Use Case 2:** [Actor] – [Goal/Action] – [Outcome]
-[Add 3–6 key use cases as needed]
-
-Formatting rules:
-- Use exactly one blank line between sections.
-- Use `#` for main sections (1–4), `##` for subsections (2.1, 2.2).
-- Use `- ` for all bullet lists; no mixed styles.
-- Keep sentences short and clear. No run-on paragraphs.
-- Do not add a Tech Stack section unless the product is a fullstack enterprise application."""
-
-    user_prompt = f"""Create a concise and well-formatted PRD for:
-
-{requirement}
-
-Follow the exact structure (1. Product Overview, 2. Business Requirements with FR and NFR, 3. Core Features, 4. Process Flows / Use Cases). Use clean Markdown so it displays perfectly."""
-
     from app_builder.services.fullstack_stack import is_fullstack, prd_system_addendum
+    from app_builder.services.prd_prompt_builder import build_prd_prompts
+
+    fs_addendum = ""
     if is_fullstack(builder_kind):
-        system_prompt = system_prompt + "\n" + prd_system_addendum()
-        user_prompt += (
-            "\n\nThis is a FULLSTACK agentic application. Include modules, APIs, data model, "
-            "roles, quality requirements, and deliverables. Keep the locked tech stack."
+        fs_addendum = prd_system_addendum() + (
+            "\n\nThis is a FULLSTACK agentic application. Add modules, APIs, data model, "
+            "roles, and deliverables while keeping the locked tech stack. "
+            "Keep ## Application Pages as the UI source of truth."
         )
+
+    system_prompt, user_prompt = build_prd_prompts(requirement, fullstack_addendum=fs_addendum)
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -131,8 +86,12 @@ Follow the exact structure (1. Product Overview, 2. Business Requirements with F
         "data": full_prd
     }
 
-    # ── Frontend-only track: extract structured PRDPlan JSON ────────────────
-    if track == "frontend_only":
+    from app_builder.services.prd_prompt_builder import is_multi_page_dashboard_prompt
+
+    emit_structured = track in ("frontend_only", "json_app", "json") or is_multi_page_dashboard_prompt(
+        requirement
+    )
+    if emit_structured:
         try:
             yield {"event": "prd_json_start", "message": "Extracting structured plan…"}
             prd_json_data = await _emit_prd_json(requirement, full_prd, llm)
@@ -443,8 +402,9 @@ Return ONLY a valid JSON object matching this schema — no markdown, no explana
 Rules:
 - Feature ids: F001, F002, … (sequential)
 - Screen ids: S001, S002, … (sequential)
+- Screens MUST match the "## Application Pages" section (### headings) when present — not document sections like "Product Overview" or "Business Requirements"
 - Simple tools (calculator, timer): 1-2 screens
-- CRUD apps (CRM, inventory): 4-6 screens — include Dashboard, list pages, reports
+- CRUD / dashboard apps: one screen per ### under Application Pages
 - entities in screens: use PascalCase singular nouns matching the domain (Lead, Deal, Product, …)
 - non_goals: list 2-4 explicit exclusions to bound scope"""
 

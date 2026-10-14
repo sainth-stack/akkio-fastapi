@@ -11,6 +11,7 @@ from app_builder.services.app_definition_compiler import _theme_from_tokens
 from app_builder.services.app_definition_generator import extract_screens_from_plan, resolve_app_display_name
 from app_builder.services.prd_compliance import page_gaps
 from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks_for_page
+from app_builder.services.prd_driven_layout import ensure_minimum_blocks
 from app_builder.services.prd_structure_parser import build_planning_context, section_for_page
 
 logger = logging.getLogger("app_builder")
@@ -163,9 +164,21 @@ UI/UX excerpt:
             llm, _BLOCKS_SYSTEM, blocks_user, PageBlocksPlan, f"page_blocks_{outline.id}"
         )
         section_body = section or f"## {outline.title}\n{outline.subtitle or outline.title}"
+
+        def _plan_from_prd() -> PageBlocksPlan:
+            blocks = ensure_minimum_blocks(
+                prd_blocks_for_page(outline.id, outline.title, section_body),
+                outline.id,
+                outline.title,
+            )
+            return PageBlocksPlan(blocks=blocks)
+
         if blocks_plan is None or not blocks_plan.blocks:
-            blocks_plan = PageBlocksPlan(blocks=prd_blocks_for_page(outline.id, outline.title, section_body))
+            blocks_plan = _plan_from_prd()
         else:
+            blocks_plan = PageBlocksPlan(
+                blocks=ensure_minimum_blocks(blocks_plan.blocks, outline.id, outline.title)
+            )
             gaps = page_gaps(
                 PageDef(id=outline.id, title=outline.title, subtitle=outline.subtitle, blocks=blocks_plan.blocks),
                 section_body,
@@ -185,11 +198,11 @@ PRD:
                     llm, _BLOCKS_SYSTEM, repair_user, PageBlocksPlan, f"page_blocks_repair_{outline.id}"
                 )
                 if repaired and repaired.blocks:
-                    blocks_plan = repaired
-                else:
                     blocks_plan = PageBlocksPlan(
-                        blocks=prd_blocks_for_page(outline.id, outline.title, section_body)
+                        blocks=ensure_minimum_blocks(repaired.blocks, outline.id, outline.title)
                     )
+                else:
+                    blocks_plan = _plan_from_prd()
 
         if on_progress:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")

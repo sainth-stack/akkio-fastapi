@@ -185,6 +185,41 @@ def _extract_charts(section: str, page_id: str, max_charts: int) -> List[Dict[st
     return blocks
 
 
+def ensure_minimum_blocks(blocks: List[Dict[str, Any]], page_id: str, title: str) -> List[Dict[str, Any]]:
+    """Guarantee at least two blocks so PageBlocksPlan validation never fails."""
+    out = list(blocks or [])
+    if len(out) >= 2:
+        return out
+    types = {b.get("type") for b in out}
+    if "filterBar" not in types:
+        out.insert(
+            0,
+            {
+                "type": "filterBar",
+                "filters": [
+                    {"id": "search", "label": "Search", "filterType": "search"},
+                    {"id": "date", "label": "Date range", "filterType": "dateRange"},
+                ],
+            },
+        )
+    types = {b.get("type") for b in out}
+    if len(out) < 2 and "kpiRow" not in types:
+        out.insert(
+            1 if out and out[0].get("type") == "filterBar" else 0,
+            {
+                "type": "kpiRow",
+                "dataKey": f"kpis_{page_id}",
+                "items": [
+                    {"label": f"{title} — primary", "valueKey": "primary_metric", "color": "primary"},
+                    {"label": f"{title} — volume", "valueKey": "volume_metric", "color": "info"},
+                ],
+            },
+        )
+    if len(out) < 2:
+        return _outline_saas_blocks(page_id, title, "")
+    return out
+
+
 def _max_charts_for_page(page_id: str) -> int:
     low = page_id.lower()
     if low in ("dashboard", "home", "overview"):
@@ -272,7 +307,7 @@ def blocks_for_page(page_id: str, title: str, prd_section: str) -> List[Dict[str
     structural = [b for b in blocks if b.get("type") not in ("text",)]
     if not structural:
         blocks = _outline_saas_blocks(page_id, title, section)
-    return blocks
+    return ensure_minimum_blocks(blocks, page_id, title)
 
 
 def _outline_saas_blocks(page_id: str, title: str, section: str) -> List[Dict[str, Any]]:

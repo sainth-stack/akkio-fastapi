@@ -59,10 +59,50 @@ def _title_from_requirement(requirement: str, fallback: str = "Workspace") -> st
     return fallback
 
 
+def _screens_from_numbered_prompt_list(text: str) -> List[Dict[str, str]]:
+    """Parse '1. **Dashboard:** …' style page lists in the user prompt."""
+    if not text:
+        return []
+    out: List[Dict[str, str]] = []
+    for m in re.finditer(
+        r"(?m)^\s*\d+[\.\)]\s*\**\s*([A-Za-z][A-Za-z0-9\s/&-]{1,40}?)\s*\**\s*:",
+        text,
+    ):
+        title = m.group(1).strip()
+        if _is_nav_screen_title(title):
+            out.append({"id": _slug(title), "title": title, "purpose": title})
+    return out
+
+
+_PRD_DOC_HEADING = re.compile(
+    r"^(pages?|product overview|business requirements?|functional requirements?|"
+    r"non[- ]functional|appendix|glossary|introduction|objectives?|scope|"
+    r"assumptions?|constraints?|success metrics?|user stories?|wireframes?)\b",
+    re.I,
+)
+
+
+def _is_nav_screen_title(title: str) -> bool:
+    t = re.sub(r"^\d+[\.\)]\s*", "", (title or "").strip()).rstrip(":").strip()
+    if not t or len(t) > 56:
+        return False
+    if _PRD_DOC_HEADING.match(t):
+        return False
+    if re.match(r"^\d+\.\d+", t):
+        return False
+    low = t.lower()
+    if low in ("pages", "page", "screens", "screen", "prompt"):
+        return False
+    return True
+
+
 def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
     """Parse '… with dashboard, analytics and reports' style lists."""
     if not text:
         return []
+    numbered = _screens_from_numbered_prompt_list(text)
+    if len(numbered) >= 2:
+        return numbered
     low = text.lower()
     for pattern in (
         r"(?:with|including|screens?)\s+([^.;\n]+)",
@@ -172,27 +212,33 @@ def extract_screens_from_plan(
     plan_json: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     plan_json = plan_json or {}
-    collected: List[Dict[str, str]] = []
-
-    collected.extend(_screens_from_prd_dict(plan_json.get("prd")))
-    collected.extend(_screens_from_architecture(plan_json.get("architecture")))
-    bp = plan_json.get("blueprint")
-    if isinstance(bp, dict):
-        collected.extend(_screens_from_blueprint_nav(bp))
-
     combined = "\n".join([requirement, prd, uiux])
-    collected.extend(_screens_from_requirement_phrase(combined))
 
-    # Markdown PRD headings: "## Dashboard" or "Screen: Contacts"
-    for m in re.finditer(r"(?m)^#+\s*(.+)$", prd or ""):
-        t = m.group(1).strip()
-        if 2 < len(t) < 60 and not t.lower().startswith(("prd", "overview", "goal", "feature")):
-            collected.append({"id": _slug(t), "title": t, "purpose": t})
+    arch_screens = _dedupe_screens(_screens_from_architecture(plan_json.get("architecture")))
+    req_screens = _dedupe_screens(_screens_from_requirement_phrase(combined))
+    if len(arch_screens) >= 2:
+        screens = arch_screens
+    elif len(req_screens) >= 2:
+        screens = req_screens
+    else:
+        collected: List[Dict[str, str]] = []
+        collected.extend(_screens_from_prd_dict(plan_json.get("prd")))
+        collected.extend(arch_screens)
+        bp = plan_json.get("blueprint")
+        if isinstance(bp, dict):
+            collected.extend(_screens_from_blueprint_nav(bp))
+        collected.extend(req_screens)
 
-    if not collected:
-        collected.extend(_screens_from_requirement_phrase(requirement))
+        for m in re.finditer(r"(?m)^#+\s*(.+)$", prd or ""):
+            t = re.sub(r"^\d+[\.\)]\s*", "", m.group(1).strip())
+            if _is_nav_screen_title(t) and not t.lower().startswith(("prd", "goal", "feature")):
+                collected.append({"id": _slug(t), "title": t, "purpose": t})
 
-    screens = _dedupe_screens(collected)
+        if not collected:
+            collected.extend(_screens_from_requirement_phrase(requirement))
+        screens = _dedupe_screens(collected)
+
+    screens = screens[:8]
     if screens and screens[0]["id"] != "dashboard" and "dashboard" in screens[0]["title"].lower():
         screens[0]["id"] = "dashboard"
     return screens
@@ -233,9 +279,20 @@ def resolve_app_display_name(
         if not app_name.startswith("fullstack_app_") and not app_name.startswith("generated_app_"):
             return app_name[:80]
 
-    bold = re.search(r"\*\*([^*]{6,90})\*\*", requirement or "")
-    if bold:
-        return _clean_product_title(bold.group(1).strip())[:80]
+    _page_bold = frozenset({"dashboard", "sessions", "reports", "analytics", "prompt"})
+    for match in re.findall(r"\*\*([^*]+)\*\*", requirement or ""):
+        candidate = match.strip().rstrip(":").strip()
+        if len(candidate) < 12 or candidate.lower() in _page_bold:
+            continue
+        if "dashboard" in candidate.lower() or "monitoring" in candidate.lower():
+            return _clean_product_title(candidate)[:80]
+    mfg = re.search(
+        r"(?:create|build)\s+(?:a\s+)?(?:professional\s+)?([A-Za-z0-9][^\n*]{8,80}?Dashboard)",
+        requirement or "",
+        re.I,
+    )
+    if mfg:
+        return _clean_product_title(mfg.group(1).strip())[:80]
     quoted = re.search(r'"([^"]{6,90})"', requirement or "")
     if quoted:
         return _clean_product_title(quoted.group(1).strip())[:80]

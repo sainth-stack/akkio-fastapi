@@ -2,6 +2,43 @@ import unittest
 
 
 class TestPrdStructureAndLayout(unittest.TestCase):
+    def test_resolve_app_name_not_dashboard_colon(self):
+        from app_builder.services.app_definition_generator import resolve_app_display_name
+
+        req = """
+Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
+
+1. **Dashboard:** Quality KPIs
+"""
+        name = resolve_app_display_name(requirement=req)
+        self.assertNotEqual(name, "Dashboard:")
+        self.assertIn("Manufacturing", name)
+
+    def test_numbered_prompt_pages(self):
+        from app_builder.services.app_definition_generator import extract_screens_from_plan
+
+        req = """
+Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
+
+1. **Dashboard:** Quality KPIs
+2. **Sessions:** Inspection sessions
+3. **Reports:** Export reports
+4. **Analytics:** Trends
+"""
+        screens = extract_screens_from_plan(requirement=req)
+        titles = [s["title"] for s in screens]
+        self.assertEqual(len(screens), 4)
+        self.assertEqual(titles, ["Dashboard", "Sessions", "Reports", "Analytics"])
+
+    def test_ensure_minimum_blocks_for_sparse_page(self):
+        from app_builder.schemas.app_definition_llm import PageBlocksPlan
+        from app_builder.services.prd_driven_layout import ensure_minimum_blocks
+
+        blocks = [{"type": "dataTable", "dataKey": "table_analytics", "columns": []}]
+        fixed = ensure_minimum_blocks(blocks, "analytics", "Analytics")
+        self.assertGreaterEqual(len(fixed), 2)
+        PageBlocksPlan(blocks=fixed)
+
     def test_section_for_numbered_dashboard_heading(self):
         from app_builder.services.prd_structure_parser import section_for_page
 

@@ -170,7 +170,7 @@ async def generate_prd_step(request: GenRequest, current: CurrentUser = Depends(
     uid = current.id or None
 
     async def stream_fn():
-        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.7, streaming=True)
+        llm = get_llm_for_user(email, model_name=request.model_name, temperature=0.35, streaming=True)
         async for event in stream_prd_generation(
             request.requirement,
             llm,

@@ -184,7 +184,14 @@ async def run_json_app_codegen(
     )
     prd_text, uiux_text = _coerce_plan_texts(merged_plan, prd, uiux)
 
-    display_name = app_name or "Application"
+    from app_builder.services.app_definition_generator import resolve_app_display_name
+
+    display_name = resolve_app_display_name(
+        requirement=requirement,
+        prd=prd_text,
+        plan_json=merged_plan,
+        app_name=app_name or project_name,
+    )
     await emit({
         "event": "pipeline_log",
         "agent": "codegen",
