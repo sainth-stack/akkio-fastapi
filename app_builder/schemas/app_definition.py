@@ -10,6 +10,8 @@ class AppMeta(BaseModel):
     appName: str
     description: str = ""
     domain: str = "generic"
+    dataSource: str = "static"
+    generatedBy: str = ""
 
 
 class AppTheme(BaseModel):

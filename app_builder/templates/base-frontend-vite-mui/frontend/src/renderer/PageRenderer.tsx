@@ -1,5 +1,6 @@
 import { Box, Typography } from '@mui/material';
 import BlockRenderer from './BlockRenderer';
+import { PageFilterProvider } from './PageFilterContext';
 import { useAppDefinition } from './useAppDefinition';
 
 export default function PageRenderer({ pageId }: { pageId: string }) {
@@ -11,18 +12,26 @@ export default function PageRenderer({ pageId }: { pageId: string }) {
   }
 
   return (
-    <Box>
-      <Typography variant="h4" fontWeight={700} gutterBottom>
-        {page.title}
-      </Typography>
-      {page.subtitle ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          {page.subtitle}
+    <PageFilterProvider>
+      <Box>
+        <Typography variant="h4" fontWeight={700} gutterBottom>
+          {page.title}
         </Typography>
-      ) : null}
-      {page.blocks.map((block, i) => (
-        <BlockRenderer key={`${pageId}-${i}`} block={block} definition={definition} pageId={pageId} />
-      ))}
-    </Box>
+        {page.subtitle ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            {page.subtitle}
+          </Typography>
+        ) : null}
+        {page.blocks.map((block, i) => (
+          <BlockRenderer
+            key={`${pageId}-${i}`}
+            block={block}
+            definition={definition}
+            pageId={pageId}
+            pageBlocks={page.blocks}
+          />
+        ))}
+      </Box>
+    </PageFilterProvider>
   );
 }

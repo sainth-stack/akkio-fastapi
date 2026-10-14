@@ -15,12 +15,15 @@ from app_builder.schemas.app_definition import (
 )
 from app_builder.services.app_definition_compiler import _theme_from_tokens
 from app_builder.services.block_normalizer import normalize_app_definition_blocks
-from app_builder.services.mvp_mock_enricher import enrich_mvp_mock
+from app_builder.services.generic_dataset_builder import ensure_datasets_from_blocks
+from app_builder.services.prd_structure_parser import section_for_page
+from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks_for_page
 
 logger = logging.getLogger("app_builder")
 
 _ICON_HINTS = (
     (("dashboard", "overview", "home"), "Dashboard"),
+    (("session", "inspection"), "FactCheck"),
     (("analytic", "insight", "metric", "chart"), "ShowChart"),
     (("report", "export"), "Assessment"),
     (("alert", "notification"), "NotificationsActive"),
@@ -230,6 +233,13 @@ def resolve_app_display_name(
         if not app_name.startswith("fullstack_app_") and not app_name.startswith("generated_app_"):
             return app_name[:80]
 
+    bold = re.search(r"\*\*([^*]{6,90})\*\*", requirement or "")
+    if bold:
+        return _clean_product_title(bold.group(1).strip())[:80]
+    quoted = re.search(r'"([^"]{6,90})"', requirement or "")
+    if quoted:
+        return _clean_product_title(quoted.group(1).strip())[:80]
+
     plan_json = plan_json or {}
     blueprint = plan_json.get("blueprint") if isinstance(plan_json.get("blueprint"), dict) else {}
     if isinstance(blueprint, dict) and blueprint.get("app_name"):
@@ -241,16 +251,19 @@ def resolve_app_display_name(
             if prd_obj.get(key):
                 return str(prd_obj[key])[:80]
 
+    title = _clean_product_title(_title_from_requirement(requirement, "My Application"))
+    if title and title not in ("My Application", "Workspace"):
+        return title[:80]
+
     try:
         from app_builder.services.fullstack_app_generator import extract_app_title
 
-        title = extract_app_title(requirement, prd)
-        if title and title != "Enterprise Application":
-            return _clean_product_title(title)[:80]
+        extracted = extract_app_title(requirement, prd)
+        if extracted and extracted not in ("Enterprise Application", "Anomaly Detection Platform"):
+            return _clean_product_title(extracted)[:80]
     except ImportError:
         pass
 
-    title = _clean_product_title(_title_from_requirement(requirement, "My Application"))
     return title[:80]
 
 
@@ -261,16 +274,14 @@ def _infer_blocks_for_screen(
     *,
     domain: str = "",
     meta_description: str = "",
+    prd: str = "",
 ) -> List[Dict[str, Any]]:
-    from app_builder.services.page_block_templates import blocks_for_screen
-
-    return blocks_for_screen(
-        screen,
-        index,
-        total,
-        domain=domain,
-        meta_description=meta_description,
-    )
+    sid = screen.get("id") or "page"
+    title = screen.get("title") or sid
+    section = section_for_page(prd, title, sid)
+    if not section:
+        section = f"{screen.get('purpose') or ''}\n{meta_description}"
+    return prd_blocks_for_page(sid, title, section)
 
 
 def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -292,26 +303,19 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     def ensure_table(key: str, columns: List[Dict[str, Any]]) -> None:
         if key in mock:
-            return
+            existing = mock[key]
+            if isinstance(existing, list) and existing:
+                from app_builder.services.generic_dataset_builder import _table_has_placeholders
+
+                if not _table_has_placeholders(existing):
+                    return
+        from app_builder.services.generic_dataset_builder import _cell_value, _seed
+
         fields = [c.get("field") for c in columns if c.get("field")]
         if not fields:
             fields = ["id", "name", "status"]
-        rows = []
-        for i in range(18):
-            row: Dict[str, Any] = {}
-            for f in fields:
-                if f == "id":
-                    row[f] = f"ROW-{100 + i}"
-                elif f in ("value", "lines"):
-                    row[f] = (i + 1) * 1000
-                elif f == "status":
-                    row[f] = ["Active", "Pending", "Complete", "Draft"][i % 4]
-                elif f == "updated" or f == "when":
-                    row[f] = f"{i + 1}d ago"
-                else:
-                    row[f] = f"Sample {f} {i + 1}"
-            rows.append(row)
-        mock[key] = rows
+        rng = _seed(str(key))
+        mock[key] = [{str(f): _cell_value(str(f), i, rng) for f in fields} for i in range(18)]
 
     for block in blocks:
         btype = block.get("type")
@@ -339,6 +343,7 @@ def build_app_definition_from_screens(
     description: str,
     domain: str,
     theme: Optional[AppTheme] = None,
+    prd: str = "",
 ) -> AppDefinition:
     if not screens:
         screens = [
@@ -376,6 +381,7 @@ def build_app_definition_from_screens(
             len(screens),
             domain=domain,
             meta_description=description,
+            prd=prd,
         )
         mock.update(_collect_mock_keys(blocks))
         pages.append(
@@ -434,6 +440,7 @@ def build_app_definition_from_plan(
         description=desc,
         domain=domain,
         theme=theme,
+        prd=prd,
     )
 
 
@@ -460,14 +467,24 @@ def finalize_app_definition(defn: AppDefinition) -> AppDefinition:
         mock.update(_collect_mock_keys(page.blocks))
     defn.mock = mock
     defn = normalize_app_definition_blocks(defn)
-    defn = enrich_mvp_mock(defn)
+    defn = ensure_datasets_from_blocks(defn)
+    from app_builder.services.production_dataset_enhancer import enhance_production_datasets
+    from app_builder.services.production_data_polish import polish_production_data_bag
+
+    defn = enhance_production_datasets(defn)
+    defn.mock = polish_production_data_bag(defn)
     mock = dict(defn.mock or {})
     page_ids = {p.id for p in defn.pages}
     navigation: List[NavItemDef] = []
     for i, nav in enumerate(defn.navigation):
         page_id = nav.pageId if nav.pageId in page_ids else (defn.pages[i].id if i < len(defn.pages) else nav.pageId)
+        icon = nav.icon or "Article"
+        if icon == "Dashboard" and nav.label.lower() != "dashboard":
+            icon = _icon_for_label(nav.label)
+        elif not nav.icon or nav.icon == "Article":
+            icon = _icon_for_label(nav.label)
         navigation.append(
-            NavItemDef(label=nav.label, path=nav.path, icon=nav.icon, pageId=page_id)
+            NavItemDef(label=nav.label, path=nav.path, icon=icon, pageId=page_id)
         )
     defn.navigation = navigation
     defn.mock = mock
@@ -509,7 +526,7 @@ Design a multi-page app that matches the user's requirement and planning docs.
 Rules:
 - navigation.length must equal pages.length; pageId must match page id.
 - First nav item path should be "/".
-- Use block types: kpiRow, lineChart, barChart, dataTable, text only.
+- Use block types: filterBar, actionBar, kpiRow, lineChart, barChart, pieChart, dataTable, text.
 - Every dataKey in blocks must have matching entries in mock (arrays for charts/tables, strings/numbers for KPI valueKeys).
 - KPI rows: store values only in data["kpis_<pageId>"] = { "oee": "87.4%", ... } (no duplicate flat keys).
 - Mock data must look like a real MVP product: use proper domain names (transformer units, sessions, metrics), 15+ table rows, 10+ chart points.
@@ -615,16 +632,29 @@ async def resolve_app_definition(
                 pass
 
     if use_llm:
-        if on_progress:
-            await on_progress("LLM: structuring navigation and page blocks from PRD…")
-        llm_def = await generate_app_definition_with_llm(
+        from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+        async def _progress(msg: str) -> None:
+            if on_progress:
+                await on_progress(msg)
+
+        llm_def = await generate_app_definition_llm(
             requirement=requirement,
             prd=prd,
             uiux=uiux,
             plan_json=plan_json,
+            app_name=app_name,
+            on_progress=_progress if on_progress else None,
         )
-        if on_progress and llm_def is not None:
-            await on_progress("LLM: validating schema and enriching MVP mock datasets…")
+        if llm_def is None:
+            llm_def = await generate_app_definition_with_llm(
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                plan_json=plan_json,
+            )
+            if llm_def is not None:
+                llm_def = finalize_app_definition(llm_def)
         if llm_def is not None:
             llm_def.meta.appName = resolve_app_display_name(
                 requirement=requirement,
@@ -632,10 +662,12 @@ async def resolve_app_definition(
                 plan_json=plan_json,
                 app_name=app_name or llm_def.meta.appName,
             )
+            llm_def.meta.generatedBy = llm_def.meta.generatedBy or "llm_pipeline"
             logger.info(
-                "[app_definition] LLM | pages=%d nav=%d",
+                "[app_definition] LLM | pages=%d nav=%d keys=%d",
                 len(llm_def.pages),
                 len(llm_def.navigation),
+                len(llm_def.mock or {}),
             )
             return llm_def
 

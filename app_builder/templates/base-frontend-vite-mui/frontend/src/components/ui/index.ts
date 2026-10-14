@@ -11,6 +11,10 @@ export type { AppShellProps, NavItem, BreadcrumbItem } from './AppShell';
 export { default as PageHeader } from './PageHeader';
 export type { PageHeaderProps, PageHeaderBreadcrumb } from './PageHeader';
 
+export { default as FilterBar } from './FilterBar';
+export { default as ActionBar } from './ActionBar';
+export { default as SessionDetailModal } from './SessionDetailModal';
+
 // Primitives
 export { default as Button } from './Button';
 export type { ButtonProps } from './Button';
