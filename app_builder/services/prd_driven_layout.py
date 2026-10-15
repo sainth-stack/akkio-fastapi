@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 _JUNK_LINE = re.compile(
     r"use case\s*\d|^\*\*|charts?\s+and\s+tables|clear kpi|cards displaying|displays\s+",
@@ -128,6 +128,8 @@ def _extract_table_columns(section: str) -> List[Dict[str, str]]:
 
 
 def _extract_charts(section: str, page_id: str, max_charts: int) -> List[Dict[str, Any]]:
+    from app_builder.services.chart_spec_parser import chart_block_from_bullet
+
     blocks: List[Dict[str, Any]] = []
     chart_idx = 0
     seen_titles: Set[str] = set()
@@ -135,63 +137,34 @@ def _extract_charts(section: str, page_id: str, max_charts: int) -> List[Dict[st
     for line in _bullets(section):
         if not _is_chart_bullet(line):
             continue
-        title = re.sub(r"^\*+|\*+$", "", line)
-        title = re.sub(r"^(line|bar|donut|pie)\s+chart\s*:\s*", "", title, flags=re.I).strip()
-        title = title[:72] or "Trend"
-        norm = title.lower()
+        chart_idx += 1
+        block = chart_block_from_bullet(line, page_id, chart_idx)
+        norm = str(block.get("title") or "").lower()
         if norm in seen_titles:
             continue
         seen_titles.add(norm)
-        chart_idx += 1
-        if re.search(r"donut|pie", line, re.I):
-            blocks.append(
-                {
-                    "type": "pieChart",
-                    "title": title,
-                    "dataKey": f"pie_{page_id}_{chart_idx}",
-                    "height": 280,
-                }
-            )
-        elif re.search(r"bar chart|pareto|comparison", line, re.I):
-            blocks.append(
-                {
-                    "type": "barChart",
-                    "title": title,
-                    "dataKey": f"series_{page_id}_bar_{chart_idx}",
-                    "xAxisKey": "period",
-                    "series": [
-                        {"dataKey": "actual", "name": "Actual"},
-                        {"dataKey": "benchmark", "name": "Benchmark"},
-                    ],
-                    "height": 300,
-                }
-            )
-        else:
-            blocks.append(
-                {
-                    "type": "lineChart",
-                    "title": title,
-                    "dataKey": f"series_{page_id}_line_{chart_idx}",
-                    "xAxisKey": "period",
-                    "series": [
-                        {"dataKey": "value", "name": "Value"},
-                        {"dataKey": "target", "name": "Target"},
-                    ],
-                    "height": 300,
-                }
-            )
+        blocks.append(block)
         if len(blocks) >= max_charts:
             break
     return blocks
 
 
-def ensure_minimum_blocks(blocks: List[Dict[str, Any]], page_id: str, title: str) -> List[Dict[str, Any]]:
+def ensure_minimum_blocks(
+    blocks: List[Dict[str, Any]],
+    page_id: str,
+    title: str,
+    *,
+    section: str = "",
+) -> List[Dict[str, Any]]:
     """Guarantee at least two blocks so PageBlocksPlan validation never fails."""
+    from app_builder.services.page_layout_intent import infer_page_layout_intent
+
+    intent = infer_page_layout_intent(section, title)
     out = list(blocks or [])
     if len(out) >= 2:
         return out
     types = {b.get("type") for b in out}
-    if "filterBar" not in types:
+    if intent.wants_filters and "filterBar" not in types:
         out.insert(
             0,
             {
@@ -203,45 +176,68 @@ def ensure_minimum_blocks(blocks: List[Dict[str, Any]], page_id: str, title: str
             },
         )
     types = {b.get("type") for b in out}
-    if len(out) < 2 and "kpiRow" not in types:
-        out.insert(
-            1 if out and out[0].get("type") == "filterBar" else 0,
+    if len(out) < 2 and intent.wants_charts and not ({b.get("type") for b in out} & {"lineChart", "barChart", "pieChart"}):
+        out.extend(_extract_charts(section, page_id, 1))
+    if len(out) < 2 and intent.wants_table and "dataTable" not in {b.get("type") for b in out}:
+        out.append(
             {
-                "type": "kpiRow",
-                "dataKey": f"kpis_{page_id}",
-                "items": [
-                    {"label": f"{title} — primary", "valueKey": "primary_metric", "color": "primary"},
-                    {"label": f"{title} — volume", "valueKey": "volume_metric", "color": "info"},
+                "type": "dataTable",
+                "title": f"{title} records",
+                "dataKey": f"table_{page_id}",
+                "columns": [
+                    {"field": "id", "header": "ID"},
+                    {"field": "name", "header": "Name"},
+                    {"field": "status", "header": "Status"},
                 ],
-            },
+                "searchable": True,
+                "detailView": intent.table_detail,
+            }
         )
     if len(out) < 2:
-        return _outline_saas_blocks(page_id, title, "")
+        return _outline_saas_blocks(page_id, title, section or "", intent)
     return out
 
 
-def _max_charts_for_page(page_id: str) -> int:
-    low = page_id.lower()
-    if low in ("dashboard", "home", "overview"):
-        return 5
-    if "analytic" in low:
-        return 4
-    if "report" in low:
-        return 3
-    if "session" in low:
-        return 2
-    return 3
+def blocks_for_page(
+    page_id: str,
+    title: str,
+    prd_section: str,
+    *,
+    dashboard_page_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    from app_builder.services.page_layout_intent import (
+        ensure_blocks_match_intent,
+        infer_page_layout_intent,
+        is_dashboard_like,
+    )
 
-
-def blocks_for_page(page_id: str, title: str, prd_section: str) -> List[Dict[str, Any]]:
     section = prd_section or ""
+    if dashboard_page_id is None and is_dashboard_like(page_id, title):
+        dashboard_page_id = page_id
+    intent = infer_page_layout_intent(
+        section, title, page_id=page_id, dashboard_page_id=dashboard_page_id
+    )
+
     if _section_looks_like_full_document(section, page_id):
-        return _outline_saas_blocks(page_id, title, section[:1200])
+        blocks = _outline_saas_blocks(page_id, title, section[:1200], intent)
+        return ensure_minimum_blocks(
+            ensure_blocks_match_intent(
+                blocks,
+                intent,
+                page_id=page_id,
+                title=title,
+                section=section,
+                dashboard_page_id=dashboard_page_id,
+            ),
+            page_id,
+            title,
+            section=section,
+        )
 
     blocks: List[Dict[str, Any]] = []
     low = section.lower()
 
-    if re.search(r"filter|date.range|export|search", low):
+    if intent.wants_filters or re.search(r"filter|date.range|export|search", low):
         filters: List[Dict[str, Any]] = [{"id": "search", "label": "Search", "filterType": "search"}]
         if "date" in low:
             filters.append({"id": "date", "label": "Date range", "filterType": "dateRange"})
@@ -253,7 +249,9 @@ def blocks_for_page(page_id: str, title: str, prd_section: str) -> List[Dict[str
             filters.append({"id": "status", "label": "Status", "filterType": "select", "optionsKey": ok})
         blocks.append({"type": "filterBar", "filters": filters})
 
-    if re.search(r"export|create|new session|pdf|csv", low):
+    if intent.wants_export_actions or intent.wants_create_action or re.search(
+        r"export|create|new session|pdf|csv", low
+    ):
         actions: List[Dict[str, Any]] = []
         if re.search(r"export|csv", low):
             actions.append({"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"})
@@ -279,13 +277,15 @@ def blocks_for_page(page_id: str, title: str, prd_section: str) -> List[Dict[str
                     "color": ("primary", "success", "warning", "error", "info", "default")[len(kpis) % 6],
                 }
             )
-    if kpis:
-        blocks.append({"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": kpis[:8]})
+    if intent.wants_kpis and kpis:
+        cap = intent.kpi_cap or 8
+        blocks.append({"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": kpis[:cap]})
 
-    blocks.extend(_extract_charts(section, page_id, _max_charts_for_page(page_id)))
+    if intent.wants_charts:
+        blocks.extend(_extract_charts(section, page_id, intent.chart_cap or 3))
 
     cols = _extract_table_columns(section)
-    if cols or re.search(r"table", low):
+    if intent.wants_table and (cols or re.search(r"table", low)):
         if not cols:
             cols = [
                 {"field": "id", "header": "ID"},
@@ -300,107 +300,82 @@ def blocks_for_page(page_id: str, title: str, prd_section: str) -> List[Dict[str
                 "dataKey": f"table_{page_id}",
                 "columns": cols,
                 "searchable": True,
-                "detailView": page_id in ("sessions", "session") or "session" in page_id,
+                "detailView": intent.table_detail,
             }
         )
 
     structural = [b for b in blocks if b.get("type") not in ("text",)]
     if not structural:
-        blocks = _outline_saas_blocks(page_id, title, section)
-    return ensure_minimum_blocks(blocks, page_id, title)
+        blocks = _outline_saas_blocks(page_id, title, section, intent)
+    shaped = ensure_blocks_match_intent(
+        blocks,
+        intent,
+        page_id=page_id,
+        title=title,
+        section=section,
+        dashboard_page_id=dashboard_page_id,
+    )
+    return ensure_minimum_blocks(shaped, page_id, title, section=section)
 
 
-def _outline_saas_blocks(page_id: str, title: str, section: str) -> List[Dict[str, Any]]:
-    """PRD-agnostic layout when section has no parseable widgets (uses page title + excerpt only)."""
-    low = f"{title} {section} {page_id}".lower()
-    blocks: List[Dict[str, Any]] = [
-        {
-            "type": "filterBar",
-            "filters": [
-                {"id": "search", "label": "Search", "filterType": "search"},
-                {"id": "date", "label": "Date range", "filterType": "dateRange"},
-            ],
-        },
-    ]
-    if "report" in low:
+def _outline_saas_blocks(
+    page_id: str,
+    title: str,
+    section: str,
+    intent: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Fallback layout driven by PRD intent (purpose/widgets), not a fixed page-id template."""
+    from app_builder.services.page_layout_intent import PageLayoutIntent, infer_page_layout_intent
+
+    if intent is None:
+        intent = infer_page_layout_intent(section, title)
+    blocks: List[Dict[str, Any]] = []
+
+    if intent.wants_filters:
         blocks.append(
             {
-                "type": "actionBar",
-                "actions": [
+                "type": "filterBar",
+                "filters": [
+                    {"id": "search", "label": "Search", "filterType": "search"},
+                    {"id": "date", "label": "Date range", "filterType": "dateRange"},
+                ],
+            }
+        )
+    if intent.wants_export_actions or intent.wants_create_action:
+        actions: List[Dict[str, Any]] = []
+        if intent.wants_export_actions:
+            actions.extend(
+                [
                     {"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"},
                     {"id": "export_pdf", "label": "Export PDF", "actionType": "exportPdf"},
-                ],
-            }
-        )
-    if "session" in low:
-        blocks.append(
-            {
-                "type": "actionBar",
-                "actions": [{"id": "create", "label": "New session", "actionType": "create"}],
-            }
-        )
+                ]
+            )
+        if intent.wants_create_action:
+            actions.append({"id": "create", "label": "Create", "actionType": "primary"})
+        blocks.append({"type": "actionBar", "actions": actions})
 
-    blocks.append(
-        {
-            "type": "kpiRow",
-            "dataKey": f"kpis_{page_id}",
-            "items": [
-                {"label": f"{title} — primary", "valueKey": "primary_metric", "color": "primary"},
-                {"label": f"{title} — secondary", "valueKey": "secondary_metric", "color": "success"},
-                {"label": f"{title} — risk", "valueKey": "risk_metric", "color": "warning"},
-                {"label": f"{title} — volume", "valueKey": "volume_metric", "color": "info"},
-            ],
-        }
-    )
-    blocks.append(
-        {
-            "type": "lineChart",
-            "title": f"{title} — trend",
-            "dataKey": f"series_{page_id}_trend",
-            "xAxisKey": "period",
-            "series": [
-                {"dataKey": "actual", "name": "Actual", "color": "#1976d2"},
-                {"dataKey": "target", "name": "Target", "color": "#94a3b8"},
-            ],
-            "height": 300,
-        }
-    )
-    if "analytic" in low or "report" in low:
+    if intent.wants_kpis:
+        items = _extract_kpi_items(section, page_id)[: intent.kpi_cap or 4]
+        if items:
+            blocks.append({"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": items})
+
+    if intent.wants_charts:
+        blocks.extend(_extract_charts(section, page_id, intent.chart_cap or 2))
+
+    if intent.wants_table:
+        cols = _extract_table_columns(section) or [
+            {"field": "id", "header": "ID"},
+            {"field": "name", "header": "Name"},
+            {"field": "status", "header": "Status"},
+        ]
         blocks.append(
             {
-                "type": "barChart",
-                "title": f"{title} — comparison",
-                "dataKey": f"series_{page_id}_compare",
-                "xAxisKey": "period",
-                "series": [
-                    {"dataKey": "value_a", "name": "Series A", "color": "#1976d2"},
-                    {"dataKey": "value_b", "name": "Series B", "color": "#d32f2f"},
-                ],
-                "height": 280,
+                "type": "dataTable",
+                "title": f"{title} — records",
+                "dataKey": f"table_{page_id}",
+                "columns": cols,
+                "searchable": True,
+                "detailView": intent.table_detail,
             }
         )
-    if "dashboard" in low or page_id == "dashboard":
-        blocks.append(
-            {
-                "type": "pieChart",
-                "title": f"{title} — distribution",
-                "dataKey": f"pie_{page_id}_mix",
-                "height": 260,
-            }
-        )
-    blocks.append(
-        {
-            "type": "dataTable",
-            "title": f"{title} — records",
-            "dataKey": f"table_{page_id}",
-            "columns": [
-                {"field": "id", "header": "ID"},
-                {"field": "name", "header": "Name"},
-                {"field": "status", "header": "Status"},
-                {"field": "updated_at", "header": "Updated"},
-            ],
-            "searchable": True,
-            "detailView": "session" in low,
-        }
-    )
     return blocks

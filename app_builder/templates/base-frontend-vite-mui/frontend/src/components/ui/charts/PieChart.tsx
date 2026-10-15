@@ -7,6 +7,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
+import { ChartTooltip, CHART_COLORS } from './chartTheme';
 
 export interface PieChartDataItem {
   name: string;
@@ -24,46 +25,57 @@ export interface PieChartProps {
   showLabels?: boolean;
 }
 
-const DEFAULT_COLORS = [
-  '#1976d2', '#2e7d32', '#ed6c02', '#9c27b0', '#0288d1',
-  '#d32f2f', '#00796b', '#f57c00', '#7b1fa2', '#0097a7',
-];
-
-/**
- * PieChart — Recharts PieChart wrapper.  Supports donut (innerRadius > 0).
- */
 export default function PieChart({
   data,
   height = 280,
-  innerRadius = 0,
-  outerRadius = 80,
+  innerRadius = 58,
+  outerRadius = 88,
   showLegend = true,
   showTooltip = true,
   showLabels = false,
 }: PieChartProps) {
+  const total = data.reduce((s, d) => s + (d.value || 0), 0);
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <RePieChart>
         <Pie
           data={data}
-          cx="50%"
+          cx="42%"
           cy="50%"
           innerRadius={innerRadius}
           outerRadius={outerRadius}
           dataKey="value"
           nameKey="name"
+          paddingAngle={2}
           label={showLabels ? ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%` : false}
           labelLine={showLabels}
         >
           {data.map((entry, i) => (
             <Cell
               key={`cell-${i}`}
-              fill={entry.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]}
+              fill={entry.color ?? CHART_COLORS[i % CHART_COLORS.length]}
+              stroke="#fff"
+              strokeWidth={2}
             />
           ))}
         </Pie>
-        {showTooltip && <Tooltip formatter={(val: number) => val.toLocaleString()} />}
-        {showLegend && <Legend />}
+        {showTooltip && <Tooltip content={<ChartTooltip />} />}
+        {showLegend && (
+          <Legend
+            layout="vertical"
+            align="right"
+            verticalAlign="middle"
+            iconType="circle"
+            iconSize={8}
+            formatter={(value: string) => {
+              const item = data.find((d) => d.name === value);
+              const pct = item && total ? Math.round((item.value / total) * 100) : null;
+              const label = pct != null ? `${value} (${pct}%)` : value;
+              return <span style={{ fontSize: 12, color: '#64748b' }}>{label}</span>;
+            }}
+          />
+        )}
       </RePieChart>
     </ResponsiveContainer>
   );

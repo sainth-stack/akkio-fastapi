@@ -37,6 +37,8 @@ export interface BreadcrumbItem {
 export interface AppShellProps {
   navItems?: NavItem[];
   appName?: string;
+  pageTitle?: string;
+  shellVariant?: 'light' | 'brand';
   logo?: React.ReactNode;
   breadcrumbs?: BreadcrumbItem[];
 }
@@ -51,6 +53,8 @@ function DynamicIcon({ name }: { name?: string }) {
 export default function AppShell({
   navItems = [],
   appName = 'Application',
+  pageTitle,
+  shellVariant = 'light',
   logo,
   breadcrumbs,
 }: AppShellProps) {
@@ -58,19 +62,37 @@ export default function AppShell({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const brand = shellVariant === 'brand';
 
   const handleDrawerToggle = () => setMobileOpen((prev) => !prev);
 
+  const drawerPaperSx = brand
+    ? {
+        bgcolor: 'primary.dark',
+        color: 'primary.contrastText',
+        borderRight: 'none',
+      }
+    : {
+        borderRight: '1px solid',
+        borderColor: 'divider',
+      };
+
   const drawerContent = (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Toolbar sx={{ px: 2 }}>
+      <Toolbar sx={{ px: 2, minHeight: 64 }}>
         {logo ?? (
-          <Typography variant="h6" fontWeight={700} color="primary" noWrap>
+          <Typography
+            variant="subtitle1"
+            fontWeight={700}
+            noWrap
+            letterSpacing="-0.02em"
+            color={brand ? 'inherit' : 'text.primary'}
+          >
             {appName}
           </Typography>
         )}
       </Toolbar>
-      <Divider />
+      <Divider sx={{ borderColor: brand ? 'rgba(255,255,255,0.12)' : 'divider' }} />
       <List sx={{ flex: 1, py: 1 }}>
         {navItems.map((item) => {
           const isActive =
@@ -84,10 +106,22 @@ export default function AppShell({
               to={item.path}
               selected={isActive}
               onClick={() => isMobile && setMobileOpen(false)}
-              sx={{ mx: 1, borderRadius: 2 }}
+              sx={{
+                mx: 1,
+                borderRadius: 2,
+                color: brand ? 'rgba(255,255,255,0.88)' : 'text.primary',
+                '&.Mui-selected': brand
+                  ? {
+                      bgcolor: 'rgba(255,255,255,0.14)',
+                      color: '#fff',
+                      '& .MuiListItemIcon-root': { color: '#fff' },
+                    }
+                  : undefined,
+                '&:hover': brand ? { bgcolor: 'rgba(255,255,255,0.08)' } : undefined,
+              }}
             >
               {item.icon && (
-                <ListItemIcon sx={{ minWidth: 36 }}>
+                <ListItemIcon sx={{ minWidth: 36, color: brand ? 'inherit' : undefined }}>
                   <DynamicIcon name={item.icon} />
                 </ListItemIcon>
               )}
@@ -102,11 +136,18 @@ export default function AppShell({
     </Box>
   );
 
+  const drawerSx = {
+    '& .MuiDrawer-paper': {
+      boxSizing: 'border-box',
+      width: DRAWER_WIDTH,
+      ...drawerPaperSx,
+    },
+  };
+
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
       <CssBaseline />
 
-      {/* Top bar */}
       <AppBar
         position="fixed"
         color="inherit"
@@ -116,6 +157,7 @@ export default function AppShell({
           ml: { md: `${DRAWER_WIDTH}px` },
           borderBottom: '1px solid',
           borderColor: 'divider',
+          bgcolor: 'background.paper',
           zIndex: theme.zIndex.drawer + 1,
         }}
       >
@@ -147,52 +189,31 @@ export default function AppShell({
               )}
             </Breadcrumbs>
           ) : (
-            <Typography variant="subtitle1" fontWeight={600}>
-              {appName}
+            <Typography variant="h6" fontWeight={600} letterSpacing="-0.02em">
+              {pageTitle || appName}
             </Typography>
           )}
         </Toolbar>
       </AppBar>
 
-      {/* Sidebar — permanent on desktop, temporary drawer on mobile */}
-      <Box
-        component="nav"
-        sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}
-      >
+      <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
         {isMobile ? (
           <Drawer
             variant="temporary"
             open={mobileOpen}
             onClose={handleDrawerToggle}
             ModalProps={{ keepMounted: true }}
-            sx={{
-              '& .MuiDrawer-paper': {
-                boxSizing: 'border-box',
-                width: DRAWER_WIDTH,
-              },
-            }}
+            sx={drawerSx}
           >
             {drawerContent}
           </Drawer>
         ) : (
-          <Drawer
-            variant="permanent"
-            sx={{
-              '& .MuiDrawer-paper': {
-                boxSizing: 'border-box',
-                width: DRAWER_WIDTH,
-                borderRight: '1px solid',
-                borderColor: 'divider',
-              },
-            }}
-            open
-          >
+          <Drawer variant="permanent" sx={drawerSx} open>
             {drawerContent}
           </Drawer>
         )}
       </Box>
 
-      {/* Main content */}
       <Box
         component="main"
         sx={{

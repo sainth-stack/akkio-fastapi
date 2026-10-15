@@ -15,6 +15,9 @@ export interface DefinitionTheme {
   warning?: string;
   info?: string;
   fontFamily?: string;
+  chartPalette?: string[];
+  shellVariant?: 'light' | 'brand';
+  border?: string;
 }
 
 export function createAppTheme(definitionTheme?: DefinitionTheme) {
@@ -49,7 +52,7 @@ export function createAppTheme(definitionTheme?: DefinitionTheme) {
       info: { main: t.info },
       background: { default: t.background, paper: t.surface },
       text: { primary: t.text, secondary: t.muted },
-      divider: baseTokens.border,
+      divider: definitionTheme?.border || baseTokens.border,
     },
     typography: {
       fontFamily: t.fontFamily,

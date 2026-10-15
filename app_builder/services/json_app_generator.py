@@ -81,6 +81,8 @@ export const tokens = {{
   info:           '{t.get("info", "#0288d1")}',
   fontFamily:     "'{font}', system-ui, -apple-system, sans-serif",
   chartPalette:   {json.dumps(palette)},
+  shellVariant:   '{t.get("shellVariant", "light")}',
+  border:         '{t.get("border", "#e2e8f0")}',
 }} as const;
 
 export type Tokens = typeof tokens;

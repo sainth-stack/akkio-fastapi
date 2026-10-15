@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from app_builder.schemas.app_definition import AppDefinition
 
@@ -104,6 +104,73 @@ def _kpi_display(label: str, value_key: str, rng: random.Random) -> str:
     return f"{rng.randint(100, 9999):,}"
 
 
+_CAT_HINT = re.compile(
+    r"category|pareto|defect|comparison|distribution|breakdown|by\s+line|top\s+\d|bar\s+",
+    re.I,
+)
+
+
+def _shift_comparison_rows(
+    data_key: str,
+    series_keys: List[str],
+    x_key: str = "shift",
+) -> List[Dict[str, Any]]:
+    rng = _seed(data_key)
+    shifts = ("Day shift", "Evening shift", "Night shift", "Weekend")
+    rows: List[Dict[str, Any]] = []
+    for i, shift in enumerate(shifts):
+        row: Dict[str, Any] = {x_key: shift}
+        for sk in series_keys:
+            skl = sk.lower()
+            if "plan" in skl or "target" in skl:
+                row[sk] = int(rng.uniform(880, 1040))
+            else:
+                row[sk] = int(rng.uniform(820, 1080) + i * 12)
+        rows.append(row)
+    return rows
+
+
+def _prefer_categorical_chart(block: Dict[str, Any], btype: str) -> bool:
+    title = str(block.get("title") or "")
+    x_key = str(block.get("xAxisKey") or "")
+    if x_key and x_key not in ("period", "date", "timestamp"):
+        return True
+    if btype == "barChart":
+        return True
+    return bool(_CAT_HINT.search(title))
+
+
+def _categorical_bar_rows(
+    data_key: str,
+    series_keys: List[str],
+    x_key: str = "category",
+) -> List[Dict[str, Any]]:
+    rng = _seed(data_key)
+    cats = (
+        "Line A — SMT",
+        "Line B — Assembly",
+        "Line C — Test",
+        "Line D — Pack",
+        "Press 1",
+        "Press 2",
+        "Final QC",
+        "Rework",
+    )
+    rows: List[Dict[str, Any]] = []
+    for i, cat in enumerate(cats[: max(MIN_CHART_POINTS, 8)]):
+        row: Dict[str, Any] = {x_key: cat}
+        for sk in series_keys:
+            skl = sk.lower()
+            if "target" in skl or "benchmark" in skl:
+                row[sk] = round(rng.uniform(12, 18), 1)
+            elif "defect" in skl or "failed" in skl:
+                row[sk] = max(1, int(rng.uniform(2, 14) + i * 0.3))
+            else:
+                row[sk] = round(rng.uniform(72, 98) - i * 0.8, 1)
+        rows.append(row)
+    return rows
+
+
 def _chart_rows(data_key: str, series_keys: List[str], x_key: str = "period") -> List[Dict[str, Any]]:
     rng = _seed(data_key)
     rows: List[Dict[str, Any]] = []
@@ -121,10 +188,25 @@ def _chart_rows(data_key: str, series_keys: List[str], x_key: str = "period") ->
     return rows
 
 
-def _pie_rows(data_key: str) -> List[Dict[str, Any]]:
+def _pie_rows(
+    data_key: str,
+    title_hint: str = "",
+    labels: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     rng = _seed(data_key)
-    labels = ("Passed", "Reworked", "Scrapped", "Hold", "Pending review")
-    return [{"name": labels[i % len(labels)], "value": rng.randint(8, 35)} for i in range(5)]
+    if labels:
+        names = [str(x)[:48] for x in labels if str(x).strip()][:8]
+    else:
+        hint = (title_hint or "").lower()
+        if "defect" in hint or "pareto" in hint:
+            names = list(("Scratch", "Void solder", "Misalign", "Contamination", "Dimensional", "Other"))
+        elif "status" in hint or "outcome" in hint:
+            names = list(("Passed", "Rework", "Hold", "Failed", "Pending review"))
+        else:
+            names = list(("Passed", "Reworked", "Scrapped", "Hold", "Pending review"))
+    if not names:
+        names = ["Segment A", "Segment B", "Other"]
+    return [{"name": names[i % len(names)], "value": rng.randint(8, 35)} for i in range(len(names))]
 
 
 def _table_has_placeholders(rows: List[Any]) -> bool:
@@ -197,16 +279,26 @@ def ensure_datasets_from_blocks(defn: AppDefinition, *, min_table_rows: int = MI
             elif btype in ("lineChart", "barChart") and dk:
                 series = block.get("series") or []
                 series_keys = [str(s.get("dataKey")) for s in series if isinstance(s, dict) and s.get("dataKey")]
-                x_key = str(block.get("xAxisKey") or "period")
+                categorical = _prefer_categorical_chart(block, str(btype))
+                x_key = str(block.get("xAxisKey") or ("category" if categorical else "period"))
                 existing = bag.get(dk)
+                title_low = str(block.get("title") or "").lower()
                 if not isinstance(existing, list) or len(existing) < MIN_CHART_POINTS // 2 or _needs_chart_refresh(existing, series_keys, x_key):
                     if series_keys:
-                        bag[dk] = _chart_rows(dk, series_keys, x_key)
+                        if x_key == "shift" or ("shift" in title_low and btype == "barChart"):
+                            sx = str(block.get("xAxisKey") or "shift")
+                            bag[dk] = _shift_comparison_rows(dk, series_keys, sx)
+                        elif categorical:
+                            bag[dk] = _categorical_bar_rows(dk, series_keys, x_key)
+                        else:
+                            bag[dk] = _chart_rows(dk, series_keys, x_key)
 
             elif btype == "pieChart" and dk:
                 existing = bag.get(dk)
                 if not isinstance(existing, list) or len(existing) < 3:
-                    bag[dk] = _pie_rows(dk)
+                    pie_labels = block.get("pieLabels")
+                    label_list = pie_labels if isinstance(pie_labels, list) else None
+                    bag[dk] = _pie_rows(dk, str(block.get("title") or ""), labels=label_list)
 
             elif btype == "dataTable" and dk:
                 cols = block.get("columns") or []

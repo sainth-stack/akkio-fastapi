@@ -70,8 +70,19 @@ def extract_expected_table_columns(section: str) -> List[str]:
 
 def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:
     """Return missing KPI labels, table columns, and block count issues."""
+    from app_builder.services.page_layout_intent import infer_page_layout_intent
+
     gaps: Dict[str, Any] = {"missing_kpis": [], "missing_columns": [], "block_types": []}
-    expected_kpis = extract_expected_kpis(section)
+    from app_builder.services.page_layout_intent import resolve_dashboard_page_id
+
+    dash_id = resolve_dashboard_page_id([(page.id, page.title)], None)
+    layout_intent = infer_page_layout_intent(
+        section,
+        page.title,
+        page_id=page.id,
+        dashboard_page_id=dash_id,
+    )
+    expected_kpis = extract_expected_kpis(section) if layout_intent.wants_kpis else []
     expected_cols = extract_expected_table_columns(section)
 
     found_kpi_labels: Set[str] = set()

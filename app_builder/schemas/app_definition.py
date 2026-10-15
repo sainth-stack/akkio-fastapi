@@ -31,6 +31,8 @@ class AppTheme(BaseModel):
     chartPalette: List[str] = Field(
         default_factory=lambda: ["#1976d2", "#2e7d32", "#ed6c02", "#9c27b0", "#0288d1", "#d32f2f"]
     )
+    shellVariant: Literal["light", "brand"] = "light"
+    border: str = "#e2e8f0"
 
 
 class NavItemDef(BaseModel):

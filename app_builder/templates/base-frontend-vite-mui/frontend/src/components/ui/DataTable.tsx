@@ -15,6 +15,9 @@ import {
   TableSortLabel,
   TextField,
   Typography,
+  Chip,
+  alpha,
+  useTheme,
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 
@@ -86,6 +89,7 @@ export default function DataTable<T extends Record<string, unknown>>({
   loading = false,
   onRowClick,
 }: DataTableProps<T>) {
+  const theme = useTheme();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(defaultPageSize);
@@ -118,12 +122,35 @@ export default function DataTable<T extends Record<string, unknown>>({
   const paginated = sorted.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
   return (
-    <Paper sx={{ borderRadius: 3, overflow: 'hidden' }}>
-      {searchable && (
-        <Box px={2} pt={2} pb={1}>
+    <Paper
+      sx={{
+        borderRadius: 3,
+        overflow: 'hidden',
+        border: '1px solid',
+        borderColor: 'divider',
+        boxShadow: '0 1px 2px rgba(15,23,42,0.06)',
+      }}
+    >
+      <Box
+        px={2}
+        pt={2}
+        pb={searchable ? 1 : 2}
+        display="flex"
+        flexWrap="wrap"
+        alignItems="center"
+        justifyContent="space-between"
+        gap={1.5}
+      >
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`${filtered.length.toLocaleString()} record${filtered.length === 1 ? '' : 's'}`}
+          sx={{ fontWeight: 500 }}
+        />
+        {searchable ? (
           <TextField
             size="small"
-            placeholder="Search…"
+            placeholder="Search records…"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             InputProps={{
@@ -133,13 +160,13 @@ export default function DataTable<T extends Record<string, unknown>>({
                 </InputAdornment>
               ),
             }}
-            sx={{ width: { xs: '100%', sm: 300 } }}
+            sx={{ width: { xs: '100%', sm: 280 }, ml: { sm: 'auto' } }}
           />
-        </Box>
-      )}
+        ) : null}
+      </Box>
 
-      <TableContainer>
-        <Table size="small" stickyHeader>
+      <TableContainer sx={{ maxHeight: 560 }}>
+        <Table size="medium" stickyHeader>
           <TableHead>
             <TableRow>
               {columns.map((col) => (
@@ -147,6 +174,16 @@ export default function DataTable<T extends Record<string, unknown>>({
                   key={String(col.field)}
                   align={col.align ?? 'left'}
                   style={{ width: col.width, whiteSpace: 'nowrap' }}
+                  sx={{
+                    bgcolor: alpha(theme.palette.primary.main, 0.06),
+                    fontWeight: 700,
+                    fontSize: '0.68rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    color: 'text.secondary',
+                    py: 1.5,
+                    borderBottom: `2px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+                  }}
                 >
                   {col.sortable !== false ? (
                     <TableSortLabel
@@ -192,10 +229,23 @@ export default function DataTable<T extends Record<string, unknown>>({
                     key={key}
                     hover
                     onClick={() => onRowClick?.(row)}
-                    sx={{ cursor: onRowClick ? 'pointer' : 'default' }}
+                    sx={{
+                      cursor: onRowClick ? 'pointer' : 'default',
+                      transition: 'background-color 0.12s ease',
+                      '&:nth-of-type(even)': { bgcolor: alpha(theme.palette.primary.main, 0.02) },
+                      '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.06) },
+                    }}
                   >
                     {columns.map((col) => (
-                      <TableCell key={String(col.field)} align={col.align ?? 'left'}>
+                      <TableCell
+                        key={String(col.field)}
+                        align={col.align ?? 'left'}
+                        sx={{
+                          py: 1.35,
+                          fontSize: '0.875rem',
+                          fontVariantNumeric: col.align === 'right' ? 'tabular-nums' : undefined,
+                        }}
+                      >
                         {col.renderCell
                           ? col.renderCell(row[col.field], row)
                           : String(row[col.field] ?? '')}

@@ -12,7 +12,8 @@ Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
 """
         name = resolve_app_display_name(requirement=req)
         self.assertNotEqual(name, "Dashboard:")
-        self.assertIn("Manufacturing", name)
+        self.assertLessEqual(len(name.split()), 2)
+        self.assertTrue(any(w in name for w in ("Quality", "Manufacturing")))
 
     def test_numbered_prompt_pages(self):
         from app_builder.services.app_definition_generator import extract_screens_from_plan

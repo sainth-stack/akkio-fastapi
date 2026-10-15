@@ -1,23 +1,23 @@
 import { useMemo, useState } from 'react';
-import { Box, Paper, Stack, Typography } from '@mui/material';
+import { Box, Paper, Typography } from '@mui/material';
 import {
   ActionBar,
   BarChart,
   DataTable,
   FilterBar,
+  KpiRow,
   LineChart,
-  PageHeader,
   PieChart,
   SessionDetailModal,
-  StatCard,
   StatusChip,
 } from '../components/ui';
+import { cleanDisplayTitle } from './displayUtils';
 import type { AppDefinition } from './useAppDefinition';
 import { dataBag, getDataSlice } from './useAppDefinition';
 import { normalizeBlock } from './blockNormalize';
 import { resolveRowKey, resolveXAxisKey } from './chartUtils';
 import { usePageFilters } from './PageFilterContext';
-import { tokens } from '../theme/tokens';
+import { useChartPalette } from '../theme/useChartPalette';
 
 type Block = Record<string, unknown>;
 
@@ -99,18 +99,56 @@ function filterRows(
   return out;
 }
 
+const chartPaperSx = {
+  standalone: {
+    p: 2.5,
+    mb: 3,
+    borderRadius: 2.5,
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'background.paper',
+    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+  },
+  grid: {
+    p: 2.5,
+    mb: 0,
+    height: '100%',
+    borderRadius: 2.5,
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'background.paper',
+    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+  },
+} as const;
+
+function ChartCardTitle({ title }: { title: string }) {
+  return (
+    <Typography variant="subtitle2" fontWeight={600} color="text.primary" sx={{ mb: 2, letterSpacing: '-0.01em' }}>
+      {title}
+    </Typography>
+  );
+}
+
 export default function BlockRenderer({
   block,
   definition,
   pageId,
+  pageTitle,
   pageBlocks,
+  layout = 'standalone',
 }: {
   block: Block;
   definition: AppDefinition;
   pageId?: string;
+  pageTitle?: string;
   pageBlocks?: Block[];
+  layout?: 'standalone' | 'grid';
 }) {
+  const chartPalette = useChartPalette();
   const normalized = normalizeBlock(block, definition, pageId);
+  const displayTitle = normalized.title
+    ? cleanDisplayTitle(String(normalized.title), pageTitle)
+    : '';
   const type = normalized.type as string;
   const { filters } = usePageFilters();
   const [detailRow, setDetailRow] = useState<Record<string, unknown> | null>(null);
@@ -154,35 +192,7 @@ export default function BlockRenderer({
         </Typography>
       );
     }
-    return (
-      <Stack direction="row" flexWrap="wrap" gap={2} sx={{ mb: 3 }}>
-        {items.map((item) => {
-          const trendKey = item.trendKey || `${item.valueKey}_trend_pct`;
-          const targetKey = item.targetKey || `${item.valueKey}_target`;
-          const trendRaw = meta[trendKey];
-          const target = meta[targetKey];
-          const trend =
-            typeof trendRaw === 'number'
-              ? { value: trendRaw, label: 'vs prior period' }
-              : undefined;
-          return (
-            <Box key={item.valueKey} sx={{ flex: '1 1 220px', minWidth: 200, maxWidth: 320 }}>
-              <StatCard
-                label={item.label}
-                value={values[item.valueKey] ?? '—'}
-                color={(item.color as 'primary') || 'primary'}
-                trend={trend}
-              />
-              {target ? (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: -1, ml: 0.5 }}>
-                  Target: {target}
-                </Typography>
-              ) : null}
-            </Box>
-          );
-        })}
-      </Stack>
-    );
+    return <KpiRow items={items} values={values} meta={meta} />;
   }
 
   if (type === 'lineChart' || type === 'barChart') {
@@ -190,11 +200,14 @@ export default function BlockRenderer({
     const series = (normalized.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
     const xAxisKey = resolveXAxisKey(data, (normalized.xAxisKey as string) || 'period');
     const Chart = type === 'lineChart' ? LineChart : BarChart;
+    const chartHeight = (normalized.height as number) || (layout === 'grid' ? 280 : 320);
+    const barLayout =
+      type === 'barChart' && /pareto|defect|category|distribution|by\s+line|comparison/i.test(displayTitle)
+        ? 'vertical'
+        : 'horizontal';
     return (
-      <Paper sx={{ p: 2, mb: 3, borderRadius: 3 }}>
-        {normalized.title ? (
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 2 }}>{normalized.title as string}</Typography>
-        ) : null}
+      <Paper sx={chartPaperSx[layout]} elevation={0}>
+        {displayTitle ? <ChartCardTitle title={displayTitle} /> : null}
         {data.length === 0 || !series.length ? (
           <Typography variant="body2" color="text.secondary">No chart data</Typography>
         ) : (
@@ -203,10 +216,12 @@ export default function BlockRenderer({
             series={series.map((s, i) => ({
               dataKey: s.dataKey,
               name: s.name || s.dataKey,
-              color: s.color || tokens.chartPalette[i % tokens.chartPalette.length],
+              color: s.color || chartPalette[i % chartPalette.length],
             }))}
             xAxisKey={xAxisKey}
-            height={(normalized.height as number) || 300}
+            height={chartHeight}
+            layout={type === 'barChart' ? barLayout : undefined}
+            rich={Boolean(normalized.rich ?? type === 'lineChart')}
           />
         )}
       </Paper>
@@ -215,12 +230,11 @@ export default function BlockRenderer({
 
   if (type === 'pieChart') {
     const data = (getDataSlice(definition, normalized.dataKey as string) as Array<{ name: string; value: number }>) || [];
+    const chartHeight = (normalized.height as number) || (layout === 'grid' ? 280 : 320);
     return (
-      <Paper sx={{ p: 2, mb: 3, borderRadius: 3 }}>
-        {normalized.title ? (
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 2 }}>{normalized.title as string}</Typography>
-        ) : null}
-        <PieChart data={data} height={(normalized.height as number) || 300} />
+      <Paper sx={chartPaperSx[layout]} elevation={0}>
+        {displayTitle ? <ChartCardTitle title={displayTitle} /> : null}
+        <PieChart data={data} height={chartHeight} />
       </Paper>
     );
   }
@@ -233,7 +247,11 @@ export default function BlockRenderer({
     const detailView = Boolean(normalized.detailView);
     return (
       <Box sx={{ mb: 3 }}>
-        {normalized.title ? <PageHeader title={normalized.title as string} /> : null}
+        {displayTitle ? (
+          <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 1.5 }}>
+            {displayTitle}
+          </Typography>
+        ) : null}
         <DataTable
           columns={columns.map((c) => ({
             field: c.field as keyof Record<string, unknown>,

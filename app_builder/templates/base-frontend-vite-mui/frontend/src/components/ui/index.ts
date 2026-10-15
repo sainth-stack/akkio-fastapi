@@ -26,6 +26,9 @@ export type { CardProps } from './Card';
 export { default as StatCard } from './StatCard';
 export type { StatCardProps, StatCardTrend } from './StatCard';
 
+export { default as KpiRow } from './KpiRow';
+export type { KpiRowProps, KpiRowItem } from './KpiRow';
+
 export { default as DataTable } from './DataTable';
 export type { DataTableProps, Column } from './DataTable';
 

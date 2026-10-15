@@ -88,7 +88,7 @@ def _dashboard_blocks(sid: str, title: str, profile: str) -> List[Dict[str, Any]
         _kpi_row(sid, kpis),
         {
             "type": "lineChart",
-            "title": f"{title} — performance trend",
+            "title": "OEE performance trend",
             "dataKey": f"series_{sid}_performance",
             "xAxisKey": "period",
             "series": trend_series,
@@ -96,7 +96,7 @@ def _dashboard_blocks(sid: str, title: str, profile: str) -> List[Dict[str, Any]
         },
         {
             "type": "barChart",
-            "title": f"{title} — shift comparison",
+            "title": "Output vs plan by shift",
             "dataKey": f"series_{sid}_shift",
             "xAxisKey": "period",
             "series": bar_series,
@@ -104,7 +104,7 @@ def _dashboard_blocks(sid: str, title: str, profile: str) -> List[Dict[str, Any]
         },
         {
             "type": "pieChart",
-            "title": f"{title} — alert distribution",
+            "title": "Alerts by category",
             "dataKey": f"pie_{sid}_alerts",
             "height": 280,
         },
@@ -127,18 +127,17 @@ def _dashboard_blocks(sid: str, title: str, profile: str) -> List[Dict[str, Any]
 
 def _sessions_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
     return [
-        _kpi_row(
-            sid,
-            [
-                {"label": "Active sessions", "valueKey": "active_sessions", "color": "primary"},
-                {"label": "Avg duration", "valueKey": "avg_duration", "color": "success"},
-                {"label": "Units online", "valueKey": "units_online", "color": "info"},
-                {"label": "Exceptions", "valueKey": "exceptions", "color": "error"},
+        {
+            "type": "filterBar",
+            "filters": [
+                {"id": "search", "label": "Search", "filterType": "search"},
+                {"id": "date", "label": "Date range", "filterType": "dateRange"},
+                {"id": "status", "label": "Status", "filterType": "select", "optionsKey": f"options_{sid}_status"},
             ],
-        ),
+        },
         {
             "type": "lineChart",
-            "title": f"{title} — utilization (24h)",
+            "title": "Utilization (24h)",
             "dataKey": f"series_{sid}_utilization",
             "xAxisKey": "period",
             "series": [
@@ -166,18 +165,9 @@ def _sessions_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
 
 def _analytics_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
     return [
-        _kpi_row(
-            sid,
-            [
-                {"label": "MTBF", "valueKey": "mtbf", "color": "primary"},
-                {"label": "First-pass yield", "valueKey": "first_pass_yield", "color": "success"},
-                {"label": "Scrap rate", "valueKey": "scrap_rate", "color": "warning"},
-                {"label": "Variance", "valueKey": "variance", "color": "info"},
-            ],
-        ),
         {
             "type": "barChart",
-            "title": f"{title} — output vs defects",
+            "title": "Output vs defects",
             "dataKey": f"series_{sid}_quality",
             "xAxisKey": "period",
             "series": [
@@ -188,7 +178,7 @@ def _analytics_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
         },
         {
             "type": "lineChart",
-            "title": f"{title} — yield trend",
+            "title": "First-pass yield trend",
             "dataKey": f"series_{sid}_yield",
             "xAxisKey": "period",
             "series": [
@@ -215,17 +205,16 @@ def _analytics_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
 
 def _reports_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
     return [
-        _kpi_row(
-            sid,
-            [
-                {"label": "Published (30d)", "valueKey": "reports_published", "color": "primary"},
-                {"label": "On-time delivery", "valueKey": "on_time_delivery", "color": "success"},
-                {"label": "Open drafts", "valueKey": "open_drafts", "color": "warning"},
+        {
+            "type": "actionBar",
+            "actions": [
+                {"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"},
+                {"id": "export_pdf", "label": "Export PDF", "actionType": "exportPdf"},
             ],
-        ),
+        },
         {
             "type": "barChart",
-            "title": f"{title} — delivery by owner",
+            "title": "Report delivery by owner",
             "dataKey": f"series_{sid}_delivery",
             "xAxisKey": "period",
             "series": [

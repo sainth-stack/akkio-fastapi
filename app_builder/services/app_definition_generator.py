@@ -244,6 +244,48 @@ def extract_screens_from_plan(
     return screens
 
 
+_BRAND_STOP = frozenset(
+    {
+        "dashboard",
+        "platform",
+        "application",
+        "app",
+        "system",
+        "suite",
+        "professional",
+        "create",
+        "build",
+        "generate",
+        "the",
+        "and",
+        "for",
+        "with",
+    }
+)
+
+
+def shorten_brand_name(long_name: str, max_words: int = 2) -> str:
+    """Sidebar-friendly product name (1–2 words), derived from the full title."""
+    t = _clean_product_title(long_name or "")
+    t = re.sub(
+        r"\b(dashboard|platform|application|monitoring|system|suite)\b",
+        " ",
+        t,
+        flags=re.I,
+    )
+    words = [w for w in re.findall(r"[A-Za-z]{3,}", t) if w.lower() not in _BRAND_STOP]
+    if not words:
+        return "Workspace"
+    if len(words) == 1:
+        return words[0].title()[:32]
+    # Prefer a meaningful pair (e.g. Quality + Manufacturing → "Quality Ops")
+    low = [w.lower() for w in words]
+    if "quality" in low:
+        other = next((w for w in words if w.lower() not in ("quality", "manufacturing")), words[0])
+        return f"Quality {other.title()}"[:32]
+    return f"{words[0].title()} {words[1].title()}"[:32]
+
+
 def _clean_product_title(raw: str) -> str:
     """Turn chat-style prompts into product titles."""
     t = (raw or "").strip()
@@ -277,7 +319,7 @@ def resolve_app_display_name(
     """Human-readable product name for meta.appName and shell header."""
     if app_name and not re.match(r"^(fullstack_app_|generated_app_|Workspace)$", app_name):
         if not app_name.startswith("fullstack_app_") and not app_name.startswith("generated_app_"):
-            return app_name[:80]
+            return shorten_brand_name(app_name)
 
     _page_bold = frozenset({"dashboard", "sessions", "reports", "analytics", "prompt"})
     for match in re.findall(r"\*\*([^*]+)\*\*", requirement or ""):
@@ -285,43 +327,43 @@ def resolve_app_display_name(
         if len(candidate) < 12 or candidate.lower() in _page_bold:
             continue
         if "dashboard" in candidate.lower() or "monitoring" in candidate.lower():
-            return _clean_product_title(candidate)[:80]
+            return shorten_brand_name(_clean_product_title(candidate))
     mfg = re.search(
         r"(?:create|build)\s+(?:a\s+)?(?:professional\s+)?([A-Za-z0-9][^\n*]{8,80}?Dashboard)",
         requirement or "",
         re.I,
     )
     if mfg:
-        return _clean_product_title(mfg.group(1).strip())[:80]
+        return shorten_brand_name(_clean_product_title(mfg.group(1).strip()))
     quoted = re.search(r'"([^"]{6,90})"', requirement or "")
     if quoted:
-        return _clean_product_title(quoted.group(1).strip())[:80]
+        return shorten_brand_name(_clean_product_title(quoted.group(1).strip()))
 
     plan_json = plan_json or {}
     blueprint = plan_json.get("blueprint") if isinstance(plan_json.get("blueprint"), dict) else {}
     if isinstance(blueprint, dict) and blueprint.get("app_name"):
-        return str(blueprint["app_name"])[:80]
+        return shorten_brand_name(str(blueprint["app_name"]))
 
     prd_obj = plan_json.get("prd")
     if isinstance(prd_obj, dict):
         for key in ("app_name", "product_name", "title", "name"):
             if prd_obj.get(key):
-                return str(prd_obj[key])[:80]
+                return shorten_brand_name(str(prd_obj[key]))
 
     title = _clean_product_title(_title_from_requirement(requirement, "My Application"))
     if title and title not in ("My Application", "Workspace"):
-        return title[:80]
+        return shorten_brand_name(title)
 
     try:
         from app_builder.services.fullstack_app_generator import extract_app_title
 
         extracted = extract_app_title(requirement, prd)
         if extracted and extracted not in ("Enterprise Application", "Anomaly Detection Platform"):
-            return _clean_product_title(extracted)[:80]
+            return shorten_brand_name(_clean_product_title(extracted))
     except ImportError:
         pass
 
-    return title[:80]
+    return shorten_brand_name(title)
 
 
 def _infer_blocks_for_screen(
@@ -332,13 +374,14 @@ def _infer_blocks_for_screen(
     domain: str = "",
     meta_description: str = "",
     prd: str = "",
+    dashboard_page_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     sid = screen.get("id") or "page"
     title = screen.get("title") or sid
     section = section_for_page(prd, title, sid)
     if not section:
         section = f"{screen.get('purpose') or ''}\n{meta_description}"
-    return prd_blocks_for_page(sid, title, section)
+    return prd_blocks_for_page(sid, title, section, dashboard_page_id=dashboard_page_id)
 
 
 def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -408,9 +451,15 @@ def build_app_definition_from_screens(
             {"id": "details", "title": "Details", "purpose": "Records"},
         ]
 
+    from app_builder.services.page_layout_intent import resolve_dashboard_page_id
+
     navigation: List[NavItemDef] = []
     pages: List[PageDef] = []
     mock: Dict[str, Any] = {}
+    dash_page_id = resolve_dashboard_page_id(
+        [(s.get("id") or "page", s.get("title") or s.get("id") or "page") for s in screens],
+        None,
+    )
 
     for i, screen in enumerate(screens):
         sid = screen["id"]
@@ -439,6 +488,7 @@ def build_app_definition_from_screens(
             domain=domain,
             meta_description=description,
             prd=prd,
+            dashboard_page_id=dash_page_id,
         )
         mock.update(_collect_mock_keys(blocks))
         pages.append(
@@ -517,8 +567,49 @@ def hydrate_plan_json(
     return plan
 
 
-def finalize_app_definition(defn: AppDefinition) -> AppDefinition:
+def finalize_app_definition(
+    defn: AppDefinition,
+    *,
+    prd: str = "",
+    requirement: str = "",
+    design_tokens: Optional[Dict[str, Any]] = None,
+) -> AppDefinition:
     """Ensure mock data exists for every block reference; align nav pageIds."""
+    from app_builder.services.page_layout_intent import strip_misplaced_kpi_blocks
+    from app_builder.services.prd_structure_parser import section_for_page
+    from app_builder.services.app_theme_generator import ensure_app_visual_identity
+
+    defn.meta.appName = shorten_brand_name(defn.meta.appName or "Workspace")
+    defn = ensure_app_visual_identity(
+        defn,
+        requirement=requirement,
+        design_tokens=design_tokens,
+    )
+    from app_builder.services.page_layout_intent import (
+        enforce_kpis_on_dashboard_only,
+        resolve_dashboard_page_id,
+    )
+
+    dash_page_id = resolve_dashboard_page_id(
+        [(p.id, p.title) for p in defn.pages],
+        [n.pageId for n in defn.navigation],
+    )
+    cleaned_pages: List[PageDef] = []
+    for page in defn.pages:
+        section = section_for_page(prd, page.title, page.id) if prd else ""
+        blocks = strip_misplaced_kpi_blocks(
+            page.blocks,
+            title=page.title,
+            page_id=page.id,
+            purpose=page.subtitle or "",
+            section=section,
+            dashboard_page_id=dash_page_id,
+        )
+        cleaned_pages.append(
+            PageDef(id=page.id, title=page.title, subtitle=page.subtitle, blocks=blocks)
+        )
+    defn.pages = cleaned_pages
+    defn = enforce_kpis_on_dashboard_only(defn)
     mock = dict(defn.mock or {})
     for page in defn.pages:
         mock.update(_collect_mock_keys(page.blocks))
@@ -711,7 +802,14 @@ async def resolve_app_definition(
                 plan_json=plan_json,
             )
             if llm_def is not None:
-                llm_def = finalize_app_definition(llm_def)
+                llm_def = finalize_app_definition(
+                    llm_def,
+                    prd=prd,
+                    requirement=requirement,
+                    design_tokens=plan_json.get("design_tokens")
+                    if isinstance(plan_json.get("design_tokens"), dict)
+                    else None,
+                )
         if llm_def is not None:
             llm_def.meta.appName = resolve_app_display_name(
                 requirement=requirement,
@@ -739,7 +837,12 @@ async def resolve_app_definition(
     )
     if on_progress:
         await on_progress("Enriching production-style sample data for charts and tables…")
-    return finalize_app_definition(built)
+    return finalize_app_definition(
+        built,
+        prd=prd,
+        requirement=requirement,
+        design_tokens=plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None,
+    )
 
 
 def resolve_app_definition_sync(
@@ -765,5 +868,8 @@ def resolve_app_definition_sync(
             uiux=uiux,
             plan_json=plan_json,
             app_name=app_name,
-        )
+        ),
+        prd=prd,
+        requirement=requirement,
+        design_tokens=plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None,
     )

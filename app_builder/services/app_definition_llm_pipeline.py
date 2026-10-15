@@ -10,6 +10,12 @@ from app_builder.schemas.app_definition_llm import AppShellPlan, PageBlocksPlan,
 from app_builder.services.app_definition_compiler import _theme_from_tokens
 from app_builder.services.app_definition_generator import extract_screens_from_plan, resolve_app_display_name
 from app_builder.services.prd_compliance import page_gaps
+from app_builder.services.page_layout_intent import (
+    apply_layout_intent_to_blocks,
+    ensure_blocks_match_intent,
+    infer_page_layout_intent,
+    resolve_dashboard_page_id,
+)
 from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks_for_page
 from app_builder.services.prd_driven_layout import ensure_minimum_blocks
 from app_builder.services.prd_structure_parser import build_planning_context, section_for_page
@@ -25,6 +31,7 @@ Derive navigation and page outlines from the user's requirement, PRD, and UI/UX 
 - Icons: MUI names (Dashboard, FactCheck, Assessment, ShowChart, People, Settings, PrecisionManufacturing).
 - subtitle: one sentence describing what the page shows (from PRD).
 - domain: short slug inferred from the product (e.g. manufacturing_quality), not a hardcoded list.
+- appName: SHORT brand label for the sidebar — at most 2 words (e.g. "Quality Pulse", "Fleet Ops"), never the full sentence from the prompt.
 """
 
 _BLOCKS_SYSTEM = """You are a UX architect. Output ONLY valid JSON for PageBlocksPlan.
@@ -42,10 +49,13 @@ Allowed block types:
 
 Rules:
 - dataKey must be unique across the app; prefix with page id (e.g. table_sessions_inspections).
-- EVERY table MUST include ALL columns mentioned in the PRD (use field slugs).
-- Include filterBar and/or actionBar when PRD mentions filters, export, or create actions.
-- Dashboard pages: multiple KPIs + multiple charts + at least one table when PRD lists them.
-- Minimum blocks: honor PRD widget count; typically 4–12 blocks on dashboard, 3–8 on other pages.
+- Read ONLY the PRD section for THIS page. Layout must differ per page like a real SaaS product.
+- Layout is driven ONLY by this page's PRD subsections (**Purpose**, **KPIs**, **Charts**, **Filters**, **Actions**, **Table columns**) — page names can be anything the user asked for.
+- kpiRow ONLY on the Dashboard page (route id/title dashboard or home). NEVER on Analytics, Reports, Sessions, or any other page — even if PRD lists KPIs there.
+- Include charts only for bullets under **Charts:** (use distinct titles and series names from the bullet text).
+- Include dataTable only when **Table columns:** exist or Purpose describes a searchable list/register.
+- Include filterBar / actionBar only when **Filters:** or **Actions:** (or Purpose) calls for them.
+- Include widgets ONLY when the PRD subsection lists them (**KPIs**, **Charts**, **Table columns**, **Filters**, **Actions**).
 - Do NOT output mock/data — blocks only.
 """
 
@@ -59,8 +69,9 @@ Rules:
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
 - Tables: arrays of 28–36 objects; keys MUST match column field names exactly; use realistic manufacturing/QMS names.
 - Production lines: Line A, Line B, Press 1; products: part numbers; operators: realistic names.
-- Charts: arrays of 14–20 objects; include xAxis field "period" as ISO dates 2024-06-01.. unless series specifies otherwise.
-- series dataKeys must exist on each chart row.
+- Charts: arrays of 14–20 objects; xAxis field must match block xAxisKey (period, category, shift, etc.).
+- Every series[].dataKey in blocks must exist on each chart row with realistic numeric values.
+- Match chart semantics from titles (OEE %, defects by line, shift comparison, etc.) — not generic value/target only.
 - pieChart data: [{ name, value }, ...] (5–8 segments).
 - filter select options: [{ value, label }, ...].
 - Use realistic labels from the PRD domain (product names, lines, metrics) — infer from context, no placeholder "Asset 1".
@@ -123,9 +134,22 @@ Suggested screens:
     if shell is None:
         return None
 
-    theme = _theme_from_tokens(
-        (plan_json or {}).get("design_tokens") if isinstance((plan_json or {}).get("design_tokens"), dict) else None
+    from app_builder.services.app_theme_generator import generate_app_theme, merge_design_tokens_into_theme
+
+    plan = plan_json or {}
+    tokens = plan.get("design_tokens") if isinstance(plan.get("design_tokens"), dict) else None
+    display_name_early = resolve_app_display_name(
+        requirement=requirement,
+        prd=prd,
+        plan_json=plan_json,
+        app_name=app_name,
     )
+    theme = generate_app_theme(
+        app_name=display_name_early,
+        domain=str(plan.get("blueprint", {}).get("domain", "") if isinstance(plan.get("blueprint"), dict) else "generic"),
+        requirement=requirement,
+    )
+    theme = merge_design_tokens_into_theme(theme, tokens)
     display_name = resolve_app_display_name(
         requirement=requirement,
         prd=prd,
@@ -139,6 +163,11 @@ Suggested screens:
         NavItemDef(label=n.label, path=n.path, icon=n.icon, pageId=n.pageId) for n in shell.navigation
     ]
 
+    dashboard_page_id = resolve_dashboard_page_id(
+        [(o.id, o.title) for o in shell.pages],
+        [n.pageId for n in shell.navigation],
+    )
+
     for i, outline in enumerate(shell.pages):
         if on_progress:
             await on_progress(f"LLM phase 2/3: blocks for «{outline.title}» ({i + 1}/{len(shell.pages)})…")
@@ -146,10 +175,25 @@ Suggested screens:
         section = section_for_page(ctx["prd"], outline.title, outline.id)
         if not section.strip():
             section = section_for_page(ctx["requirement"], outline.title, outline.id)
+        section_body_preview = section or f"## {outline.title}\n{outline.subtitle or outline.title}"
+        page_intent_hint = infer_page_layout_intent(
+            section_body_preview,
+            outline.title,
+            page_id=outline.id,
+            dashboard_page_id=dashboard_page_id,
+        )
+
         blocks_user = f"""App: {display_name}
 Page id: {outline.id}
 Page title: {outline.title}
 Page subtitle: {outline.subtitle}
+
+Layout intent (from PRD — follow this; do not duplicate other pages):
+- include KPI row: {page_intent_hint.wants_kpis} (cap {page_intent_hint.kpi_cap or 0})
+- include charts: {page_intent_hint.wants_charts} (cap {page_intent_hint.chart_cap or 0})
+- include table: {page_intent_hint.wants_table} (detail rows: {page_intent_hint.table_detail})
+- include filters: {page_intent_hint.wants_filters}
+- include export/create actions: {page_intent_hint.wants_export_actions or page_intent_hint.wants_create_action}
 
 PRD section for this page:
 {section or '(use requirement + UI docs below)'}
@@ -165,26 +209,61 @@ UI/UX excerpt:
         )
         section_body = section or f"## {outline.title}\n{outline.subtitle or outline.title}"
 
-        def _plan_from_prd() -> PageBlocksPlan:
-            blocks = ensure_minimum_blocks(
-                prd_blocks_for_page(outline.id, outline.title, section_body),
+        page_intent = infer_page_layout_intent(
+            section_body,
+            outline.title,
+            page_id=outline.id,
+            dashboard_page_id=dashboard_page_id,
+        )
+
+        def _finalize_blocks(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            shaped = apply_layout_intent_to_blocks(
+                raw, page_intent, page_id=outline.id, title=outline.title
+            )
+            shaped = ensure_blocks_match_intent(
+                shaped,
+                page_intent,
+                page_id=outline.id,
+                title=outline.title,
+                section=section_body,
+                dashboard_page_id=dashboard_page_id,
+            )
+            return ensure_minimum_blocks(
+                shaped,
                 outline.id,
                 outline.title,
+                section=section_body,
             )
-            return PageBlocksPlan(blocks=blocks)
+
+        def _plan_from_prd() -> PageBlocksPlan:
+            return PageBlocksPlan(
+                blocks=_finalize_blocks(
+                    prd_blocks_for_page(
+                        outline.id,
+                        outline.title,
+                        section_body,
+                        dashboard_page_id=dashboard_page_id,
+                    )
+                )
+            )
 
         if blocks_plan is None or not blocks_plan.blocks:
             blocks_plan = _plan_from_prd()
         else:
-            blocks_plan = PageBlocksPlan(
-                blocks=ensure_minimum_blocks(blocks_plan.blocks, outline.id, outline.title)
-            )
+            blocks_plan = PageBlocksPlan(blocks=_finalize_blocks(blocks_plan.blocks))
             gaps = page_gaps(
                 PageDef(id=outline.id, title=outline.title, subtitle=outline.subtitle, blocks=blocks_plan.blocks),
                 section_body,
             )
             if gaps.get("missing_kpis") or gaps.get("missing_columns") or (gaps.get("needs_charts") and not gaps.get("has_chart")):
                 repair_user = f"""Fix blocks to satisfy PRD gaps on page {outline.id}.
+Layout intent (do not exceed — page must look different from other routes):
+- KPI row: {page_intent.wants_kpis} (max {page_intent.kpi_cap or 0} items)
+- Charts: {page_intent.wants_charts} (max {page_intent.chart_cap or 0})
+- Table: {page_intent.wants_table}
+- Filters: {page_intent.wants_filters}
+- Export/create: {page_intent.wants_export_actions or page_intent.wants_create_action}
+
 Current blocks:
 {json.dumps(blocks_plan.blocks, indent=2)[:12000]}
 
@@ -198,9 +277,7 @@ PRD:
                     llm, _BLOCKS_SYSTEM, repair_user, PageBlocksPlan, f"page_blocks_repair_{outline.id}"
                 )
                 if repaired and repaired.blocks:
-                    blocks_plan = PageBlocksPlan(
-                        blocks=ensure_minimum_blocks(repaired.blocks, outline.id, outline.title)
-                    )
+                    blocks_plan = PageBlocksPlan(blocks=_finalize_blocks(repaired.blocks))
                 else:
                     blocks_plan = _plan_from_prd()
 
@@ -263,4 +340,11 @@ def _finalize_llm_definition(defn: AppDefinition) -> AppDefinition:
     from app_builder.services.app_definition_generator import finalize_app_definition
 
     defn.meta.generatedBy = defn.meta.generatedBy or "llm_pipeline"
-    return finalize_app_definition(defn)
+    plan = plan_json or {}
+    tokens = plan.get("design_tokens") if isinstance(plan.get("design_tokens"), dict) else None
+    return finalize_app_definition(
+        defn,
+        prd=prd,
+        requirement=requirement,
+        design_tokens=tokens,
+    )

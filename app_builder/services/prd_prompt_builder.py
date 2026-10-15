@@ -45,6 +45,7 @@ Formatting:
 - Charts: prefix with type — `Line chart:`, `Bar chart:`, `Donut chart:` (one idea per bullet).
 - KPIs: one metric per bullet (e.g. First Pass Yield (FPY), Defect Rate).
 - Do not duplicate the same widget on every page unless the prompt says so.
+- **KPIs:** subsection ONLY on the Dashboard (or Home/Overview) page — never on other pages. Other pages use Charts, Table columns, Filters, Actions as needed.
 - Do not add a Tech Stack section unless building a fullstack enterprise app."""
 
 
@@ -74,23 +75,22 @@ def is_multi_page_dashboard_prompt(requirement: str) -> bool:
 
 def _page_spec_template(page: str) -> str:
     return f"""### {page}
-**Purpose:** [What the user accomplishes on this page — from the prompt]
+**Purpose:** [One sentence — what the user does on {page}; infer from the prompt, any domain]
 
 **KPIs:**
-- [Only KPIs relevant to {page}; omit section if none in prompt]
+- [Metric bullets ONLY if this page shows summary numbers; otherwise omit this whole subsection]
 
 **Charts:**
-- Line chart: [title from prompt or implied for {page}]
-- Bar chart: [if applicable]
+- [Line/Bar/Donut chart bullets with concrete metrics — e.g. "Line chart: OEE % vs target over time"]
 
 **Filters:**
-- Search, date range, [domain filters from prompt]
+- [Search/date/select filters needed on this page only]
 
 **Actions:**
-- [Export CSV/PDF, Create — only if mentioned for {page}]
+- [Buttons such as Export PDF, Create record — only if relevant]
 
 **Table columns:**
-- [Only if this page is a list/report table; one column per bullet]
+- [Column bullets ONLY if this page is a list, log, or catalog]
 """
 
 
@@ -107,7 +107,7 @@ def build_prd_prompts(
         page_block = "\n".join(_page_spec_template(p) for p in pages) if pages else _page_spec_template("Dashboard")
         system_prompt = f"""You are a senior product manager writing a PRD for a multi-page SaaS web application.
 
-Product name: {product_name}
+Product name (short brand — 1–2 words for the app shell): {product_name}
 
 The user prompt defines pages, KPIs, charts, tables, and workflows. You MUST:
 1. Use the exact application page names: {", ".join(pages) if pages else "as stated in the prompt"}.

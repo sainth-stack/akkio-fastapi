@@ -19,6 +19,17 @@ export const tokens = {
   warning:        '#ed6c02',
   info:           '#0288d1',
   fontFamily:     "'Inter', system-ui, -apple-system, sans-serif",
+  chartPalette: [
+    '#2563eb',
+    '#16a34a',
+    '#ea580c',
+    '#7c3aed',
+    '#0891b2',
+    '#dc2626',
+    '#64748b',
+  ],
+  shellVariant: 'light' as 'light' | 'brand',
+  border: '#e2e8f0',
 } as const;
 
 export type Tokens = typeof tokens;
