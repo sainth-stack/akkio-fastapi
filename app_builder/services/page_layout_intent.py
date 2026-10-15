@@ -358,6 +358,45 @@ def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:
     return defn
 
 
+def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = "") -> Any:
+    """Rebuild page blocks from PRD when LLM/layout left a route empty (e.g. dashboard blocks: [])."""
+    from app_builder.services.prd_driven_layout import blocks_for_page
+    from app_builder.services.prd_structure_parser import section_for_page
+
+    pages = list(getattr(defn, "pages", []) or [])
+    nav = list(getattr(defn, "navigation", []) or [])
+    dash_id = resolve_dashboard_page_id(
+        [(p.id, p.title) for p in pages],
+        [n.pageId for n in nav],
+    )
+    new_pages = []
+    for page in pages:
+        blocks = list(page.blocks or [])
+        structural = [
+            b
+            for b in blocks
+            if isinstance(b, dict)
+            and b.get("type") not in ("text",)
+            and not (b.get("type") == "text" and b.get("hidden"))
+        ]
+        if not structural:
+            section = section_for_page(prd, page.title, page.id) if prd else ""
+            if not section.strip() and requirement:
+                section = section_for_page(requirement, page.title, page.id)
+            body = section or f"### {page.title}\n{page.subtitle or page.title}\n"
+            blocks = blocks_for_page(
+                page.id,
+                page.title,
+                body,
+                dashboard_page_id=dash_id,
+            )
+        new_pages.append(
+            type(page)(id=page.id, title=page.title, subtitle=page.subtitle, blocks=blocks)
+        )
+    defn.pages = new_pages
+    return defn
+
+
 def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "") -> Any:
     """Final guard: KPI cards only on the dashboard route."""
     from app_builder.services.prd_structure_parser import section_for_page

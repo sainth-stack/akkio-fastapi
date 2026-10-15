@@ -58,6 +58,7 @@ Rules:
 - kpiRow ONLY on the Dashboard page (route id/title dashboard or home). NEVER on Analytics, Reports, Sessions, or any other page — even if PRD lists KPIs there.
 - Include charts only for bullets under **Charts:** (use distinct titles and series names from the bullet text).
 - Include dataTable only when **Table columns:** exist or Purpose describes a searchable list/register.
+- dataTable columns MUST use shape {{ "field": "snake_case_key", "header": "Human label" }} — never empty field/header; do not use title/dataKey on column objects.
 - Include filterBar / actionBar only when **Filters:** or **Actions:** (or Purpose) calls for them.
 - Include widgets ONLY when the PRD subsection lists them (**KPIs**, **Charts**, **Table columns**, **Filters**, **Actions**).
 - Do NOT output mock/data — blocks only.

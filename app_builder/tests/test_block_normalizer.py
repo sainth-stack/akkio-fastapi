@@ -37,6 +37,24 @@ class TestBlockNormalizer(unittest.TestCase):
         chart_block = out.pages[0].blocks[2]
         self.assertEqual(len(chart_block.get("series") or []), 2)
 
+    def test_llm_table_columns_title_datakey_repaired(self):
+        from app_builder.services.block_normalizer import repair_data_table_columns
+
+        block = repair_data_table_columns(
+            {
+                "type": "dataTable",
+                "dataKey": "maintenance_events_table",
+                "columns": [
+                    {"title": "Machine", "dataKey": "machine", "field": "", "header": ""},
+                    {"title": "Root Cause", "dataKey": "root_cause", "field": "", "header": ""},
+                ],
+            }
+        )
+        cols = block["columns"]
+        self.assertEqual(cols[0]["field"], "machine")
+        self.assertEqual(cols[0]["header"], "Machine")
+        self.assertEqual(cols[1]["field"], "root_cause")
+
 
 if __name__ == "__main__":
     unittest.main()

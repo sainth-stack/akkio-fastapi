@@ -32,8 +32,9 @@ def _columns_are_invalid(columns: List[Dict[str, Any]]) -> bool:
     for col in columns:
         if not isinstance(col, dict):
             return True
-        field = str(col.get("field") or "")
-        header = re.sub(r"\*+", "", str(col.get("header") or "")).strip()
+        repaired = _normalize_column_def(col, 0)
+        field = str(repaired.get("field") or "")
+        header = str(repaired.get("header") or "").strip()
         if _is_placeholder_field(field) or not header or header in ("**", "*"):
             return True
     return False
@@ -58,11 +59,14 @@ def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
             rng = _seed(dk)
             existing = mock.get(dk)
             rows = existing if isinstance(existing, list) else []
+            sample = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+            generic_row = isinstance(sample, dict) and set(sample.keys()) <= {"id", "name", "status", "updated_at"}
             need_rebuild = (
                 not rows
                 or _table_has_placeholders(rows)
                 or not isinstance(rows[0], dict)
                 or any(f not in rows[0] for f in fields)
+                or (generic_row and any(f not in ("id", "name", "status", "updated_at") for f in fields))
             )
             if not need_rebuild:
                 continue
@@ -94,6 +98,30 @@ def upgrade_maintenance_table_blocks(defn: AppDefinition) -> AppDefinition:
     return defn
 
 
+def _normalize_column_def(col: Dict[str, Any], index: int) -> Dict[str, Any]:
+    """LLM often emits { title, dataKey } with empty field/header — repair for UI + export."""
+    title = re.sub(r"\*+", "", str(col.get("title") or col.get("header") or "")).strip()
+    field = str(col.get("field") or col.get("dataKey") or "").strip()
+    if not field and title:
+        field = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    if not title and field:
+        title = _humanize(field)
+    if _is_placeholder_field(field):
+        field = _field_from_header(title, index)
+    if not field:
+        field = f"column_{index}"
+    if not title or title in ("**", "*"):
+        title = _humanize(field)
+    align = col.get("align")
+    variant = col.get("variant")
+    out: Dict[str, Any] = {"field": field, "header": title}
+    if align:
+        out["align"] = align
+    if variant:
+        out["variant"] = variant
+    return out
+
+
 def repair_data_table_columns(block: Dict[str, Any]) -> Dict[str, Any]:
     b = dict(block)
     cols = b.get("columns")
@@ -103,11 +131,7 @@ def repair_data_table_columns(block: Dict[str, Any]) -> Dict[str, Any]:
     for i, col in enumerate(cols):
         if not isinstance(col, dict):
             continue
-        field = str(col.get("field") or "")
-        header = str(col.get("header") or _humanize(field))
-        if _is_placeholder_field(field):
-            field = _field_from_header(header, i)
-        fixed.append({**col, "field": field, "header": header})
+        fixed.append(_normalize_column_def(col, i))
     b["columns"] = fixed
     return b
 

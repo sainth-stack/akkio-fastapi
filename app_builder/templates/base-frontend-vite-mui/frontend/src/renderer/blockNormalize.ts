@@ -61,8 +61,25 @@ export function normalizeBlock(
   }
 
   if (type === 'dataTable') {
-    const columns = block.columns as Array<{ field: string; header: string }> | undefined;
-    if (columns?.length) return next;
+    const rawCols = block.columns as Array<Record<string, unknown>> | undefined;
+    if (rawCols?.length) {
+      next.columns = rawCols.map((col, i) => {
+        const title = String(col.title || col.header || '').replace(/\*+/g, '').trim();
+        let field = String(col.field || col.dataKey || '').trim();
+        if (!field && title) {
+          field = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+        }
+        const header = title || humanizeField(field || `column_${i}`);
+        if (!field) field = `column_${i}`;
+        return {
+          field,
+          header,
+          align: col.align as 'left' | 'center' | 'right' | undefined,
+          variant: col.variant,
+        };
+      });
+      return next;
+    }
 
     const rows = (getMockSlice(definition, block.dataKey as string) as Record<string, unknown>[]) || [];
     if (!rows.length) return next;
