@@ -13,6 +13,7 @@ import {
 } from '../components/ui';
 import { cleanDisplayTitle } from './displayUtils';
 import type { AppDefinition } from './useAppDefinition';
+import { buildPageExportSheets } from './buildExportSheets';
 import { dataBag, getDataSlice } from './useAppDefinition';
 import { normalizeBlock } from './blockNormalize';
 import { resolveRowKey, resolveXAxisKey } from './chartUtils';
@@ -153,17 +154,10 @@ export default function BlockRenderer({
   const { filters } = usePageFilters();
   const [detailRow, setDetailRow] = useState<Record<string, unknown> | null>(null);
 
-  const exportRows = useMemo(() => {
-    if (!pageBlocks) return [];
-    const all: Record<string, unknown>[] = [];
-    for (const b of pageBlocks) {
-      if (b.type === 'dataTable' && b.dataKey) {
-        const rows = getDataSlice(definition, b.dataKey as string);
-        if (Array.isArray(rows)) all.push(...rows);
-      }
-    }
-    return all;
-  }, [definition, pageBlocks]);
+  const exportSheets = useMemo(
+    () => buildPageExportSheets(pageBlocks, definition),
+    [definition, pageBlocks],
+  );
 
   if (type === 'filterBar') {
     const filterDefs = (normalized.filters as Array<Record<string, unknown>>) || [];
@@ -175,7 +169,7 @@ export default function BlockRenderer({
     return (
       <ActionBar
         actions={actions as never}
-        exportRows={exportRows}
+        exportSheets={exportSheets}
         exportFilename={`${pageId || 'page'}-export.csv`}
       />
     );

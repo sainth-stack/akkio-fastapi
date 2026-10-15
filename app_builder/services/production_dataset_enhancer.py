@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import random
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app_builder.schemas.app_definition import AppDefinition
 
@@ -83,11 +83,16 @@ def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
                 dk = str(block.get("dataKey") or "")
                 cols = block.get("columns") or []
                 fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
+                headers = {
+                    str(c.get("field")): str(c.get("header") or "")
+                    for c in cols
+                    if isinstance(c, dict) and c.get("field")
+                }
                 if not dk or not fields:
                     continue
                 rows = bag.get(dk)
                 if isinstance(rows, list):
-                    bag[dk] = _extend_table(rows, fields, dk, MIN_TABLE_ROWS)
+                    bag[dk] = _extend_table(rows, fields, dk, MIN_TABLE_ROWS, headers=headers)
                     bag[dk] = _polish_status_fields(bag[dk], fields)
 
     defn.mock = bag
@@ -96,6 +101,12 @@ def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
 
 def _format_kpi_value(label: str, vk: str, rng: random.Random) -> str:
     low = f"{label} {vk}".lower()
+    if "mttr" in low or "time to repair" in low:
+        return f"{rng.uniform(0.6, 4.2):.1f} h"
+    if "mtbf" in low or "between failures" in low:
+        return f"{rng.uniform(140, 520):.0f} h"
+    if "work order" in low:
+        return f"{rng.randint(48, 412):,}"
     if "copq" in low or "$" in label or "cost" in low:
         return f"${rng.randint(18, 220)}k"
     if "rate" in low or "yield" in low or "oee" in low or "pass" in low:
@@ -140,18 +151,28 @@ def _extend_chart(
     return out
 
 
-def _extend_table(rows: List[Dict[str, Any]], fields: List[str], data_key: str, target_len: int) -> List[Dict[str, Any]]:
+def _extend_table(
+    rows: List[Dict[str, Any]],
+    fields: List[str],
+    data_key: str,
+    target_len: int,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     from app_builder.services.generic_dataset_builder import _cell_value, _table_has_placeholders
 
+    headers = headers or {}
     if isinstance(rows, list) and _table_has_placeholders(rows):
         rows = []
-    if len(rows) >= target_len:
-        return rows
     rng = _seed(data_key)
-    out = [dict(r) for r in rows if isinstance(r, dict)]
+    out: List[Dict[str, Any]] = []
+    for i, r in enumerate(rows if isinstance(rows, list) else []):
+        if not isinstance(r, dict):
+            continue
+        out.append({f: r.get(f, _cell_value(f, i, rng, headers.get(f, ""))) for f in fields})
     i = len(out)
     while len(out) < target_len:
-        row = {f: _cell_value(f, i, rng) for f in fields}
+        row = {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
         out.append(row)
         i += 1
     return out
@@ -161,9 +182,9 @@ def _polish_status_fields(rows: List[Dict[str, Any]], fields: List[str]) -> List
     status_fields = [f for f in fields if "status" in f.lower() or f.lower() == "severity"]
     if not status_fields:
         return rows
-    good = ("Passed", "Complete", "Normal", "Published", "Running")
-    warn = ("Warning", "Watch", "Draft", "Review", "Idle")
-    bad = ("Critical", "Failed", "Rejected", "Elevated")
+    good = ("Passed", "Complete", "Normal", "Published", "Running", "Resolved", "Operational")
+    warn = ("Warning", "Watch", "Draft", "Review", "Idle", "Scheduled", "In progress")
+    bad = ("Critical", "Failed", "Rejected", "Elevated", "Breakdown")
     rng = random.Random(42)
     for i, row in enumerate(rows):
         for sf in status_fields:

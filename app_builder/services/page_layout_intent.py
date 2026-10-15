@@ -138,13 +138,13 @@ def apply_route_layout_policies(
         intent.chart_cap = 0
         intent.wants_table = False
         intent.wants_filters = False
-        if not intent.wants_kpis:
-            from app_builder.services.prd_compliance import extract_expected_kpis
+        intent.wants_export_actions = False
+        intent.wants_create_action = False
+        intent.wants_kpis = True
+        from app_builder.services.prd_compliance import extract_expected_kpis
 
-            kpis = extract_expected_kpis(section)
-            if kpis:
-                intent.wants_kpis = True
-                intent.kpi_cap = max(intent.kpi_cap, min(8, len(kpis)))
+        kpis = extract_expected_kpis(section)
+        intent.kpi_cap = max(intent.kpi_cap, min(8, len(kpis) if kpis else 3))
     elif role == "reports":
         intent.wants_kpis = False
         intent.kpi_cap = 0
@@ -330,8 +330,23 @@ def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:
             page_id=page.id,
             dashboard_page_id=dash_id,
         )
+        section_body = section or f"### {page.title}\n{page.subtitle or ''}"
         blocks = apply_layout_intent_to_blocks(
             list(page.blocks or []),
+            intent,
+            page_id=page.id,
+            title=page.title,
+        )
+        blocks = ensure_blocks_match_intent(
+            blocks,
+            intent,
+            page_id=page.id,
+            title=page.title,
+            section=section_body,
+            dashboard_page_id=dash_id,
+        )
+        blocks = apply_layout_intent_to_blocks(
+            blocks,
             intent,
             page_id=page.id,
             title=page.title,
@@ -343,8 +358,11 @@ def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:
     return defn
 
 
-def enforce_kpis_on_dashboard_only(defn: Any) -> Any:
+def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "") -> Any:
     """Final guard: KPI cards only on the dashboard route."""
+    from app_builder.services.prd_structure_parser import section_for_page
+    from app_builder.services.prd_driven_layout import _default_maintenance_kpi_items, _extract_kpi_items
+
     pages = list(getattr(defn, "pages", []) or [])
     nav = list(getattr(defn, "navigation", []) or [])
     dash_id = resolve_dashboard_page_id(
@@ -359,7 +377,19 @@ def enforce_kpis_on_dashboard_only(defn: Any) -> Any:
         if page.id != dash_id:
             blocks = [b for b in blocks if not (isinstance(b, dict) and b.get("type") == "kpiRow")]
         else:
+            blocks = [
+                b
+                for b in blocks
+                if not (isinstance(b, dict) and b.get("type") in ("actionBar", "filterBar"))
+            ]
             blocks = _kpi_row_first(blocks)
+            if not any(isinstance(b, dict) and b.get("type") == "kpiRow" for b in blocks):
+                section = section_for_page(prd, page.title, page.id) if prd else ""
+                items = _extract_kpi_items(section, page.id) or _default_maintenance_kpi_items()
+                blocks.insert(
+                    0,
+                    {"type": "kpiRow", "dataKey": f"kpis_{page.id}", "items": items},
+                )
         new_pages.append(
             type(page)(id=page.id, title=page.title, subtitle=page.subtitle, blocks=blocks)
         )

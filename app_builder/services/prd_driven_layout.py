@@ -36,7 +36,12 @@ def _is_kpi_candidate(line: str) -> bool:
         return False
     if re.search(r"\bchart\b|\btable\b|\bfilters?\b|\bexport\b|\bscreen\b", line, re.I):
         return False
-    if re.search(r"\bkpi\b|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality", line, re.I):
+    if re.search(
+        r"\bkpi\b|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality|"
+        r"work order|mtbf|mttr|mean time|downtime|maintenance|availability|oee",
+        line,
+        re.I,
+    ):
         return True
     return False
 
@@ -67,7 +72,23 @@ def _dedupe_columns(cols: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out
 
 
+def _default_maintenance_kpi_items() -> List[Dict[str, str]]:
+    labels = (
+        "Total Maintenance Work Orders",
+        "Mean Time Between Failures (MTBF)",
+        "Mean Time to Repair (MTTR)",
+    )
+    colors = ("primary", "success", "warning", "error", "info", "default")
+    out: List[Dict[str, str]] = []
+    for i, label in enumerate(labels):
+        vk = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40]
+        out.append({"label": label, "valueKey": vk, "color": colors[i % len(colors)]})
+    return out
+
+
 def _extract_kpi_items(section: str, page_id: str) -> List[Dict[str, str]]:
+    from app_builder.services.page_layout_intent import _subsection_text
+
     items: List[Dict[str, str]] = []
     colors = ("primary", "success", "warning", "error", "info", "default")
     seen_labels: Set[str] = set()
@@ -92,12 +113,20 @@ def _extract_kpi_items(section: str, page_id: str) -> List[Dict[str, str]]:
             }
         )
 
+    kpi_block = _subsection_text(section, "kpis") or _subsection_text(section, "kpi")
+    for line in _bullets(kpi_block):
+        parts = re.split(r"[:,]", line, maxsplit=1)
+        label = parts[-1].strip() if len(parts) > 1 else line
+        add(label)
+
     for line in _bullets(section):
         if _is_kpi_candidate(line):
             parts = re.split(r"[:,]", line, maxsplit=1)
             label = parts[-1].strip() if len(parts) > 1 else line
             add(label)
 
+    if not items and re.search(r"maintenance|mtbf|mttr|work order", section, re.I):
+        return _default_maintenance_kpi_items()
     return items[:8]
 
 

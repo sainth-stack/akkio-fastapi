@@ -125,13 +125,20 @@ def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = ""
 
 def _kpi_display(label: str, value_key: str, rng: random.Random) -> str:
     vk = value_key.lower()
+    lab = (label or "").lower()
+    if "mttr" in vk or "mttr" in lab or "time to repair" in lab:
+        return f"{rng.uniform(0.6, 4.2):.1f} h"
+    if "mtbf" in vk or "mtbf" in lab or "between failures" in lab:
+        return f"{rng.uniform(140, 520):.0f} h"
+    if "work order" in vk or "work order" in lab:
+        return f"{rng.randint(48, 412):,}"
     if "rate" in vk or "yield" in vk or "oee" in vk or "pct" in vk:
         return f"{rng.uniform(82, 99.2):.1f}%"
     if "cost" in vk or "copq" in vk or "$" in label:
         return f"${rng.randint(12, 180)}k"
     if "units" in vk or "total" in vk or "count" in vk:
         return f"{rng.randint(1200, 48000):,}"
-    if "time" in vk or "duration" in vk or "mtbf" in vk:
+    if "time" in vk or "duration" in vk:
         return f"{rng.randint(1, 48)}h {rng.randint(0, 59)}m"
     if "open" in vk or "issues" in vk or "alerts" in vk:
         return str(rng.randint(0, 24))
@@ -253,7 +260,7 @@ def _table_has_placeholders(rows: List[Any]) -> bool:
             if isinstance(val, str):
                 if val.startswith("Sample ") or val.startswith("Item "):
                     return True
-                if re.match(r"^(Col\d+|Column \d+)", val, re.I):
+                if re.match(r"^(Col\d+|Column \d+|Field \d+ \d+)", val, re.I):
                     return True
                 if re.search(r"\b(Col1|Col2|Col3)\b", val):
                     return True

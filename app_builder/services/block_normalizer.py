@@ -21,8 +21,77 @@ def _is_placeholder_field(field: str) -> bool:
 
 
 def _field_from_header(header: str, index: int) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", (header or "").lower()).strip("_")
+    clean = re.sub(r"\*+", "", (header or "")).strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")
     return slug or f"field_{index}"
+
+
+def _columns_are_invalid(columns: List[Dict[str, Any]]) -> bool:
+    if not columns:
+        return True
+    for col in columns:
+        if not isinstance(col, dict):
+            return True
+        field = str(col.get("field") or "")
+        header = re.sub(r"\*+", "", str(col.get("header") or "")).strip()
+        if _is_placeholder_field(field) or not header or header in ("**", "*"):
+            return True
+    return False
+
+
+def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
+    """Ensure every table row uses column field keys with display-ready values (export + UI)."""
+    from app_builder.services.generic_dataset_builder import _cell_value, _seed, _table_has_placeholders
+
+    mock = dict(defn.mock or {})
+    for page in defn.pages:
+        for block in page.blocks:
+            if not isinstance(block, dict) or block.get("type") != "dataTable":
+                continue
+            block = repair_data_table_columns(block)
+            dk = str(block.get("dataKey") or "")
+            cols = block.get("columns") or []
+            fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
+            headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
+            if not dk or not fields or _columns_are_invalid(cols):
+                continue
+            rng = _seed(dk)
+            existing = mock.get(dk)
+            rows = existing if isinstance(existing, list) else []
+            need_rebuild = (
+                not rows
+                or _table_has_placeholders(rows)
+                or not isinstance(rows[0], dict)
+                or any(f not in rows[0] for f in fields)
+            )
+            if not need_rebuild:
+                continue
+            mock[dk] = [
+                {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
+                for i in range(max(28, len(rows) if isinstance(rows, list) else 0))
+            ]
+    defn.mock = mock
+    return defn
+
+
+def upgrade_maintenance_table_blocks(defn: AppDefinition) -> AppDefinition:
+    from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
+
+    for page in defn.pages:
+        blob = f"{page.id} {page.title}".lower()
+        if "analytic" not in blob:
+            continue
+        new_blocks: List[Any] = []
+        for block in page.blocks:
+            if not isinstance(block, dict) or block.get("type") != "dataTable":
+                new_blocks.append(block)
+                continue
+            block = repair_data_table_columns(block)
+            if _columns_are_invalid(block.get("columns") or []):
+                block = {**block, "columns": _maintenance_analytics_columns()}
+            new_blocks.append(block)
+        page.blocks = new_blocks
+    return defn
 
 
 def repair_data_table_columns(block: Dict[str, Any]) -> Dict[str, Any]:
@@ -64,9 +133,9 @@ def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
             rows = mock.get(dk)
             if not isinstance(rows, list):
                 continue
-            if rows and not _table_has_placeholders(rows):
+            if rows and not _table_has_placeholders(rows) and not _columns_are_invalid(cols):
                 keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-                if keys == fields:
+                if keys == fields and not any(_is_placeholder_field(k) for k in keys):
                     continue
             rng = _seed(dk)
             rebuilt: List[Dict[str, Any]] = []
@@ -166,6 +235,7 @@ def normalize_block(block: Dict[str, Any], mock: Dict[str, Any], page_id: str) -
 
 
 def normalize_app_definition_blocks(defn: AppDefinition) -> AppDefinition:
+    defn = upgrade_maintenance_table_blocks(defn)
     mock = _mock_bag(defn)
     for page in defn.pages:
         page.blocks = [

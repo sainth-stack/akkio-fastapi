@@ -16,17 +16,34 @@ def _bullets(text: str) -> List[str]:
     return out
 
 
+def _clean_label(text: str) -> str:
+    label = re.sub(r"^\d+[\).\s]+", "", (text or "").strip())
+    label = re.sub(r"^\*+|\*+$", "", label).strip()
+    return label
+
+
 def extract_expected_kpis(section: str) -> List[str]:
+    from app_builder.services.page_layout_intent import _subsection_text
+
     labels: List[str] = []
+    kpi_block = _subsection_text(section, "kpis") or _subsection_text(section, "kpi")
+    for line in _bullets(kpi_block):
+        label = _clean_label(line.split(":")[-1] if ":" in line else line)
+        if 2 < len(label) < 80:
+            labels.append(label)
+
     for line in _bullets(section):
         if re.search(r"\bchart\b|use case|cards displaying|^\*\*", line, re.I):
             continue
         if re.search(r"line chart|bar chart|donut|pie chart|pareto", line, re.I):
             continue
-        if re.search(r"kpi|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality", line, re.I):
-            label = line.split(":")[-1].strip() if ":" in line else line
-            label = re.sub(r"^\d+[\).\s]+", "", label)
-            label = re.sub(r"^\*+|\*+$", "", label).strip()
+        if re.search(
+            r"kpi|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality|"
+            r"work order|mtbf|mttr|mean time|downtime|maintenance",
+            line,
+            re.I,
+        ):
+            label = _clean_label(line.split(":")[-1] if ":" in line else line)
             if 2 < len(label) < 80:
                 labels.append(label)
     block = re.search(r"quality kpis?:\s*\n((?:\s*[-*•].+\n?)+)", section, re.I)
@@ -65,7 +82,13 @@ def extract_expected_table_columns(section: str) -> List[str]:
             bm = re.match(r"^[\s]*[-*•]\s+(.+)$", line.strip())
             if bm:
                 cols.append(bm.group(1).strip())
-    return [c for c in dict.fromkeys(cols) if c.lower() != "actions"]
+    cleaned: List[str] = []
+    for c in dict.fromkeys(cols):
+        name = _clean_label(c)
+        if not name or name in ("**", "*") or name.lower() == "actions":
+            continue
+        cleaned.append(name)
+    return cleaned
 
 
 def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:

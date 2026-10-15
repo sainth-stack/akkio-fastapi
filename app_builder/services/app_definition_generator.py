@@ -682,7 +682,7 @@ def finalize_app_definition(
             PageDef(id=page.id, title=page.title, subtitle=page.subtitle, blocks=blocks)
         )
     defn.pages = cleaned_pages
-    defn = enforce_kpis_on_dashboard_only(defn)
+    defn = enforce_kpis_on_dashboard_only(defn, prd=prd)
     defn = enforce_page_role_blocks(defn, prd=prd)
     mock = dict(defn.mock or {})
     for page in defn.pages:
@@ -693,10 +693,17 @@ def finalize_app_definition(
     from app_builder.services.block_normalizer import repair_table_mock_keys
 
     defn = repair_table_mock_keys(defn)
+    from app_builder.services.block_normalizer import upgrade_maintenance_table_blocks
+
+    defn = upgrade_maintenance_table_blocks(defn)
+    defn = repair_table_mock_keys(defn)
     from app_builder.services.production_dataset_enhancer import enhance_production_datasets
     from app_builder.services.production_data_polish import polish_production_data_bag
 
     defn = enhance_production_datasets(defn)
+    from app_builder.services.block_normalizer import align_table_datasets_to_columns
+
+    defn = align_table_datasets_to_columns(defn)
     defn.mock = polish_production_data_bag(defn)
     mock = dict(defn.mock or {})
     page_ids = {p.id for p in defn.pages}

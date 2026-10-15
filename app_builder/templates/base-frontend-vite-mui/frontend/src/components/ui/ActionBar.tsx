@@ -1,6 +1,7 @@
 import { Button, Paper, Stack } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DownloadIcon from '@mui/icons-material/Download';
+import type { ExportSheet } from '../../renderer/buildExportSheets';
 
 export type ActionDef = {
   id: string;
@@ -8,11 +9,26 @@ export type ActionDef = {
   actionType?: 'primary' | 'exportCsv' | 'exportPdf' | 'create';
 };
 
-function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
-  if (!rows.length) return;
-  const keys = Object.keys(rows[0]);
-  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [keys.join(','), ...rows.map((r) => keys.map((k) => esc(r[k])).join(','))];
+function escCsv(v: unknown): string {
+  return `"${String(v ?? '').replace(/"/g, '""')}"`;
+}
+
+function downloadCsvFromSheets(filename: string, sheets: ExportSheet[]) {
+  if (!sheets.length) return;
+  const lines: string[] = [];
+  for (const sheet of sheets) {
+    if (!sheet.rows.length || !sheet.columns.length) continue;
+    if (sheet.title) {
+      lines.push(`# ${String(sheet.title).replace(/#/g, '')}`);
+    }
+    const fields = sheet.columns.map((c) => c.field);
+    lines.push(sheet.columns.map((c) => escCsv(c.header)).join(','));
+    for (const row of sheet.rows) {
+      lines.push(fields.map((f) => escCsv(row[f])).join(','));
+    }
+    lines.push('');
+  }
+  if (lines.length === 0) return;
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -24,11 +40,11 @@ function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
 
 export default function ActionBar({
   actions,
-  exportRows,
+  exportSheets,
   exportFilename = 'export.csv',
 }: {
   actions: ActionDef[];
-  exportRows?: Record<string, unknown>[];
+  exportSheets?: ExportSheet[];
   exportFilename?: string;
 }) {
   return (
@@ -39,9 +55,13 @@ export default function ActionBar({
           const isPrimary = type === 'primary' || type === 'create';
           const onClick =
             type === 'exportCsv'
-              ? () => downloadCsv(exportFilename, exportRows || [])
+              ? () => downloadCsvFromSheets(exportFilename, exportSheets || [])
               : type === 'exportPdf'
-                ? () => downloadCsv(exportFilename.replace('.csv', '.csv'), exportRows || [])
+                ? () =>
+                    downloadCsvFromSheets(
+                      exportFilename.replace(/\.csv$/i, '') + '-report.csv',
+                      exportSheets || [],
+                    )
                 : undefined;
           return (
             <Button
