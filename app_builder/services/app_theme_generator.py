@@ -102,7 +102,8 @@ _THEME_PRESETS: List[Dict[str, Any]] = [
 ]
 
 _KEYWORD_PRESET: List[Tuple[str, str]] = [
-    (r"manufactur|factory|plant|industrial|quality|oee", "ember"),
+    (r"navy|manufacturing quality|quality monitoring", "midnight"),
+    (r"manufactur|factory|plant|industrial|quality|oee", "midnight"),
     (r"health|clinical|hospital|patient", "teal"),
     (r"finance|bank|ledger|payment|fintech", "midnight"),
     (r"logistics|supply|warehouse|inventory|fleet", "slate"),

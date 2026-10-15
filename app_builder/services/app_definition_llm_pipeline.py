@@ -326,7 +326,12 @@ Generate complete data for every dataKey in these blocks.
         pages=pages,
         mock=mock,
     )
-    defn = _finalize_llm_definition(defn)
+    defn = _finalize_llm_definition(
+        defn,
+        prd=prd,
+        requirement=requirement,
+        plan_json=plan_json,
+    )
     logger.info(
         "[app_definition_llm] done | pages=%d blocks=%d data_keys=%d",
         len(defn.pages),
@@ -336,7 +341,13 @@ Generate complete data for every dataKey in these blocks.
     return defn
 
 
-def _finalize_llm_definition(defn: AppDefinition) -> AppDefinition:
+def _finalize_llm_definition(
+    defn: AppDefinition,
+    *,
+    prd: str = "",
+    requirement: str = "",
+    plan_json: Optional[Dict[str, Any]] = None,
+) -> AppDefinition:
     from app_builder.services.app_definition_generator import finalize_app_definition
 
     defn.meta.generatedBy = defn.meta.generatedBy or "llm_pipeline"
