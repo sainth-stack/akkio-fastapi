@@ -15,6 +15,83 @@ def _humanize(key: str) -> str:
     return s.title() if s else key
 
 
+def _is_placeholder_field(field: str) -> bool:
+    f = (field or "").strip().lower()
+    return bool(re.match(r"^(col_?\d+|field_?\d+|column_?\d+)$", f))
+
+
+def _field_from_header(header: str, index: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", (header or "").lower()).strip("_")
+    return slug or f"field_{index}"
+
+
+def repair_data_table_columns(block: Dict[str, Any]) -> Dict[str, Any]:
+    b = dict(block)
+    cols = b.get("columns")
+    if not isinstance(cols, list):
+        return b
+    fixed: List[Dict[str, Any]] = []
+    for i, col in enumerate(cols):
+        if not isinstance(col, dict):
+            continue
+        field = str(col.get("field") or "")
+        header = str(col.get("header") or _humanize(field))
+        if _is_placeholder_field(field):
+            field = _field_from_header(header, i)
+        fixed.append({**col, "field": field, "header": header})
+    b["columns"] = fixed
+    return b
+
+
+def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
+    from app_builder.services.generic_dataset_builder import _cell_value, _seed, _table_has_placeholders
+
+    mock = dict(defn.mock or {})
+    for page in defn.pages:
+        new_blocks: List[Any] = []
+        for block in page.blocks:
+            if not isinstance(block, dict) or block.get("type") != "dataTable":
+                new_blocks.append(block)
+                continue
+            block = repair_data_table_columns(block)
+            new_blocks.append(block)
+            dk = str(block.get("dataKey") or "")
+            cols = block.get("columns") or []
+            fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
+            headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
+            if not dk or not fields:
+                continue
+            rows = mock.get(dk)
+            if not isinstance(rows, list):
+                continue
+            if rows and not _table_has_placeholders(rows):
+                keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+                if keys == fields:
+                    continue
+            rng = _seed(dk)
+            rebuilt: List[Dict[str, Any]] = []
+            for i, row in enumerate(rows if isinstance(rows, list) else []):
+                old = row if isinstance(row, dict) else {}
+                old_keys = list(old.keys())
+                new_row: Dict[str, Any] = {}
+                for j, f in enumerate(fields):
+                    if f in old and not _is_placeholder_field(str(f)):
+                        new_row[f] = old[f]
+                    elif j < len(old_keys) and not _is_placeholder_field(str(old_keys[j])):
+                        new_row[f] = old[old_keys[j]]
+                    else:
+                        new_row[f] = _cell_value(f, i, rng, headers.get(f, ""))
+                rebuilt.append(new_row)
+            if len(rebuilt) < 12:
+                start = len(rebuilt)
+                for i in range(start, 28):
+                    rebuilt.append({f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields})
+            mock[dk] = rebuilt
+        page.blocks = new_blocks
+    defn.mock = mock
+    return defn
+
+
 def _mock_bag(defn: AppDefinition) -> Dict[str, Any]:
     return dict(defn.mock or {})
 
@@ -65,6 +142,7 @@ def normalize_block(block: Dict[str, Any], mock: Dict[str, Any], page_id: str) -
         return b
 
     if btype == "dataTable":
+        b = repair_data_table_columns(b)
         columns = b.get("columns")
         if isinstance(columns, list) and columns:
             return b
@@ -94,4 +172,5 @@ def normalize_app_definition_blocks(defn: AppDefinition) -> AppDefinition:
             normalize_block(b, mock, page.id) if isinstance(b, dict) else b
             for b in page.blocks
         ]
+    defn = repair_table_mock_keys(defn)
     return defn

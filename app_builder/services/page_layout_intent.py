@@ -105,6 +105,66 @@ def _apply_kpi_dashboard_gate(intent: PageLayoutIntent, page_id: str, dashboard_
         intent.kpi_cap = 0
 
 
+def _page_role(page_id: str, title: str) -> str:
+    if is_dashboard_like(page_id, title):
+        return "dashboard"
+    blob = f"{page_id} {title}".lower().replace("_", " ").replace("-", " ")
+    if re.search(r"\breports?\b", blob):
+        return "reports"
+    if re.search(r"\banalytics?\b", blob):
+        return "analytics"
+    return "other"
+
+
+def apply_route_layout_policies(
+    intent: PageLayoutIntent,
+    *,
+    page_id: str,
+    title: str,
+    section: str,
+    dashboard_page_id: Optional[str],
+) -> None:
+    """Enforce common SaaS page roles (dashboard = KPIs only; reports = charts + export; no default filters)."""
+    filter_block = _subsection_text(section, "filters") or _subsection_text(section, "filter")
+    filter_bullets = _bullets(filter_block)
+    if not filter_bullets:
+        intent.wants_filters = False
+
+    role = _page_role(page_id, title)
+    dash = dashboard_page_id and page_id == dashboard_page_id
+
+    if dash or role == "dashboard":
+        intent.wants_charts = False
+        intent.chart_cap = 0
+        intent.wants_table = False
+        intent.wants_filters = False
+        if not intent.wants_kpis:
+            from app_builder.services.prd_compliance import extract_expected_kpis
+
+            kpis = extract_expected_kpis(section)
+            if kpis:
+                intent.wants_kpis = True
+                intent.kpi_cap = max(intent.kpi_cap, min(8, len(kpis)))
+    elif role == "reports":
+        intent.wants_kpis = False
+        intent.kpi_cap = 0
+        intent.wants_table = False
+        intent.wants_filters = False
+        intent.wants_export_actions = True
+        if not intent.wants_charts:
+            intent.wants_charts = True
+            intent.chart_cap = max(intent.chart_cap, 2)
+    elif role == "analytics":
+        intent.wants_kpis = False
+        intent.kpi_cap = 0
+        intent.wants_filters = False
+        if not intent.wants_table:
+            intent.wants_table = True
+        if not intent.wants_charts:
+            intent.wants_charts = True
+            intent.chart_cap = max(intent.chart_cap, 2)
+
+
 def _infer_from_purpose_when_sparse(intent: PageLayoutIntent, purpose: str) -> None:
     """Soft hints when PRD page section has no widget subsections — any screen name is allowed."""
     p = (purpose or "").lower()
@@ -117,12 +177,9 @@ def _infer_from_purpose_when_sparse(intent: PageLayoutIntent, purpose: str) -> N
         intent.chart_cap = max(intent.chart_cap, 2)
     if re.search(r"\b(search|browse|list|register|catalog|log|directory|grid of)\b", p):
         intent.wants_table = True
-        intent.wants_filters = True
         intent.table_detail = bool(re.search(r"detail|drill|row|click", p))
     if re.search(r"\b(export|report|publish|print|download|share)\b", p):
         intent.wants_export_actions = True
-        intent.wants_table = True
-        intent.wants_filters = True
     if re.search(r"\b(analy|trend|compare|pareto|insight|breakdown|distribution|forecast|correlat)\b", p):
         intent.wants_charts = True
         intent.chart_cap = max(intent.chart_cap, 3)
@@ -186,8 +243,6 @@ def infer_page_layout_intent(
     filter_bullets = _bullets(filter_block)
     if filter_bullets:
         intent.wants_filters = True
-    elif has_filter_header and not _subsection_declares_omit(filter_block):
-        intent.wants_filters = True
 
     action_bullets = _bullets(actions_block)
     if action_bullets:
@@ -219,6 +274,13 @@ def infer_page_layout_intent(
             intent.kpi_cap = 0
 
     _apply_kpi_dashboard_gate(intent, page_id or title, dashboard_page_id)
+    apply_route_layout_policies(
+        intent,
+        page_id=page_id or title,
+        title=title,
+        section=section,
+        dashboard_page_id=dashboard_page_id,
+    )
     return intent
 
 
@@ -247,6 +309,38 @@ def _kpi_row_first(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     kpis = [b for b in blocks if isinstance(b, dict) and b.get("type") == "kpiRow"]
     rest = [b for b in blocks if not (isinstance(b, dict) and b.get("type") == "kpiRow")]
     return kpis + rest if kpis else blocks
+
+
+def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:
+    """Strip widgets that contradict route roles (dashboard KPI-only, reports no table, no filter bars unless PRD lists filters)."""
+    from app_builder.services.prd_structure_parser import section_for_page
+
+    pages = list(getattr(defn, "pages", []) or [])
+    nav = list(getattr(defn, "navigation", []) or [])
+    dash_id = resolve_dashboard_page_id(
+        [(p.id, p.title) for p in pages],
+        [n.pageId for n in nav],
+    )
+    new_pages = []
+    for page in pages:
+        section = section_for_page(prd, page.title, page.id) if prd else ""
+        intent = infer_page_layout_intent(
+            section or f"### {page.title}\n{page.subtitle or ''}",
+            page.title,
+            page_id=page.id,
+            dashboard_page_id=dash_id,
+        )
+        blocks = apply_layout_intent_to_blocks(
+            list(page.blocks or []),
+            intent,
+            page_id=page.id,
+            title=page.title,
+        )
+        new_pages.append(
+            type(page)(id=page.id, title=page.title, subtitle=page.subtitle, blocks=blocks)
+        )
+    defn.pages = new_pages
+    return defn
 
 
 def enforce_kpis_on_dashboard_only(defn: Any) -> Any:
@@ -381,6 +475,11 @@ def ensure_blocks_match_intent(
 
     if intent.wants_table and "dataTable" not in {b.get("type") for b in shaped}:
         cols = _extract_table_columns(section)
+        if not cols and _page_role(page_id, title) == "analytics":
+            from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
+
+            if re.search(r"maintenance|mtbf|mttr|equipment|work order", section, re.I):
+                cols = _maintenance_analytics_columns()
         if not cols:
             cols = [
                 {"field": "id", "header": "ID"},

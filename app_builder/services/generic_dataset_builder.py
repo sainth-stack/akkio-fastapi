@@ -24,6 +24,40 @@ def _human_header(field: str) -> str:
 def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = "") -> Any:
     f = field.lower()
     h = (col_header or field).lower()
+    if "work_order" in f or f == "wo_id":
+        return f"WO-{24000 + row_i}"
+    if f == "shift" or h == "shift":
+        return rng.choice(("Day", "Swing", "Night"))
+    if "root_cause" in f:
+        return rng.choice(
+            (
+                "Bearing wear",
+                "Sensor drift",
+                "Hydraulic leak",
+                "Electrical fault",
+                "Operator error",
+                "Lubrication overdue",
+                "PLC communication",
+            )
+        )
+    if "event_type" in f or "maintenance_type" in f:
+        return rng.choice(("Preventive", "Corrective", "Breakdown", "Inspection", "Calibration"))
+    if f in ("machine", "equipment") or "equipment" in f:
+        assets = (
+            "CNC Mill #3",
+            "Conveyor A",
+            "Hydraulic Press 2",
+            "Packaging Robot",
+            "Injection Molder 5",
+            "Welding Station 1",
+        )
+        return assets[row_i % len(assets)]
+    if "downtime" in f and "hour" in f:
+        return round(rng.uniform(0.25, 6.5), 2)
+    if f == "mtbf_hours" or "mtbf" in f:
+        return round(rng.uniform(120, 520), 1)
+    if f == "mttr_hours" or "mttr" in f:
+        return round(rng.uniform(0.5, 4.5), 2)
     if f == "session_id" or f.endswith("session_id"):
         return f"SES-{4100 + row_i}"
     if f == "machine_id" or (f.endswith("_id") and "machine" in f):
@@ -210,12 +244,19 @@ def _pie_rows(
 
 
 def _table_has_placeholders(rows: List[Any]) -> bool:
-    for row in rows[:5]:
+    for row in rows[:8]:
         if not isinstance(row, dict):
             continue
-        for val in row.values():
-            if isinstance(val, str) and (val.startswith("Sample ") or val.startswith("Item ")):
+        for key, val in row.items():
+            if isinstance(key, str) and re.match(r"^(col_?\d+|field_?\d+|column_?\d+)$", key.strip(), re.I):
                 return True
+            if isinstance(val, str):
+                if val.startswith("Sample ") or val.startswith("Item "):
+                    return True
+                if re.match(r"^(Col\d+|Column \d+)", val, re.I):
+                    return True
+                if re.search(r"\b(Col1|Col2|Col3)\b", val):
+                    return True
     return False
 
 

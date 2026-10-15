@@ -101,6 +101,24 @@ def _extract_kpi_items(section: str, page_id: str) -> List[Dict[str, str]]:
     return items[:8]
 
 
+def _maintenance_analytics_columns() -> List[Dict[str, str]]:
+    return [
+        {"field": "work_order_id", "header": "Work order"},
+        {"field": "machine", "header": "Machine"},
+        {"field": "production_line", "header": "Production line"},
+        {"field": "equipment", "header": "Equipment"},
+        {"field": "shift", "header": "Shift"},
+        {"field": "event_type", "header": "Event type"},
+        {"field": "root_cause", "header": "Root cause"},
+        {"field": "severity", "header": "Severity"},
+        {"field": "status", "header": "Status"},
+        {"field": "downtime_hours", "header": "Downtime (h)", "align": "right"},
+        {"field": "mtbf_hours", "header": "MTBF (h)", "align": "right"},
+        {"field": "mttr_hours", "header": "MTTR (h)", "align": "right"},
+        {"field": "occurred_at", "header": "Occurred at"},
+    ]
+
+
 def _extract_table_columns(section: str) -> List[Dict[str, str]]:
     from app_builder.services.prd_compliance import extract_expected_table_columns
 
@@ -109,11 +127,13 @@ def _extract_table_columns(section: str) -> List[Dict[str, str]]:
         field = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
         if field == "actions":
             continue
+        if not field:
+            field = f"field_{len(cols)}"
         cols.append(
             {
-                "field": field or f"col_{len(cols)}",
+                "field": field,
                 "header": name,
-                **({"align": "right"} if "rate" in field or "units" in field else {}),
+                **({"align": "right"} if "rate" in field or "units" in field or "hours" in field else {}),
             }
         )
     for line in section.splitlines():
@@ -123,7 +143,9 @@ def _extract_table_columns(section: str) -> List[Dict[str, str]]:
                 name = part.strip()
                 if name and name.lower() != "actions":
                     field = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-                    cols.append({"field": field or f"col_{len(cols)}", "header": name})
+                    if not field:
+                        field = f"field_{len(cols)}"
+                    cols.append({"field": field, "header": name})
     return _dedupe_columns(cols)[:16]
 
 
@@ -237,7 +259,7 @@ def blocks_for_page(
     blocks: List[Dict[str, Any]] = []
     low = section.lower()
 
-    if intent.wants_filters or re.search(r"filter|date.range|export|search", low):
+    if intent.wants_filters:
         filters: List[Dict[str, Any]] = [{"id": "search", "label": "Search", "filterType": "search"}]
         if "date" in low:
             filters.append({"id": "date", "label": "Date range", "filterType": "dateRange"})
@@ -286,6 +308,9 @@ def blocks_for_page(
 
     cols = _extract_table_columns(section)
     if intent.wants_table and (cols or re.search(r"table", low)):
+        if not cols and re.search(r"\banalytics?\b", f"{page_id} {title}".lower()):
+            if re.search(r"maintenance|mtbf|mttr|equipment|work order", low):
+                cols = _maintenance_analytics_columns()
         if not cols:
             cols = [
                 {"field": "id", "header": "ID"},

@@ -8,7 +8,11 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from app_builder.schemas.app_definition import AppDefinition, AppMeta, AppTheme, NavItemDef, PageDef
 from app_builder.schemas.app_definition_llm import AppShellPlan, PageBlocksPlan, PageDataPlan
 from app_builder.services.app_definition_compiler import _theme_from_tokens
-from app_builder.services.app_definition_generator import extract_screens_from_plan, resolve_app_display_name
+from app_builder.services.app_definition_generator import (
+    align_shell_plan_to_screens,
+    extract_screens_from_plan,
+    resolve_app_display_name,
+)
 from app_builder.services.prd_compliance import page_gaps
 from app_builder.services.page_layout_intent import (
     apply_layout_intent_to_blocks,
@@ -27,7 +31,7 @@ _SHELL_SYSTEM = """You are a principal product architect. Output ONLY valid JSON
 Derive navigation and page outlines from the user's requirement, PRD, and UI/UX docs.
 - navigation.length MUST equal pages.length; every pageId must match a page id.
 - First navigation path MUST be "/".
-- Use 2–8 pages; reflect exact page names from the PRD when present (e.g. Dashboard, Sessions, Reports, Analytics).
+- Use 2–8 pages; navigation.label and pages[].title MUST match the Suggested screens list exactly when provided (same spelling and order).
 - Icons: MUI names (Dashboard, FactCheck, Assessment, ShowChart, People, Settings, PrecisionManufacturing).
 - subtitle: one sentence describing what the page shows (from PRD).
 - domain: short slug inferred from the product (e.g. manufacturing_quality), not a hardcoded list.
@@ -67,7 +71,7 @@ Rules:
 - Keys MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists).
 - KPI bundles: objects with string values matching labels (%, counts, currency as in PRD).
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
-- Tables: arrays of 28–36 objects; keys MUST match column field names exactly; use realistic manufacturing/QMS names.
+- Tables: arrays of 28–36 objects; keys MUST match column field names exactly (never col1, col2, or field_0); use realistic manufacturing/maintenance names.
 - Production lines: Line A, Line B, Press 1; products: part numbers; operators: realistic names.
 - Charts: arrays of 14–20 objects; xAxis field must match block xAxisKey (period, category, shift, etc.).
 - Every series[].dataKey in blocks must exist on each chart row with realistic numeric values.
@@ -133,10 +137,18 @@ Suggested screens:
     shell: Optional[AppShellPlan] = await _llm_validated(llm, _SHELL_SYSTEM, shell_user, AppShellPlan, "app_shell")
     if shell is None:
         return None
+    if screens:
+        shell = align_shell_plan_to_screens(shell, screens)
 
-    from app_builder.services.app_theme_generator import generate_app_theme, merge_design_tokens_into_theme
+    from app_builder.services.app_theme_generator import (
+        ensure_theme_variation_seed,
+        generate_app_theme,
+        merge_design_tokens_into_theme,
+    )
 
     plan = plan_json or {}
+    variation_seed = ensure_theme_variation_seed(plan)
+    plan["theme_variation_seed"] = variation_seed
     tokens = plan.get("design_tokens") if isinstance(plan.get("design_tokens"), dict) else None
     display_name_early = resolve_app_display_name(
         requirement=requirement,
@@ -148,8 +160,9 @@ Suggested screens:
         app_name=display_name_early,
         domain=str(plan.get("blueprint", {}).get("domain", "") if isinstance(plan.get("blueprint"), dict) else "generic"),
         requirement=requirement,
+        variation_seed=variation_seed,
     )
-    theme = merge_design_tokens_into_theme(theme, tokens)
+    theme = merge_design_tokens_into_theme(theme, tokens, preserve_generated_colors=True)
     display_name = resolve_app_display_name(
         requirement=requirement,
         prd=prd,
@@ -352,10 +365,14 @@ def _finalize_llm_definition(
 
     defn.meta.generatedBy = defn.meta.generatedBy or "llm_pipeline"
     plan = plan_json or {}
+    from app_builder.services.app_theme_generator import ensure_theme_variation_seed
+
     tokens = plan.get("design_tokens") if isinstance(plan.get("design_tokens"), dict) else None
+    seed = str(plan.get("theme_variation_seed") or "") or ensure_theme_variation_seed(plan)
     return finalize_app_definition(
         defn,
         prd=prd,
         requirement=requirement,
         design_tokens=tokens,
+        theme_variation_seed=seed,
     )

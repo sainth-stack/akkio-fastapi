@@ -24,15 +24,18 @@ class TestPageLayoutIntent(unittest.TestCase):
 - Date range
 - Production line
 """
-        intent = infer_page_layout_intent(section, "Dashboard")
+        intent = infer_page_layout_intent(section, "Dashboard", page_id="dashboard")
         self.assertTrue(intent.wants_kpis)
-        self.assertTrue(intent.wants_charts)
+        self.assertFalse(intent.wants_charts)
         self.assertFalse(intent.wants_table)
+        self.assertFalse(intent.wants_filters)
 
-        blocks = blocks_for_page("dashboard", "Dashboard", section)
+        blocks = blocks_for_page("dashboard", "Dashboard", section, dashboard_page_id="dashboard")
         types = [b["type"] for b in blocks]
         self.assertIn("kpiRow", types)
         self.assertNotIn("dataTable", types)
+        self.assertNotIn("filterBar", types)
+        self.assertNotIn("lineChart", types)
 
     def test_sessions_list_table_focus(self):
         from app_builder.services.prd_driven_layout import blocks_for_page
@@ -115,11 +118,24 @@ class TestPageLayoutIntent(unittest.TestCase):
 - Export PDF
 - Export CSV
 """
-        intent = infer_page_layout_intent(section, "Reports")
+        intent = infer_page_layout_intent(section, "Reports", page_id="reports")
         self.assertTrue(intent.wants_export_actions)
-        self.assertTrue(intent.wants_table)
+        self.assertFalse(intent.wants_table)
         self.assertFalse(intent.wants_kpis)
-        self.assertEqual(intent.chart_cap, 1)
+        self.assertFalse(intent.wants_filters)
+        self.assertGreaterEqual(intent.chart_cap, 1)
+
+
+    def test_requirement_pages_list_sidebar_names(self):
+        from app_builder.services.app_definition_generator import extract_screens_from_plan
+
+        req = (
+            "Create a Manufacturing Maintenance Monitoring Dashboard with 3 pages: "
+            "Dashboard, Reports, and Analytics."
+        )
+        screens = extract_screens_from_plan(requirement=req, prd="", uiux="", plan_json={})
+        titles = [s["title"] for s in screens]
+        self.assertEqual(titles[:3], ["Dashboard", "Reports", "Analytics"])
 
 
 if __name__ == "__main__":

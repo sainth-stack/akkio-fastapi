@@ -5,6 +5,7 @@ import re
 from typing import List, Tuple
 
 from app_builder.services.app_definition_generator import (
+    _normalize_prompt_text,
     _screens_from_numbered_prompt_list,
     _screens_from_requirement_phrase,
     resolve_app_display_name,
@@ -49,8 +50,19 @@ Formatting:
 - Do not add a Tech Stack section unless building a fullstack enterprise app."""
 
 
+def _page_layout_hint(page: str) -> str:
+    low = (page or "").lower()
+    if re.search(r"\b(dashboard|home|overview)\b", low):
+        return "Layout: **KPIs only** on this page (no Charts, Filters, or Table columns unless the user explicitly put them on Dashboard)."
+    if re.search(r"\breports?\b", low):
+        return "Layout: **Charts** + **Actions** (Export PDF/CSV). No **Table columns**. Omit **Filters** unless the user requested filters."
+    if re.search(r"\banalytics?\b", low):
+        return "Layout: **Charts** + **Table columns** with realistic field names (machine, line, shift, root cause, severity). Omit **Filters** unless the user requested filters."
+    return ""
+
+
 def infer_pages_from_requirement(requirement: str) -> List[str]:
-    combined = requirement or ""
+    combined = _normalize_prompt_text(requirement or "")
     screens = _screens_from_numbered_prompt_list(combined)
     if len(screens) < 2:
         screens = _screens_from_requirement_phrase(combined)
@@ -74,9 +86,11 @@ def is_multi_page_dashboard_prompt(requirement: str) -> bool:
 
 
 def _page_spec_template(page: str) -> str:
+    hint = _page_layout_hint(page)
+    hint_line = f"\n[{hint}]\n" if hint else "\n"
     return f"""### {page}
 **Purpose:** [One sentence — what the user does on {page}; infer from the prompt, any domain]
-
+{hint_line}
 **KPIs:**
 - [Metric bullets ONLY if this page shows summary numbers; otherwise omit this whole subsection]
 
@@ -103,6 +117,21 @@ def build_prd_prompts(
     product_name = resolve_app_display_name(requirement=requirement)
     pages = infer_pages_from_requirement(requirement)
 
+    maintenance = bool(re.search(r"maintenance|mtbf|mttr|work order|downtime", requirement or "", re.I))
+    kpi_defs = ""
+    if maintenance:
+        kpi_defs = """
+## KPI Definitions
+- **Total Maintenance Work Orders:** Count of open + closed work orders in the selected period.
+- **MTBF (Mean Time Between Failures):** Average operating time between unplanned failures (hours).
+- **MTTR (Mean Time to Repair):** Average time from failure detection to restored operation (hours).
+
+## Maintenance status workflow
+- **Scheduled** → **In progress** → **Completed** (preventive/corrective)
+- **Breakdown reported** → **Triaged** → **Repair in progress** → **Resolved** / **Deferred**
+- Use green for operational/resolved, amber for scheduled/warning, red for critical/breakdown.
+"""
+
     if is_multi_page_dashboard_prompt(requirement):
         page_block = "\n".join(_page_spec_template(p) for p in pages) if pages else _page_spec_template("Dashboard")
         system_prompt = f"""You are a senior product manager writing a PRD for a multi-page SaaS web application.
@@ -125,7 +154,7 @@ Required Markdown outline:
 
 ## Application Pages
 {page_block}
-
+{kpi_defs}
 ## Functional Requirements
 
 ## Non-Functional Requirements

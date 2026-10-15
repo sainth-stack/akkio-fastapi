@@ -101,17 +101,34 @@ _THEME_PRESETS: List[Dict[str, Any]] = [
     },
 ]
 
-_KEYWORD_PRESET: List[Tuple[str, str]] = [
-    (r"navy|manufacturing quality|quality monitoring", "midnight"),
-    (r"manufactur|factory|plant|industrial|quality|oee", "midnight"),
-    (r"health|clinical|hospital|patient", "teal"),
-    (r"finance|bank|ledger|payment|fintech", "midnight"),
-    (r"logistics|supply|warehouse|inventory|fleet", "slate"),
-    (r"security|cyber|threat", "violet"),
-    (r"energy|utility|grid|solar", "forest"),
-    (r"retail|commerce|shop", "rose"),
-    (r"analytics|data|insight", "ocean"),
+# Soft pools — hash picks one preset per app (avoids every manufacturing app = same midnight blue).
+_PRESET_POOLS: List[Tuple[str, List[str]]] = [
+    (r"health|clinical|hospital|patient", ["teal", "forest", "ocean"]),
+    (r"finance|bank|ledger|payment|fintech", ["midnight", "slate", "violet"]),
+    (r"logistics|supply|warehouse|inventory|fleet", ["slate", "ocean", "midnight"]),
+    (r"security|cyber|threat", ["violet", "slate", "midnight"]),
+    (r"energy|utility|grid|solar", ["forest", "teal", "ocean"]),
+    (r"retail|commerce|shop", ["rose", "ember", "ocean"]),
+    (
+        r"manufactur|maintenance|factory|plant|industrial|quality|oee|navy|monitoring",
+        ["midnight", "slate", "teal", "ocean", "forest", "violet"],
+    ),
+    (r"analytics|data|insight", ["ocean", "violet", "slate", "midnight"]),
 ]
+
+_GENERIC_PRIMARIES = frozenset(
+    {
+        "#1976d2",
+        "#1565c0",
+        "#1d4ed8",
+        "#1e3a8a",
+        "#0b3d6f",
+        "#082847",
+        "#2563eb",
+        "#4f46e5",
+        "#0ea5e9",
+    }
+)
 
 
 def _seed_index(*parts: str) -> int:
@@ -127,15 +144,28 @@ def _preset_by_id(pid: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _pick_preset(requirement: str, domain: str, app_name: str) -> Dict[str, Any]:
-    blob = f"{requirement} {domain} {app_name}".lower()
-    for pattern, preset_id in _KEYWORD_PRESET:
+def _candidate_preset_ids(blob: str) -> List[str]:
+    for pattern, pool in _PRESET_POOLS:
         if re.search(pattern, blob):
-            found = _preset_by_id(preset_id)
-            if found:
-                return found
-    idx = _seed_index(app_name, domain, requirement[:800]) % len(_THEME_PRESETS)
-    return _THEME_PRESETS[idx]
+            return pool
+    return [p["id"] for p in _THEME_PRESETS]
+
+
+def _pick_preset(
+    requirement: str,
+    domain: str,
+    app_name: str,
+    *,
+    variation_seed: str = "",
+) -> Dict[str, Any]:
+    blob = f"{requirement} {domain} {app_name}".lower()
+    pool = _candidate_preset_ids(blob)
+    idx = _seed_index(app_name, domain, requirement[:800], variation_seed) % len(pool)
+    preset_id = pool[idx]
+    found = _preset_by_id(preset_id)
+    if found:
+        return found
+    return _THEME_PRESETS[_seed_index(variation_seed, app_name) % len(_THEME_PRESETS)]
 
 
 def theme_is_default(theme: Optional[AppTheme]) -> bool:
@@ -144,16 +174,28 @@ def theme_is_default(theme: Optional[AppTheme]) -> bool:
     return (theme.primary or "").lower() == _DEFAULT_PRIMARY.lower()
 
 
+def theme_looks_generic(theme: Optional[AppTheme]) -> bool:
+    if theme is None:
+        return True
+    return (theme.primary or "").lower() in _GENERIC_PRIMARIES
+
+
 def generate_app_theme(
     *,
     app_name: str = "App",
     domain: str = "generic",
     requirement: str = "",
     description: str = "",
+    variation_seed: str = "",
 ) -> AppTheme:
-    preset = _pick_preset(f"{requirement} {description}", domain, app_name)
+    preset = _pick_preset(
+        f"{requirement} {description}",
+        domain,
+        app_name,
+        variation_seed=variation_seed,
+    )
     fonts = ("Inter", "DM Sans", "Plus Jakarta Sans", "Source Sans 3")
-    font_idx = _seed_index(app_name, "font") % len(fonts)
+    font_idx = _seed_index(app_name, "font", variation_seed) % len(fonts)
     return AppTheme(
         primary=preset["primary"],
         primaryDark=preset["primaryDark"],
@@ -174,7 +216,12 @@ def generate_app_theme(
     )
 
 
-def merge_design_tokens_into_theme(theme: AppTheme, design_tokens: Optional[Dict[str, Any]]) -> AppTheme:
+def merge_design_tokens_into_theme(
+    theme: AppTheme,
+    design_tokens: Optional[Dict[str, Any]],
+    *,
+    preserve_generated_colors: bool = True,
+) -> AppTheme:
     if not design_tokens:
         return theme
     from app_builder.services.app_definition_compiler import _theme_from_tokens
@@ -182,12 +229,20 @@ def merge_design_tokens_into_theme(theme: AppTheme, design_tokens: Optional[Dict
     override = _theme_from_tokens(design_tokens)
     data = theme.model_dump()
     o = override.model_dump()
+    token_primary = (o.get("primary") or "").lower()
+    skip_colors = preserve_generated_colors and token_primary in _GENERIC_PRIMARIES
+    color_keys = frozenset(
+        {"primary", "primaryDark", "primaryLight", "secondary", "background", "surface", "chartPalette"}
+    )
     for key, val in o.items():
-        if val and (key not in data or theme_is_default(theme) or key in ("primary", "chartPalette", "background")):
-            if key == "chartPalette" and isinstance(val, list) and val:
-                data[key] = val
-            elif val:
-                data[key] = val
+        if not val:
+            continue
+        if skip_colors and key in color_keys:
+            continue
+        if key == "chartPalette" and isinstance(val, list) and val:
+            data[key] = val
+        elif val:
+            data[key] = val
     return AppTheme(**data)
 
 
@@ -215,14 +270,31 @@ def ensure_app_visual_identity(
     *,
     requirement: str = "",
     design_tokens: Optional[Dict[str, Any]] = None,
+    variation_seed: str = "",
 ) -> AppDefinition:
-    """Assign a unique theme per app when none was provided; sync chart series colors."""
-    if theme_is_default(defn.theme):
+    """Assign a varied theme per build; sync chart series colors."""
+    if theme_is_default(defn.theme) or theme_looks_generic(defn.theme):
         defn.theme = generate_app_theme(
             app_name=defn.meta.appName,
             domain=defn.meta.domain or "generic",
             requirement=requirement,
             description=defn.meta.description or "",
+            variation_seed=variation_seed,
         )
-    defn.theme = merge_design_tokens_into_theme(defn.theme, design_tokens)
+    defn.theme = merge_design_tokens_into_theme(
+        defn.theme,
+        design_tokens,
+        preserve_generated_colors=True,
+    )
     return apply_theme_to_chart_blocks(defn)
+
+
+def ensure_theme_variation_seed(plan_json: Optional[Dict[str, Any]]) -> str:
+    """Stable per codegen run; new seed on each hydrate when missing."""
+    import uuid
+
+    plan = plan_json if isinstance(plan_json, dict) else {}
+    existing = str(plan.get("theme_variation_seed") or "").strip()
+    if existing:
+        return existing
+    return uuid.uuid4().hex[:16]

@@ -59,8 +59,18 @@ def _title_from_requirement(requirement: str, fallback: str = "Workspace") -> st
     return fallback
 
 
+def _normalize_prompt_text(text: str) -> str:
+    """Strip zero-width chars and normalize bullet glyphs for screen parsing."""
+    if not text:
+        return ""
+    t = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
+    t = re.sub(r"•\s*", "- ", t)
+    return t
+
+
 def _screens_from_numbered_prompt_list(text: str) -> List[Dict[str, str]]:
     """Parse '1. **Dashboard:** …' style page lists in the user prompt."""
+    text = _normalize_prompt_text(text)
     if not text:
         return []
     out: List[Dict[str, str]] = []
@@ -98,11 +108,24 @@ def _is_nav_screen_title(title: str) -> bool:
 
 def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
     """Parse '… with dashboard, analytics and reports' style lists."""
+    text = _normalize_prompt_text(text)
     if not text:
         return []
     numbered = _screens_from_numbered_prompt_list(text)
     if len(numbered) >= 2:
         return numbered
+    pages_list = re.search(r"with\s+\d+\s+pages?\s*:\s*([^.;\n]+)", text, re.I)
+    if pages_list:
+        chunk = pages_list.group(1)
+        parts = re.split(r",|\band\b", chunk)
+        out: List[Dict[str, str]] = []
+        for p in parts:
+            name = p.strip()
+            if 2 < len(name) < 48 and _is_nav_screen_title(name):
+                title = name[0].upper() + name[1:] if name.islower() else name
+                out.append({"id": _slug(title), "title": title, "purpose": title})
+        if len(out) >= 2:
+            return out
     low = text.lower()
     for pattern in (
         r"(?:with|including|screens?)\s+([^.;\n]+)",
@@ -214,34 +237,78 @@ def extract_screens_from_plan(
     plan_json = plan_json or {}
     combined = "\n".join([requirement, prd, uiux])
 
-    arch_screens = _dedupe_screens(_screens_from_architecture(plan_json.get("architecture")))
-    req_screens = _dedupe_screens(_screens_from_requirement_phrase(combined))
-    if len(arch_screens) >= 2:
-        screens = arch_screens
-    elif len(req_screens) >= 2:
-        screens = req_screens
+    req_from_requirement = _dedupe_screens(_screens_from_requirement_phrase(requirement or ""))
+    if len(req_from_requirement) >= 2:
+        screens = req_from_requirement
     else:
-        collected: List[Dict[str, str]] = []
-        collected.extend(_screens_from_prd_dict(plan_json.get("prd")))
-        collected.extend(arch_screens)
-        bp = plan_json.get("blueprint")
-        if isinstance(bp, dict):
-            collected.extend(_screens_from_blueprint_nav(bp))
-        collected.extend(req_screens)
+        arch_screens = _dedupe_screens(_screens_from_architecture(plan_json.get("architecture")))
+        req_screens = _dedupe_screens(_screens_from_requirement_phrase(combined))
+        if len(req_screens) >= 2:
+            screens = req_screens
+        elif len(arch_screens) >= 2:
+            screens = arch_screens
+        else:
+            collected: List[Dict[str, str]] = []
+            collected.extend(_screens_from_prd_dict(plan_json.get("prd")))
+            collected.extend(arch_screens)
+            bp = plan_json.get("blueprint")
+            if isinstance(bp, dict):
+                collected.extend(_screens_from_blueprint_nav(bp))
+            collected.extend(req_screens)
 
-        for m in re.finditer(r"(?m)^#+\s*(.+)$", prd or ""):
-            t = re.sub(r"^\d+[\.\)]\s*", "", m.group(1).strip())
-            if _is_nav_screen_title(t) and not t.lower().startswith(("prd", "goal", "feature")):
-                collected.append({"id": _slug(t), "title": t, "purpose": t})
+            for m in re.finditer(r"(?m)^#+\s*(.+)$", prd or ""):
+                t = re.sub(r"^\d+[\.\)]\s*", "", m.group(1).strip())
+                if _is_nav_screen_title(t) and not t.lower().startswith(("prd", "goal", "feature")):
+                    collected.append({"id": _slug(t), "title": t, "purpose": t})
 
-        if not collected:
-            collected.extend(_screens_from_requirement_phrase(requirement))
-        screens = _dedupe_screens(collected)
+            if not collected:
+                collected.extend(_screens_from_requirement_phrase(requirement))
+            screens = _dedupe_screens(collected)
 
     screens = screens[:8]
     if screens and screens[0]["id"] != "dashboard" and "dashboard" in screens[0]["title"].lower():
         screens[0]["id"] = "dashboard"
     return screens
+
+
+def align_shell_plan_to_screens(shell: Any, screens: List[Dict[str, str]]) -> Any:
+    """Force LLM shell page ids/titles and nav labels to match parsed requirement screens."""
+    from app_builder.schemas.app_definition_llm import AppShellPlan, NavItemPlan, PageOutlinePlan
+
+    if not isinstance(shell, AppShellPlan) or not screens or not shell.pages:
+        return shell
+    n = min(len(screens), len(shell.pages))
+    if n < 1:
+        return shell
+    pages: List[PageOutlinePlan] = []
+    for i in range(len(shell.pages)):
+        if i < n:
+            s = screens[i]
+            old = shell.pages[i]
+            pages.append(
+                PageOutlinePlan(
+                    id=str(s.get("id") or old.id),
+                    title=str(s.get("title") or old.title),
+                    subtitle=old.subtitle or str(s.get("purpose") or s.get("title") or ""),
+                )
+            )
+        else:
+            pages.append(shell.pages[i])
+    navigation: List[NavItemPlan] = []
+    for i, nav in enumerate(shell.navigation):
+        page = pages[i] if i < len(pages) else None
+        if page is not None:
+            navigation.append(
+                NavItemPlan(
+                    label=page.title,
+                    path="/" if i == 0 else (nav.path if nav.path and nav.path != "/" else f"/{page.id}"),
+                    icon=nav.icon or "Article",
+                    pageId=page.id,
+                )
+            )
+        else:
+            navigation.append(nav)
+    return shell.model_copy(update={"pages": pages, "navigation": navigation})
 
 
 _BRAND_STOP = frozenset(
@@ -564,6 +631,9 @@ def hydrate_plan_json(
             plan["architecture"] = architecture
     if design_tokens and not plan.get("design_tokens"):
         plan["design_tokens"] = design_tokens
+    from app_builder.services.app_theme_generator import ensure_theme_variation_seed
+
+    plan.setdefault("theme_variation_seed", ensure_theme_variation_seed(plan))
     return plan
 
 
@@ -573,6 +643,7 @@ def finalize_app_definition(
     prd: str = "",
     requirement: str = "",
     design_tokens: Optional[Dict[str, Any]] = None,
+    theme_variation_seed: str = "",
 ) -> AppDefinition:
     """Ensure mock data exists for every block reference; align nav pageIds."""
     from app_builder.services.page_layout_intent import strip_misplaced_kpi_blocks
@@ -584,9 +655,11 @@ def finalize_app_definition(
         defn,
         requirement=requirement,
         design_tokens=design_tokens,
+        variation_seed=theme_variation_seed,
     )
     from app_builder.services.page_layout_intent import (
         enforce_kpis_on_dashboard_only,
+        enforce_page_role_blocks,
         resolve_dashboard_page_id,
     )
 
@@ -610,12 +683,16 @@ def finalize_app_definition(
         )
     defn.pages = cleaned_pages
     defn = enforce_kpis_on_dashboard_only(defn)
+    defn = enforce_page_role_blocks(defn, prd=prd)
     mock = dict(defn.mock or {})
     for page in defn.pages:
         mock.update(_collect_mock_keys(page.blocks))
     defn.mock = mock
     defn = normalize_app_definition_blocks(defn)
     defn = ensure_datasets_from_blocks(defn)
+    from app_builder.services.block_normalizer import repair_table_mock_keys
+
+    defn = repair_table_mock_keys(defn)
     from app_builder.services.production_dataset_enhancer import enhance_production_datasets
     from app_builder.services.production_data_polish import polish_production_data_bag
 
@@ -626,13 +703,15 @@ def finalize_app_definition(
     navigation: List[NavItemDef] = []
     for i, nav in enumerate(defn.navigation):
         page_id = nav.pageId if nav.pageId in page_ids else (defn.pages[i].id if i < len(defn.pages) else nav.pageId)
+        page_match = next((p for p in defn.pages if p.id == page_id), None)
+        label = page_match.title if page_match else nav.label
         icon = nav.icon or "Article"
-        if icon == "Dashboard" and nav.label.lower() != "dashboard":
-            icon = _icon_for_label(nav.label)
+        if icon == "Dashboard" and label.lower() != "dashboard":
+            icon = _icon_for_label(label)
         elif not nav.icon or nav.icon == "Article":
-            icon = _icon_for_label(nav.label)
+            icon = _icon_for_label(label)
         navigation.append(
-            NavItemDef(label=nav.label, path=nav.path, icon=icon, pageId=page_id)
+            NavItemDef(label=label, path=nav.path, icon=icon, pageId=page_id)
         )
     defn.navigation = navigation
     defn.mock = mock
@@ -809,6 +888,7 @@ async def resolve_app_definition(
                     design_tokens=plan_json.get("design_tokens")
                     if isinstance(plan_json.get("design_tokens"), dict)
                     else None,
+                    theme_variation_seed=str(plan_json.get("theme_variation_seed") or ""),
                 )
         if llm_def is not None:
             llm_def.meta.appName = resolve_app_display_name(
@@ -842,6 +922,7 @@ async def resolve_app_definition(
         prd=prd,
         requirement=requirement,
         design_tokens=plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None,
+        theme_variation_seed=str(plan_json.get("theme_variation_seed") or ""),
     )
 
 
@@ -872,4 +953,5 @@ def resolve_app_definition_sync(
         prd=prd,
         requirement=requirement,
         design_tokens=plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None,
+        theme_variation_seed=str(plan_json.get("theme_variation_seed") or ""),
     )
