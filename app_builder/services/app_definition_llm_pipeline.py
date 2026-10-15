@@ -246,6 +246,7 @@ UI/UX excerpt:
                 outline.id,
                 outline.title,
                 section=section_body,
+                dashboard_page_id=dashboard_page_id,
             )
 
         def _plan_from_prd() -> PageBlocksPlan:
@@ -268,7 +269,11 @@ UI/UX excerpt:
                 PageDef(id=outline.id, title=outline.title, subtitle=outline.subtitle, blocks=blocks_plan.blocks),
                 section_body,
             )
-            if gaps.get("missing_kpis") or gaps.get("missing_columns") or (gaps.get("needs_charts") and not gaps.get("has_chart")):
+            if (
+                gaps.get("missing_kpis")
+                or gaps.get("missing_columns")
+                or (page_intent.wants_charts and gaps.get("needs_charts") and not gaps.get("has_chart"))
+            ):
                 repair_user = f"""Fix blocks to satisfy PRD gaps on page {outline.id}.
 Layout intent (do not exceed — page must look different from other routes):
 - KPI row: {page_intent.wants_kpis} (max {page_intent.kpi_cap or 0} items)

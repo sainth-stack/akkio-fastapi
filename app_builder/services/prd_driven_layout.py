@@ -171,17 +171,79 @@ def _extract_charts(section: str, page_id: str, max_charts: int) -> List[Dict[st
     return blocks
 
 
+def pad_blocks_to_minimum(
+    blocks: List[Dict[str, Any]],
+    page_id: str,
+    title: str,
+    section: str,
+    *,
+    dashboard_page_id: Optional[str] = None,
+    min_count: int = 2,
+) -> List[Dict[str, Any]]:
+    """Ensure len(blocks) >= min_count without breaking route layout policies."""
+    from app_builder.services.page_layout_intent import infer_page_layout_intent
+
+    out = list(blocks or [])
+    if len(out) >= min_count:
+        return out
+    intent = infer_page_layout_intent(
+        section,
+        title,
+        page_id=page_id,
+        dashboard_page_id=dashboard_page_id,
+    )
+    while len(out) < min_count:
+        types = {b.get("type") for b in out}
+        if intent.wants_charts:
+            for ch in _extract_charts(section, page_id, intent.chart_cap or 2):
+                out.append(ch)
+                if len(out) >= min_count:
+                    return out[:24]
+        if intent.wants_kpis and "kpiRow" not in types:
+            items = _extract_kpi_items(section, page_id)[: intent.kpi_cap or 4]
+            if items:
+                out.insert(0, {"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": items})
+                if len(out) >= min_count:
+                    return out[:24]
+        if intent.wants_table and "dataTable" not in types:
+            cols = _extract_table_columns(section) or [
+                {"field": "id", "header": "ID"},
+                {"field": "name", "header": "Name"},
+                {"field": "status", "header": "Status"},
+            ]
+            out.append(
+                {
+                    "type": "dataTable",
+                    "title": f"{title} records",
+                    "dataKey": f"table_{page_id}",
+                    "columns": cols,
+                    "searchable": True,
+                    "detailView": intent.table_detail,
+                }
+            )
+            if len(out) >= min_count:
+                return out[:24]
+        out.append({"type": "text", "content": "", "hidden": True})
+    return out[:24]
+
+
 def ensure_minimum_blocks(
     blocks: List[Dict[str, Any]],
     page_id: str,
     title: str,
     *,
     section: str = "",
+    dashboard_page_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Guarantee at least two blocks so PageBlocksPlan validation never fails."""
     from app_builder.services.page_layout_intent import infer_page_layout_intent
 
-    intent = infer_page_layout_intent(section, title)
+    intent = infer_page_layout_intent(
+        section,
+        title,
+        page_id=page_id,
+        dashboard_page_id=dashboard_page_id,
+    )
     out = list(blocks or [])
     if len(out) >= 2:
         return out
@@ -216,8 +278,15 @@ def ensure_minimum_blocks(
             }
         )
     if len(out) < 2:
-        return _outline_saas_blocks(page_id, title, section or "", intent)
-    return out
+        out = _outline_saas_blocks(page_id, title, section or "", intent)
+    return pad_blocks_to_minimum(
+        out,
+        page_id,
+        title,
+        section or "",
+        dashboard_page_id=dashboard_page_id,
+        min_count=2,
+    )
 
 
 def blocks_for_page(

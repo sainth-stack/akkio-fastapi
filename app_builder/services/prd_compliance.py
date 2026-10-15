@@ -116,9 +116,9 @@ def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:
             gaps["missing_columns"].append(col)
 
     gaps["block_types"] = types
-    gaps["needs_charts"] = bool(re.search(r"chart|pareto|donut|trend", section, re.I))
+    gaps["needs_charts"] = bool(layout_intent.wants_charts)
     gaps["has_chart"] = any(t in types for t in ("lineChart", "barChart", "pieChart"))
-    gaps["needs_filters"] = bool(re.search(r"filter|date.range|search", section, re.I))
+    gaps["needs_filters"] = bool(layout_intent.wants_filters)
     gaps["has_filter"] = "filterBar" in types
     return gaps
 

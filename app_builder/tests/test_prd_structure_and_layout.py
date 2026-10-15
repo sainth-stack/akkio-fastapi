@@ -40,6 +40,37 @@ Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
         self.assertGreaterEqual(len(fixed), 2)
         PageBlocksPlan(blocks=fixed)
 
+    def test_dashboard_kpi_only_meets_page_blocks_plan_min(self):
+        from app_builder.schemas.app_definition_llm import PageBlocksPlan
+        from app_builder.services.prd_driven_layout import ensure_minimum_blocks
+
+        section = """### Dashboard
+**Purpose:** Maintenance KPI overview
+
+**KPIs:**
+- Total Maintenance Work Orders
+- Mean Time Between Failures (MTBF)
+- Mean Time to Repair (MTTR)
+"""
+        blocks = [
+            {
+                "type": "kpiRow",
+                "dataKey": "kpis_dashboard",
+                "items": [{"label": "MTBF", "valueKey": "mtbf", "color": "primary"}],
+            }
+        ]
+        fixed = ensure_minimum_blocks(
+            blocks,
+            "dashboard",
+            "Dashboard",
+            section=section,
+            dashboard_page_id="dashboard",
+        )
+        self.assertGreaterEqual(len(fixed), 2)
+        types = [b["type"] for b in fixed]
+        self.assertIn("kpiRow", types)
+        PageBlocksPlan(blocks=fixed)
+
     def test_section_for_numbered_dashboard_heading(self):
         from app_builder.services.prd_structure_parser import section_for_page
 

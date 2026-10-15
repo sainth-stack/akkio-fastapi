@@ -286,8 +286,12 @@ export default function BlockRenderer({
   }
 
   if (type === 'text') {
+    const body = String(normalized.content ?? '').trim();
+    if (!body || normalized.hidden) {
+      return null;
+    }
     return (
-      <Typography variant="body1" sx={{ mb: 2 }}>{normalized.content as string}</Typography>
+      <Typography variant="body1" sx={{ mb: 2 }}>{body}</Typography>
     );
   }
 
