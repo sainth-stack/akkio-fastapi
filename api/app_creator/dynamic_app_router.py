@@ -652,6 +652,69 @@ class LLMRequest(BaseModel):
     stream: bool = False
 
 
+class AppChatRequest(BaseModel):
+    messages: List[Dict[str, str]]
+    page_id: Optional[str] = None
+    """Optional inline definition when client has data.json in-browser (fallback)."""
+    app_definition: Optional[Dict[str, Any]] = None
+
+
+async def _optional_project_access(project_id: str, request: Request) -> None:
+    """Require JWT when provided; otherwise allow chat if project files exist (hosted app preview)."""
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth.split(" ", 1)[1].strip())
+        current = await resolve_user_for_generated_app(request, creds)
+        assert_project_access(project_id, current)
+        return
+    token = (request.query_params.get("access_token") or "").strip()
+    if token:
+        preview_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        current = await resolve_user_for_generated_app(request, preview_creds)
+        assert_project_access(project_id, current)
+        return
+    from app_builder.services.app_data_rag import load_project_app_definition
+
+    if not load_project_app_definition(project_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+@router.post("/{project_id}/chat")
+async def app_data_chat(
+    project_id: str,
+    body: AppChatRequest,
+    request: Request,
+):
+    """
+    RAG chat over the generated app's KPIs, charts, and tables (server OPENAI_API_KEY / LLM config).
+    """
+    await _optional_project_access(project_id, request)
+    if not body.messages:
+        raise HTTPException(status_code=400, detail="messages required")
+    try:
+        from app_builder.services.app_chat_service import answer_app_chat
+
+        content = await answer_app_chat(
+            project_id,
+            body.messages,
+            page_id=body.page_id,
+            app_definition=body.app_definition,
+        )
+        return JSONResponse(content={"role": "assistant", "content": content})
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}") from e
+    except Exception as e:
+        logger.exception("[dynamic_app] app chat error: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="Chat failed. Check OPENAI_API_KEY in server .env and try again.",
+        ) from e
+
+
 @router.post("/{project_id}/llm")
 async def llm_proxy(
     project_id: str,

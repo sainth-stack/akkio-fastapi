@@ -47,7 +47,8 @@ Formatting:
 - KPIs: one metric per bullet (e.g. First Pass Yield (FPY), Defect Rate).
 - Do not duplicate the same widget on every page unless the prompt says so.
 - **KPIs:** subsection ONLY on the Dashboard (or Home/Overview) page — never on other pages. Other pages use Charts, Table columns, Filters, Actions as needed.
-- Do not add a Tech Stack section unless building a fullstack enterprise app."""
+- Do not add a Tech Stack section unless building a fullstack enterprise app.
+- The generated app includes an in-app **Data assistant** chat (floating button) that answers from KPI/chart/table data — keep metrics in data.json consistent with PRD labels."""
 
 
 def _page_layout_hint(page: str) -> str:

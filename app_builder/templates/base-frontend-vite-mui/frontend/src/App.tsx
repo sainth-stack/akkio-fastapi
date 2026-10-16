@@ -5,6 +5,7 @@ import AppShell from './components/ui/AppShell';
 import PageRenderer from './renderer/PageRenderer';
 import { useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
+import AppChatAssistant from './components/chat/AppChatAssistant';
 
 function AppShellLayout() {
   const { definition } = useAppDefinition();
@@ -27,12 +28,15 @@ function AppShellLayout() {
     definition.theme?.shellVariant === 'brand' ? 'brand' : 'light';
 
   return (
-    <AppShell
-      navItems={nav}
-      appName={definition.meta.appName}
-      pageTitle={page?.title}
-      shellVariant={shellVariant}
-    />
+    <>
+      <AppShell
+        navItems={nav}
+        appName={definition.meta.appName}
+        pageTitle={page?.title}
+        shellVariant={shellVariant}
+      />
+      <AppChatAssistant definition={definition} pageId={page?.id} pageTitle={page?.title} />
+    </>
   );
 }
 
