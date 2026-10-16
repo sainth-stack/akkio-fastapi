@@ -191,7 +191,7 @@ def apply_route_layout_policies(
         intent.kpi_cap = 0
         intent.wants_table = False
         intent.wants_filters = False
-        intent.wants_export_actions = True
+        intent.wants_export_actions = False
         if not intent.wants_charts:
             intent.wants_charts = True
             intent.chart_cap = max(intent.chart_cap, 2)
@@ -201,9 +201,13 @@ def apply_route_layout_policies(
         intent.wants_filters = False
         intent.wants_table = False
         intent.table_detail = False
+        intent.wants_export_actions = False
         if not intent.wants_charts:
             intent.wants_charts = True
             intent.chart_cap = max(intent.chart_cap, 2)
+
+    # Generated apps are view-only in the UI — no export/download toolbar unless explicitly required later.
+    intent.wants_export_actions = False
 
 
 def _infer_from_purpose_when_sparse(intent: PageLayoutIntent, purpose: str) -> None:
@@ -219,8 +223,6 @@ def _infer_from_purpose_when_sparse(intent: PageLayoutIntent, purpose: str) -> N
     if re.search(r"\b(search|browse|list|register|catalog|log|directory|grid of)\b", p):
         intent.wants_table = True
         intent.table_detail = bool(re.search(r"detail|drill|row|click", p))
-    if re.search(r"\b(export|report|publish|print|download|share)\b", p):
-        intent.wants_export_actions = True
     if re.search(r"\b(analy|trend|compare|pareto|insight|breakdown|distribution|forecast|correlat)\b", p):
         intent.wants_charts = True
         intent.chart_cap = max(intent.chart_cap, 3)
@@ -287,12 +289,7 @@ def infer_page_layout_intent(
 
     action_bullets = _bullets(actions_block)
     if action_bullets:
-        intent.wants_export_actions = bool(
-            re.search(r"export|pdf|csv|download|print", " ".join(action_bullets), re.I)
-        )
         intent.wants_create_action = bool(re.search(r"create|add|new", " ".join(action_bullets), re.I))
-    elif has_actions_header and not _subsection_declares_omit(actions_block):
-        intent.wants_export_actions = True
 
     intent.table_detail = bool(re.search(r"detail|drill|row click|session", purpose + section, re.I))
 
@@ -350,6 +347,39 @@ def _kpi_row_first(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     kpis = [b for b in blocks if isinstance(b, dict) and b.get("type") == "kpiRow"]
     rest = [b for b in blocks if not (isinstance(b, dict) and b.get("type") == "kpiRow")]
     return kpis + rest if kpis else blocks
+
+
+_EXPORT_ACTION_TYPES = frozenset({"exportCsv", "exportPdf", "export", "download"})
+
+
+def _is_export_action(action: Dict[str, Any]) -> bool:
+    if not isinstance(action, dict):
+        return False
+    at = str(action.get("actionType") or "").strip()
+    if at in _EXPORT_ACTION_TYPES:
+        return True
+    label = str(action.get("label") or "").lower()
+    return bool(re.search(r"\b(export|download|pdf|csv)\b", label))
+
+
+def strip_export_download_ui(defn: Any) -> Any:
+    """Remove Export CSV/PDF and download actions from all pages (view-only dashboard UI)."""
+    for page in getattr(defn, "pages", []) or []:
+        new_blocks: List[Dict[str, Any]] = []
+        for block in page.blocks or []:
+            if not isinstance(block, dict) or block.get("type") != "actionBar":
+                new_blocks.append(block)
+                continue
+            actions = [
+                a
+                for a in (block.get("actions") or [])
+                if isinstance(a, dict) and not _is_export_action(a)
+            ]
+            if not actions:
+                continue
+            new_blocks.append({**block, "actions": actions})
+        page.blocks = new_blocks
+    return defn
 
 
 def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:

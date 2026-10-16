@@ -690,6 +690,9 @@ def finalize_app_definition(
 
     defn = repair_pages_with_no_blocks(defn, prd=prd, requirement=requirement)
     defn = enforce_page_role_blocks(defn, prd=prd)
+    from app_builder.services.page_layout_intent import strip_export_download_ui
+
+    defn = strip_export_download_ui(defn)
     defn = enforce_kpis_on_dashboard_only(defn, prd=prd)
     from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
@@ -719,6 +722,7 @@ def finalize_app_definition(
     from app_builder.services.app_theme_generator import apply_theme_to_chart_blocks
 
     defn = apply_theme_to_chart_blocks(defn, replace_generic_colors=True)
+    defn = strip_export_download_ui(defn)
     mock = dict(defn.mock or {})
     page_ids = {p.id for p in defn.pages}
     navigation: List[NavItemDef] = []

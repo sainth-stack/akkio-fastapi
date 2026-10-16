@@ -206,13 +206,6 @@ def _analytics_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
 def _reports_blocks(sid: str, title: str) -> List[Dict[str, Any]]:
     return [
         {
-            "type": "actionBar",
-            "actions": [
-                {"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"},
-                {"id": "export_pdf", "label": "Export PDF", "actionType": "exportPdf"},
-            ],
-        },
-        {
             "type": "barChart",
             "title": "Report delivery by owner",
             "dataKey": f"series_{sid}_delivery",

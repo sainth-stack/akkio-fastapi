@@ -60,7 +60,8 @@ Rules:
 - On Dashboard: include KPI row when **KPIs:** exist; include line/bar charts only when the page section lists chart bullets (do not add charts if none are listed).
 - Include dataTable only when **Table columns:** exist or Purpose describes a searchable list/register.
 - dataTable columns MUST use shape {{ "field": "snake_case_key", "header": "Human label" }} — never empty field/header; do not use title/dataKey on column objects.
-- Include filterBar / actionBar only when **Filters:** or **Actions:** (or Purpose) calls for them.
+- Include filterBar only when **Filters:** lists filters. Do NOT add actionBar for export, download, PDF, or CSV — the UI is view-only.
+- actionBar only for explicit in-app **create** flows (rare); never exportCsv/exportPdf.
 - Include widgets ONLY when the PRD subsection lists them (**KPIs**, **Charts**, **Table columns**, **Filters**, **Actions**).
 - Do NOT output mock/data — blocks only.
 """

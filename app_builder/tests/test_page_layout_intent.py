@@ -168,12 +168,41 @@ class TestPageLayoutIntent(unittest.TestCase):
 - Export CSV
 """
         intent = infer_page_layout_intent(section, "Reports", page_id="reports")
-        self.assertTrue(intent.wants_export_actions)
+        self.assertFalse(intent.wants_export_actions)
         self.assertFalse(intent.wants_table)
         self.assertFalse(intent.wants_kpis)
         self.assertFalse(intent.wants_filters)
         self.assertGreaterEqual(intent.chart_cap, 1)
 
+
+    def test_strip_export_download_ui_removes_action_bar(self):
+        from app_builder.schemas.app_definition import AppDefinition, AppMeta, NavItemDef, PageDef
+        from app_builder.services.page_layout_intent import strip_export_download_ui
+
+        defn = AppDefinition(
+            meta=AppMeta(appName="Ops", description="", domain="generic"),
+            navigation=[NavItemDef(label="Reports", path="/reports", icon="Assessment", pageId="reports")],
+            pages=[
+                PageDef(
+                    id="reports",
+                    title="Reports",
+                    blocks=[
+                        {
+                            "type": "actionBar",
+                            "actions": [
+                                {"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"},
+                                {"id": "export_pdf", "label": "Export PDF", "actionType": "exportPdf"},
+                            ],
+                        },
+                        {"type": "barChart", "dataKey": "chart_reports"},
+                    ],
+                )
+            ],
+            mock={},
+        )
+        out = strip_export_download_ui(defn)
+        types = [b.get("type") for b in out.pages[0].blocks if isinstance(b, dict)]
+        self.assertNotIn("actionBar", types)
 
     def test_requirement_pages_list_sidebar_names(self):
         from app_builder.services.app_definition_generator import extract_screens_from_plan

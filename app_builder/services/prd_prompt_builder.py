@@ -59,7 +59,7 @@ def _page_layout_hint(page: str) -> str:
             "not on Analytics."
         )
     if re.search(r"\breports?\b", low):
-        return "Layout: **Charts** + **Actions** (Export PDF/CSV). No **Table columns**. Omit **Filters** unless the user requested filters."
+        return "Layout: **Charts only**. No **Table columns**, no **Actions** (no export/download buttons in the UI). Omit **Filters** unless the user requested filters."
     if re.search(r"\banalytics?\b", low):
         return (
             "Layout: **Charts only** (trends, pareto, failure frequency, root cause) — **no Table columns** "

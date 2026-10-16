@@ -369,14 +369,8 @@ def blocks_for_page(
             filters.append({"id": "status", "label": "Status", "filterType": "select", "optionsKey": ok})
         blocks.append({"type": "filterBar", "filters": filters})
 
-    if intent.wants_export_actions or intent.wants_create_action or re.search(
-        r"export|create|new session|pdf|csv", low
-    ):
+    if intent.wants_create_action or re.search(r"create|new session", low):
         actions: List[Dict[str, Any]] = []
-        if re.search(r"export|csv", low):
-            actions.append({"id": "export_csv", "label": "Export CSV", "actionType": "exportCsv"})
-        if "pdf" in low:
-            actions.append({"id": "export_pdf", "label": "Export PDF", "actionType": "exportPdf"})
         if re.search(r"create|new", low):
             actions.append({"id": "create", "label": "Create", "actionType": "primary"})
         if actions:
