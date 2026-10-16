@@ -5,6 +5,31 @@ type Block = Record<string, unknown>;
 
 const KPI_COLORS = ['primary', 'success', 'warning', 'info', 'error'] as const;
 
+const PLACEHOLDER_FIELD = /^(col_?\d+|field_?\d+|column_?\d+)$/i;
+const PLACEHOLDER_HEADER = /^(field|column|col)\s*\d+$/i;
+
+const MAINTENANCE_TABLE_COLUMNS = [
+  { field: 'work_order_id', header: 'Work order' },
+  { field: 'machine', header: 'Machine' },
+  { field: 'production_line', header: 'Production line' },
+  { field: 'equipment', header: 'Equipment' },
+  { field: 'shift', header: 'Shift' },
+  { field: 'event_type', header: 'Event type' },
+  { field: 'root_cause', header: 'Root cause' },
+  { field: 'severity', header: 'Severity' },
+  { field: 'status', header: 'Status' },
+  { field: 'downtime_hours', header: 'Downtime (h)', align: 'right' as const },
+  { field: 'occurred_at', header: 'Occurred at' },
+];
+
+function columnsLookPlaceholder(cols: Array<Record<string, unknown>>): boolean {
+  return cols.every((col) => {
+    const field = String(col.field || col.dataKey || '').trim();
+    const header = String(col.title || col.header || '').replace(/\*+/g, '').trim();
+    return PLACEHOLDER_FIELD.test(field) || PLACEHOLDER_HEADER.test(header);
+  });
+}
+
 export function humanizeField(key: string): string {
   return key
     .replace(/_/g, ' ')
@@ -62,6 +87,13 @@ export function normalizeBlock(
 
   if (type === 'dataTable') {
     const rawCols = block.columns as Array<Record<string, unknown>> | undefined;
+    if (rawCols?.length && columnsLookPlaceholder(rawCols)) {
+      next.columns = MAINTENANCE_TABLE_COLUMNS;
+      if (String(block.title || '').toLowerCase().includes('records')) {
+        next.title = 'Recent maintenance events';
+      }
+      return next;
+    }
     if (rawCols?.length) {
       next.columns = rawCols.map((col, i) => {
         const title = String(col.title || col.header || '').replace(/\*+/g, '').trim();

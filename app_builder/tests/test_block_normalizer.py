@@ -37,6 +37,36 @@ class TestBlockNormalizer(unittest.TestCase):
         chart_block = out.pages[0].blocks[2]
         self.assertEqual(len(chart_block.get("series") or []), 2)
 
+    def test_field_0_columns_replaced_with_maintenance_schema(self):
+        from app_builder.schemas.app_definition import AppDefinition, AppMeta, NavItemDef, PageDef
+        from app_builder.services.block_normalizer import repair_broken_data_table_blocks
+
+        defn = AppDefinition(
+            meta=AppMeta(appName="Manufacturing Operations", description="", domain="generic"),
+            navigation=[NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard")],
+            pages=[
+                PageDef(
+                    id="dashboard",
+                    title="Dashboard",
+                    blocks=[
+                        {
+                            "type": "dataTable",
+                            "title": "Dashboard records",
+                            "dataKey": "table_dashboard",
+                            "columns": [{"field": "field_0", "header": "Field 0"}],
+                        }
+                    ],
+                )
+            ],
+            mock={"table_dashboard": [{"field_0": "Field 0 1"}]},
+        )
+        out = repair_broken_data_table_blocks(defn, prd="manufacturing maintenance")
+        cols = out.pages[0].blocks[0]["columns"]
+        fields = [c["field"] for c in cols]
+        self.assertIn("machine", fields)
+        self.assertIn("work_order_id", fields)
+        self.assertNotIn("field_0", fields)
+
     def test_llm_table_columns_title_datakey_repaired(self):
         from app_builder.services.block_normalizer import repair_data_table_columns
 

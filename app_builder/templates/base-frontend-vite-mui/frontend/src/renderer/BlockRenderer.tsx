@@ -19,6 +19,7 @@ import { normalizeBlock } from './blockNormalize';
 import { resolveRowKey, resolveXAxisKey } from './chartUtils';
 import { usePageFilters } from './PageFilterContext';
 import { useChartPalette } from '../theme/useChartPalette';
+import { repairTableRows, rowsLookPlaceholder } from './tableDataRepair';
 
 type Block = Record<string, unknown>;
 
@@ -235,8 +236,11 @@ export default function BlockRenderer({
 
   if (type === 'dataTable') {
     const rawRows = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
-    const rows = filterRows(rawRows, filters);
     const columns = (normalized.columns as Array<{ field: string; header: string; align?: string; variant?: string }>) || [];
+    const tableRows = rowsLookPlaceholder(rawRows)
+      ? repairTableRows(rawRows, columns)
+      : rawRows;
+    const rows = filterRows(tableRows, filters);
     const rowKey = resolveRowKey(rows, columns, normalized.rowKey as string | undefined);
     const detailView = Boolean(normalized.detailView);
     return (

@@ -246,7 +246,27 @@ def merge_design_tokens_into_theme(
     return AppTheme(**data)
 
 
-def apply_theme_to_chart_blocks(defn: AppDefinition) -> AppDefinition:
+_GENERIC_CHART_HEX = frozenset(
+    {
+        "#2563eb",
+        "#16a34a",
+        "#ea580c",
+        "#7c3aed",
+        "#0891b2",
+        "#dc2626",
+        "#64748b",
+        "#1976d2",
+        "#2e7d32",
+        "#ed6c02",
+    }
+)
+
+
+def apply_theme_to_chart_blocks(
+    defn: AppDefinition,
+    *,
+    replace_generic_colors: bool = False,
+) -> AppDefinition:
     palette = list(defn.theme.chartPalette or [])
     if not palette:
         return defn
@@ -260,7 +280,12 @@ def apply_theme_to_chart_blocks(defn: AppDefinition) -> AppDefinition:
             if not isinstance(series, list):
                 continue
             for i, s in enumerate(series):
-                if isinstance(s, dict) and not s.get("color"):
+                if not isinstance(s, dict):
+                    continue
+                existing = str(s.get("color") or "").strip().lower()
+                if replace_generic_colors and existing in _GENERIC_CHART_HEX:
+                    s["color"] = palette[i % len(palette)]
+                elif not s.get("color"):
                     s["color"] = palette[i % len(palette)]
     return defn
 

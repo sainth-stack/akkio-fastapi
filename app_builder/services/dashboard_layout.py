@@ -128,6 +128,16 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
 
     dash_page = next(p for p in new_pages if p.id == dash_id)
     dash_blocks = list(dash_page.blocks or [])
+    from app_builder.services.block_normalizer import _columns_are_invalid, repair_data_table_columns
+
+    repaired_blocks: List[Any] = []
+    for b in dash_blocks:
+        if isinstance(b, dict) and b.get("type") == "dataTable":
+            b = repair_data_table_columns(b)
+            if _columns_are_invalid(b.get("columns") or []):
+                b = {**b, "columns": _maintenance_analytics_columns(), "title": "Recent maintenance events"}
+        repaired_blocks.append(b)
+    dash_blocks = repaired_blocks
     has_table = any(isinstance(b, dict) and b.get("type") == "dataTable" for b in dash_blocks)
     if not has_table:
         table_block: Optional[Dict[str, Any]] = None

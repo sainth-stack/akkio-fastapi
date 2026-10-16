@@ -20,6 +20,27 @@ def _is_placeholder_field(field: str) -> bool:
     return bool(re.match(r"^(col_?\d+|field_?\d+|column_?\d+)$", f))
 
 
+def _is_placeholder_header(header: str) -> bool:
+    h = re.sub(r"\*+", "", (header or "")).strip().lower()
+    return bool(re.match(r"^(field|column|col)\s*\d+$", h))
+
+
+def _infer_table_columns(block: Dict[str, Any], page_id: str, title: str, *, prd: str = "") -> List[Dict[str, Any]]:
+    from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
+
+    blob = f"{prd} {page_id} {title} {block.get('title') or ''}".lower()
+    if re.search(r"maintenance|manufacturing|operations|mtbf|mttr|work order|equipment|downtime", blob):
+        return _maintenance_analytics_columns()
+    return [
+        {"field": "work_order_id", "header": "Work order"},
+        {"field": "machine", "header": "Machine"},
+        {"field": "production_line", "header": "Production line"},
+        {"field": "event_type", "header": "Event type"},
+        {"field": "status", "header": "Status"},
+        {"field": "occurred_at", "header": "Occurred at"},
+    ]
+
+
 def _field_from_header(header: str, index: int) -> str:
     clean = re.sub(r"\*+", "", (header or "")).strip()
     slug = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")
@@ -35,7 +56,12 @@ def _columns_are_invalid(columns: List[Dict[str, Any]]) -> bool:
         repaired = _normalize_column_def(col, 0)
         field = str(repaired.get("field") or "")
         header = str(repaired.get("header") or "").strip()
-        if _is_placeholder_field(field) or not header or header in ("**", "*"):
+        if (
+            _is_placeholder_field(field)
+            or _is_placeholder_header(header)
+            or not header
+            or header in ("**", "*")
+        ):
             return True
     return False
 
@@ -46,45 +72,48 @@ def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
 
     mock = dict(defn.mock or {})
     for page in defn.pages:
+        new_blocks: List[Any] = []
         for block in page.blocks:
             if not isinstance(block, dict) or block.get("type") != "dataTable":
+                new_blocks.append(block)
                 continue
             block = repair_data_table_columns(block)
             dk = str(block.get("dataKey") or "")
             cols = block.get("columns") or []
             fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
             headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
-            if not dk or not fields or _columns_are_invalid(cols):
-                continue
-            rng = _seed(dk)
-            existing = mock.get(dk)
-            rows = existing if isinstance(existing, list) else []
-            sample = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
-            generic_row = isinstance(sample, dict) and set(sample.keys()) <= {"id", "name", "status", "updated_at"}
-            need_rebuild = (
-                not rows
-                or _table_has_placeholders(rows)
-                or not isinstance(rows[0], dict)
-                or any(f not in rows[0] for f in fields)
-                or (generic_row and any(f not in ("id", "name", "status", "updated_at") for f in fields))
-            )
-            if not need_rebuild:
-                continue
-            mock[dk] = [
-                {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
-                for i in range(max(28, len(rows) if isinstance(rows, list) else 0))
-            ]
+            if _columns_are_invalid(cols):
+                block = {**block, "columns": _infer_table_columns(block, page.id, page.title)}
+                cols = block.get("columns") or []
+                fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
+                headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
+            if dk and fields:
+                rng = _seed(dk)
+                existing = mock.get(dk)
+                rows = existing if isinstance(existing, list) else []
+                sample = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+                generic_row = isinstance(sample, dict) and set(sample.keys()) <= {"id", "name", "status", "updated_at"}
+                need_rebuild = (
+                    not rows
+                    or _table_has_placeholders(rows)
+                    or not isinstance(rows[0], dict)
+                    or any(f not in rows[0] for f in fields)
+                    or (generic_row and any(f not in ("id", "name", "status", "updated_at") for f in fields))
+                )
+                if need_rebuild:
+                    mock[dk] = [
+                        {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
+                        for i in range(max(28, len(rows) if isinstance(rows, list) else 0))
+                    ]
+            new_blocks.append(block)
+        page.blocks = new_blocks
     defn.mock = mock
     return defn
 
 
-def upgrade_maintenance_table_blocks(defn: AppDefinition) -> AppDefinition:
-    from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
-
+def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "") -> AppDefinition:
+    """Replace LLM placeholder columns (field_0) with domain-appropriate schemas on every page."""
     for page in defn.pages:
-        blob = f"{page.id} {page.title}".lower()
-        if "analytic" not in blob:
-            continue
         new_blocks: List[Any] = []
         for block in page.blocks:
             if not isinstance(block, dict) or block.get("type") != "dataTable":
@@ -92,10 +121,20 @@ def upgrade_maintenance_table_blocks(defn: AppDefinition) -> AppDefinition:
                 continue
             block = repair_data_table_columns(block)
             if _columns_are_invalid(block.get("columns") or []):
-                block = {**block, "columns": _maintenance_analytics_columns()}
+                block = {
+                    **block,
+                    "columns": _infer_table_columns(block, page.id, page.title, prd=prd),
+                }
+                title_low = str(block.get("title") or "").lower()
+                if title_low.endswith("records") or title_low == f"{page.title.lower()} records":
+                    block["title"] = "Recent maintenance events"
             new_blocks.append(block)
         page.blocks = new_blocks
     return defn
+
+
+def upgrade_maintenance_table_blocks(defn: AppDefinition, *, prd: str = "") -> AppDefinition:
+    return repair_broken_data_table_blocks(defn, prd=prd)
 
 
 def _normalize_column_def(col: Dict[str, Any], index: int) -> Dict[str, Any]:
@@ -106,8 +145,11 @@ def _normalize_column_def(col: Dict[str, Any], index: int) -> Dict[str, Any]:
         field = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
     if not title and field:
         title = _humanize(field)
-    if _is_placeholder_field(field):
-        field = _field_from_header(title, index)
+    if _is_placeholder_field(field) or _is_placeholder_header(title):
+        if title and not _is_placeholder_header(title):
+            field = _field_from_header(title, index)
+        elif _is_placeholder_field(field):
+            field = f"column_{index}"
     if not field:
         field = f"column_{index}"
     if not title or title in ("**", "*"):
@@ -150,9 +192,12 @@ def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
             new_blocks.append(block)
             dk = str(block.get("dataKey") or "")
             cols = block.get("columns") or []
+            if _columns_are_invalid(cols):
+                block = {**block, "columns": _infer_table_columns(block, page.id, page.title)}
+                cols = block.get("columns") or []
             fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
             headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
-            if not dk or not fields:
+            if not dk or not fields or _columns_are_invalid(cols):
                 continue
             rows = mock.get(dk)
             if not isinstance(rows, list):
@@ -258,8 +303,8 @@ def normalize_block(block: Dict[str, Any], mock: Dict[str, Any], page_id: str) -
     return b
 
 
-def normalize_app_definition_blocks(defn: AppDefinition) -> AppDefinition:
-    defn = upgrade_maintenance_table_blocks(defn)
+def normalize_app_definition_blocks(defn: AppDefinition, *, prd: str = "") -> AppDefinition:
+    defn = repair_broken_data_table_blocks(defn, prd=prd)
     mock = _mock_bag(defn)
     for page in defn.pages:
         page.blocks = [

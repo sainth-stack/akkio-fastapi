@@ -24,7 +24,7 @@ def _human_header(field: str) -> str:
 def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = "") -> Any:
     f = field.lower()
     h = (col_header or field).lower()
-    if "work_order" in f or f == "wo_id":
+    if "work_order" in f or f in ("wo_id", "work_order_id"):
         return f"WO-{24000 + row_i}"
     if f == "shift" or h == "shift":
         return rng.choice(("Day", "Swing", "Night"))

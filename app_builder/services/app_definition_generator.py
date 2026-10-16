@@ -478,6 +478,10 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
                     return
         from app_builder.services.generic_dataset_builder import _cell_value, _seed
 
+        from app_builder.services.block_normalizer import _columns_are_invalid, _infer_table_columns
+
+        if isinstance(columns, list) and _columns_are_invalid(columns):
+            columns = _infer_table_columns({"dataKey": key}, "page", "Page")
         fields = [c.get("field") for c in columns if c.get("field")]
         if not fields:
             fields = ["id", "name", "status"]
@@ -690,18 +694,19 @@ def finalize_app_definition(
     from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
     defn = apply_dashboard_analytics_product_rules(defn, prd=prd)
+    from app_builder.services.block_normalizer import repair_broken_data_table_blocks
+
+    defn = repair_broken_data_table_blocks(defn, prd=prd)
     mock = dict(defn.mock or {})
     for page in defn.pages:
         mock.update(_collect_mock_keys(page.blocks))
     defn.mock = mock
-    defn = normalize_app_definition_blocks(defn)
+    defn = normalize_app_definition_blocks(defn, prd=prd)
     defn = ensure_datasets_from_blocks(defn)
     from app_builder.services.block_normalizer import repair_table_mock_keys
 
     defn = repair_table_mock_keys(defn)
-    from app_builder.services.block_normalizer import upgrade_maintenance_table_blocks
-
-    defn = upgrade_maintenance_table_blocks(defn)
+    defn = repair_broken_data_table_blocks(defn, prd=prd)
     defn = repair_table_mock_keys(defn)
     from app_builder.services.production_dataset_enhancer import enhance_production_datasets
     from app_builder.services.production_data_polish import polish_production_data_bag
@@ -711,6 +716,9 @@ def finalize_app_definition(
 
     defn = align_table_datasets_to_columns(defn)
     defn.mock = polish_production_data_bag(defn)
+    from app_builder.services.app_theme_generator import apply_theme_to_chart_blocks
+
+    defn = apply_theme_to_chart_blocks(defn, replace_generic_colors=True)
     mock = dict(defn.mock or {})
     page_ids = {p.id for p in defn.pages}
     navigation: List[NavItemDef] = []
