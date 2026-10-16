@@ -53,7 +53,10 @@ Formatting:
 def _page_layout_hint(page: str) -> str:
     low = (page or "").lower()
     if re.search(r"\b(dashboard|home|overview)\b", low):
-        return "Layout: **KPIs only** on this page (no Charts, Filters, or Table columns unless the user explicitly put them on Dashboard)."
+        return (
+            "Layout: **KPIs** on Dashboard. If the user lists charts under **Include:** or **Charts:** "
+            "(e.g. line chart for downtime trends, bar chart by category), copy those bullets here — do not omit them."
+        )
     if re.search(r"\breports?\b", low):
         return "Layout: **Charts** + **Actions** (Export PDF/CSV). No **Table columns**. Omit **Filters** unless the user requested filters."
     if re.search(r"\banalytics?\b", low):

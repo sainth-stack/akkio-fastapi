@@ -23,6 +23,8 @@ def _detect_metrics(text: str) -> List[Tuple[str, str]]:
         (r"yield", "yield_pct", "Yield %"),
         (r"downtime", "downtime", "Downtime"),
         (r"output", "output", "Output"),
+        (r"performance", "performance", "Performance"),
+        (r"operational", "operational_index", "Operational index"),
         (r"planned|plan\b", "planned", "Planned"),
         (r"actual", "actual", "Actual"),
         (r"target|benchmark", "target", "Target"),

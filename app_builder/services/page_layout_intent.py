@@ -20,7 +20,7 @@ class PageLayoutIntent:
 
 
 _SUBSECTION = re.compile(
-    r"(?im)^\s*\*{0,2}\s*(purpose|kpis?|charts?|filters?|actions?|table\s*columns?|columns?)\s*:?\s*\*{0,2}\s*$"
+    r"(?im)^\s*\*{0,2}\s*(purpose|kpis?|charts?|filters?|actions?|include|table\s*columns?|columns?)\s*:?\s*\*{0,2}\s*$"
 )
 
 
@@ -116,6 +116,25 @@ def _page_role(page_id: str, title: str) -> str:
     return "other"
 
 
+def _merge_chart_bullets_from_section(section: str, chart_block: str) -> List[str]:
+    """Charts from **Charts:** / **Include:** or any chart bullet in the page section (prompt-faithful)."""
+    from app_builder.services.prd_driven_layout import _is_chart_bullet
+
+    include_block = _subsection_text(section, "include")
+    out: List[str] = []
+    seen: set[str] = set()
+    for blob in (chart_block, include_block, section):
+        for line in _bullets(blob):
+            if not _is_chart_bullet(line):
+                continue
+            key = line.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(line)
+    return out
+
+
 def apply_route_layout_policies(
     intent: PageLayoutIntent,
     *,
@@ -124,7 +143,7 @@ def apply_route_layout_policies(
     section: str,
     dashboard_page_id: Optional[str],
 ) -> None:
-    """Enforce common SaaS page roles (dashboard = KPIs only; reports = charts + export; no default filters)."""
+    """Route defaults — dashboard shows charts only when the prompt/PRD lists them."""
     filter_block = _subsection_text(section, "filters") or _subsection_text(section, "filter")
     filter_bullets = _bullets(filter_block)
     if not filter_bullets:
@@ -134,8 +153,14 @@ def apply_route_layout_policies(
     dash = dashboard_page_id and page_id == dashboard_page_id
 
     if dash or role == "dashboard":
-        intent.wants_charts = False
-        intent.chart_cap = 0
+        chart_block = _subsection_text(section, "charts") or _subsection_text(section, "chart")
+        declared_charts = _merge_chart_bullets_from_section(section, chart_block)
+        if declared_charts:
+            intent.wants_charts = True
+            intent.chart_cap = max(intent.chart_cap, min(6, len(declared_charts)))
+        elif not intent.wants_charts:
+            intent.wants_charts = False
+            intent.chart_cap = 0
         intent.wants_table = False
         intent.wants_filters = False
         intent.wants_export_actions = False
@@ -211,7 +236,7 @@ def infer_page_layout_intent(
     )
 
     kpi_bullets = _bullets(kpi_block)
-    chart_bullets = _bullets(chart_block)
+    chart_bullets = _merge_chart_bullets_from_section(section, chart_block)
     table_bullets = _bullets(table_block)
     table_cols = extract_expected_table_columns(section)
 
@@ -398,7 +423,7 @@ def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = 
 
 
 def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "") -> Any:
-    """Final guard: KPI cards only on the dashboard route."""
+    """KPI row on dashboard; charts stay when declared in the Dashboard PRD section."""
     from app_builder.services.prd_structure_parser import section_for_page
     from app_builder.services.prd_driven_layout import _default_maintenance_kpi_items, _extract_kpi_items
 

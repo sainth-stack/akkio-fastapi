@@ -56,7 +56,8 @@ Rules:
 - Read ONLY the PRD section for THIS page. Layout must differ per page like a real SaaS product.
 - Layout is driven ONLY by this page's PRD subsections (**Purpose**, **KPIs**, **Charts**, **Filters**, **Actions**, **Table columns**) — page names can be anything the user asked for.
 - kpiRow ONLY on the Dashboard page (route id/title dashboard or home). NEVER on Analytics, Reports, Sessions, or any other page — even if PRD lists KPIs there.
-- Include charts only for bullets under **Charts:** (use distinct titles and series names from the bullet text).
+- Include charts for bullets under **Charts:** or **Include:** on that page (use distinct titles and series names from the bullet text).
+- On Dashboard: include KPI row when **KPIs:** exist; include line/bar charts only when the page section lists chart bullets (do not add charts if none are listed).
 - Include dataTable only when **Table columns:** exist or Purpose describes a searchable list/register.
 - dataTable columns MUST use shape {{ "field": "snake_case_key", "header": "Human label" }} — never empty field/header; do not use title/dataKey on column objects.
 - Include filterBar / actionBar only when **Filters:** or **Actions:** (or Purpose) calls for them.

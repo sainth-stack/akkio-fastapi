@@ -26,7 +26,8 @@ class TestPageLayoutIntent(unittest.TestCase):
 """
         intent = infer_page_layout_intent(section, "Dashboard", page_id="dashboard")
         self.assertTrue(intent.wants_kpis)
-        self.assertFalse(intent.wants_charts)
+        self.assertTrue(intent.wants_charts)
+        self.assertGreaterEqual(intent.chart_cap, 2)
         self.assertFalse(intent.wants_table)
         self.assertFalse(intent.wants_filters)
 
@@ -35,7 +36,54 @@ class TestPageLayoutIntent(unittest.TestCase):
         self.assertIn("kpiRow", types)
         self.assertNotIn("dataTable", types)
         self.assertNotIn("filterBar", types)
+        self.assertIn("lineChart", types)
+        self.assertIn("barChart", types)
+
+    def test_dashboard_kpis_only_when_no_chart_bullets(self):
+        from app_builder.services.page_layout_intent import infer_page_layout_intent
+        from app_builder.services.prd_driven_layout import blocks_for_page
+
+        section = """### Dashboard
+**Purpose:** Maintenance KPI overview
+
+**KPIs:**
+- Total Maintenance Work Orders
+- MTBF
+- MTTR
+"""
+        intent = infer_page_layout_intent(section, "Dashboard", page_id="dashboard")
+        self.assertTrue(intent.wants_kpis)
+        self.assertFalse(intent.wants_charts)
+        blocks = blocks_for_page("dashboard", "Dashboard", section, dashboard_page_id="dashboard")
+        types = [b["type"] for b in blocks]
+        self.assertIn("kpiRow", types)
         self.assertNotIn("lineChart", types)
+
+    def test_dashboard_include_section_charts(self):
+        from app_builder.services.page_layout_intent import infer_page_layout_intent
+        from app_builder.services.prd_driven_layout import blocks_for_page
+
+        section = """### Dashboard
+**Purpose:** Maintenance KPI overview
+
+**KPIs:**
+- Total Maintenance Work Orders
+- Mean Time Between Failures (MTBF)
+- Mean Time to Repair (MTTR)
+
+**Include:**
+- Line chart: Production output and operational downtime trends over time.
+- Bar chart: Production performance by category.
+"""
+        intent = infer_page_layout_intent(section, "Dashboard", page_id="dashboard")
+        self.assertTrue(intent.wants_kpis)
+        self.assertTrue(intent.wants_charts)
+        self.assertEqual(intent.chart_cap, 2)
+        blocks = blocks_for_page("dashboard", "Dashboard", section, dashboard_page_id="dashboard")
+        types = [b["type"] for b in blocks]
+        self.assertIn("kpiRow", types)
+        self.assertIn("lineChart", types)
+        self.assertIn("barChart", types)
 
     def test_sessions_list_table_focus(self):
         from app_builder.services.prd_driven_layout import blocks_for_page
