@@ -52,8 +52,12 @@ def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = ""
             "Welding Station 1",
         )
         return assets[row_i % len(assets)]
-    if "downtime" in f and "hour" in f:
+    if f in ("downtime_hours", "downtime") or ("downtime" in f and "hour" in f):
         return round(rng.uniform(0.25, 6.5), 2)
+    if f in ("production_output", "output") or f == "open_work_orders":
+        return rng.randint(120, 980) if "order" in f else round(rng.uniform(72, 98), 1)
+    if f == "work_orders" or f == "events_by_category":
+        return rng.randint(8, 85)
     if f == "mtbf_hours" or "mtbf" in f:
         return round(rng.uniform(120, 520), 1)
     if f == "mttr_hours" or "mttr" in f:

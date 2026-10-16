@@ -687,6 +687,9 @@ def finalize_app_definition(
     defn = repair_pages_with_no_blocks(defn, prd=prd, requirement=requirement)
     defn = enforce_page_role_blocks(defn, prd=prd)
     defn = enforce_kpis_on_dashboard_only(defn, prd=prd)
+    from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
+
+    defn = apply_dashboard_analytics_product_rules(defn, prd=prd)
     mock = dict(defn.mock or {})
     for page in defn.pages:
         mock.update(_collect_mock_keys(page.blocks))

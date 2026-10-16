@@ -161,7 +161,23 @@ def apply_route_layout_policies(
         elif not intent.wants_charts:
             intent.wants_charts = False
             intent.chart_cap = 0
-        intent.wants_table = False
+        table_block = (
+            _subsection_text(section, "table columns")
+            or _subsection_text(section, "table column")
+            or _subsection_text(section, "columns")
+        )
+        table_cols = bool(_bullets(table_block)) or bool(
+            re.search(r"table columns?:", section, re.I)
+        )
+        intent.wants_table = table_cols or bool(
+            re.search(
+                r"filterable table|maintenance events|events by machine|work order.{0,20}table|drill.?down",
+                section,
+                re.I,
+            )
+        )
+        if intent.wants_table:
+            intent.table_detail = True
         intent.wants_filters = False
         intent.wants_export_actions = False
         intent.wants_create_action = False
@@ -183,8 +199,8 @@ def apply_route_layout_policies(
         intent.wants_kpis = False
         intent.kpi_cap = 0
         intent.wants_filters = False
-        if not intent.wants_table:
-            intent.wants_table = True
+        intent.wants_table = False
+        intent.table_detail = False
         if not intent.wants_charts:
             intent.wants_charts = True
             intent.chart_cap = max(intent.chart_cap, 2)
@@ -569,10 +585,12 @@ def ensure_blocks_match_intent(
 
     if intent.wants_table and "dataTable" not in {b.get("type") for b in shaped}:
         cols = _extract_table_columns(section)
-        if not cols and _page_role(page_id, title) == "analytics":
+        if not cols and _page_role(page_id, title) == "dashboard":
             from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
 
-            if re.search(r"maintenance|mtbf|mttr|equipment|work order", section, re.I):
+            if intent.wants_table and re.search(
+                r"maintenance|mtbf|mttr|equipment|work order|filterable", section, re.I
+            ):
                 cols = _maintenance_analytics_columns()
         if not cols:
             cols = [

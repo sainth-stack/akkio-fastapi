@@ -54,13 +54,17 @@ def _page_layout_hint(page: str) -> str:
     low = (page or "").lower()
     if re.search(r"\b(dashboard|home|overview)\b", low):
         return (
-            "Layout: **KPIs** on Dashboard. If the user lists charts under **Include:** or **Charts:** "
-            "(e.g. line chart for downtime trends, bar chart by category), copy those bullets here — do not omit them."
+            "Layout: **KPIs** + **Charts** (Include/Charts bullets; charts should relate to KPIs — MTBF, MTTR, "
+            "work orders, downtime). Put **filterable maintenance event tables** on Dashboard only (Table columns), "
+            "not on Analytics."
         )
     if re.search(r"\breports?\b", low):
         return "Layout: **Charts** + **Actions** (Export PDF/CSV). No **Table columns**. Omit **Filters** unless the user requested filters."
     if re.search(r"\banalytics?\b", low):
-        return "Layout: **Charts** + **Table columns** with realistic field names (machine, line, shift, root cause, severity). Omit **Filters** unless the user requested filters."
+        return (
+            "Layout: **Charts only** (trends, pareto, failure frequency, root cause) — **no Table columns** "
+            "(tables belong on Dashboard). Omit **Filters** unless the user requested filters."
+        )
     return ""
 
 

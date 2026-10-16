@@ -146,6 +146,7 @@ class TestPageLayoutIntent(unittest.TestCase):
         blocks = blocks_for_page("analytics", "Analytics", section, dashboard_page_id="dashboard")
         types = [b["type"] for b in blocks]
         self.assertNotIn("kpiRow", types)
+        self.assertNotIn("dataTable", types)
         self.assertGreaterEqual(types.count("lineChart") + types.count("barChart") + types.count("pieChart"), 1)
 
     def test_reports_export_one_chart_table(self):
