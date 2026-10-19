@@ -342,6 +342,121 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
         ) from e
 
 
+# --- App assistant (must register before /{collection} CRUD or "chat" is treated as a table) ---
+
+_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm"})
+
+
+class LLMRequest(BaseModel):
+    messages: List[Dict[str, str]]
+    stream: bool = False
+
+
+class AppChatRequest(BaseModel):
+    messages: List[Dict[str, str]]
+    page_id: Optional[str] = None
+    app_definition: Optional[Dict[str, Any]] = None
+
+
+async def _optional_project_access(project_id: str, request: Request) -> None:
+    """Require JWT when provided; otherwise allow chat if project files exist (hosted app preview)."""
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth.split(" ", 1)[1].strip())
+        current = await resolve_user_for_generated_app(request, creds)
+        assert_project_access(project_id, current)
+        return
+    token = (request.query_params.get("access_token") or "").strip()
+    if token:
+        preview_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        current = await resolve_user_for_generated_app(request, preview_creds)
+        assert_project_access(project_id, current)
+        return
+    from app_builder.services.app_data_rag import load_project_app_definition
+
+    if not load_project_app_definition(project_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+@router.post("/{project_id}/chat")
+async def app_data_chat(
+    project_id: str,
+    body: AppChatRequest,
+    request: Request,
+):
+    """RAG chat over the generated app's KPIs, charts, and tables."""
+    await _optional_project_access(project_id, request)
+    if not body.messages:
+        raise HTTPException(status_code=400, detail="messages required")
+    try:
+        from app_builder.services.app_chat_service import answer_app_chat
+
+        content = await answer_app_chat(
+            project_id,
+            body.messages,
+            page_id=body.page_id,
+            app_definition=body.app_definition,
+        )
+        return JSONResponse(content={"role": "assistant", "content": content})
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}") from e
+    except Exception as e:
+        logger.exception("[dynamic_app] app chat error: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="Chat failed. Check OPENAI_API_KEY in server .env and try again.",
+        ) from e
+
+
+@router.post("/{project_id}/llm")
+async def llm_proxy(
+    project_id: str,
+    request: LLMRequest,
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
+):
+    """Proxy LLM calls with project-specific system prompt."""
+    assert_project_access(project_id, current)
+    config = get_project_config(project_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+    system_prompt = config.get("llmPrompt") or "You are a helpful assistant."
+    try:
+        from llm_helper import get_llm_for_user
+        llm = get_llm_for_user(user_email=None, temperature=0.7)
+        from langchain_core.messages import HumanMessage, SystemMessage
+        messages = [SystemMessage(content=system_prompt)]
+        for m in request.messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "system":
+                messages.insert(0, SystemMessage(content=content))
+            elif role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                from langchain_core.messages import AIMessage
+                messages.append(AIMessage(content=content))
+        if request.stream:
+            chunks = []
+            async for chunk in llm.astream(messages):
+                if hasattr(chunk, "content") and chunk.content:
+                    chunks.append(chunk.content)
+            return JSONResponse(content={"content": "".join(chunks)})
+        response = await llm.ainvoke(messages)
+        return JSONResponse(content={"content": response.content})
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}")
+    except Exception as e:
+        logger.exception("[dynamic_app] LLM error: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="AI request failed. Check API keys in server .env and try again.",
+        ) from e
+
+
 # --- CRUD routes ---
 
 
@@ -507,6 +622,8 @@ async def create_item(
     current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Create item in collection, or dispatch to custom endpoint (generate-ideas, translate, etc.)."""
+    if collection in _RESERVED_PATH_SEGMENTS:
+        raise HTTPException(status_code=404, detail=f"Unknown collection: {collection}")
     assert_project_access(project_id, current)
     config = get_project_config(project_id)
     if not config:
@@ -643,118 +760,3 @@ async def delete_item(
     finally:
         conn.close()
 
-
-# --- LLM proxy ---
-
-
-class LLMRequest(BaseModel):
-    messages: List[Dict[str, str]]
-    stream: bool = False
-
-
-class AppChatRequest(BaseModel):
-    messages: List[Dict[str, str]]
-    page_id: Optional[str] = None
-    """Optional inline definition when client has data.json in-browser (fallback)."""
-    app_definition: Optional[Dict[str, Any]] = None
-
-
-async def _optional_project_access(project_id: str, request: Request) -> None:
-    """Require JWT when provided; otherwise allow chat if project files exist (hosted app preview)."""
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    auth = request.headers.get("Authorization", "")
-    if auth.lower().startswith("bearer "):
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth.split(" ", 1)[1].strip())
-        current = await resolve_user_for_generated_app(request, creds)
-        assert_project_access(project_id, current)
-        return
-    token = (request.query_params.get("access_token") or "").strip()
-    if token:
-        preview_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-        current = await resolve_user_for_generated_app(request, preview_creds)
-        assert_project_access(project_id, current)
-        return
-    from app_builder.services.app_data_rag import load_project_app_definition
-
-    if not load_project_app_definition(project_id):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-
-@router.post("/{project_id}/chat")
-async def app_data_chat(
-    project_id: str,
-    body: AppChatRequest,
-    request: Request,
-):
-    """
-    RAG chat over the generated app's KPIs, charts, and tables (server OPENAI_API_KEY / LLM config).
-    """
-    await _optional_project_access(project_id, request)
-    if not body.messages:
-        raise HTTPException(status_code=400, detail="messages required")
-    try:
-        from app_builder.services.app_chat_service import answer_app_chat
-
-        content = await answer_app_chat(
-            project_id,
-            body.messages,
-            page_id=body.page_id,
-            app_definition=body.app_definition,
-        )
-        return JSONResponse(content={"role": "assistant", "content": content})
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ImportError as e:
-        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}") from e
-    except Exception as e:
-        logger.exception("[dynamic_app] app chat error: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="Chat failed. Check OPENAI_API_KEY in server .env and try again.",
-        ) from e
-
-
-@router.post("/{project_id}/llm")
-async def llm_proxy(
-    project_id: str,
-    request: LLMRequest,
-    current: CurrentUser = Depends(resolve_user_for_generated_app),
-):
-    """Proxy LLM calls with project-specific system prompt."""
-    assert_project_access(project_id, current)
-    config = get_project_config(project_id)
-    if not config:
-        raise HTTPException(status_code=404, detail="Project not found")
-    system_prompt = config.get("llmPrompt") or "You are a helpful assistant."
-    try:
-        from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0.7)
-        from langchain_core.messages import HumanMessage, SystemMessage
-        messages = [SystemMessage(content=system_prompt)]
-        for m in request.messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            if role == "system":
-                messages.insert(0, SystemMessage(content=content))
-            elif role == "user":
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                from langchain_core.messages import AIMessage
-                messages.append(AIMessage(content=content))
-        if request.stream:
-            chunks = []
-            async for chunk in llm.astream(messages):
-                if hasattr(chunk, "content") and chunk.content:
-                    chunks.append(chunk.content)
-            return JSONResponse(content={"content": "".join(chunks)})
-        response = await llm.ainvoke(messages)
-        return JSONResponse(content={"content": response.content})
-    except ImportError as e:
-        raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}")
-    except Exception as e:
-        logger.exception("[dynamic_app] LLM error: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="AI request failed. Check API keys in server .env and try again.",
-        ) from e
