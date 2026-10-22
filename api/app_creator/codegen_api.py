@@ -290,19 +290,39 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         # ── Detect track ─────────────────────────────────────────────────────
         _track = None
         _domain = None
+        _kw_static = None
         try:
-            from app_builder.services.fullstack_app_generator import resolve_app_mode, resolve_track
-            _domain = resolve_app_mode(requirement, prd, uiux)
-            _track = resolve_track(_domain)
+            from app_builder.services.fullstack_app_generator import (
+                STATIC_DOMAINS,
+                _keyword_classify,
+                resolve_app_mode,
+                resolve_track,
+            )
+            _kw_static = _keyword_classify(requirement, prd, uiux)
+            if _kw_static in STATIC_DOMAINS:
+                _domain = _kw_static
+                _track = "legacy"
+            else:
+                _domain = resolve_app_mode(requirement, prd, uiux)
+                _track = resolve_track(_domain)
         except Exception:
             pass
 
-        # Override with plan_json track if available
+        # Override with plan_json track if available (static verticals still win)
         if plan_json_req and (plan_json_req.get("blueprint") or {}).get("domain"):
-            _domain = plan_json_req["blueprint"]["domain"]
             try:
-                from app_builder.services.fullstack_app_generator import resolve_track
-                _track = resolve_track(_domain)
+                from app_builder.services.fullstack_app_generator import STATIC_DOMAINS, resolve_track
+
+                bp_domain = plan_json_req["blueprint"]["domain"]
+                if _kw_static and _kw_static in STATIC_DOMAINS:
+                    _domain = _kw_static
+                    _track = "legacy"
+                elif bp_domain in STATIC_DOMAINS:
+                    _domain = bp_domain
+                    _track = "legacy"
+                else:
+                    _domain = bp_domain
+                    _track = resolve_track(_domain)
             except Exception:
                 pass
 

@@ -17,6 +17,33 @@ class TestEcommerceVertical(unittest.TestCase):
         prd = "Online pharmacy with healthcare, vitamins, and wellness products."
         self.assertEqual(_detect_product_domain(req, prd, ""), "electronics")
 
+    def test_pharma_catalog_when_prompt_says_pharmacy(self):
+        from app_builder.services.fullstack_app_generator import generate_fullstack_application
+
+        files = generate_fullstack_application(
+            "Build an online pharmacy store with shopping cart, checkout, and product listing",
+            "Medicine and wellness delivery for customers",
+            "",
+            {},
+            forced_mode="ecommerce",
+        )
+        mock = files.get("frontend/src/api/mock.ts", "")
+        self.assertIn("Paracetamol", mock)
+        self.assertNotIn("Laptop", mock)
+
+    def test_legacy_forced_mode_ignores_llm_generic(self):
+        from app_builder.services.fullstack_app_generator import generate_fullstack_application
+
+        files = generate_fullstack_application(
+            "online store with cart and checkout",
+            "",
+            "",
+            {},
+            forced_mode="ecommerce",
+        )
+        self.assertIn("frontend/src/api/mock.ts", files)
+        self.assertNotIn("frontend/src/mock/data.json", files)
+
     def test_electronics_products_in_generated_mock(self):
         from app_builder.services.fullstack_app_generator import (
             generate_fullstack_application,

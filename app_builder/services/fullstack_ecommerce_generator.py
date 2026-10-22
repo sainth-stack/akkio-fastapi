@@ -27,6 +27,19 @@ def is_ecommerce_domain(requirement: str, prd: str = "", uiux: str = "") -> bool
     strong = sum(1 for k in ECOMMERCE_KEYWORDS if k in text)
     if strong >= 1:
         return True
+    vertical_store = (
+        "online pharmacy",
+        "pharmacy store",
+        "medicine delivery",
+        "drug store",
+        "electronics store",
+        "gadget store",
+        "online store",
+        "grocery delivery",
+        "fashion store",
+    )
+    if any(v in text for v in vertical_store):
+        return True
     support = sum(1 for k in ECOMMERCE_SUPPORTING if k in text)
     return support >= 3
 

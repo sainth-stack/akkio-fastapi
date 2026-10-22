@@ -107,6 +107,7 @@ async def run_legacy_static_codegen(
         uiux,
         architecture,
         design_tokens,
+        forced_mode=domain if domain in ("ecommerce", "doc_chat", "anomaly_detection") else None,
     )
 
     await emit({

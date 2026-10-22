@@ -118,10 +118,13 @@ def _keyword_classify(requirement: str, prd: str = "", uiux: str = "") -> str:
 def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
     """Classify app type using LLM (with keyword fallback).
 
-    Runs the async LLM classifier in an isolated thread so this sync function
-    can be called from any context (event loop or plain thread).
-    Falls back to keyword matching on any error or timeout.
+    E-commerce, doc chat, and anomaly stores always use keyword detection first so
+    LLM mislabels (e.g. generic/crm) do not replace the legacy shopping-cart template.
     """
+    kw = _keyword_classify(requirement, prd, uiux)
+    if kw in STATIC_DOMAINS:
+        return kw
+
     try:
         import asyncio
         import concurrent.futures
@@ -142,7 +145,7 @@ def resolve_app_mode(requirement: str, prd: str = "", uiux: str = "") -> str:
     except Exception as exc:
         logger.debug("[resolve_app_mode] LLM classify unavailable (%s) — using keywords", exc)
 
-    return _keyword_classify(requirement, prd, uiux)
+    return kw
 
 
 def is_quality_domain(requirement: str, prd: str = "", uiux: str = "") -> bool:
@@ -188,11 +191,13 @@ def generate_fullstack_application(
     uiux: str = "",
     architecture: Optional[Dict[str, Any]] = None,
     design_tokens: Optional[Dict[str, Any]] = None,
+    *,
+    forced_mode: Optional[str] = None,
 ) -> Dict[str, str]:
     files = dict(get_fullstack_scaffold_files())
     title = extract_app_title(requirement, prd)
     colors = theme_from_tokens(design_tokens, uiux=uiux)
-    mode = resolve_app_mode(requirement, prd, uiux)
+    mode = forced_mode if forced_mode in STATIC_DOMAINS else resolve_app_mode(requirement, prd, uiux)
 
     # ── JSON app track (template renderer + mock/data.json) ────────────────
     if mode not in STATIC_DOMAINS:
