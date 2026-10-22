@@ -36,8 +36,15 @@ async def answer_app_chat(
     system = CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)
 
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from llm_config import get_llm_config
     from llm_helper import get_llm_for_user
 
+    llm_cfg = get_llm_config(None)
+    if not (llm_cfg.get("api_key") or "").strip():
+        raise ValueError(
+            "No LLM API key on the server. Set OPENAI_API_KEY (or ANTHROPIC_API_KEY / GOOGLE_API_KEY) "
+            "in akkio-fastapi/.env and restart the API process."
+        )
     llm = get_llm_for_user(user_email=None, temperature=0.25)
     lc_messages: List[Any] = [SystemMessage(content=system)]
     for m in messages[-12:]:

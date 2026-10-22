@@ -220,8 +220,17 @@ def get_llm_config(user_email: Optional[str] = None) -> Dict[str, str]:
     config = {
         "provider": DEFAULT_PROVIDER,
         "api_key": get_default_api_key(DEFAULT_PROVIDER),
-        "model": DEFAULT_MODEL
+        "model": DEFAULT_MODEL,
     }
+
+    if not config["api_key"]:
+        for provider in ("openai", "anthropic", "google"):
+            key = get_default_api_key(provider)
+            if key:
+                config["provider"] = provider
+                config["api_key"] = key
+                config["model"] = PROVIDER_MODELS.get(provider, {}).get("default", DEFAULT_MODEL)
+                break
 
     if not user_email:
         return config

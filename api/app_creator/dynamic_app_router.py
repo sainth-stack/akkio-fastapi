@@ -358,8 +358,27 @@ class AppChatRequest(BaseModel):
     app_definition: Optional[Dict[str, Any]] = None
 
 
-async def _optional_project_access(project_id: str, request: Request) -> None:
-    """Require JWT when provided; otherwise allow chat if project files exist (hosted app preview)."""
+def _client_supplied_app_definition(body: Optional[AppChatRequest]) -> bool:
+    """Browser embeds data.json in the chat request — no server project copy required."""
+    if not body or not isinstance(body.app_definition, dict):
+        return False
+    d = body.app_definition
+    data = d.get("data") or d.get("mock")
+    if isinstance(data, dict) and data:
+        return True
+    pages = d.get("pages")
+    return isinstance(pages, list) and len(pages) > 0
+
+
+async def _optional_project_access(
+    project_id: str,
+    request: Request,
+    body: Optional[AppChatRequest] = None,
+) -> None:
+    """JWT when provided; else allow chat with inline app_definition or on-disk project data."""
+    if _client_supplied_app_definition(body):
+        return
+
     from fastapi.security import HTTPAuthorizationCredentials
 
     auth = request.headers.get("Authorization", "")
@@ -376,8 +395,12 @@ async def _optional_project_access(project_id: str, request: Request) -> None:
         return
     from app_builder.services.app_data_rag import load_project_app_definition
 
-    if not load_project_app_definition(project_id):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    if load_project_app_definition(project_id):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Chat requires sign-in, preview access token, or app data in the request.",
+    )
 
 
 @router.post("/{project_id}/chat")
@@ -387,7 +410,7 @@ async def app_data_chat(
     request: Request,
 ):
     """RAG chat over the generated app's KPIs, charts, and tables."""
-    await _optional_project_access(project_id, request)
+    await _optional_project_access(project_id, request, body)
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages required")
     try:
@@ -401,14 +424,21 @@ async def app_data_chat(
         )
         return JSONResponse(content={"role": "assistant", "content": content})
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        msg = str(e)
+        low = msg.lower()
+        if "api key" in low or ("llm" in low and "configured" in low):
+            raise HTTPException(status_code=503, detail=msg) from e
+        raise HTTPException(status_code=404, detail=msg) from e
     except ImportError as e:
         raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}") from e
     except Exception as e:
         logger.exception("[dynamic_app] app chat error: %s", e)
+        err = str(e)
+        if "api key" in err.lower():
+            raise HTTPException(status_code=503, detail=err) from e
         raise HTTPException(
             status_code=503,
-            detail="Chat failed. Check OPENAI_API_KEY in server .env and try again.",
+            detail="Chat failed. Check server logs and LLM API keys in akkio-fastapi/.env.",
         ) from e
 
 

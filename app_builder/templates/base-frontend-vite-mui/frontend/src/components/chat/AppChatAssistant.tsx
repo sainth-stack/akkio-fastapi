@@ -18,6 +18,23 @@ import { getAkkioAccessToken, getAkkioApiBase } from '../../renderer/akkioApi';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
+function formatApiDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === 'object' && 'msg' in item) {
+          return String((item as { msg?: string }).msg);
+        }
+        return JSON.stringify(item);
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail);
+  return 'Request failed';
+}
+
 export default function AppChatAssistant({
   definition,
   pageId,
@@ -87,18 +104,22 @@ export default function AppChatAssistant({
           },
         }),
       });
-      const data = (await res.json()) as { content?: string; detail?: string };
+      const data = (await res.json()) as { content?: string; detail?: unknown };
       if (!res.ok) {
-        throw new Error(data.detail || `Request failed (${res.status})`);
+        throw new Error(formatApiDetail(data.detail) || `Request failed (${res.status})`);
       }
       setMessages((prev) => [...prev, { role: 'assistant', content: data.content || 'No response.' }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Something went wrong.';
+      const needsKeyHint = /api key|openai_api_key|not configured|503/i.test(msg);
+      const suffix = needsKeyHint
+        ? ' Add OPENAI_API_KEY to akkio-fastapi/.env on the server and restart the API.'
+        : '';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `I could not reach the assistant. ${msg} Ensure OPENAI_API_KEY is set on the server.`,
+          content: `I could not reach the assistant. ${msg}${suffix}`,
         },
       ]);
     } finally {
