@@ -1,6 +1,7 @@
 """E-commerce vertical detection (electronics vs pharmacy)."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -30,6 +31,23 @@ class TestEcommerceVertical(unittest.TestCase):
         mock = files.get("frontend/src/api/mock.ts", "")
         self.assertIn("Paracetamol", mock)
         self.assertNotIn("Laptop", mock)
+
+    def test_ecommerce_includes_data_agent_and_store_context(self):
+        from app_builder.services.fullstack_app_generator import generate_fullstack_application
+
+        files = generate_fullstack_application(
+            "ecommerce electronics shop with cart and checkout",
+            "",
+            "",
+            {},
+            forced_mode="ecommerce",
+        )
+        self.assertIn("frontend/src/components/AppDataAgent.tsx", files)
+        self.assertIn("frontend/src/data/store-context.json", files)
+        ctx = json.loads(files["frontend/src/data/store-context.json"])
+        self.assertEqual(ctx.get("appKind"), "ecommerce")
+        self.assertEqual(ctx.get("meta", {}).get("domain"), "electronics")
+        self.assertTrue(any(p.get("name") == "Laptop" for p in ctx.get("products", [])))
 
     def test_legacy_forced_mode_ignores_llm_generic(self):
         from app_builder.services.fullstack_app_generator import generate_fullstack_application

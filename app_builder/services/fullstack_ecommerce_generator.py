@@ -7,6 +7,8 @@ Pages: Home, Register, Login, Products, ProductDetail, Cart, Checkout, OrderConf
 Backend: User, Product, Cart, Order, OrderItem + JWT auth + seed 10 products
 """
 from __future__ import annotations
+
+import json
 from typing import Dict, List, Tuple
 
 
@@ -232,8 +234,11 @@ def ecommerce_frontend_files(
     products = _DOMAIN_PRODUCTS.get(domain, _DOMAIN_PRODUCTS["electronics"])
     hero_title, hero_subtitle = _DOMAIN_HERO.get(domain, _DOMAIN_HERO["electronics"])
     safe = title.replace("\\", "\\\\").replace("'", "\\'")
+    store_ctx = _store_context_json(title, domain, products, hero_title, hero_subtitle)
     return {
         "frontend/src/theme.ts": build_theme_ts(colors),
+        "frontend/src/data/store-context.json": store_ctx,
+        "frontend/src/components/AppDataAgent.tsx": _app_data_agent_tsx(safe),
         "frontend/src/App.tsx": _app_tsx(),
         "frontend/src/context/CartContext.tsx": _cart_context_tsx(),
         "frontend/src/layout/Navbar.tsx": _navbar_tsx(safe),
@@ -296,12 +301,180 @@ export function isLoggedIn(): boolean { return !!getToken(); }
 """
 
 
+def _store_context_json(
+    title: str,
+    domain: str,
+    products: List[Tuple],
+    hero_title: str,
+    hero_subtitle: str,
+) -> str:
+    items = [
+        {
+            "id": i + 1,
+            "name": name,
+            "description": desc,
+            "price": price,
+            "stock": stock,
+        }
+        for i, (name, desc, price, _img, stock) in enumerate(products)
+    ]
+    first_price = products[0][2] if products else 0
+    payload = {
+        "appKind": "ecommerce",
+        "meta": {
+            "appName": title,
+            "domain": domain,
+            "description": hero_subtitle,
+        },
+        "hero": {"title": hero_title, "subtitle": hero_subtitle},
+        "products": items,
+        "dashboard": {
+            "total_orders": 1,
+            "pending_orders": 0,
+            "total_spent": first_price,
+            "recent_orders": [
+                {
+                    "order_number": "ORD-1001",
+                    "total": first_price,
+                    "status": "Delivered",
+                }
+            ],
+        },
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _app_data_agent_tsx(app_name: str) -> str:
+    safe_name = app_name.replace("\\", "\\\\").replace("'", "\\'")
+    return f"""import {{ useCallback, useRef, useState }} from 'react';
+import {{
+  Box, CircularProgress, Drawer, Fab, IconButton, Paper, Stack, TextField, Typography,
+}} from '@mui/material';
+import ChatIcon from '@mui/icons-material/Chat';
+import CloseIcon from '@mui/icons-material/Close';
+import SendIcon from '@mui/icons-material/Send';
+import storeContext from '../data/store-context.json';
+
+type ChatMessage = {{ role: 'user' | 'assistant'; content: string }};
+
+function getAkkioApiBase(): string | null {{
+  const w = window as {{ __AKKIO_API_BASE__?: string }};
+  if (w.__AKKIO_API_BASE__) return w.__AKKIO_API_BASE__.replace(/\\/$/, '');
+  const m = window.location.pathname.match(/^\\/app\\/([^/]+)/);
+  return m ? `/api/apps/${{m[1]}}` : null;
+}}
+
+function getAkkioAccessToken(): string | null {{
+  const w = window as {{ __AKKIO_ACCESS_TOKEN__?: string }};
+  return w.__AKKIO_ACCESS_TOKEN__?.trim() || null;
+}}
+
+function formatApiDetail(detail: unknown): string {{
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((x) => JSON.stringify(x)).join('; ');
+  return 'Request failed';
+}}
+
+export default function AppDataAgent() {{
+  const apiBase = getAkkioApiBase();
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {{
+      role: 'assistant',
+      content: 'Hi — ask me about products, prices, stock, or your dashboard orders.',
+    }},
+  ]);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const send = useCallback(async () => {{
+    const text = input.trim();
+    if (!text || loading) return;
+    if (!apiBase) {{
+      setMessages((prev) => [
+        ...prev,
+        {{ role: 'user', content: text }},
+        {{ role: 'assistant', content: 'Open this store from the Akkio app host (/app/...) to use the data agent.' }},
+      ]);
+      setInput('');
+      return;
+    }}
+    const history = [...messages.filter((m) => m.role === 'user' || m.role === 'assistant'), {{ role: 'user' as const, content: text }}];
+    setMessages((prev) => [...prev, {{ role: 'user', content: text }}]);
+    setInput('');
+    setLoading(true);
+    try {{
+      const headers: Record<string, string> = {{ 'Content-Type': 'application/json' }};
+      const token = getAkkioAccessToken();
+      if (token) headers.Authorization = `Bearer ${{token}}`;
+      const res = await fetch(`${{apiBase}}/chat`, {{
+        method: 'POST',
+        headers,
+        body: JSON.stringify({{
+          messages: history.map((m) => ({{ role: m.role, content: m.content }})),
+          page_id: 'dashboard',
+          app_definition: storeContext,
+        }}),
+      }});
+      const data = (await res.json()) as {{ content?: string; detail?: unknown }};
+      if (!res.ok) throw new Error(formatApiDetail(data.detail));
+      setMessages((prev) => [...prev, {{ role: 'assistant', content: data.content || 'No response.' }}]);
+    }} catch (e) {{
+      const msg = e instanceof Error ? e.message : 'Something went wrong.';
+      setMessages((prev) => [...prev, {{ role: 'assistant', content: `Could not reach the agent. ${{msg}}` }}]);
+    }} finally {{
+      setLoading(false);
+      listRef.current?.scrollTo({{ top: listRef.current.scrollHeight, behavior: 'smooth' }});
+    }}
+  }}, [apiBase, input, loading, messages]);
+
+  return (
+    <>
+      <Fab color="primary" aria-label="Store data agent" onClick={{() => setOpen(true)}}
+        sx={{ position: 'fixed', bottom: 24, right: 24, zIndex: (t) => t.zIndex.drawer + 2 }}>
+        <ChatIcon />
+      </Fab>
+      <Drawer anchor="right" open={{open}} onClose={{() => setOpen(false)}}
+        PaperProps={{ sx: {{ width: {{ xs: '100%', sm: 400 }}, display: 'flex', flexDirection: 'column' }} }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2 }}>
+          <Typography variant="subtitle1" fontWeight={{700}}>Store agent</Typography>
+          <IconButton onClick={{() => setOpen(false)}}><CloseIcon /></IconButton>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ px: 2, pb: 1 }}>
+          Answers from this shop catalog and dashboard data — not the open web.
+        </Typography>
+        <Box ref={{listRef}} sx={{ flex: 1, overflow: 'auto', px: 2, py: 1, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+          {{messages.map((m, i) => (
+            <Paper key={{i}} elevation={{0}} sx={{ p: 1.5, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '92%',
+              bgcolor: m.role === 'user' ? 'primary.main' : 'action.hover',
+              color: m.role === 'user' ? 'primary.contrastText' : 'text.primary', borderRadius: 2 }}>
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{{m.content}}</Typography>
+            </Paper>
+          ))}}
+          {{loading ? <CircularProgress size={{18}} /> : null}}
+        </Box>
+        <Stack direction="row" spacing={{1}} sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
+          <TextField fullWidth size="small" placeholder="Ask about products, prices, orders…"
+            value={{input}} onChange={{(e) => setInput(e.target.value)}}
+            onKeyDown={{(e) => {{ if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); send(); }} }}}}
+            disabled={{loading}} />
+          <IconButton color="primary" onClick={{send}} disabled={{loading || !input.trim()}}><SendIcon /></IconButton>
+        </Stack>
+      </Drawer>
+    </>
+  );
+}}
+"""
+
+
 def _app_tsx() -> str:
     # NOTE: main.tsx (frozen scaffold) already provides:
     #   <QueryClientProvider> <ThemeProvider> <CssBaseline> <BrowserRouter>
     # App.tsx must NOT duplicate those providers — only add CartProvider + routes.
     return """import { Navigate, Route, Routes } from 'react-router-dom';
 import { CartProvider } from './context/CartContext';
+import AppDataAgent from './components/AppDataAgent';
 import Navbar from './layout/Navbar';
 import HomePage from './pages/HomePage';
 import RegisterPage from './pages/RegisterPage';
@@ -314,20 +487,23 @@ import DashboardPage from './pages/DashboardPage';
 
 export default function App() {
   return (
-    <CartProvider>
-      <Navbar />
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/products" element={<ProductsPage />} />
-        <Route path="/products/:id" element={<ProductDetailPage />} />
-        <Route path="/cart" element={<CartPage />} />
-        <Route path="/checkout" element={<CheckoutPage />} />
-        <Route path="/order-confirmation" element={<OrderConfirmationPage />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </CartProvider>
+    <>
+      <CartProvider>
+        <Navbar />
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/products" element={<ProductsPage />} />
+          <Route path="/products/:id" element={<ProductDetailPage />} />
+          <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<CheckoutPage />} />
+          <Route path="/order-confirmation" element={<OrderConfirmationPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </CartProvider>
+      <AppDataAgent />
+    </>
   );
 }
 """

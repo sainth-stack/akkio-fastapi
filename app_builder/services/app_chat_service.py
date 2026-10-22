@@ -6,8 +6,10 @@ from typing import Any, Dict, List, Optional
 
 from app_builder.services.app_data_rag import (
     CHAT_SYSTEM_TEMPLATE,
+    ECOMMERCE_CHAT_SYSTEM_TEMPLATE,
     build_rag_context,
     load_project_app_definition,
+    _is_ecommerce_definition,
 )
 
 logger = logging.getLogger("app_builder")
@@ -33,7 +35,10 @@ async def answer_app_chat(
     context = build_rag_context(defn, last_user or "overview", focus_page_id=page_id)
     meta = defn.get("meta") or {}
     app_name = str(meta.get("appName") or "Dashboard")
-    system = CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)
+    if _is_ecommerce_definition(defn):
+        system = ECOMMERCE_CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)
+    else:
+        system = CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)
 
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from llm_config import get_llm_config

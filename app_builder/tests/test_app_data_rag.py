@@ -42,5 +42,21 @@ class TestAppDataRag(unittest.TestCase):
         self.assertIn("downtime", ctx.lower())
 
 
+    def test_ecommerce_context_includes_products(self):
+        from app_builder.services.app_data_rag import build_rag_context
+
+        defn = {
+            "appKind": "ecommerce",
+            "meta": {"appName": "Tech Shop", "domain": "electronics"},
+            "products": [
+                {"id": 1, "name": "Laptop", "price": 50000, "stock": 20, "description": "15 inch"},
+            ],
+            "dashboard": {"total_orders": 2, "total_spent": 50000},
+        }
+        ctx = build_rag_context(defn, "Which laptop do you sell?")
+        self.assertIn("Laptop", ctx)
+        self.assertIn("50000", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()

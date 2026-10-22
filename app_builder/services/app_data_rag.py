@@ -18,6 +18,7 @@ def load_project_app_definition(project_id: str) -> Optional[Dict[str, Any]]:
     if not os.path.isdir(root):
         return None
     for rel in (
+        "frontend/src/data/store-context.json",
         "frontend/src/mock/data.json",
         "frontend/src/config/app-definition.json",
         "app_definition.json",
@@ -139,12 +140,64 @@ def _summarize_kpi_block(block: Dict[str, Any], data: Dict[str, Any], page_id: s
     return "\n".join(lines) if lines else "  (no KPI values)"
 
 
+def _is_ecommerce_definition(defn: Dict[str, Any]) -> bool:
+    return defn.get("appKind") == "ecommerce" or isinstance(defn.get("products"), list)
+
+
+def _build_ecommerce_knowledge_chunks(defn: Dict[str, Any]) -> List[Tuple[str, str]]:
+    meta = defn.get("meta") or {}
+    chunks: List[Tuple[str, str]] = []
+    hero = defn.get("hero") or {}
+    intro = (
+        f"Store: {meta.get('appName', 'Online Shop')}\n"
+        f"Vertical: {meta.get('domain', 'general')}\n"
+        f"Tagline: {hero.get('subtitle') or meta.get('description', '')}"
+    ).strip()
+    chunks.append(("store", intro))
+
+    products = defn.get("products") or []
+    if isinstance(products, list) and products:
+        lines = ["Product catalog (prices in INR):"]
+        for p in products[:24]:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name", "")
+            price = p.get("price", "")
+            stock = p.get("stock", "")
+            desc = str(p.get("description") or "")[:120]
+            lines.append(f"  • {name} — ₹{price}, stock {stock}. {desc}")
+        chunks.append(("products", "\n".join(lines)))
+
+    dash = defn.get("dashboard") or {}
+    if isinstance(dash, dict) and dash:
+        chunks.append(
+            (
+                "dashboard",
+                "Customer dashboard (sample/demo data):\n"
+                f"  • Total orders: {dash.get('total_orders')}\n"
+                f"  • Pending orders: {dash.get('pending_orders')}\n"
+                f"  • Total spent: ₹{dash.get('total_spent')}\n"
+                f"  • Recent orders: {dash.get('recent_orders')}",
+            )
+        )
+
+    pages_hint = (
+        "Store pages: Home, Products catalog, Product detail, Cart, Checkout, "
+        "Order confirmation, Dashboard (order history and spend KPIs)."
+    )
+    chunks.append(("pages", pages_hint))
+    return chunks
+
+
 def build_knowledge_chunks(
     defn: Dict[str, Any],
     *,
     focus_page_id: Optional[str] = None,
 ) -> List[Tuple[str, str]]:
     """Return (chunk_id, text) sections for retrieval."""
+    if _is_ecommerce_definition(defn):
+        return _build_ecommerce_knowledge_chunks(defn)
+
     data = _data_bag(defn)
     meta = defn.get("meta") or {}
     chunks: List[Tuple[str, str]] = []
@@ -220,6 +273,9 @@ def retrieve_chunks(
             score += 2
         if any(w in q_tokens for w in ("chart", "graph", "trend", "line", "bar")) and "chart" in low:
             score += 2
+        if any(w in q_tokens for w in ("product", "price", "stock", "order", "cart", "laptop")):
+            if "product" in low or "catalog" in low or "₹" in text:
+                score += 2
         scored.append((score, text))
     scored.sort(key=lambda x: (-x[0], len(x[1])))
     picked = [t for s, t in scored if s > 0][:top_k]
@@ -241,6 +297,19 @@ def build_rag_context(
         body = body[:_MAX_CONTEXT_CHARS] + "\n…(truncated)"
     return body
 
+
+ECOMMERCE_CHAT_SYSTEM_TEMPLATE = """You are the in-app shopping data agent for "{app_name}".
+Answer questions about products, prices, stock, orders, and dashboard stats using ONLY the STORE DATA below.
+Rules:
+- Quote exact product names and prices (₹) from the catalog when relevant.
+- For dashboard questions, use total orders, pending orders, total spent, and recent orders from the data.
+- Help shoppers compare products, find items in stock, and understand their order history (demo data).
+- If the question is outside the store data, say so — do not invent products or prices.
+- Be friendly, concise, and use bullet points when listing multiple products.
+
+STORE DATA:
+{context}
+"""
 
 CHAT_SYSTEM_TEMPLATE = """You are the in-app analytics assistant for "{app_name}".
 Answer questions about KPIs, charts, tables, trends, and operational metrics using ONLY the APPLICATION DATA below.

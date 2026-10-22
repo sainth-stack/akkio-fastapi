@@ -363,6 +363,8 @@ def _client_supplied_app_definition(body: Optional[AppChatRequest]) -> bool:
     if not body or not isinstance(body.app_definition, dict):
         return False
     d = body.app_definition
+    if d.get("appKind") == "ecommerce" and isinstance(d.get("products"), list) and d.get("products"):
+        return True
     data = d.get("data") or d.get("mock")
     if isinstance(data, dict) and data:
         return True
