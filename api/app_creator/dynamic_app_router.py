@@ -344,7 +344,7 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 
 # --- App assistant (must register before /{collection} CRUD or "chat" is treated as a table) ---
 
-_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm"})
+_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict"})
 
 
 class LLMRequest(BaseModel):
@@ -442,6 +442,58 @@ async def app_data_chat(
             status_code=503,
             detail="Chat failed. Check server logs and LLM API keys in akkio-fastapi/.env.",
         ) from e
+
+
+class PredictRequest(BaseModel):
+    features: Dict[str, Any] = {}
+    app_definition: Optional[Dict[str, Any]] = None
+
+
+@router.post("/{project_id}/chat/rag-export")
+async def rag_export(
+    project_id: str,
+    body: AppChatRequest,
+    request: Request,
+):
+    """Return full RAG context for PDF download in the chat UI."""
+    await _optional_project_access(project_id, request, body)
+    from app_builder.services.app_data_rag import build_rag_context, load_project_app_definition
+
+    defn = body.app_definition or load_project_app_definition(project_id)
+    if not defn:
+        raise HTTPException(status_code=404, detail="App definition not found")
+    meta = defn.get("meta") or {}
+    query = "full export of KPIs charts tables products and dashboard data"
+    context = build_rag_context(defn, query, focus_page_id=body.page_id)
+    return JSONResponse(
+        content={
+            "appName": meta.get("appName") or "Application",
+            "context": context,
+            "exportedAt": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
+
+@router.post("/{project_id}/predict")
+async def predict_synthetic(
+    project_id: str,
+    body: PredictRequest,
+    request: Request,
+):
+    """Synthetic forecast from operational inputs (manual Predict page or chat)."""
+    pseudo = AppChatRequest(messages=[], app_definition=body.app_definition)
+    await _optional_project_access(project_id, request, pseudo)
+    from app_builder.services.synthetic_predict import (
+        default_features_from_definition,
+        predict_from_features,
+    )
+    from app_builder.services.app_data_rag import load_project_app_definition
+
+    defn = body.app_definition or load_project_app_definition(project_id)
+    feats = dict(default_features_from_definition(defn if isinstance(defn, dict) else None))
+    feats.update(body.features or {})
+    result = predict_from_features(feats, app_definition=defn if isinstance(defn, dict) else None)
+    return JSONResponse(content=result)
 
 
 @router.post("/{project_id}/llm")

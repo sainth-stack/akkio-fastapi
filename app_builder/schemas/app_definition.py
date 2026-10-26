@@ -12,6 +12,7 @@ class AppMeta(BaseModel):
     domain: str = "generic"
     dataSource: str = "static"
     generatedBy: str = ""
+    capabilities: List[str] = Field(default_factory=list)
 
 
 class AppTheme(BaseModel):

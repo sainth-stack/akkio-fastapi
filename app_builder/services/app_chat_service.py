@@ -32,6 +32,35 @@ async def answer_app_chat(
             last_user = str(m.get("content") or "")
             break
 
+    import re
+
+    low = (last_user or "").lower()
+    if re.search(r"\b(download|export)\b.*\b(rag|context|data)\b", low) or re.search(
+        r"\brag data\b", low
+    ):
+        return (
+            "Use **Download RAG data (PDF)** in this chat panel to export the grounded context "
+            "(KPIs, charts, tables, and catalog data) used for answers."
+        )
+
+    if re.search(r"\b(predict|forecast|what.?if|projection)\b", low):
+        from app_builder.services.synthetic_predict import (
+            default_features_from_definition,
+            predict_from_features,
+        )
+
+        feats = default_features_from_definition(defn)
+        pred = predict_from_features(feats, app_definition=defn)
+        return (
+            f"**Synthetic forecast** (from current app data):\n"
+            f"- Predicted downtime (next period): **{pred['predicted_downtime_hours_next_period']} h**\n"
+            f"- Predicted MTBF: **{pred['predicted_mtbf_hours']} h**\n"
+            f"- Risk level: **{pred['risk_level']}** (confidence {pred['confidence']:.0%})\n"
+            f"- Drivers: {', '.join(pred['drivers'])}\n"
+            f"- Recommendation: {pred['recommendation']}\n\n"
+            "Open **Predict** in the sidebar to change inputs manually or run another scenario."
+        )
+
     context = build_rag_context(defn, last_user or "overview", focus_page_id=page_id)
     meta = defn.get("meta") or {}
     app_name = str(meta.get("appName") or "Dashboard")

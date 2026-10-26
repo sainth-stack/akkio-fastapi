@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import {
   Box,
+  Button,
   CircularProgress,
   Drawer,
   Fab,
@@ -13,8 +14,11 @@ import {
 import ChatIcon from '@mui/icons-material/Chat';
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
+import DownloadIcon from '@mui/icons-material/Download';
+import { useNavigate } from 'react-router-dom';
 import type { AppDefinition } from '../../renderer/useAppDefinition';
 import { getAkkioAccessToken, getAkkioApiBase } from '../../renderer/akkioApi';
+import { downloadRagDataPdf } from '../../utils/ragDownload';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
@@ -35,6 +39,20 @@ function formatApiDetail(detail: unknown): string {
   return 'Request failed';
 }
 
+function wantsRagDownload(text: string): boolean {
+  const low = text.toLowerCase();
+  return (
+    /\b(download|export)\b.*\b(rag|context)\b/.test(low) ||
+    /\brag data\b/.test(low) ||
+    /\bexport\b.*\bdata\b/.test(low)
+  );
+}
+
+function wantsPredictNav(text: string): boolean {
+  const low = text.toLowerCase();
+  return /\b(open|go to)\b.*\bpredict\b/.test(low) || /\bpredict page\b/.test(low);
+}
+
 export default function AppChatAssistant({
   definition,
   pageId,
@@ -45,7 +63,13 @@ export default function AppChatAssistant({
   pageTitle?: string;
 }) {
   const apiBase = getAkkioApiBase();
+  const navigate = useNavigate();
+  const caps = definition.meta?.capabilities || [];
+  const showRagExport =
+    !caps.length || caps.includes('rag_export') || caps.includes('rag_chat');
+  const hasPredictNav = definition.navigation?.some((n) => n.pageId === 'predict');
   const [open, setOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -62,9 +86,52 @@ export default function AppChatAssistant({
     });
   };
 
+  const runRagExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await downloadRagDataPdf(definition, pageId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Export failed';
+      setMessages((prev) => [...prev, { role: 'assistant', content: msg }]);
+      scrollToEnd();
+    } finally {
+      setExporting(false);
+    }
+  }, [definition, pageId]);
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
+
+    if (wantsRagDownload(text)) {
+      const nextUser: ChatMessage = { role: 'user', content: text };
+      setMessages((prev) => [
+        ...prev,
+        nextUser,
+        {
+          role: 'assistant',
+          content: 'Opening the RAG data export — use Print → Save as PDF in the new window.',
+        },
+      ]);
+      setInput('');
+      scrollToEnd();
+      await runRagExport();
+      return;
+    }
+
+    if (wantsPredictNav(text) && hasPredictNav) {
+      const nextUser: ChatMessage = { role: 'user', content: text };
+      setMessages((prev) => [
+        ...prev,
+        nextUser,
+        { role: 'assistant', content: 'Opening the Predict page for manual inputs.' },
+      ]);
+      setInput('');
+      navigate('/predict');
+      scrollToEnd();
+      return;
+    }
+
     if (!apiBase) {
       setMessages((prev) => [
         ...prev,
@@ -126,7 +193,7 @@ export default function AppChatAssistant({
       setLoading(false);
       scrollToEnd();
     }
-  }, [apiBase, definition, input, loading, messages, pageId]);
+  }, [apiBase, definition, hasPredictNav, input, loading, messages, navigate, pageId, runRagExport]);
 
   return (
     <>
@@ -163,6 +230,20 @@ export default function AppChatAssistant({
         <Typography variant="caption" color="text.secondary" sx={{ px: 2, pb: 1 }}>
           Answers use your app KPIs, charts, and tables — not the open web.
         </Typography>
+        {showRagExport ? (
+          <Box sx={{ px: 2, pb: 1 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={exporting ? <CircularProgress size={14} /> : <DownloadIcon />}
+              onClick={runRagExport}
+              disabled={exporting}
+              fullWidth
+            >
+              Download RAG data (PDF)
+            </Button>
+          </Box>
+        ) : null}
 
         <Box
           ref={listRef}

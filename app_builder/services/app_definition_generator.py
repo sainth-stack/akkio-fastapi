@@ -697,6 +697,9 @@ def finalize_app_definition(
     from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
     defn = apply_dashboard_analytics_product_rules(defn, prd=prd)
+    from app_builder.services.intelligence_pages import ensure_intelligence_features
+
+    defn = ensure_intelligence_features(defn, prd=prd, requirement=requirement)
     from app_builder.services.block_normalizer import repair_broken_data_table_blocks
 
     defn = repair_broken_data_table_blocks(defn, prd=prd)

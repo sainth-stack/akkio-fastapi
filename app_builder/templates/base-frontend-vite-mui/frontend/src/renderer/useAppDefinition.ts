@@ -3,7 +3,12 @@ import definitionJson from '../mock/data.json';
 
 export interface AppDefinition {
   version: number;
-  meta: { appName: string; description: string; domain: string };
+  meta: {
+    appName: string;
+    description: string;
+    domain: string;
+    capabilities?: string[];
+  };
   theme: Record<string, unknown>;
   navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;
   pages: Array<{ id: string; title: string; subtitle?: string; blocks: Array<Record<string, unknown>> }>;

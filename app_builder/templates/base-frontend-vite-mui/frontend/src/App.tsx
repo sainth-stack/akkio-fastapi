@@ -3,6 +3,7 @@ import { CssBaseline, ThemeProvider } from '@mui/material';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import AppShell from './components/ui/AppShell';
 import PageRenderer from './renderer/PageRenderer';
+import PredictPage from './pages/PredictPage';
 import { useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
 import AppChatAssistant from './components/chat/AppChatAssistant';
@@ -66,7 +67,13 @@ export default function App() {
             <Route
               key={item.pageId}
               path={item.path}
-              element={<PageRenderer pageId={item.pageId} />}
+              element={
+                item.pageId === 'predict' ? (
+                  <PredictPage definition={definition} />
+                ) : (
+                  <PageRenderer pageId={item.pageId} />
+                )
+              }
             />
           ))}
           <Route path="*" element={<Navigate to={defaultPath} replace />} />
