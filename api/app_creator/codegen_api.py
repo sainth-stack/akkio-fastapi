@@ -431,6 +431,15 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
                     )
                 await websocket.send_text(json.dumps({"event": "error", "message": _err}))
                 return
+            from app_builder.services.json_app_template_guard import ensure_json_app_renderer
+
+            files, _guard_n = ensure_json_app_renderer(files)
+            if _guard_n:
+                await websocket.send_text(json.dumps({
+                    "event": "pipeline_log",
+                    "agent": "codegen",
+                    "message": f"json_app: locked { _guard_n } renderer file(s) to PageRenderer + data.json.",
+                }))
             # Skip to final save (no backend verification needed for FO track)
         else:
             files = await execute_code_generator_agent(

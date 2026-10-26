@@ -152,6 +152,10 @@ def generate_json_app_files(
 
     files.pop("frontend/src/pages/DemoPage.tsx", None)
 
+    from app_builder.services.json_app_template_guard import ensure_json_app_renderer
+
+    files, _ = ensure_json_app_renderer(files)
+
     logger.info(
         "[json_app] definition | pages=%d nav=%d mock_keys=%d",
         len(definition.pages),

@@ -219,11 +219,28 @@ def _deterministic_build_fix(files: Dict[str, str], build_log: str, project_root
         try:
             from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
 
-            updated, n = ensure_frontend_only_kit(updated, project_name=project_name)
+            updated, n = ensure_frontend_only_kit(updated)
             if n:
                 logger.info("[build-fix] Restored UI kit (%d files) after LineChart resolve error", n)
         except Exception as exc:
             logger.warning("[build-fix] UI kit restore failed: %s", exc)
+
+    # ── Fix: legacy App.tsx references DashboardPage/ReportsPage without imports (json_app) ──
+    if "is not defined" in build_log and "page" in log_lower:
+        try:
+            from app_builder.services.json_app_template_guard import (
+                ensure_json_app_renderer,
+                repair_broken_legacy_app_tsx,
+            )
+
+            updated, fixed = repair_broken_legacy_app_tsx(updated)
+            if fixed:
+                logger.info("[build-fix] Replaced broken legacy App.tsx with json_app PageRenderer")
+            updated, n = ensure_json_app_renderer(updated)
+            if n or fixed:
+                logger.info("[build-fix] json_app renderer guard restored %d file(s)", n)
+        except Exception as exc:
+            logger.warning("[build-fix] json_app guard failed: %s", exc)
 
     return updated
 
@@ -322,17 +339,29 @@ Rules:
     except ImportError:
         is_ui_kit_path = lambda _p: False  # type: ignore
 
+    try:
+        from app_builder.services.json_app_template_guard import is_json_app_project
+    except ImportError:
+        is_json_app_project = lambda _f: False  # type: ignore
+
+    json_app = is_json_app_project(files)
+
     for path, content in (data.get("files") or {}).items():
         if isinstance(content, str) and content.strip():
             if is_ui_kit_path(path):
                 logger.warning("[build-fix] Ignoring LLM patch to frozen UI path %s", path)
                 continue
+            if json_app and path.replace("\\", "/") == "frontend/src/App.tsx":
+                logger.warning("[build-fix] Ignoring LLM patch to json_app App.tsx")
+                continue
             updated[path] = content
 
     try:
         from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+        from app_builder.services.json_app_template_guard import ensure_json_app_renderer
 
         updated, _ = ensure_frontend_only_kit(updated)
+        updated, _ = ensure_json_app_renderer(updated)
     except Exception:
         pass
 
@@ -379,12 +408,14 @@ async def verify_build_and_fix(
 
     try:
         from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+        from app_builder.services.json_app_template_guard import ensure_json_app_renderer
 
         files, kit_n = ensure_frontend_only_kit(files, project_name=project_name)
-        if kit_n:
+        files, json_n = ensure_json_app_renderer(files)
+        if kit_n or json_n:
             await emit(
                 "agent_progress",
-                f"Frontend-only: restored {kit_n} UI kit file(s) from base-frontend-vite-mui before build",
+                f"Template guard: restored {kit_n} UI kit + {json_n} json_app renderer file(s) before build",
                 agent="build_verify_agent",
             )
     except Exception as guard_exc:
@@ -453,7 +484,10 @@ async def verify_build_and_fix(
             )
             try:
                 from app_builder.services.frontend_only_template_guard import ensure_frontend_only_kit
+                from app_builder.services.json_app_template_guard import ensure_json_app_renderer
+
                 files, _ = ensure_frontend_only_kit(files, project_name=project_name)
+                files, _ = ensure_json_app_renderer(files)
             except Exception:
                 pass
             file_writer(project_name, GeneratedFiles(files=files))
