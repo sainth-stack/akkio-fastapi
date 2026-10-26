@@ -104,6 +104,13 @@ async def _classify_with_llm(requirement: str, prd: str = "") -> Optional[str]:
 
 def _keyword_classify(requirement: str, prd: str = "", uiux: str = "") -> str:
     """Pure keyword-based app-type classification (fast, deterministic fallback)."""
+    try:
+        from app_builder.services.json_app_routing import should_force_json_app_track
+
+        if should_force_json_app_track(requirement, prd, uiux):
+            return "manufacturing"
+    except ImportError:
+        pass
     if is_doc_chat_domain(requirement, prd, uiux):
         return "doc_chat"
     if is_ecommerce_domain(requirement, prd, uiux):

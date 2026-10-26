@@ -1,6 +1,7 @@
 """Anomaly Detection app generator for Agentic Builder — config-driven SaaS template."""
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from app_builder.services.anomaly_saas_frontend import (
@@ -37,6 +38,19 @@ ANOMALY_SUPPORTING = (
 
 def is_anomaly_detection_domain(requirement: str, prd: str = "", uiux: str = "") -> bool:
     text = "\n".join([requirement or "", prd or "", uiux or ""]).lower()
+    try:
+        from app_builder.services.json_app_routing import is_operations_dashboard_prompt
+
+        if is_operations_dashboard_prompt(requirement, prd, uiux):
+            return False
+    except ImportError:
+        pass
+    if re.search(r"\banomaly detection\b|\banomaly monitoring\b|\banomaly platform\b", text):
+        pass  # continue normal scoring
+    elif re.search(r"maintenance|manufacturing", text) and re.search(
+        r"dashboard|analytics|reports?", text
+    ):
+        return False
     strong = sum(1 for k in ANOMALY_KEYWORDS if k in text)
     if strong >= 1:
         return True

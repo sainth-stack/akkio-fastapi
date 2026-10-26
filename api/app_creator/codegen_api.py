@@ -326,6 +326,36 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             except Exception:
                 pass
 
+        # Maintenance / multi-page dashboard prompts → json_app (not anomaly legacy or fullstack AI)
+        try:
+            from app_builder.services.json_app_routing import should_force_json_app_track
+
+            _force_json_app = should_force_json_app_track(requirement, prd, uiux)
+        except Exception:
+            _force_json_app = False
+
+        if _force_json_app:
+            try:
+                from app_builder.services.fullstack_app_generator import STATIC_DOMAINS
+
+                if _kw_static not in ("ecommerce", "doc_chat"):
+                    _track = "json_app"
+                    if not _domain or _domain in STATIC_DOMAINS:
+                        _domain = "manufacturing"
+            except Exception:
+                _track = "json_app"
+            await websocket.send_text(json.dumps({
+                "event": "pipeline_log",
+                "agent": "codegen",
+                "message": (
+                    "Routing: json_app (data-driven Dashboard / Analytics / Reports from data.json) — "
+                    "not anomaly or fullstack AI page codegen."
+                ),
+            }))
+
+        if _track is None:
+            _track = "json_app"
+
         if app_id and user_email:
             db.update_app_builder_app(
                 app_id=app_id,
@@ -356,7 +386,7 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         # ── Legacy static domains (ecommerce, doc_chat, anomaly) ─────────────
         from app_builder.services.fullstack_app_generator import STATIC_DOMAINS
 
-        if _track == "legacy" and _domain in STATIC_DOMAINS:
+        if _track == "legacy" and _domain in STATIC_DOMAINS and not _force_json_app:
             from app_builder.services.legacy_static_codegen import run_legacy_static_codegen
 
             files = await run_legacy_static_codegen(
