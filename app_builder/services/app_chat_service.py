@@ -1,7 +1,9 @@
 """Chat over generated app data (RAG context + server LLM API key)."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from app_builder.services.app_data_rag import (
@@ -13,6 +15,24 @@ from app_builder.services.app_data_rag import (
 )
 
 logger = logging.getLogger("app_builder")
+
+PREDICT_CHAT_SYSTEM = """You are an operations analyst for "{app_name}".
+Use ONLY the live app context and the server forecast JSON below. Numbers in the forecast are authoritative.
+
+--- Live app context (RAG) ---
+{context}
+
+--- Real-time forecast (just computed for this message) ---
+{prediction_json}
+
+Explain the forecast for the user's question. State risk level, key predicted metrics, and what changed vs baseline if scenario_notes exist.
+If scenario_notes is empty, say the forecast used current dashboard KPIs as baseline.
+Keep it concise (bullet points OK). Do not invent metrics outside the JSON."""
+
+
+def _is_predict_intent(text: str) -> bool:
+    low = (text or "").lower()
+    return bool(re.search(r"\b(predict|forecast|what.?if|projection|scenario)\b", low))
 
 
 async def answer_app_chat(
@@ -32,8 +52,6 @@ async def answer_app_chat(
             last_user = str(m.get("content") or "")
             break
 
-    import re
-
     low = (last_user or "").lower()
     if re.search(r"\b(download|export)\b.*\b(rag|context|data)\b", low) or re.search(
         r"\brag data\b", low
@@ -43,28 +61,24 @@ async def answer_app_chat(
             "(KPIs, charts, tables, and catalog data) used for answers."
         )
 
-    if re.search(r"\b(predict|forecast|what.?if|projection)\b", low):
-        from app_builder.services.synthetic_predict import (
-            default_features_from_definition,
-            predict_from_features,
-        )
-
-        feats = default_features_from_definition(defn)
-        pred = predict_from_features(feats, app_definition=defn)
-        return (
-            f"**Synthetic forecast** (from current app data):\n"
-            f"- Predicted downtime (next period): **{pred['predicted_downtime_hours_next_period']} h**\n"
-            f"- Predicted MTBF: **{pred['predicted_mtbf_hours']} h**\n"
-            f"- Risk level: **{pred['risk_level']}** (confidence {pred['confidence']:.0%})\n"
-            f"- Drivers: {', '.join(pred['drivers'])}\n"
-            f"- Recommendation: {pred['recommendation']}\n\n"
-            "Open **Predict** in the sidebar to change inputs manually or run another scenario."
-        )
-
-    context = build_rag_context(defn, last_user or "overview", focus_page_id=page_id)
+    predict_mode = _is_predict_intent(last_user)
+    context = build_rag_context(
+        defn,
+        last_user or "overview",
+        focus_page_id=page_id,
+    )
     meta = defn.get("meta") or {}
     app_name = str(meta.get("appName") or "Dashboard")
-    if _is_ecommerce_definition(defn):
+    if predict_mode and not _is_ecommerce_definition(defn):
+        from app_builder.services.synthetic_predict import run_live_prediction
+
+        prediction = run_live_prediction(defn, prompt=last_user)
+        system = PREDICT_CHAT_SYSTEM.format(
+            app_name=app_name,
+            context=context,
+            prediction_json=json.dumps(prediction, indent=2),
+        )
+    elif _is_ecommerce_definition(defn):
         system = ECOMMERCE_CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)
     else:
         system = CHAT_SYSTEM_TEMPLATE.format(app_name=app_name, context=context)

@@ -446,6 +446,8 @@ async def app_data_chat(
 
 class PredictRequest(BaseModel):
     features: Dict[str, Any] = {}
+    prompt: Optional[str] = None
+    refresh_baseline_only: bool = False
     app_definition: Optional[Dict[str, Any]] = None
 
 
@@ -484,15 +486,27 @@ async def predict_synthetic(
     pseudo = AppChatRequest(messages=[], app_definition=body.app_definition)
     await _optional_project_access(project_id, request, pseudo)
     from app_builder.services.synthetic_predict import (
+        _collect_kpi_bag,
         default_features_from_definition,
-        predict_from_features,
+        run_live_prediction,
     )
     from app_builder.services.app_data_rag import load_project_app_definition
 
     defn = body.app_definition or load_project_app_definition(project_id)
-    feats = dict(default_features_from_definition(defn if isinstance(defn, dict) else None))
-    feats.update(body.features or {})
-    result = predict_from_features(feats, app_definition=defn if isinstance(defn, dict) else None)
+    defn_dict = defn if isinstance(defn, dict) else None
+    if body.refresh_baseline_only:
+        baseline = default_features_from_definition(defn_dict)
+        return JSONResponse(
+            content={
+                "baseline": baseline,
+                "kpi_snapshot": _collect_kpi_bag(defn_dict),
+            }
+        )
+    result = run_live_prediction(
+        defn_dict,
+        features=body.features or {},
+        prompt=body.prompt or "",
+    )
     return JSONResponse(content=result)
 
 
