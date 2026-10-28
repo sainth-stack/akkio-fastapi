@@ -106,6 +106,30 @@ def section_for_page(prd: str, page_title: str, page_id: str) -> str:
     return ""
 
 
+def page_prompt_context(
+    prd: str,
+    requirement: str,
+    page_title: str,
+    page_id: str,
+    *,
+    include_requirement_tail: bool = True,
+) -> str:
+    """PRD section for a page plus create-prompt text when KPIs live only in the user requirement."""
+    prd_text = (prd or "").strip()
+    req_text = (requirement or "").strip()
+    section = ""
+    if prd_text:
+        section = section_for_page(prd_text, page_title, page_id)
+    if not section.strip() and req_text:
+        section = section_for_page(req_text, page_title, page_id)
+    if include_requirement_tail and req_text:
+        if not section.strip():
+            return req_text
+        if req_text not in section and len(req_text) < 12000:
+            return f"{section}\n\n{req_text}"
+    return section or req_text or prd_text
+
+
 def build_planning_context(
     *,
     requirement: str = "",

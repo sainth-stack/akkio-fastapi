@@ -10,9 +10,14 @@ from app_builder.services.json_app_template_guard import (
 def _json_app_files(app_tsx: str) -> dict:
     return {
         "frontend/src/mock/data.json": json.dumps(
-            {"version": 1, "pages": [{"id": "dashboard"}], "navigation": [{"pageId": "dashboard"}]}
+            {
+                "version": 1,
+                "pages": [{"id": "dashboard"}],
+                "navigation": [{"pageId": "dashboard", "path": "/", "label": "Dashboard"}],
+            }
         ),
         "frontend/src/App.tsx": app_tsx,
+        "frontend/package.json": '{"dependencies":{"@mui/material":"6"}}',
     }
 
 

@@ -32,8 +32,17 @@ def is_json_app_project(files: Dict[str, str]) -> bool:
     return (
         isinstance(data.get("pages"), list)
         and isinstance(data.get("navigation"), list)
-        and data.get("version") is not None
+        and len(data.get("pages") or []) >= 1
     )
+
+
+def guard_json_app_files(files: Dict[str, str]) -> Dict[str, str]:
+    """Repair legacy App.tsx and restore PageRenderer bundle (call before disk write / build)."""
+    if not is_json_app_project(files):
+        return files
+    out, _ = repair_broken_legacy_app_tsx(files)
+    out, _ = ensure_json_app_renderer(out)
+    return out
 
 
 def _path_protected(path: str) -> bool:

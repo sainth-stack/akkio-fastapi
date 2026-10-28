@@ -179,6 +179,13 @@ def is_fullstack_generated_files(files: Dict[str, str]) -> bool:
     """True when codegen output is Agentic/fullstack (Vite+TS+MUI), not generic App.jsx shell."""
     if not isinstance(files, dict) or not files:
         return False
+    try:
+        from app_builder.services.json_app_template_guard import is_json_app_project
+
+        if is_json_app_project(files):
+            return False
+    except ImportError:
+        pass
     pkg = files.get("frontend/package.json") or ""
     if "frontend/src/App.tsx" in files and "@mui/material" in pkg:
         return True

@@ -39,7 +39,8 @@ def extract_expected_kpis(section: str) -> List[str]:
             continue
         if re.search(
             r"kpi|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality|"
-            r"work order|mtbf|mttr|mean time|downtime|maintenance",
+            r"work order|mtbf|mttr|mean time|downtime|maintenance|"
+            r"revenue|sales|orders?|customers?|conversion|inventory|oee|throughput|uptime|sla",
             line,
             re.I,
         ):

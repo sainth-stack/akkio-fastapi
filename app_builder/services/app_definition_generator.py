@@ -651,7 +651,7 @@ def finalize_app_definition(
 ) -> AppDefinition:
     """Ensure mock data exists for every block reference; align nav pageIds."""
     from app_builder.services.page_layout_intent import strip_misplaced_kpi_blocks
-    from app_builder.services.prd_structure_parser import section_for_page
+    from app_builder.services.prd_structure_parser import page_prompt_context
     from app_builder.services.app_theme_generator import ensure_app_visual_identity
 
     defn.meta.appName = shorten_brand_name(defn.meta.appName or "Workspace")
@@ -673,7 +673,7 @@ def finalize_app_definition(
     )
     cleaned_pages: List[PageDef] = []
     for page in defn.pages:
-        section = section_for_page(prd, page.title, page.id) if prd else ""
+        section = page_prompt_context(prd, requirement, page.title, page.id, include_requirement_tail=False)
         blocks = strip_misplaced_kpi_blocks(
             page.blocks,
             title=page.title,
@@ -693,7 +693,7 @@ def finalize_app_definition(
     from app_builder.services.page_layout_intent import strip_export_download_ui
 
     defn = strip_export_download_ui(defn)
-    defn = enforce_kpis_on_dashboard_only(defn, prd=prd)
+    defn = enforce_kpis_on_dashboard_only(defn, prd=prd, requirement=requirement)
     from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
     defn = apply_dashboard_analytics_product_rules(defn, prd=prd)

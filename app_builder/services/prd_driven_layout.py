@@ -38,7 +38,9 @@ def _is_kpi_candidate(line: str) -> bool:
         return False
     if re.search(
         r"\bkpi\b|yield|defect rate|scrap rate|rework|copq|units inspected|pass rate|open quality|"
-        r"work order|mtbf|mttr|mean time|downtime|maintenance|availability|oee",
+        r"work order|mtbf|mttr|mean time|downtime|maintenance|availability|oee|"
+        r"revenue|sales|orders?|customers?|conversion|aov|cart|inventory|stock|fulfillment|"
+        r"throughput|utilization|headcount|churn|retention|nps|sla|uptime",
         line,
         re.I,
     ):
@@ -128,6 +130,116 @@ def _extract_kpi_items(section: str, page_id: str) -> List[Dict[str, str]]:
     if not items and re.search(r"maintenance|mtbf|mttr|work order", section, re.I):
         return _default_maintenance_kpi_items()
     return items[:8]
+
+
+def _normalize_kpi_label(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (label or "").lower()).strip()
+
+
+def _kpi_item_labels(items: List[Dict[str, Any]]) -> List[str]:
+    return [_normalize_kpi_label(str(i.get("label") or i.get("valueKey") or "")) for i in items if isinstance(i, dict)]
+
+
+def kpi_items_overlap(existing: List[Dict[str, Any]], expected: List[Dict[str, Any]]) -> float:
+    """Fraction of expected KPI labels matched by existing dashboard row (fuzzy)."""
+    exp = [x for x in _kpi_item_labels(expected) if x]
+    exist = [x for x in _kpi_item_labels(existing) if x]
+    if not exp:
+        return 1.0
+    if not exist:
+        return 0.0
+    matched = 0
+    for want in exp:
+        for have in exist:
+            if want == have or want in have or have in want:
+                matched += 1
+                break
+            want_tokens = set(want.split())
+            have_tokens = set(have.split())
+            if want_tokens and have_tokens:
+                inter = len(want_tokens & have_tokens)
+                if inter >= min(2, len(want_tokens), len(have_tokens)):
+                    matched += 1
+                    break
+    return matched / len(exp)
+
+
+_GENERIC_KPI_VALUE_KEYS = frozenset(
+    {
+        "oee",
+        "throughput",
+        "output",
+        "efficiency",
+        "load_mva",
+        "oil_temp",
+        "metric_1",
+        "metric_2",
+        "kpi_a",
+        "kpi_b",
+        "value",
+        "score",
+    }
+)
+
+
+def looks_like_generic_kpi_row(items: List[Dict[str, Any]]) -> bool:
+    if not items:
+        return True
+    keys = {str(i.get("valueKey") or "").lower() for i in items if isinstance(i, dict)}
+    if keys & _GENERIC_KPI_VALUE_KEYS and len(keys & _GENERIC_KPI_VALUE_KEYS) >= len(keys) // 2:
+        return True
+    labels = " ".join(_kpi_item_labels(items))
+    if re.search(r"\boverall equipment effectiveness\b", labels) and "oee" not in labels:
+        return False
+    return False
+
+
+def build_kpi_items_from_context(
+    section: str,
+    page_id: str,
+    *,
+    requirement: str = "",
+    prd: str = "",
+) -> List[Dict[str, str]]:
+    """KPI row items from PRD section + create prompt (deduped)."""
+    from app_builder.services.prd_compliance import extract_expected_kpis
+    from app_builder.services.prd_structure_parser import page_prompt_context
+
+    ctx = page_prompt_context(prd, requirement, "Dashboard", page_id, include_requirement_tail=True)
+    combined = "\n\n".join(x for x in (section.strip(), ctx.strip()) if x)
+    items = list(_extract_kpi_items(combined, page_id))
+    colors = ("primary", "success", "warning", "error", "info", "default")
+    seen = {str(i.get("label") or "").lower() for i in items}
+    for label in extract_expected_kpis(combined):
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        vk = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40]
+        items.append(
+            {
+                "label": label,
+                "valueKey": vk or f"metric_{len(items)}",
+                "color": colors[len(items) % len(colors)],
+            }
+        )
+    return items[:8]
+
+
+def should_replace_dashboard_kpis(
+    existing_items: List[Dict[str, Any]],
+    expected_items: List[Dict[str, Any]],
+) -> bool:
+    if not expected_items or len(expected_items) < 2:
+        return False
+    if not existing_items:
+        return True
+    overlap = kpi_items_overlap(existing_items, expected_items)
+    if overlap >= 0.55:
+        return False
+    if looks_like_generic_kpi_row(existing_items):
+        return True
+    return overlap < 0.45
 
 
 def _maintenance_analytics_columns() -> List[Dict[str, str]]:

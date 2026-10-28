@@ -341,6 +341,14 @@ def fill_missing_fullstack_files(
     architecture: Optional[Dict[str, Any]] = None,
     design_tokens: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
+    try:
+        from app_builder.services.json_app_template_guard import is_json_app_project, guard_json_app_files
+
+        if is_json_app_project(files or {}):
+            return guard_json_app_files(dict(files or {}))
+    except ImportError:
+        pass
+
     out = {}
     for path, content in (files or {}).items():
         if isinstance(path, str) and isinstance(content, str):

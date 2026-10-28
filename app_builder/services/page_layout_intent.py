@@ -432,7 +432,7 @@ def enforce_page_role_blocks(defn: Any, *, prd: str = "") -> Any:
 def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = "") -> Any:
     """Rebuild page blocks from PRD when LLM/layout left a route empty (e.g. dashboard blocks: [])."""
     from app_builder.services.prd_driven_layout import blocks_for_page
-    from app_builder.services.prd_structure_parser import section_for_page
+    from app_builder.services.prd_structure_parser import page_prompt_context
 
     pages = list(getattr(defn, "pages", []) or [])
     nav = list(getattr(defn, "navigation", []) or [])
@@ -451,10 +451,10 @@ def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = 
             and not (b.get("type") == "text" and b.get("hidden"))
         ]
         if not structural:
-            section = section_for_page(prd, page.title, page.id) if prd else ""
-            if not section.strip() and requirement:
-                section = section_for_page(requirement, page.title, page.id)
-            body = section or f"### {page.title}\n{page.subtitle or page.title}\n"
+            section = page_prompt_context(prd, requirement, page.title, page.id)
+            if not section.strip():
+                section = f"### {page.title}\n{page.subtitle or page.title}\n"
+            body = section
             blocks = blocks_for_page(
                 page.id,
                 page.title,
@@ -468,10 +468,15 @@ def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = 
     return defn
 
 
-def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "") -> Any:
+def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "", requirement: str = "") -> Any:
     """KPI row on dashboard; charts stay when declared in the Dashboard PRD section."""
-    from app_builder.services.prd_structure_parser import section_for_page
-    from app_builder.services.prd_driven_layout import _default_maintenance_kpi_items, _extract_kpi_items
+    from app_builder.services.prd_structure_parser import page_prompt_context
+    from app_builder.services.prd_driven_layout import (
+        _default_maintenance_kpi_items,
+        _extract_kpi_items,
+        build_kpi_items_from_context,
+        should_replace_dashboard_kpis,
+    )
 
     pages = list(getattr(defn, "pages", []) or [])
     nav = list(getattr(defn, "navigation", []) or [])
@@ -492,10 +497,29 @@ def enforce_kpis_on_dashboard_only(defn: Any, *, prd: str = "") -> Any:
                 for b in blocks
                 if not (isinstance(b, dict) and b.get("type") in ("actionBar", "filterBar"))
             ]
+            section = page_prompt_context(prd, requirement, page.title, page.id)
+            expected = build_kpi_items_from_context(
+                section,
+                page.id,
+                requirement=requirement,
+                prd=prd,
+            )
+            existing_kpi = next(
+                (b for b in blocks if isinstance(b, dict) and b.get("type") == "kpiRow"),
+                None,
+            )
+            if existing_kpi and expected and should_replace_dashboard_kpis(
+                list(existing_kpi.get("items") or []),
+                expected,
+            ):
+                blocks = [b for b in blocks if not (isinstance(b, dict) and b.get("type") == "kpiRow")]
+                blocks.insert(
+                    0,
+                    {"type": "kpiRow", "dataKey": f"kpis_{page.id}", "items": expected},
+                )
             blocks = _kpi_row_first(blocks)
             if not any(isinstance(b, dict) and b.get("type") == "kpiRow" for b in blocks):
-                section = section_for_page(prd, page.title, page.id) if prd else ""
-                items = _extract_kpi_items(section, page.id) or _default_maintenance_kpi_items()
+                items = expected or _extract_kpi_items(section, page.id) or _default_maintenance_kpi_items()
                 blocks.insert(
                     0,
                     {"type": "kpiRow", "dataKey": f"kpis_{page.id}", "items": items},

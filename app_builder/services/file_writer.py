@@ -19,6 +19,12 @@ def file_writer(project_name: str, generated_files: GeneratedFiles):
     """
     base_path = project_write_root(project_name)
     files = {k: v for k, v in generated_files.files.items() if not _should_skip_path(k)}
+    try:
+        from app_builder.services.json_app_template_guard import guard_json_app_files
+
+        files = guard_json_app_files(files)
+    except Exception as exc:
+        logger.warning("[file_writer] json_app guard skipped: %s", exc)
     if not os.path.exists(base_path):
         os.makedirs(base_path, exist_ok=True)
     logger.info("[file_writer] writing %d files to project=%s | path=%s", len(files), project_name, base_path)

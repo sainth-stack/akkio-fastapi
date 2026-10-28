@@ -146,6 +146,20 @@ def _kpi_display(label: str, value_key: str, rng: random.Random) -> str:
         return f"{rng.randint(1, 48)}h {rng.randint(0, 59)}m"
     if "open" in vk or "issues" in vk or "alerts" in vk:
         return str(rng.randint(0, 24))
+    if "revenue" in vk or "revenue" in lab or "sales" in lab:
+        return f"${rng.randint(120, 890):,}k"
+    if "order" in vk or "orders" in lab:
+        return f"{rng.randint(320, 4200):,}"
+    if "customer" in vk or "customer" in lab or "user" in lab:
+        return f"{rng.randint(1200, 48000):,}"
+    if "inventory" in vk or "stock" in vk or "inventory" in lab:
+        return f"{rng.randint(800, 12000):,}"
+    if "conversion" in vk or "conversion" in lab:
+        return f"{rng.uniform(1.2, 8.5):.2f}%"
+    if "availability" in vk or "uptime" in vk or "availability" in lab:
+        return f"{rng.uniform(92.0, 99.8):.1f}%"
+    if "downtime" in vk or "downtime" in lab:
+        return f"{rng.uniform(1.5, 18.2):.1f} h"
     return f"{rng.randint(100, 9999):,}"
 
 

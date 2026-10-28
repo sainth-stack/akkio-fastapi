@@ -96,6 +96,14 @@ def post_process_generated_files(
     from app_builder.services.fullstack_stack import is_fullstack
 
     files_in = dict(files or {})
+    try:
+        from app_builder.services.json_app_template_guard import guard_json_app_files, is_json_app_project
+
+        if is_json_app_project(files_in):
+            return guard_json_app_files(files_in)
+    except ImportError:
+        pass
+
     if is_fullstack(builder_kind) or is_fullstack_generated_files(files_in):
         return post_process_fullstack_files(
             files_in,

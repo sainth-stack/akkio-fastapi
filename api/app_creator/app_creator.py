@@ -217,6 +217,20 @@ def _build_frontend(
     if not frontend_dir or not os.path.exists(os.path.join(frontend_dir, "package.json")):
         return None, "No frontend found"
 
+    try:
+        from app_builder.services.json_app_template_guard import guard_json_app_files, is_json_app_project
+        from app_builder.services.file_reader import read_project_files
+
+        disk_files = read_project_files(project_name)
+        if is_json_app_project(disk_files):
+            guarded = guard_json_app_files(disk_files)
+            from app_builder.schemas.files import GeneratedFiles
+
+            file_writer(project_name, GeneratedFiles(files=guarded))
+            logger.info("[build] json_app guard applied before npm build for %s", project_name)
+    except Exception as exc:
+        logger.warning("[build] json_app pre-build guard skipped: %s", exc)
+
     from api.app_creator.vite_build import is_vite_frontend, prepare_vite_frontend_dir, run_vite_build
 
     if is_vite_frontend(frontend_dir):
