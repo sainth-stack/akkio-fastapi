@@ -90,23 +90,19 @@ export default function PredictPage({ definition }: { definition: AppDefinition 
       const features: Record<string, number> = {};
       FIELDS.forEach(({ key }) => {
         const raw = values[key];
-        if (raw !== '' && raw != null) features[key] = Number(raw) || 0;
+        features[key] = raw === '' || raw == null ? 0 : Number(raw) || 0;
       });
       const data = await postPredict({
         features,
         prompt: scenario.trim(),
       });
       setResult(data);
-      if (data.baseline && !baselineLoaded) {
-        setValues(baselineToForm(data.baseline));
-        setBaselineLoaded(true);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Prediction failed');
     } finally {
       setLoading(false);
     }
-  }, [baselineLoaded, postPredict, scenario, values]);
+  }, [postPredict, scenario, values]);
 
   return (
     <Box sx={{ maxWidth: 1000, mx: 'auto', pb: 10 }}>

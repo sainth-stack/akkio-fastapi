@@ -37,6 +37,8 @@ export type LivePrediction = {
   prompt?: string;
   computed_at?: string;
   baseline?: Record<string, number>;
+  scenario_inputs?: Record<string, number>;
+  inputs_used?: Record<string, number>;
 };
 
 function severityToColor(sev?: string): 'error' | 'warning' | 'success' | 'info' | 'primary' {
@@ -91,7 +93,7 @@ export default function PredictionIndicators({ result }: { result: LivePredictio
           const delta = m.delta_pct;
           const trend =
             delta != null
-              ? { value: delta, label: `${delta > 0 ? '+' : ''}${delta}% vs live KPI` }
+              ? { value: delta, label: `${delta > 0 ? '+' : ''}${delta}% vs your inputs` }
               : undefined;
           const display =
             typeof m.value === 'number'
@@ -130,6 +132,12 @@ export default function PredictionIndicators({ result }: { result: LivePredictio
       {result.scenario_notes && result.scenario_notes.length > 0 ? (
         <Typography variant="caption" color="text.secondary">
           Scenario: {result.scenario_notes.join(' · ')}
+        </Typography>
+      ) : null}
+      {result.inputs_used ? (
+        <Typography variant="caption" color="text.secondary" display="block">
+          Inputs used: MTBF {result.inputs_used.mtbf_hours}h · downtime {result.inputs_used.downtime_hours}h ·
+          load {result.inputs_used.machine_load_pct}% · WOs {result.inputs_used.open_work_orders}
         </Typography>
       ) : null}
       {result.computed_at ? (

@@ -54,3 +54,27 @@ def test_run_live_prediction_has_indicators():
     )
     assert out["indicators"]
     assert out["computed_at"]
+
+
+def test_different_inputs_different_outputs():
+    low = predict_from_features(
+        {
+            "mtbf_hours": 400,
+            "downtime_hours": 1,
+            "open_work_orders": 10,
+            "machine_load_pct": 50,
+            "mttr_hours": 1,
+            "production_output": 900,
+        }
+    )
+    high = predict_from_features(
+        {
+            "mtbf_hours": 100,
+            "downtime_hours": 8,
+            "open_work_orders": 150,
+            "machine_load_pct": 95,
+            "mttr_hours": 4,
+            "production_output": 400,
+        }
+    )
+    assert low["predicted_downtime_hours_next_period"] != high["predicted_downtime_hours_next_period"]

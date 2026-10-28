@@ -109,6 +109,9 @@ def apply_prompt_to_features(
         (r"work\s+orders?\s*(?:at|to|=|:)?\s*(\d+(?:\.\d+)?)", "open_work_orders", "Work orders"),
         (r"output\s*(?:at|to|=|:)?\s*(\d+(?:\.\d+)?)", "production_output", "Output"),
         (r"throughput\s*(?:at|to|=|:)?\s*(\d+(?:\.\d+)?)", "production_output", "Throughput"),
+        (r"(\d+(?:\.\d+)?)\s*h(?:ours)?\s+mtbf", "mtbf_hours", "MTBF"),
+        (r"(\d+(?:\.\d+)?)\s*h(?:ours)?\s+downtime", "downtime_hours", "Downtime"),
+        (r"(\d+(?:\.\d+)?)\s*%\s*oee", "machine_load_pct", "OEE"),
     ]
     for pattern, key, label in pairs:
         m = re.search(pattern, low)
@@ -130,6 +133,24 @@ def apply_prompt_to_features(
         notes.append("What-if scenario using live dashboard KPIs as baseline")
 
     return out, notes
+
+
+def parse_numeric_features_from_prompt(
+    text: str,
+    baseline: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """Extract numeric field overrides from natural-language text."""
+    base = baseline or default_features_from_definition(None)
+    after, _ = apply_prompt_to_features(text, dict(base), base)
+    keys = (
+        "mtbf_hours",
+        "mttr_hours",
+        "downtime_hours",
+        "open_work_orders",
+        "machine_load_pct",
+        "production_output",
+    )
+    return {k: after[k] for k in keys if after.get(k) != base.get(k)}
 
 
 def predict_from_features(
@@ -206,7 +227,7 @@ def _delta_pct(predicted: float, baseline: float) -> Optional[float]:
 
 def build_prediction_indicators(
     prediction: Dict[str, Any],
-    baseline: Dict[str, float],
+    scenario_inputs: Dict[str, float],
 ) -> List[Dict[str, Any]]:
     used = prediction.get("inputs_used") or {}
     risk = str(prediction.get("risk_level") or "Low")
@@ -221,7 +242,7 @@ def build_prediction_indicators(
         *,
         higher_is_bad: bool = False,
     ) -> Dict[str, Any]:
-        base = float(baseline.get(baseline_key, predicted))
+        base = float(scenario_inputs.get(baseline_key, used.get(baseline_key, predicted)))
         delta = _delta_pct(predicted, base)
         trend = "up" if delta and delta > 0 else "down" if delta and delta < 0 else "flat"
         if delta is not None and higher_is_bad:
@@ -291,18 +312,21 @@ def run_live_prediction(
     features: Optional[Dict[str, Any]] = None,
     prompt: str = "",
 ) -> Dict[str, Any]:
-    """Re-read KPIs from definition, merge form + prompt, then forecast."""
+    """Merge dashboard baseline → form fields → prompt numbers, then forecast."""
     baseline = default_features_from_definition(defn)
     merged = dict(baseline)
-    if features:
-        for k, v in features.items():
-            merged[k] = _float(v, merged.get(k, 0.0))
+
+    explicit = features or {}
+    for k, v in explicit.items():
+        merged[k] = _float(v, merged.get(k, 0.0))
+
     merged, scenario_notes = apply_prompt_to_features(prompt, merged, baseline)
     core = predict_from_features(merged, app_definition=defn)
     return {
         **core,
         "baseline": baseline,
-        "indicators": build_prediction_indicators(core, baseline),
+        "scenario_inputs": merged,
+        "indicators": build_prediction_indicators(core, merged),
         "scenario_notes": scenario_notes,
         "prompt": (prompt or "").strip(),
         "computed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

@@ -70,9 +70,15 @@ async def answer_app_chat(
     meta = defn.get("meta") or {}
     app_name = str(meta.get("appName") or "Dashboard")
     if predict_mode and not _is_ecommerce_definition(defn):
-        from app_builder.services.synthetic_predict import run_live_prediction
+        from app_builder.services.synthetic_predict import (
+            default_features_from_definition,
+            parse_numeric_features_from_prompt,
+            run_live_prediction,
+        )
 
-        prediction = run_live_prediction(defn, prompt=last_user)
+        baseline = default_features_from_definition(defn)
+        parsed = parse_numeric_features_from_prompt(last_user, baseline)
+        prediction = run_live_prediction(defn, features=parsed, prompt=last_user)
         system = PREDICT_CHAT_SYSTEM.format(
             app_name=app_name,
             context=context,
