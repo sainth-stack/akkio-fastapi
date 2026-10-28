@@ -79,6 +79,83 @@ def default_features_from_definition(defn: Optional[Dict[str, Any]]) -> Dict[str
     }
 
 
+FEATURE_KEYS = (
+    "mtbf_hours",
+    "mttr_hours",
+    "downtime_hours",
+    "open_work_orders",
+    "machine_load_pct",
+    "production_output",
+)
+
+
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
+
+
+def clamp_scenario_to_baseline(
+    features: Dict[str, float],
+    baseline: Dict[str, float],
+) -> Tuple[Dict[str, float], List[str]]:
+    """
+    Keep what-if inputs in a plausible band around live dashboard KPIs (not arbitrary randoms).
+    """
+    notes: List[str] = []
+    out = dict(baseline)
+    out.update(features)
+
+    # Per-metric bands (fraction of baseline)
+    bands = {
+        "mtbf_hours": (0.35, 2.0),
+        "mttr_hours": (0.5, 3.0),
+        "downtime_hours": (0.25, 3.0),
+        "open_work_orders": (0.0, 3.5),
+        "machine_load_pct": (max(5.0, baseline.get("machine_load_pct", 78) * 0.5), min(100.0, baseline.get("machine_load_pct", 78) * 1.35)),
+        "production_output": (0.4, 2.0),
+    }
+
+    for key in FEATURE_KEYS:
+        b = float(baseline.get(key, out.get(key, 0)) or 0)
+        raw = float(out.get(key, b) or 0)
+        lo_frac, hi_frac = bands.get(key, (0.5, 2.0))
+        if key == "machine_load_pct":
+            lo, hi = lo_frac, hi_frac
+        elif key == "open_work_orders":
+            lo = 0.0
+            hi = max(b * hi_frac, b + 50, 20.0)
+        else:
+            lo = max(b * lo_frac, 0.01) if b > 0 else raw
+            hi = max(b * hi_frac, b * 1.01) if b > 0 else raw * 2
+
+        clamped = _clamp(raw, lo, hi)
+        if abs(clamped - raw) > 1e-6:
+            notes.append(
+                f"{key.replace('_', ' ')} adjusted from {round(raw, 2)} to {round(clamped, 2)} "
+                f"(allowed band vs dashboard baseline)"
+            )
+        out[key] = round(clamped, 2)
+
+    return out, notes
+
+
+def merge_explicit_features(
+    baseline: Dict[str, float],
+    features: Optional[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Use dashboard baseline; override only fields the client actually sent (non-empty)."""
+    merged = dict(baseline)
+    if not features:
+        return merged
+    for key in FEATURE_KEYS:
+        if key not in features:
+            continue
+        raw = features[key]
+        if raw is None or raw == "":
+            continue
+        merged[key] = _float(raw, merged.get(key, 0.0))
+    return merged
+
+
 def apply_prompt_to_features(
     prompt: str,
     features: Dict[str, float],
@@ -156,41 +233,82 @@ def parse_numeric_features_from_prompt(
 def predict_from_features(
     features: Dict[str, Any],
     *,
+    baseline: Optional[Dict[str, float]] = None,
     app_definition: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    mtbf = _float(features.get("mtbf_hours"), 240.0)
-    mttr = _float(features.get("mttr_hours"), 1.8)
-    downtime = _float(features.get("downtime_hours"), 2.5)
-    work_orders = _float(features.get("open_work_orders"), 48.0)
-    load = _float(features.get("machine_load_pct"), 78.0)
-    output = _float(features.get("production_output"), 850.0)
+    """Forecast next period — stays in range of dashboard baseline + scenario inputs."""
+    base = baseline or default_features_from_definition(
+        app_definition if isinstance(app_definition, dict) else None
+    )
+    mtbf = _float(features.get("mtbf_hours"), base["mtbf_hours"])
+    mttr = _float(features.get("mttr_hours"), base["mttr_hours"])
+    downtime = _float(features.get("downtime_hours"), base["downtime_hours"])
+    work_orders = _float(features.get("open_work_orders"), base["open_work_orders"])
+    load = _float(features.get("machine_load_pct"), base["machine_load_pct"])
+    output = _float(features.get("production_output"), base["production_output"])
 
-    load_factor = max(0.6, min(1.35, load / 80.0))
-    reliability = max(0.5, min(1.2, mtbf / 280.0))
-    wo_stress = max(0.8, min(1.4, work_orders / 60.0))
+    def _rel_delta(cur: float, ref: float) -> float:
+        if ref <= 0:
+            return 0.0
+        return (cur - ref) / ref
 
-    pred_downtime = round(downtime * load_factor * wo_stress / reliability, 2)
-    pred_mtbf = round(mtbf * (0.92 + (100 - load) / 500), 1)
-    pred_output = round(output * (1 - pred_downtime / 48) * reliability, 1)
+    d_load = _rel_delta(load, base["machine_load_pct"])
+    d_wo = _rel_delta(work_orders, base["open_work_orders"])
+    d_mtbf = _rel_delta(base["mtbf_hours"], mtbf)  # lower MTBF vs baseline → positive stress
+    d_down = _rel_delta(downtime, base["downtime_hours"])
+    d_out = _rel_delta(output, base["production_output"])
 
-    if pred_downtime >= 5 or work_orders >= 120:
+    # Small, interpretable adjustments vs baseline (typical next-period band ~±35%)
+    pred_downtime = base["downtime_hours"] * (
+        1.0 + 0.35 * d_down + 0.28 * d_load + 0.22 * d_wo + 0.25 * d_mtbf
+    )
+    pred_downtime = _clamp(
+        pred_downtime,
+        base["downtime_hours"] * 0.55,
+        base["downtime_hours"] * 2.0,
+    )
+
+    pred_mtbf = base["mtbf_hours"] * (
+        1.0 - 0.12 * d_load - 0.08 * d_wo + 0.45 * _rel_delta(mtbf, base["mtbf_hours"])
+    )
+    pred_mtbf = _clamp(
+        pred_mtbf,
+        base["mtbf_hours"] * 0.72,
+        base["mtbf_hours"] * 1.28,
+    )
+
+    pred_output = base["production_output"] * (
+        1.0 + 0.15 * d_out - 0.18 * _rel_delta(pred_downtime, base["downtime_hours"])
+    )
+    pred_output = _clamp(
+        pred_output,
+        base["production_output"] * 0.75,
+        base["production_output"] * 1.25,
+    )
+
+    pred_downtime = round(pred_downtime, 2)
+    pred_mtbf = round(pred_mtbf, 1)
+    pred_output = round(pred_output, 1)
+
+    ref_down = max(base["downtime_hours"], 0.1)
+    if pred_downtime >= base["downtime_hours"] * 1.6 or work_orders >= base["open_work_orders"] * 1.5 + 20:
         risk = "High"
-    elif pred_downtime >= 2.5 or work_orders >= 80:
+    elif pred_downtime >= base["downtime_hours"] * 1.2 or work_orders >= base["open_work_orders"] * 1.2:
         risk = "Medium"
     else:
         risk = "Low"
 
     drivers: List[str] = []
-    if load >= 85:
-        drivers.append("High machine load")
-    if work_orders >= 80:
-        drivers.append("Elevated open work orders")
-    if mtbf < 180:
-        drivers.append("Below-target MTBF")
-    if mttr > 3:
-        drivers.append("Long MTTR")
+    if d_load > 0.08:
+        drivers.append("Higher load vs dashboard baseline")
+    if d_wo > 0.15:
+        drivers.append("More open work orders than baseline")
+    if mtbf < base["mtbf_hours"] * 0.9:
+        drivers.append("MTBF below dashboard baseline")
+    if mttr > base["mttr_hours"] * 1.2:
+        drivers.append("MTTR above dashboard baseline")
     if not drivers:
-        drivers.append("Stable operating conditions vs live baseline")
+        drivers.append("Scenario aligned with current dashboard operating range")
 
     rec = (
         "Schedule preventive maintenance on top-loaded assets and review open work orders."
@@ -200,12 +318,15 @@ def predict_from_features(
         else "Continue current maintenance cadence; re-run after KPIs change."
     )
 
+    spread = abs(d_load) + abs(d_wo) + abs(d_mtbf) + abs(d_down)
+    confidence = round(_clamp(0.78 - spread * 0.12, 0.62, 0.92), 2)
+
     return {
         "predicted_downtime_hours_next_period": pred_downtime,
         "predicted_mtbf_hours": pred_mtbf,
         "predicted_production_output": pred_output,
         "risk_level": risk,
-        "confidence": round(0.72 + min(0.23, mtbf / 1800), 2),
+        "confidence": confidence,
         "drivers": drivers,
         "recommendation": rec,
         "inputs_used": {
@@ -216,6 +337,7 @@ def predict_from_features(
             "machine_load_pct": load,
             "production_output": output,
         },
+        "baseline_reference": base,
     }
 
 
@@ -230,6 +352,7 @@ def build_prediction_indicators(
     scenario_inputs: Dict[str, float],
 ) -> List[Dict[str, Any]]:
     used = prediction.get("inputs_used") or {}
+    dash = prediction.get("baseline_reference") or scenario_inputs
     risk = str(prediction.get("risk_level") or "Low")
     risk_sev = {"High": "error", "Medium": "warning", "Low": "success"}.get(risk, "info")
 
@@ -242,7 +365,7 @@ def build_prediction_indicators(
         *,
         higher_is_bad: bool = False,
     ) -> Dict[str, Any]:
-        base = float(scenario_inputs.get(baseline_key, used.get(baseline_key, predicted)))
+        base = float(dash.get(baseline_key, used.get(baseline_key, predicted)))
         delta = _delta_pct(predicted, base)
         trend = "up" if delta and delta > 0 else "down" if delta and delta < 0 else "flat"
         if delta is not None and higher_is_bad:
@@ -312,16 +435,14 @@ def run_live_prediction(
     features: Optional[Dict[str, Any]] = None,
     prompt: str = "",
 ) -> Dict[str, Any]:
-    """Merge dashboard baseline → form fields → prompt numbers, then forecast."""
+    """Merge dashboard baseline → form fields → prompt, clamp to KPI band, then forecast."""
     baseline = default_features_from_definition(defn)
-    merged = dict(baseline)
+    merged = merge_explicit_features(baseline, features)
+    merged, prompt_notes = apply_prompt_to_features(prompt, merged, baseline)
+    merged, clamp_notes = clamp_scenario_to_baseline(merged, baseline)
+    scenario_notes = list(prompt_notes) + clamp_notes
 
-    explicit = features or {}
-    for k, v in explicit.items():
-        merged[k] = _float(v, merged.get(k, 0.0))
-
-    merged, scenario_notes = apply_prompt_to_features(prompt, merged, baseline)
-    core = predict_from_features(merged, app_definition=defn)
+    core = predict_from_features(merged, baseline=baseline, app_definition=defn)
     return {
         **core,
         "baseline": baseline,

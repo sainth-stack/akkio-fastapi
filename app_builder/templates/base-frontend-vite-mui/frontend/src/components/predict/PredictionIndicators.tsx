@@ -39,6 +39,7 @@ export type LivePrediction = {
   baseline?: Record<string, number>;
   scenario_inputs?: Record<string, number>;
   inputs_used?: Record<string, number>;
+  baseline_reference?: Record<string, number>;
 };
 
 function severityToColor(sev?: string): 'error' | 'warning' | 'success' | 'info' | 'primary' {
@@ -93,7 +94,7 @@ export default function PredictionIndicators({ result }: { result: LivePredictio
           const delta = m.delta_pct;
           const trend =
             delta != null
-              ? { value: delta, label: `${delta > 0 ? '+' : ''}${delta}% vs your inputs` }
+              ? { value: delta, label: `${delta > 0 ? '+' : ''}${delta}% vs dashboard` }
               : undefined;
           const display =
             typeof m.value === 'number'
@@ -136,8 +137,14 @@ export default function PredictionIndicators({ result }: { result: LivePredictio
       ) : null}
       {result.inputs_used ? (
         <Typography variant="caption" color="text.secondary" display="block">
-          Inputs used: MTBF {result.inputs_used.mtbf_hours}h · downtime {result.inputs_used.downtime_hours}h ·
+          Scenario inputs: MTBF {result.inputs_used.mtbf_hours}h · downtime {result.inputs_used.downtime_hours}h ·
           load {result.inputs_used.machine_load_pct}% · WOs {result.inputs_used.open_work_orders}
+        </Typography>
+      ) : null}
+      {result.baseline_reference ? (
+        <Typography variant="caption" color="text.secondary" display="block">
+          Dashboard baseline: MTBF {result.baseline_reference.mtbf_hours}h · downtime{' '}
+          {result.baseline_reference.downtime_hours}h · output {result.baseline_reference.production_output}
         </Typography>
       ) : null}
       {result.computed_at ? (

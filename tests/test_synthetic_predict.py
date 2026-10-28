@@ -1,5 +1,6 @@
 from app_builder.services.synthetic_predict import (
     apply_prompt_to_features,
+    clamp_scenario_to_baseline,
     default_features_from_definition,
     predict_from_features,
     run_live_prediction,
@@ -7,19 +8,20 @@ from app_builder.services.synthetic_predict import (
 
 
 def test_predict_returns_stable_shape():
-    result = predict_from_features(
-        {
-            "mtbf_hours": 200,
-            "mttr_hours": 2,
-            "downtime_hours": 4,
-            "open_work_orders": 100,
-            "machine_load_pct": 90,
-            "production_output": 800,
-        }
-    )
+    base = {
+        "mtbf_hours": 200.0,
+        "mttr_hours": 2.0,
+        "downtime_hours": 4.0,
+        "open_work_orders": 50.0,
+        "machine_load_pct": 85.0,
+        "production_output": 800.0,
+    }
+    result = predict_from_features(base, baseline=base)
     assert result["risk_level"] in ("Low", "Medium", "High")
     assert "predicted_downtime_hours_next_period" in result
     assert result["drivers"]
+    pd = result["predicted_downtime_hours_next_period"]
+    assert base["downtime_hours"] * 0.5 <= pd <= base["downtime_hours"] * 2.1
 
 
 def test_default_features_from_definition():
@@ -56,25 +58,27 @@ def test_run_live_prediction_has_indicators():
     assert out["computed_at"]
 
 
+def test_clamp_extreme_inputs():
+    base = default_features_from_definition(
+        {"data": {"kpis_analytics": {"mtbf": "128 h", "downtime": "42 min"}}}
+    )
+    wild = dict(base)
+    wild["mtbf_hours"] = 9999
+    wild["downtime_hours"] = 0.001
+    clamped, notes = clamp_scenario_to_baseline(wild, base)
+    assert clamped["mtbf_hours"] <= base["mtbf_hours"] * 2.01
+    assert notes
+
+
 def test_different_inputs_different_outputs():
-    low = predict_from_features(
-        {
-            "mtbf_hours": 400,
-            "downtime_hours": 1,
-            "open_work_orders": 10,
-            "machine_load_pct": 50,
-            "mttr_hours": 1,
-            "production_output": 900,
-        }
+    base = default_features_from_definition(None)
+    low = predict_from_features(base, baseline=base)
+    stressed = dict(base)
+    stressed["machine_load_pct"] = min(100, base["machine_load_pct"] * 1.2)
+    stressed["open_work_orders"] = base["open_work_orders"] * 1.4
+    high = predict_from_features(stressed, baseline=base)
+    assert (
+        low["predicted_downtime_hours_next_period"]
+        != high["predicted_downtime_hours_next_period"]
+        or low["risk_level"] != high["risk_level"]
     )
-    high = predict_from_features(
-        {
-            "mtbf_hours": 100,
-            "downtime_hours": 8,
-            "open_work_orders": 150,
-            "machine_load_pct": 95,
-            "mttr_hours": 4,
-            "production_output": 400,
-        }
-    )
-    assert low["predicted_downtime_hours_next_period"] != high["predicted_downtime_hours_next_period"]

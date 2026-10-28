@@ -90,7 +90,9 @@ export default function PredictPage({ definition }: { definition: AppDefinition 
       const features: Record<string, number> = {};
       FIELDS.forEach(({ key }) => {
         const raw = values[key];
-        features[key] = raw === '' || raw == null ? 0 : Number(raw) || 0;
+        if (raw !== '' && raw != null) {
+          features[key] = Number(raw) || 0;
+        }
       });
       const data = await postPredict({
         features,
@@ -111,8 +113,9 @@ export default function PredictPage({ definition }: { definition: AppDefinition 
         <Typography variant="h5" fontWeight={700}>Predict</Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Forecasts run on the server using <strong>live dashboard KPIs</strong> each time you predict.
-        Describe a what-if in the scenario box (e.g. &quot;machine load 92%&quot;) or edit inputs, then run.
+        Forecasts stay in the same range as your dashboard KPIs. Use <strong>Sync live KPIs</strong>, then
+        adjust inputs slightly or describe a small what-if (e.g. load +10%). Extreme values are clamped to
+        a realistic band vs baseline.
       </Typography>
 
       <Grid container spacing={3}>
@@ -151,9 +154,14 @@ export default function PredictPage({ definition }: { definition: AppDefinition 
                     onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
                   />
                 ))}
-                <Button variant="contained" onClick={runPredict} disabled={loading}>
+                <Button variant="contained" onClick={runPredict} disabled={loading || !baselineLoaded}>
                   {loading ? 'Running forecast…' : 'Run prediction'}
                 </Button>
+                {!baselineLoaded ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Sync live KPIs first so inputs and forecasts match your dashboard scale.
+                  </Typography>
+                ) : null}
                 {error ? <Typography color="error" variant="body2">{error}</Typography> : null}
               </Stack>
             </CardContent>
