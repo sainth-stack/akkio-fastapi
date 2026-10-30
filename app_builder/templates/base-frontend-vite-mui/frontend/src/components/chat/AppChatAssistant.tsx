@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import {
+  alpha,
   Box,
   Button,
   CircularProgress,
@@ -75,7 +76,7 @@ export default function AppChatAssistant({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: `Hi — ask me about KPIs, charts, and data on ${definition.meta?.appName || 'this dashboard'}${pageTitle ? ` (${pageTitle})` : ''}.`,
+      content: 'How can I help you?',
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -216,19 +217,25 @@ export default function AppChatAssistant({
         open={open}
         onClose={() => setOpen(false)}
         PaperProps={{
-          sx: { width: { xs: '100%', sm: 400 }, display: 'flex', flexDirection: 'column' },
+          sx: {
+            width: { xs: '100%', sm: 400 },
+            display: 'flex',
+            flexDirection: 'column',
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+          },
         }}
       >
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, pb: 1 }}>
-          <Typography variant="subtitle1" fontWeight={700}>
-            Data assistant
+          <Typography variant="subtitle1" fontWeight={700} color="text.primary">
+            Assistant
           </Typography>
           <IconButton onClick={() => setOpen(false)} aria-label="Close chat">
             <CloseIcon />
           </IconButton>
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ px: 2, pb: 1 }}>
-          Answers use your app KPIs, charts, and tables — not the open web.
+          Answers use this app&apos;s data — not the open web.
         </Typography>
         {showRagExport ? (
           <Box sx={{ px: 2, pb: 1 }}>
@@ -261,14 +268,18 @@ export default function AppChatAssistant({
             <Paper
               key={i}
               elevation={0}
-              sx={{
+              sx={(theme) => ({
                 p: 1.5,
                 alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
                 maxWidth: '92%',
-                bgcolor: m.role === 'user' ? 'primary.main' : 'action.hover',
+                bgcolor:
+                  m.role === 'user'
+                    ? 'primary.main'
+                    : alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.12 : 0.06),
                 color: m.role === 'user' ? 'primary.contrastText' : 'text.primary',
                 borderRadius: 2,
-              }}
+                border: m.role === 'user' ? 'none' : `1px solid ${theme.palette.divider}`,
+              })}
             >
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
                 {m.content}
@@ -287,7 +298,7 @@ export default function AppChatAssistant({
           <TextField
             fullWidth
             size="small"
-            placeholder="Ask about MTBF, downtime, trends…"
+            placeholder="Ask a question…"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

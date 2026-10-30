@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import SyncIcon from '@mui/icons-material/Sync';
-import type { AppDefinition } from '../renderer/useAppDefinition';
+import { useAppDefinition } from '../renderer/useAppDefinition';
 import { buildAppDefinitionPayload } from '../utils/ragDownload';
 import { getAkkioAccessToken, getAkkioApiBase } from '../renderer/akkioApi';
 import PredictionIndicators, { type LivePrediction } from '../components/predict/PredictionIndicators';
@@ -33,7 +33,8 @@ function baselineToForm(baseline: Record<string, number>): Record<string, string
   return out;
 }
 
-export default function PredictPage({ definition }: { definition: AppDefinition }) {
+export default function PredictPage() {
+  const { definition } = useAppDefinition();
   const apiBase = getAkkioApiBase();
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(FIELDS.map((f) => [f.key, ''])),
@@ -105,6 +106,8 @@ export default function PredictPage({ definition }: { definition: AppDefinition 
       setLoading(false);
     }
   }, [postPredict, scenario, values]);
+
+  if (!definition) return null;
 
   return (
     <Box sx={{ maxWidth: 1000, mx: 'auto', pb: 10 }}>

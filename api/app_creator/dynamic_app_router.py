@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -508,6 +508,72 @@ async def predict_synthetic(
         prompt=body.prompt or "",
     )
     return JSONResponse(content=result)
+
+
+@router.get("/{project_id}/definition")
+async def get_app_definition(
+    project_id: str,
+    request: Request,
+):
+    """Latest data.json for hosted preview (after upload or rebuild)."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.data_import_service import load_data_json_from_project
+    from app_builder.services.runtime_paths import resolve_project_root
+
+    defn = load_project_app_definition(project_id)
+    if not defn:
+        root = resolve_project_root(project_id)
+        defn = load_data_json_from_project(root)
+    if not defn:
+        raise HTTPException(status_code=404, detail="App definition not found")
+    return JSONResponse(content=defn)
+
+
+@router.post("/{project_id}/data/import")
+async def import_app_data(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    target_key: Optional[str] = Form(None),
+):
+    """Upload CSV, JSON, or Excel and merge into frontend/src/mock/data.json datasets."""
+    await _optional_project_access(project_id, request, AppChatRequest(messages=[]))
+
+    from app_builder.services.data_import_service import (
+        list_import_targets,
+        load_data_json_from_project,
+        merge_upload_bytes,
+        save_data_json_to_project,
+    )
+    from app_builder.services.runtime_paths import resolve_project_root
+
+    root = resolve_project_root(project_id)
+    defn = load_data_json_from_project(root) or load_project_app_definition(project_id)
+    if not defn:
+        raise HTTPException(status_code=404, detail="App has no data.json — build the app first.")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        updated, summary = merge_upload_bytes(
+            defn,
+            filename=file.filename or "upload.csv",
+            raw=raw,
+            target_key=target_key or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    save_data_json_to_project(project_id, updated)
+    return JSONResponse(
+        content={
+            "message": "Data imported",
+            "updatedKeys": summary.get("updatedKeys") or [],
+            "summary": summary,
+            "targets": list_import_targets(updated),
+        }
+    )
 
 
 @router.post("/{project_id}/llm")

@@ -20,6 +20,7 @@ import {
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import * as MuiIcons from '@mui/icons-material';
+import DataUploadButton from '../data/DataUploadButton';
 
 const DRAWER_WIDTH = 256;
 
@@ -161,7 +162,7 @@ export default function AppShell({
           zIndex: theme.zIndex.drawer + 1,
         }}
       >
-        <Toolbar>
+        <Toolbar sx={{ gap: 1, flexWrap: 'wrap' }}>
           {isMobile && (
             <IconButton
               color="inherit"
@@ -189,10 +190,11 @@ export default function AppShell({
               )}
             </Breadcrumbs>
           ) : (
-            <Typography variant="h6" fontWeight={600} letterSpacing="-0.02em">
+            <Typography variant="h6" fontWeight={600} letterSpacing="-0.02em" sx={{ flex: 1 }}>
               {pageTitle || appName}
             </Typography>
           )}
+          <DataUploadButton />
         </Toolbar>
       </AppBar>
 

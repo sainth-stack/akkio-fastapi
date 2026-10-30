@@ -101,6 +101,21 @@ export function createAppTheme(definitionTheme?: DefinitionTheme) {
       },
       MuiTextField: { defaultProps: { size: 'small' } },
       MuiChip: { styleOverrides: { root: { borderRadius: 6 } } },
+      MuiDrawer: {
+        styleOverrides: {
+          paper: ({ ownerState }) => {
+            const isNavDrawer =
+              ownerState.variant === 'permanent' || ownerState.variant === 'persistent';
+            if (isNavDrawer) {
+              return {};
+            }
+            return {
+              backgroundColor: t.surface,
+              color: t.text,
+            };
+          },
+        },
+      },
       MuiTableCell: {
         styleOverrides: {
           head: { fontWeight: 600, backgroundColor: t.background },

@@ -348,6 +348,7 @@ def _app_data_agent_tsx(app_name: str) -> str:
     safe_name = app_name.replace("\\", "\\\\").replace("'", "\\'")
     return f"""import {{ useCallback, useRef, useState }} from 'react';
 import {{
+  alpha,
   Box, CircularProgress, Drawer, Fab, IconButton, Paper, Stack, TextField, Typography,
 }} from '@mui/material';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -383,7 +384,7 @@ export default function AppDataAgent() {{
   const [messages, setMessages] = useState<ChatMessage[]>([
     {{
       role: 'assistant',
-      content: 'Hi — ask me about products, prices, stock, or your dashboard orders.',
+      content: 'How can I help you?',
     }},
   ]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -436,26 +437,40 @@ export default function AppDataAgent() {{
         <ChatIcon />
       </Fab>
       <Drawer anchor="right" open={{open}} onClose={{() => setOpen(false)}}
-        PaperProps={{ sx: {{ width: {{ xs: '100%', sm: 400 }}, display: 'flex', flexDirection: 'column' }} }}>
+        PaperProps={{ sx: {{
+          width: {{ xs: '100%', sm: 400 }},
+          display: 'flex',
+          flexDirection: 'column',
+          bgcolor: 'background.paper',
+          color: 'text.primary',
+        }} }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2 }}>
-          <Typography variant="subtitle1" fontWeight={{700}}>Store agent</Typography>
+          <Typography variant="subtitle1" fontWeight={{700}} color="text.primary">Assistant</Typography>
           <IconButton onClick={{() => setOpen(false)}}><CloseIcon /></IconButton>
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ px: 2, pb: 1 }}>
-          Answers from this shop catalog and dashboard data — not the open web.
+          Answers use this app&apos;s data — not the open web.
         </Typography>
         <Box ref={{listRef}} sx={{ flex: 1, overflow: 'auto', px: 2, py: 1, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           {{messages.map((m, i) => (
-            <Paper key={{i}} elevation={{0}} sx={{ p: 1.5, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '92%',
-              bgcolor: m.role === 'user' ? 'primary.main' : 'action.hover',
-              color: m.role === 'user' ? 'primary.contrastText' : 'text.primary', borderRadius: 2 }}>
+            <Paper key={{i}} elevation={{0}} sx={{(theme) => ({{
+              p: 1.5,
+              alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+              maxWidth: '92%',
+              bgcolor: m.role === 'user'
+                ? 'primary.main'
+                : alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.12 : 0.06),
+              color: m.role === 'user' ? 'primary.contrastText' : 'text.primary',
+              borderRadius: 2,
+              border: m.role === 'user' ? 'none' : `1px solid ${{theme.palette.divider}}`,
+            }})}}>
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{{m.content}}</Typography>
             </Paper>
           ))}}
           {{loading ? <CircularProgress size={{18}} /> : null}}
         </Box>
         <Stack direction="row" spacing={{1}} sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-          <TextField fullWidth size="small" placeholder="Ask about products, prices, orders…"
+          <TextField fullWidth size="small" placeholder="Ask a question…"
             value={{input}} onChange={{(e) => setInput(e.target.value)}}
             onKeyDown={{(e) => {{ if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); send(); }} }}}}
             disabled={{loading}} />

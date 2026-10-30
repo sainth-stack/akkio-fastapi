@@ -4,7 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import AppShell from './components/ui/AppShell';
 import PageRenderer from './renderer/PageRenderer';
 import PredictPage from './pages/PredictPage';
-import { useAppDefinition } from './renderer/useAppDefinition';
+import { AppDefinitionProvider, useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
 import AppChatAssistant from './components/chat/AppChatAssistant';
 
@@ -41,7 +41,7 @@ function AppShellLayout() {
   );
 }
 
-export default function App() {
+function AppRoutes() {
   const { definition, loading, error } = useAppDefinition();
 
   const theme = useMemo(
@@ -49,7 +49,7 @@ export default function App() {
     [definition?.theme],
   );
 
-  if (loading) {
+  if (loading && !definition) {
     return null;
   }
   if (error || !definition) {
@@ -68,11 +68,7 @@ export default function App() {
               key={item.pageId}
               path={item.path}
               element={
-                item.pageId === 'predict' ? (
-                  <PredictPage definition={definition} />
-                ) : (
-                  <PageRenderer pageId={item.pageId} />
-                )
+                item.pageId === 'predict' ? <PredictPage /> : <PageRenderer pageId={item.pageId} />
               }
             />
           ))}
@@ -80,5 +76,13 @@ export default function App() {
         </Route>
       </Routes>
     </ThemeProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <AppDefinitionProvider>
+      <AppRoutes />
+    </AppDefinitionProvider>
   );
 }

@@ -3,6 +3,7 @@ import BlockRenderer from './BlockRenderer';
 import { shouldShowPageSubtitle } from './displayUtils';
 import { PageFilterProvider } from './PageFilterContext';
 import { useAppDefinition } from './useAppDefinition';
+import { DataUploadHint } from '../components/data/DataUploadButton';
 
 type Block = Record<string, unknown>;
 
@@ -39,6 +40,7 @@ function segmentBlocks(blocks: Block[]): Segment[] {
 
 export default function PageRenderer({ pageId }: { pageId: string }) {
   const { definition } = useAppDefinition();
+  if (!definition) return null;
   const page = definition.pages.find((p) => p.id === pageId);
 
   if (!page) {
@@ -47,10 +49,15 @@ export default function PageRenderer({ pageId }: { pageId: string }) {
 
   const segments = segmentBlocks(page.blocks);
   const showSubtitle = shouldShowPageSubtitle(page.subtitle, page.title);
+  const isDashboard =
+    pageId === 'dashboard' ||
+    page.title.toLowerCase() === 'dashboard' ||
+    definition.navigation[0]?.pageId === pageId;
 
   return (
     <PageFilterProvider>
       <Box sx={{ maxWidth: 1440, mx: 'auto' }}>
+        {isDashboard ? <DataUploadHint /> : null}
         {showSubtitle ? (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
             {page.subtitle}

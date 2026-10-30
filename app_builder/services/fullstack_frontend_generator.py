@@ -151,10 +151,20 @@ export const appTheme = createTheme({{
     }},
     MuiDrawer: {{
       styleOverrides: {{
-        paper: {{
-          backgroundColor: tokens.primaryDark,
-          color: '#E2E8F0',
-          borderRight: 'none',
+        paper: ({{ ownerState }}) => {{
+          const isNavDrawer =
+            ownerState.variant === 'permanent' || ownerState.variant === 'persistent';
+          if (isNavDrawer) {{
+            return {{
+              backgroundColor: tokens.primaryDark,
+              color: '#E2E8F0',
+              borderRight: 'none',
+            }};
+          }}
+          return {{
+            backgroundColor: tokens.surface,
+            color: tokens.text,
+          }};
         }},
       }},
     }},
