@@ -227,6 +227,9 @@ def _build_frontend(
             from app_builder.schemas.files import GeneratedFiles
 
             file_writer(project_name, GeneratedFiles(files=guarded))
+            from app_builder.services.json_app_template_guard import cleanup_obsolete_json_app_paths_on_disk
+
+            cleanup_obsolete_json_app_paths_on_disk(project_name)
             logger.info("[build] json_app guard applied before npm build for %s", project_name)
     except Exception as exc:
         logger.warning("[build] json_app pre-build guard skipped: %s", exc)

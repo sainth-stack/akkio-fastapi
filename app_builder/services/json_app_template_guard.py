@@ -72,7 +72,24 @@ def ensure_json_app_renderer(files: Dict[str, str]) -> Tuple[Dict[str, str], int
             restored += 1
     if restored:
         logger.info("[json_app_guard] restored %d renderer file(s) from template", restored)
+    merged.pop("frontend/src/renderer/useAppDefinition.ts", None)
     return merged, restored
+
+
+def cleanup_obsolete_json_app_paths_on_disk(project_name: str) -> None:
+    """Remove renamed template files so Vite does not resolve stale .ts over .tsx."""
+    import os
+
+    from app_builder.services.runtime_paths import project_write_root
+
+    root = project_write_root(project_name)
+    stale = os.path.join(root, "frontend", "src", "renderer", "useAppDefinition.ts")
+    if os.path.isfile(stale):
+        try:
+            os.remove(stale)
+            logger.info("[json_app_guard] removed obsolete %s", stale)
+        except OSError as exc:
+            logger.warning("[json_app_guard] could not remove %s: %s", stale, exc)
 
 
 def repair_broken_legacy_app_tsx(files: Dict[str, str]) -> Tuple[Dict[str, str], bool]:
