@@ -219,13 +219,36 @@ async def delete_app(app_id: str, current: CurrentUser = Depends(resolve_user)):
 
 @router.get("/apps/{app_id}/status")
 async def get_app_status(app_id: str, current: CurrentUser = Depends(resolve_user)):
+    """Lightweight poll endpoint while pipeline/build runs (avoids huge plan_json / full logs)."""
     try:
-        app = db.get_app_builder_app(
+        app = db.get_app_builder_app_poll_snapshot(
             app_id, user_email=user_email_from(current), user_id=current.id or None
         )
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
         job = db.get_active_job_for_app(app_id)
+
+        def _tail(text: Optional[str], max_len: int = 6000) -> Optional[str]:
+            if not text:
+                return text
+            if len(text) <= max_len:
+                return text
+            return f"… ({len(text) - max_len} chars truncated)\n{text[-max_len:]}"
+
+        slim_job = None
+        if job:
+            slim_job = {
+                "id": job.get("id"),
+                "session_id": job.get("session_id"),
+                "job_type": job.get("job_type"),
+                "status": job.get("status"),
+                "step": job.get("step"),
+                "error": job.get("error"),
+                "started_at": job.get("started_at"),
+                "updated_at": job.get("updated_at"),
+                "logs": _tail(job.get("logs"), 4000),
+            }
+
         return {
             "status": "success",
             "app_id": app_id,
@@ -237,8 +260,7 @@ async def get_app_status(app_id: str, current: CurrentUser = Depends(resolve_use
             "preview_url": app.get("preview_url"),
             "live_url": app.get("live_url"),
             "track": app.get("track"),
-            "plan_json": app.get("plan_json"),
-            "job": job,
+            "job": slim_job,
         }
     except HTTPException:
         raise

@@ -19,6 +19,7 @@ from api.app_creator.project_access import assert_project_access
 
 from app_builder.services.project_config import get_project_config
 from app_builder.services.runtime_paths import get_projects_dir, resolve_project_root
+from app_builder.services.app_data_rag import load_project_app_definition
 from app_builder.services.demo_api_data import (
     anomaly_dashboard_payload,
     anomaly_reports_summary,

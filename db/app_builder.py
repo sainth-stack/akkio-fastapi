@@ -486,6 +486,48 @@ class AppBuilderStore(PostgresPool):
                 email = user_email or self._user_email_for_id(row["user_id"])
                 return _app_row_to_dict(row, email)
 
+    def get_app_builder_app_poll_snapshot(
+        self,
+        app_id,
+        user_email: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        """Status polling only — avoids loading generated_code_json / plan_json from metadata."""
+        self.init_schema()
+        try:
+            aid = int(app_id)
+        except (TypeError, ValueError):
+            return None
+        uid = user_id
+        if uid is None and user_email:
+            uid = self._resolve_user_id(user_email)
+        if uid is None:
+            return None
+        sql = """
+            SELECT id, project_name,
+                   metadata->>'pipeline_status' AS pipeline_status,
+                   metadata->>'pipeline_error' AS pipeline_error,
+                   metadata->>'build_status' AS build_status,
+                   metadata->>'build_error' AS build_error,
+                   metadata->>'preview_url' AS preview_url,
+                   metadata->>'live_url' AS live_url,
+                   metadata->>'track' AS track,
+                   CASE
+                     WHEN length(COALESCE(metadata->>'build_log', '')) > 8000
+                     THEN '…' || right(metadata->>'build_log', 8000)
+                     ELSE metadata->>'build_log'
+                   END AS build_log
+            FROM builder_apps
+            WHERE id = %s AND user_id = %s
+        """
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(sql, (aid, uid))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
     def update_app_builder_app(
         self,
         app_id,
