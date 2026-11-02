@@ -36,9 +36,14 @@ def build_sample_data_xlsx(project_name: str) -> str:
     """Write KPIs + Detail + Breakdown sheets; returns temp file path."""
     import pandas as pd
 
-    from app_builder.services.json_app_sample_export import build_sheets_from_json_app
+    from app_builder.services.json_app_sample_export import (
+        build_import_template_sheets,
+        build_sheets_from_json_app,
+    )
 
-    sheets = build_sheets_from_json_app(project_name)
+    sheets = build_import_template_sheets(project_name)
+    if not sheets:
+        sheets = build_sheets_from_json_app(project_name)
     if not sheets:
         seed, requirement, prd = _load_seed_and_meta(project_name)
         sheets = seed.get("sample_export")
@@ -55,6 +60,8 @@ def build_sample_data_xlsx(project_name: str) -> str:
         ordered = [name for name in sheet_order if name in sheets] + [
             k for k in sheets if k not in sheet_order
         ]
+        if not ordered:
+            ordered = list(sheets.keys())
         for sheet_name in ordered:
             rows = sheets.get(sheet_name)
             if not isinstance(rows, list) or not rows:

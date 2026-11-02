@@ -5,12 +5,14 @@ Single backend serves all projects via config-driven routes.
 import json
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Depends, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from api.auth.dependencies import CurrentUser
@@ -528,6 +530,41 @@ async def get_app_definition(
     if not defn:
         raise HTTPException(status_code=404, detail="App definition not found")
     return JSONResponse(content=defn)
+
+
+@router.get("/{project_id}/data/template.xlsx")
+async def download_data_import_template(
+    project_id: str,
+    request: Request,
+):
+    """Excel template (one sheet per dataKey) for edit-and-upload workflow."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.sample_data_export import build_sample_data_xlsx
+
+    try:
+        xlsx_path = build_sample_data_xlsx(project_id)
+    except Exception as e:
+        logger.exception("[dynamic_app] template export failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Could not build data template: {e}") from e
+
+    def _cleanup(path: str) -> None:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    app_name = project_id
+    defn = load_project_app_definition(project_id)
+    if isinstance(defn, dict):
+        app_name = str((defn.get("meta") or {}).get("appName") or project_id)
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", app_name)[:48]
+
+    return FileResponse(
+        path=xlsx_path,
+        filename=f"{safe}_data_template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(_cleanup, xlsx_path),
+    )
 
 
 @router.post("/{project_id}/data/import")

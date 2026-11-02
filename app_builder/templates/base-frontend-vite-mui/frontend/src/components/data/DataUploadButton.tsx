@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import {
+  Alert,
   Button,
   CircularProgress,
   Dialog,
@@ -11,17 +12,16 @@ import {
   MenuItem,
   Select,
   Snackbar,
-  Alert,
+  Stack,
   Typography,
   List,
   ListItem,
   ListItemText,
 } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
+import DownloadIcon from '@mui/icons-material/Download';
 import { getAkkioAccessToken, getAkkioApiBase } from '../../renderer/akkioApi';
 import { useAppDefinition } from '../../renderer/useAppDefinition';
-
-type ImportTarget = { dataKey: string; blockType: string; pageId: string; label: string };
 
 export default function DataUploadButton() {
   const { definition, refreshDefinition, importTargets } = useAppDefinition();
@@ -31,6 +31,7 @@ export default function DataUploadButton() {
   const [targetKey, setTargetKey] = useState('');
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [snack, setSnack] = useState<{ severity: 'success' | 'error'; message: string } | null>(
     null,
   );
@@ -40,6 +41,43 @@ export default function DataUploadButton() {
   }
 
   const targets = importTargets.length ? importTargets : [];
+  const appLabel = definition.meta?.appName || 'app';
+
+  const downloadTemplate = async () => {
+    setDownloading(true);
+    try {
+      const token = getAkkioAccessToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`${apiBase}/data/template.xlsx`, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(
+          typeof (err as { detail?: string }).detail === 'string'
+            ? (err as { detail: string }).detail
+            : 'Download failed',
+        );
+      }
+      const blob = await res.blob();
+      const dispo = res.headers.get('Content-Disposition') || '';
+      const match = /filename="?([^";]+)"?/i.exec(dispo);
+      const filename = match?.[1] || `${appLabel.replace(/\s+/g, '_')}_data_template.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setSnack({ severity: 'success', message: 'Template downloaded — edit and upload when ready.' });
+    } catch (e) {
+      setSnack({
+        severity: 'error',
+        message: e instanceof Error ? e.message : 'Download failed',
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const runUpload = async (file: File, key?: string) => {
     setLoading(true);
@@ -101,6 +139,8 @@ export default function DataUploadButton() {
     void runUpload(file, targetKey || targets[0]?.dataKey);
   };
 
+  const busy = loading || downloading;
+
   return (
     <>
       <input
@@ -113,16 +153,28 @@ export default function DataUploadButton() {
           e.target.value = '';
         }}
       />
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={loading ? <CircularProgress size={14} /> : <UploadFileIcon />}
-        disabled={loading}
-        onClick={() => fileRef.current?.click()}
-        sx={{ ml: 'auto', whiteSpace: 'nowrap' }}
-      >
-        Upload data
-      </Button>
+      <Stack direction="row" spacing={1} sx={{ ml: 'auto', flexShrink: 0 }}>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={downloading ? <CircularProgress size={14} /> : <DownloadIcon />}
+          disabled={busy}
+          onClick={() => void downloadTemplate()}
+          sx={{ whiteSpace: 'nowrap' }}
+        >
+          Download template
+        </Button>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={loading ? <CircularProgress size={14} /> : <UploadFileIcon />}
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+          sx={{ whiteSpace: 'nowrap' }}
+        >
+          Upload data
+        </Button>
+      </Stack>
 
       <Dialog open={open} onClose={() => !loading && setOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Import data</DialogTitle>
@@ -192,7 +244,7 @@ export function DataUploadHint() {
       <ListItem>
         <ListItemText
           primary="Use your own data"
-          secondary="Upload CSV, Excel, or JSON from the toolbar — KPIs, charts, and tables update immediately."
+          secondary="Download template from the toolbar, edit in Excel, then upload — KPIs, charts, and tables update immediately."
         />
       </ListItem>
     </List>
