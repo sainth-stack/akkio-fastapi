@@ -1,4 +1,4 @@
-"""Merge user-uploaded CSV / JSON / Excel into json_app data.json datasets."""
+"""Merge user-uploaded source data and recompute KPIs / tables / charts."""
 from __future__ import annotations
 
 import csv
@@ -30,7 +30,16 @@ def _set_data_bag(defn: Dict[str, Any], bag: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def list_import_targets(defn: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Human-readable targets derived from page blocks."""
+    """Upload targets = source datasets only (not derived KPI/chart keys)."""
+    from app_builder.services.source_dataset_planner import list_source_import_targets
+
+    targets = list_source_import_targets(defn)
+    if targets:
+        return targets
+    return _legacy_block_targets(defn)
+
+
+def _legacy_block_targets(defn: Dict[str, Any]) -> List[Dict[str, str]]:
     targets: List[Dict[str, str]] = []
     seen: Set[str] = set()
     for page in defn.get("pages") or []:
@@ -40,45 +49,45 @@ def list_import_targets(defn: Dict[str, Any]) -> List[Dict[str, str]]:
         for block in page.get("blocks") or []:
             if not isinstance(block, dict):
                 continue
-            btype = str(block.get("type") or "")
             dk = str(block.get("dataKey") or "")
             if not dk or dk in seen:
                 continue
             seen.add(dk)
-            label = str(block.get("title") or block.get("type") or dk)
             targets.append(
                 {
                     "dataKey": dk,
-                    "blockType": btype,
+                    "blockType": str(block.get("type") or ""),
                     "pageId": page_id,
-                    "label": label,
+                    "label": str(block.get("title") or block.get("type") or dk),
                 }
             )
     return targets
 
 
-def _match_data_key(defn: Dict[str, Any], hint: str) -> Optional[str]:
-    hint_slug = _slug(hint)
-    if not hint_slug:
-        return None
-    keys = {t["dataKey"] for t in list_import_targets(defn)}
-    if hint in keys:
-        return hint
-    for k in keys:
-        if _slug(k) == hint_slug or hint_slug in _slug(k) or _slug(k) in hint_slug:
-            return k
+def _source_dataset_by_key(defn: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    from app_builder.services.source_dataset_planner import get_source_datasets
+
+    key_slug = _slug(key)
+    for ds in get_source_datasets(defn):
+        dk = str(ds.get("dataKey") or "")
+        sid = str(ds.get("id") or "")
+        if key == dk or _slug(dk) == key_slug or _slug(sid) == key_slug or key_slug in _slug(dk):
+            return ds
     return None
 
 
-def _default_table_key(defn: Dict[str, Any]) -> Optional[str]:
-    for t in list_import_targets(defn):
-        if t["blockType"] == "dataTable":
-            return t["dataKey"]
-    for t in list_import_targets(defn):
-        if t["blockType"] == "kpiRow":
-            return t["dataKey"]
-    targets = list_import_targets(defn)
-    return targets[0]["dataKey"] if targets else None
+def _match_source_key(defn: Dict[str, Any], hint: str) -> Optional[str]:
+    ds = _source_dataset_by_key(defn, hint)
+    if ds:
+        return str(ds.get("dataKey"))
+    from app_builder.services.source_dataset_planner import get_source_datasets
+
+    for ds in get_source_datasets(defn):
+        dk = str(ds.get("dataKey") or "")
+        sheet = dk.replace("source_", "")
+        if _slug(hint) == _slug(sheet) or _slug(hint) == _slug(dk):
+            return dk
+    return None
 
 
 def _parse_csv_text(text: str) -> Tuple[List[str], List[Dict[str, Any]]]:
@@ -91,7 +100,7 @@ def _parse_csv_text(text: str) -> Tuple[List[str], List[Dict[str, Any]]]:
     rows = list(reader)
     if not rows:
         return [], []
-    headers = [_slug(h) or f"col_{i}" for i, h in enumerate(rows[0])]
+    headers = [h.strip() for h in rows[0]]
     out: List[Dict[str, Any]] = []
     for row in rows[1:]:
         if not any(str(c).strip() for c in row):
@@ -100,8 +109,7 @@ def _parse_csv_text(text: str) -> Tuple[List[str], List[Dict[str, Any]]]:
         for i, h in enumerate(headers):
             if i >= len(row):
                 break
-            raw = row[i].strip()
-            item[h] = _coerce_cell(raw)
+            item[h] = _coerce_cell(row[i].strip())
         if item:
             out.append(item)
     return headers, out
@@ -128,63 +136,11 @@ def _coerce_cell(raw: str) -> Any:
     return raw
 
 
-def _looks_like_kpi_csv(headers: List[str], rows: List[Dict[str, Any]]) -> bool:
-    if len(headers) < 2 or not rows:
-        return False
-    h = " ".join(headers)
-    if re.search(r"label|metric|kpi|name", h) and re.search(r"value|amount|count|reading", h):
-        return True
-    if len(headers) == 2 and all(len(r) >= 2 for r in rows[:3]):
-        return True
-    return False
+def _rows_for_source(defn: Dict[str, Any], dataset: Dict[str, Any], raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    from app_builder.services.source_dataset_planner import map_upload_row_to_fields
 
-
-def _kpi_bundle_from_rows(headers: List[str], rows: List[Dict[str, Any]]) -> Dict[str, str]:
-    label_idx = 0
-    value_idx = 1
-    for i, h in enumerate(headers):
-        if re.search(r"value|amount|count|reading|metric_value", h):
-            value_idx = i
-        if re.search(r"label|metric|kpi|name", h):
-            label_idx = i
-    bundle: Dict[str, str] = {}
-    for row in rows:
-        keys = list(row.keys())
-        if len(keys) < 2:
-            continue
-        label_key = keys[label_idx] if label_idx < len(keys) else keys[0]
-        value_key = keys[value_idx] if value_idx < len(keys) else keys[1]
-        label = str(row.get(label_key) or "").strip()
-        val = row.get(value_key)
-        if not label:
-            continue
-        vk = _slug(label)[:40] or f"metric_{len(bundle)}"
-        bundle[vk] = str(val) if val is not None else ""
-    return bundle
-
-
-def _align_table_rows(defn: Dict[str, Any], data_key: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    fields: List[str] = []
-    for page in defn.get("pages") or []:
-        for block in page.get("blocks") or []:
-            if isinstance(block, dict) and block.get("dataKey") == data_key:
-                for col in block.get("columns") or []:
-                    if isinstance(col, dict) and col.get("field"):
-                        fields.append(str(col["field"]))
-    if not fields:
-        return rows
-    aligned: List[Dict[str, Any]] = []
-    for i, row in enumerate(rows):
-        out: Dict[str, Any] = {}
-        for f in fields:
-            if f in row:
-                out[f] = row[f]
-            else:
-                slug_f = _slug(f)
-                match = next((row[k] for k in row if _slug(k) == slug_f), None)
-                out[f] = match if match is not None else (i + 1 if f == "id" else "")
-        aligned.append(out)
-    return aligned
+    cols = dataset.get("columns") or []
+    return [map_upload_row_to_fields(r, cols) for r in raw_rows if isinstance(r, dict)]
 
 
 def merge_upload_bytes(
@@ -194,35 +150,48 @@ def merge_upload_bytes(
     raw: bytes,
     target_key: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    Return (updated_definition, summary).
-    Raises ValueError on unsupported or empty input.
-    """
+    from app_builder.services.operational_metrics_compute import apply_source_data_pipeline, recompute_derived_data
+    from app_builder.services.source_dataset_planner import get_source_datasets
+
     if not isinstance(defn, dict) or not defn.get("pages"):
         raise ValueError("App definition is missing pages — regenerate the app first.")
+
+    defn = apply_source_data_pipeline(defn, seed_if_empty=False)
+    if not get_source_datasets(defn):
+        raise ValueError("No source data model on this app — regenerate from the latest builder.")
 
     bag = _data_bag(defn)
     name = (filename or "upload").lower()
     stem = _slug(name.rsplit(".", 1)[0])
-    summary: Dict[str, Any] = {"filename": filename, "updatedKeys": []}
+    summary: Dict[str, Any] = {"filename": filename, "updatedKeys": [], "computed": True}
+
+    def _finish() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        defn2 = dict(defn)
+        defn2["data"] = bag
+        defn2 = recompute_derived_data(defn2)
+        summary["derivedKeys"] = [
+            k for k in (defn2.get("data") or {}) if not str(k).startswith("source_")
+        ]
+        return defn2, summary
 
     if name.endswith(".json"):
         try:
             payload = json.loads(raw.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Invalid JSON: {e}") from e
-        if isinstance(payload, dict) and payload.get("pages") and payload.get("navigation"):
-            payload = _data_bag(payload)
         if not isinstance(payload, dict):
-            raise ValueError("JSON must be an object of data keys or a full app definition.")
+            raise ValueError("JSON must be an object keyed by source dataset id.")
         for key, val in payload.items():
-            if key in ("meta", "theme", "pages", "navigation", "version"):
+            if not str(key).startswith("source_") and not _match_source_key(defn, str(key)):
                 continue
-            bag[key] = val
-            summary["updatedKeys"].append(key)
+            ds = _source_dataset_by_key(defn, str(key))
+            if not ds or not isinstance(val, list):
+                continue
+            bag[str(ds["dataKey"])] = _rows_for_source(defn, ds, val)
+            summary["updatedKeys"].append(str(ds["dataKey"]))
         if not summary["updatedKeys"]:
-            raise ValueError("No dataset keys found in JSON upload.")
-        return _set_data_bag(defn, bag), summary
+            raise ValueError("Upload JSON must contain source dataset arrays (e.g. source_maintenance_events).")
+        return _finish()
 
     if name.endswith((".xlsx", ".xls")):
         import pandas as pd
@@ -234,50 +203,43 @@ def merge_upload_bytes(
             if frame is None or frame.empty:
                 continue
             records = frame.fillna("").to_dict(orient="records")
-            rows = [{_slug(str(k)): _coerce_cell(str(v)) for k, v in r.items()} for r in records]
-            key = target_key or _match_data_key(defn, str(sheet_name)) or _match_data_key(defn, stem)
-            if not key:
-                key = _default_table_key(defn)
-            if not key:
-                raise ValueError("Could not map Excel sheet to a dashboard block dataKey.")
-            block_type = next(
-                (t["blockType"] for t in list_import_targets(defn) if t["dataKey"] == key),
-                "dataTable",
-            )
-            if block_type == "kpiRow" or _looks_like_kpi_csv(list(rows[0].keys()) if rows else [], rows):
-                bag[key] = _kpi_bundle_from_rows(list(rows[0].keys()) if rows else [], rows)
-            elif isinstance(bag.get(key), list) or block_type == "dataTable":
-                bag[key] = _align_table_rows(defn, key, rows)
-            else:
-                bag[key] = rows
-            summary["updatedKeys"].append(key)
+            raw_rows = [{str(k): _coerce_cell(str(v)) for k, v in r.items()} for r in records]
+            hint = target_key or str(sheet_name)
+            ds = _source_dataset_by_key(defn, hint)
+            if not ds:
+                dk = _match_source_key(defn, hint)
+                ds = _source_dataset_by_key(defn, dk or hint)
+            if not ds:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' does not match a source dataset. "
+                    f"Use the downloaded template sheet names."
+                )
+            bag[str(ds["dataKey"])] = _rows_for_source(defn, ds, raw_rows)
+            summary["updatedKeys"].append(str(ds["dataKey"]))
         if not summary["updatedKeys"]:
             raise ValueError("Excel upload produced no rows.")
-        return _set_data_bag(defn, bag), summary
+        return _finish()
 
     if name.endswith(".csv") or "," in raw.decode("utf-8-sig", errors="replace")[:500]:
         text = raw.decode("utf-8-sig", errors="replace")
-        headers, rows = _parse_csv_text(text)
+        _, rows = _parse_csv_text(text)
         if not rows:
             raise ValueError("CSV has no data rows.")
-        key = target_key or _match_data_key(defn, stem) or _default_table_key(defn)
-        if not key:
-            raise ValueError("Could not map CSV to a block dataKey — name the file like table_dashboard.csv.")
-        block_type = next(
-            (t["blockType"] for t in list_import_targets(defn) if t["dataKey"] == key),
-            "dataTable",
-        )
-        if block_type == "kpiRow" or _looks_like_kpi_csv(headers, rows):
-            bag[key] = _kpi_bundle_from_rows(headers, rows)
-        elif block_type in ("lineChart", "barChart"):
-            bag[key] = rows
-        else:
-            bag[key] = _align_table_rows(defn, key, rows)
-        summary["updatedKeys"] = [key]
-        summary["rowCount"] = len(rows) if isinstance(bag.get(key), list) else len(bag.get(key) or {})
-        return _set_data_bag(defn, bag), summary
+        hint = target_key or stem
+        ds = _source_dataset_by_key(defn, hint)
+        if not ds:
+            dk = _match_source_key(defn, hint)
+            ds = _source_dataset_by_key(defn, dk or hint)
+        if not ds:
+            raise ValueError(
+                "CSV must target a source dataset — use the downloaded template or name the file like maintenance_events.csv."
+            )
+        bag[str(ds["dataKey"])] = _rows_for_source(defn, ds, rows)
+        summary["updatedKeys"] = [str(ds["dataKey"])]
+        summary["rowCount"] = len(bag[str(ds["dataKey"])])
+        return _finish()
 
-    raise ValueError("Unsupported file type. Use .csv, .json, or .xlsx.")
+    raise ValueError("Unsupported file type. Use .csv, .json, or .xlsx from the template.")
 
 
 def load_data_json_from_project(project_root: str) -> Optional[Dict[str, Any]]:

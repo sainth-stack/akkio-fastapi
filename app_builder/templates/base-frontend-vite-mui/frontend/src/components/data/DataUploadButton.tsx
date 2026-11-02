@@ -68,7 +68,7 @@ export default function DataUploadButton() {
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      setSnack({ severity: 'success', message: 'Template downloaded — edit and upload when ready.' });
+      setSnack({ severity: 'success', message: 'Template downloaded — edit operational rows, then upload.' });
     } catch (e) {
       setSnack({
         severity: 'error',
@@ -113,7 +113,7 @@ export default function DataUploadButton() {
       setSnack({
         severity: 'success',
         message: keys.length
-          ? `Updated ${keys.join(', ')}. Dashboard refreshed.`
+          ? `Source data updated (${keys.join(', ')}). KPIs and tables recomputed.`
           : data.message || 'Data uploaded.',
       });
       setOpen(false);
@@ -180,8 +180,8 @@ export default function DataUploadButton() {
         <DialogTitle>Import data</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose which part of the app to update. CSV column headers should match table fields when
-            possible.
+            Choose the operational source table to replace. Do not upload KPI label/value sheets — metrics
+            are computed from source rows after import.
           </Typography>
           <FormControl fullWidth size="small">
             <InputLabel id="import-target-label">Dataset</InputLabel>
@@ -244,7 +244,7 @@ export function DataUploadHint() {
       <ListItem>
         <ListItemText
           primary="Use your own data"
-          secondary="Download template from the toolbar, edit in Excel, then upload — KPIs, charts, and tables update immediately."
+          secondary="Download the operational data template (real column headers), fill in rows, then upload — KPIs, tables, and charts are computed automatically."
         />
       </ListItem>
     </List>

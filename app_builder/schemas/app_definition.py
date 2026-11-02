@@ -13,6 +13,8 @@ class AppMeta(BaseModel):
     dataSource: str = "static"
     generatedBy: str = ""
     capabilities: List[str] = Field(default_factory=list)
+    dataModel: str = ""
+    sourceDatasets: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class AppTheme(BaseModel):

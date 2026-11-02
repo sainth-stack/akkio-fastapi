@@ -743,6 +743,27 @@ def finalize_app_definition(
         )
     defn.navigation = navigation
     defn.mock = mock
+    from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+    piped = apply_source_data_pipeline(
+        {
+            **defn.model_dump(mode="json"),
+            "data": dict(defn.mock or {}),
+            "mock": None,
+        },
+        requirement=requirement,
+        prd=prd,
+        seed_if_empty=True,
+    )
+    meta_p = piped.get("meta") or {}
+    defn.meta = defn.meta.model_copy(
+        update={
+            "sourceDatasets": meta_p.get("sourceDatasets") or [],
+            "dataModel": str(meta_p.get("dataModel") or "source_compute_v1"),
+            "dataSource": str(meta_p.get("dataSource") or defn.meta.dataSource),
+        }
+    )
+    defn.mock = piped.get("data") or {}
     return defn
 
 

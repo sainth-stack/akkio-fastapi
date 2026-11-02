@@ -122,82 +122,16 @@ def _sheet_title(data_key: str, used: set) -> str:
 
 def build_import_template_sheets(project_name: str) -> Dict[str, List[Dict[str, Any]]] | None:
     """
-    Excel template aligned with upload import: one sheet per block dataKey.
-    KPI sheets use columns label,value; tables use column field names; charts use x + series keys.
+    Excel template: source operational tables only (human column headers).
+    KPIs and charts are computed after upload — not edited directly.
     """
     defn = _load_full_data_json(project_name)
-    if not defn or not defn.get("pages"):
+    if not defn:
         return None
+    from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
-    bag = defn.get("data") or defn.get("mock") or {}
-    if not isinstance(bag, dict):
-        bag = {}
+    defn = apply_source_data_pipeline(defn, seed_if_empty=True)
+    from app_builder.services.source_dataset_planner import build_template_sheets
 
-    sheets: Dict[str, List[Dict[str, Any]]] = {}
-    used_titles: set = set()
-    seen_keys: set = set()
-
-    for page in defn.get("pages") or []:
-        if not isinstance(page, dict):
-            continue
-        for block in page.get("blocks") or []:
-            if not isinstance(block, dict):
-                continue
-            data_key = str(block.get("dataKey") or "").strip()
-            if not data_key or data_key in seen_keys:
-                continue
-            seen_keys.add(data_key)
-            sheet = _sheet_title(data_key, used_titles)
-            btype = str(block.get("type") or "")
-
-            if btype == "kpiRow":
-                items = block.get("items") or []
-                bundle = bag.get(data_key) if isinstance(bag.get(data_key), dict) else {}
-                rows: List[Dict[str, Any]] = []
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    label = str(item.get("label") or "")
-                    vk = str(item.get("valueKey") or "")
-                    val = bundle.get(vk, "") if isinstance(bundle, dict) and vk else ""
-                    rows.append({"label": label, "value": val})
-                if not rows:
-                    rows = [{"label": "Example metric", "value": "100"}]
-                sheets[sheet] = rows
-                continue
-
-            if btype == "dataTable":
-                cols = block.get("columns") or []
-                fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
-                existing = bag.get(data_key)
-                if isinstance(existing, list) and existing:
-                    sheets[sheet] = existing[:500]
-                elif fields:
-                    example = {f: f"sample_{f}" for f in fields}
-                    sheets[sheet] = [example]
-                continue
-
-            if btype in ("lineChart", "barChart"):
-                x_key = str(block.get("xAxisKey") or "period")
-                series_keys = [
-                    str(s.get("dataKey"))
-                    for s in (block.get("series") or [])
-                    if isinstance(s, dict) and s.get("dataKey")
-                ]
-                existing = bag.get(data_key)
-                if isinstance(existing, list) and existing:
-                    sheets[sheet] = existing[:200]
-                else:
-                    row: Dict[str, Any] = {x_key: "Period 1"}
-                    for sk in series_keys:
-                        row[sk] = 0
-                    sheets[sheet] = [row]
-                continue
-
-            raw = bag.get(data_key)
-            if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-                sheets[sheet] = raw[:200]
-            elif isinstance(raw, dict):
-                sheets[sheet] = [{"label": k, "value": v} for k, v in raw.items()]
-
+    sheets = build_template_sheets(defn)
     return sheets if sheets else None

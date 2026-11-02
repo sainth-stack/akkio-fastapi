@@ -12,12 +12,20 @@ import { getAkkioAccessToken, getAkkioApiBase } from './akkioApi';
 
 export interface AppDefinition {
   version: number;
-  meta: {
+    meta: {
     appName: string;
     description: string;
     domain: string;
     capabilities?: string[];
     dataSource?: string;
+    dataModel?: string;
+    sourceDatasets?: Array<{
+      id: string;
+      dataKey: string;
+      title: string;
+      description?: string;
+      columns: Array<{ field: string; header: string; type?: string }>;
+    }>;
   };
   theme: Record<string, unknown>;
   navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;
@@ -44,12 +52,21 @@ type AppDefinitionContextValue = {
 const AppDefinitionContext = createContext<AppDefinitionContextValue | null>(null);
 
 function collectImportTargets(defn: AppDefinition): ImportTarget[] {
+  const fromMeta = defn.meta?.sourceDatasets;
+  if (Array.isArray(fromMeta) && fromMeta.length) {
+    return fromMeta.map((ds) => ({
+      dataKey: ds.dataKey,
+      blockType: 'sourceTable',
+      pageId: '',
+      label: ds.title || ds.id || ds.dataKey,
+    }));
+  }
   const targets: ImportTarget[] = [];
   const seen = new Set<string>();
   for (const page of defn.pages || []) {
     for (const block of page.blocks || []) {
       const dk = String(block.dataKey || '');
-      if (!dk || seen.has(dk)) continue;
+      if (!dk || seen.has(dk) || dk.startsWith('source_')) continue;
       seen.add(dk);
       targets.push({
         dataKey: dk,
