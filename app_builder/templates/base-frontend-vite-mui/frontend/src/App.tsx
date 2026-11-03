@@ -12,13 +12,24 @@ function AppShellLayout() {
   const { definition } = useAppDefinition();
   const location = useLocation();
 
-  if (!definition) return null;
+  const nav = useMemo(() => {
+    if (!definition) return [];
+    const seen = new Set<string>();
+    const items: typeof definition.navigation = [];
+    for (const n of definition.navigation) {
+      if (seen.has(n.pageId)) continue;
+      seen.add(n.pageId);
+      items.push(n);
+    }
+    return items.map((n) => ({
+      label: n.label,
+      path: n.path,
+      icon: n.icon,
+      pageId: n.pageId,
+    }));
+  }, [definition]);
 
-  const nav = definition.navigation.map((n) => ({
-    label: n.label,
-    path: n.path,
-    icon: n.icon,
-  }));
+  if (!definition) return null;
 
   const activeNav = nav.find((n) =>
     n.path === '/' ? location.pathname === '/' : location.pathname.startsWith(n.path),
@@ -33,7 +44,7 @@ function AppShellLayout() {
       <AppShell
         navItems={nav}
         appName={definition.meta.appName}
-        pageTitle={page?.title}
+        pageTitle={activeNav?.label || page?.title}
         shellVariant={shellVariant}
       />
       <AppChatAssistant definition={definition} pageId={page?.id} pageTitle={page?.title} />
@@ -58,12 +69,21 @@ function AppRoutes() {
 
   const defaultPath = definition.navigation[0]?.path ?? '/';
 
+  const routesNav = useMemo(() => {
+    const seen = new Set<string>();
+    return definition.navigation.filter((n) => {
+      if (seen.has(n.pageId)) return false;
+      seen.add(n.pageId);
+      return true;
+    });
+  }, [definition.navigation]);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Routes>
         <Route element={<AppShellLayout />}>
-          {definition.navigation.map((item) => (
+          {routesNav.map((item) => (
             <Route
               key={item.pageId}
               path={item.path}

@@ -78,8 +78,21 @@ def _subsection_declares_omit(block: str) -> bool:
 
 
 def is_dashboard_like(page_id: str, title: str = "") -> bool:
-    blob = f"{page_id} {title}".lower().replace("_", " ").replace("-", " ")
-    return bool(re.search(r"\b(dashboard|home|overview)\b", blob))
+    pid = (page_id or "").lower().replace("_", " ").replace("-", " ")
+    if re.search(r"\b(analytics|reports|predict|details|settings)\b", pid):
+        return False
+    if re.search(r"\b(dashboard|home)\b", pid):
+        return True
+    title_low = (title or "").lower().strip()
+    if not title_low:
+        return False
+    if re.match(r"^(dashboard|home|overview|executive overview)\b", title_low):
+        return True
+    if re.search(r"\bkpi\s+cards?\b", title_low) and not re.search(
+        r"\b(no|none|without)\s+.*\bkpi\b", title_low
+    ):
+        return True
+    return False
 
 
 def resolve_dashboard_page_id(

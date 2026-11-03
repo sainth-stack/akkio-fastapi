@@ -28,6 +28,7 @@ export interface NavItem {
   label: string;
   path: string;
   icon?: string;
+  pageId?: string;
 }
 
 export interface BreadcrumbItem {
@@ -102,7 +103,7 @@ export default function AppShell({
               : location.pathname.startsWith(item.path);
           return (
             <ListItemButton
-              key={item.path}
+              key={item.pageId ?? item.path}
               component={NavLink}
               to={item.path}
               selected={isActive}
