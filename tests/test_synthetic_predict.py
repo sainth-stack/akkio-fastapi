@@ -82,3 +82,27 @@ def test_different_inputs_different_outputs():
         != high["predicted_downtime_hours_next_period"]
         or low["risk_level"] != high["risk_level"]
     )
+
+
+def test_dynamic_predict_uses_target_field():
+    defn = {
+        "meta": {
+            "predictConfig": {
+                "targetField": "first_pass_yield_pct",
+                "fields": [
+                    {"key": "first_pass_yield_pct", "label": "FPY", "unit": "%"},
+                    {"key": "defect_rate_pct", "label": "Defect rate", "unit": "%"},
+                ],
+                "baseline": {"first_pass_yield_pct": 94.0, "defect_rate_pct": 2.5},
+            }
+        },
+        "data": {},
+    }
+    out = run_live_prediction(
+        defn,
+        features={"defect_rate_pct": 4.0, "first_pass_yield_pct": 93.0},
+        target_field="first_pass_yield_pct",
+    )
+    assert out["target_field"] == "first_pass_yield_pct"
+    assert out["predicted_value"] is not None
+    assert out["indicators"]

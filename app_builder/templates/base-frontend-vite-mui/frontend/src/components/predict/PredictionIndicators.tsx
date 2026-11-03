@@ -25,9 +25,14 @@ export type PredictionIndicator = {
 };
 
 export type LivePrediction = {
-  predicted_downtime_hours_next_period: number;
-  predicted_mtbf_hours: number;
-  predicted_production_output: number;
+  predicted_downtime_hours_next_period?: number;
+  predicted_mtbf_hours?: number;
+  predicted_production_output?: number;
+  predicted_value?: number;
+  target_field?: string;
+  target_label?: string;
+  target_unit?: string;
+  baseline_target?: number;
   risk_level: string;
   confidence: number;
   drivers: string[];
@@ -137,14 +142,20 @@ export default function PredictionIndicators({ result }: { result: LivePredictio
       ) : null}
       {result.inputs_used ? (
         <Typography variant="caption" color="text.secondary" display="block">
-          Scenario inputs: MTBF {result.inputs_used.mtbf_hours}h · downtime {result.inputs_used.downtime_hours}h ·
-          load {result.inputs_used.machine_load_pct}% · WOs {result.inputs_used.open_work_orders}
+          Scenario inputs:{' '}
+          {Object.entries(result.inputs_used)
+            .slice(0, 6)
+            .map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`)
+            .join(' · ')}
         </Typography>
       ) : null}
       {result.baseline_reference ? (
         <Typography variant="caption" color="text.secondary" display="block">
-          Dashboard baseline: MTBF {result.baseline_reference.mtbf_hours}h · downtime{' '}
-          {result.baseline_reference.downtime_hours}h · output {result.baseline_reference.production_output}
+          Data baseline:{' '}
+          {Object.entries(result.baseline_reference)
+            .slice(0, 6)
+            .map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`)
+            .join(' · ')}
         </Typography>
       ) : null}
       {result.computed_at ? (

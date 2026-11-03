@@ -55,6 +55,43 @@ class TestSourceDataPipeline(unittest.TestCase):
         self.assertIn("Work order", first[0].keys())
         self.assertNotIn("label", first[0])
 
+    def test_quality_charts_map_source_columns(self):
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+        defn = {
+            "meta": {"domain": "manufacturing", "description": "Quality FPY defect"},
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "blocks": [
+                        {
+                            "type": "lineChart",
+                            "title": "First Pass Yield (FPY) trend over time",
+                            "dataKey": "chart_fpy_trend",
+                            "xAxisKey": "period",
+                            "series": [{"dataKey": "fpy", "name": "First-pass yield"}],
+                        },
+                        {
+                            "type": "barChart",
+                            "title": "Quality defects by production line",
+                            "dataKey": "chart_defects_line",
+                            "xAxisKey": "name",
+                            "series": [{"dataKey": "defects", "name": "Defects"}],
+                        },
+                    ],
+                }
+            ],
+            "data": {},
+        }
+        out = apply_source_data_pipeline(defn)
+        bag = out.get("data") or {}
+        trend = bag.get("chart_fpy_trend") or []
+        self.assertTrue(trend)
+        self.assertTrue(any((row.get("fpy") or 0) > 0 for row in trend))
+        by_line = bag.get("chart_defects_line") or []
+        self.assertTrue(by_line)
+        self.assertIn("production_line", by_line[0])
+
     def test_upload_recomputes_kpis(self):
         from app_builder.services.data_import_service import merge_upload_bytes
 

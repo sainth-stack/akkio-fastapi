@@ -54,7 +54,17 @@ export function normalizeBlock(
     if (!dataKey && pageId) dataKey = `kpis_${pageId}`;
     if (!dataKey) return next;
 
-    const slice = getMockSlice(definition, dataKey);
+    let slice = getMockSlice(definition, dataKey);
+    if (!slice || typeof slice !== 'object' || Array.isArray(slice)) {
+      const bag = (definition.data || definition.mock) as Record<string, unknown> | undefined;
+      if (bag) {
+        const kpiKey = Object.keys(bag).find((k) => k.startsWith('kpis_') && typeof bag[k] === 'object' && !Array.isArray(bag[k]));
+        if (kpiKey) {
+          next.dataKey = dataKey || kpiKey;
+          slice = bag[kpiKey] as Record<string, unknown>;
+        }
+      }
+    }
     if (!slice || typeof slice !== 'object' || Array.isArray(slice)) return next;
 
     next.items = Object.entries(slice as Record<string, unknown>).map(([valueKey], i) => ({

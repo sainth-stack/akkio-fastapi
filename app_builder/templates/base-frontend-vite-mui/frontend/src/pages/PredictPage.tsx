@@ -1,10 +1,14 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
   Card,
   CardContent,
+  FormControl,
   Grid,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Typography,
@@ -16,19 +20,27 @@ import { buildAppDefinitionPayload } from '../utils/ragDownload';
 import { getAkkioAccessToken, getAkkioApiBase } from '../renderer/akkioApi';
 import PredictionIndicators, { type LivePrediction } from '../components/predict/PredictionIndicators';
 
-const FIELDS = [
-  { key: 'mtbf_hours', label: 'MTBF (hours)' },
-  { key: 'mttr_hours', label: 'MTTR (hours)' },
-  { key: 'downtime_hours', label: 'Downtime (hours)' },
-  { key: 'open_work_orders', label: 'Open work orders' },
-  { key: 'machine_load_pct', label: 'Machine load / OEE (%)' },
-  { key: 'production_output', label: 'Production output' },
-] as const;
+type PredictField = { key: string; label: string; unit?: string };
+type PredictConfig = {
+  targetField?: string;
+  fields?: PredictField[];
+  baseline?: Record<string, number>;
+  description?: string;
+};
 
-function baselineToForm(baseline: Record<string, number>): Record<string, string> {
+const LEGACY_FIELDS: PredictField[] = [
+  { key: 'mtbf_hours', label: 'MTBF (hours)', unit: 'h' },
+  { key: 'mttr_hours', label: 'MTTR (hours)', unit: 'h' },
+  { key: 'downtime_hours', label: 'Downtime (hours)', unit: 'h' },
+  { key: 'open_work_orders', label: 'Open work orders' },
+  { key: 'machine_load_pct', label: 'Machine load / OEE (%)', unit: '%' },
+  { key: 'production_output', label: 'Production output' },
+];
+
+function baselineToForm(fields: PredictField[], baseline: Record<string, number>): Record<string, string> {
   const out: Record<string, string> = {};
-  FIELDS.forEach(({ key }) => {
-    out[key] = String(baseline[key] ?? '');
+  fields.forEach(({ key }) => {
+    out[key] = baseline[key] != null ? String(baseline[key]) : '';
   });
   return out;
 }
@@ -36,15 +48,42 @@ function baselineToForm(baseline: Record<string, number>): Record<string, string
 export default function PredictPage() {
   const { definition } = useAppDefinition();
   const apiBase = getAkkioApiBase();
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(FIELDS.map((f) => [f.key, ''])),
-  );
+  const predictConfig = (definition?.meta?.predictConfig as PredictConfig | undefined) ?? undefined;
+
+  const fields = useMemo<PredictField[]>(() => {
+    if (predictConfig?.fields?.length) {
+      return predictConfig.fields.map((f) => ({
+        key: f.key,
+        label: f.label || f.key.replace(/_/g, ' '),
+        unit: f.unit,
+      }));
+    }
+    return LEGACY_FIELDS;
+  }, [predictConfig]);
+
+  const [targetField, setTargetField] = useState('');
+  const [values, setValues] = useState<Record<string, string>>({});
   const [scenario, setScenario] = useState('');
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState<LivePrediction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [baselineLoaded, setBaselineLoaded] = useState(false);
+
+  useEffect(() => {
+    const initialTarget =
+      predictConfig?.targetField || fields[0]?.key || 'production_output';
+    setTargetField(initialTarget);
+    if (predictConfig?.baseline) {
+      setValues(baselineToForm(fields, predictConfig.baseline));
+      setBaselineLoaded(true);
+    }
+  }, [fields, predictConfig?.baseline, predictConfig?.targetField]);
+
+  const inputFields = useMemo(
+    () => fields.filter((f) => f.key !== targetField),
+    [fields, targetField],
+  );
 
   const postPredict = useCallback(
     async (body: Record<string, unknown>) => {
@@ -62,7 +101,7 @@ export default function PredictPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(String(data.detail || 'Prediction failed'));
-      return data as LivePrediction & { baseline?: Record<string, number> };
+      return data as LivePrediction & { baseline?: Record<string, number>; predictConfig?: PredictConfig };
     },
     [apiBase, definition],
   );
@@ -72,16 +111,20 @@ export default function PredictPage() {
     setError(null);
     try {
       const data = await postPredict({ refresh_baseline_only: true });
-      if (data.baseline) {
-        setValues(baselineToForm(data.baseline));
-        setBaselineLoaded(true);
-      }
+      const cfg = data.predictConfig || predictConfig;
+      const syncFields = cfg?.fields?.length
+        ? cfg.fields.map((f) => ({ key: f.key, label: f.label, unit: f.unit }))
+        : fields;
+      const baseline = data.baseline || cfg?.baseline || {};
+      setValues(baselineToForm(syncFields, baseline));
+      if (cfg?.targetField) setTargetField(cfg.targetField);
+      setBaselineLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load live KPIs');
     } finally {
       setSyncing(false);
     }
-  }, [postPredict]);
+  }, [fields, postPredict, predictConfig]);
 
   const runPredict = useCallback(async () => {
     setLoading(true);
@@ -89,7 +132,7 @@ export default function PredictPage() {
     setResult(null);
     try {
       const features: Record<string, number> = {};
-      FIELDS.forEach(({ key }) => {
+      fields.forEach(({ key }) => {
         const raw = values[key];
         if (raw !== '' && raw != null) {
           features[key] = Number(raw) || 0;
@@ -98,6 +141,7 @@ export default function PredictPage() {
       const data = await postPredict({
         features,
         prompt: scenario.trim(),
+        target_field: targetField,
       });
       setResult(data);
     } catch (e) {
@@ -105,7 +149,7 @@ export default function PredictPage() {
     } finally {
       setLoading(false);
     }
-  }, [postPredict, scenario, values]);
+  }, [fields, postPredict, scenario, targetField, values]);
 
   if (!definition) return null;
 
@@ -116,9 +160,8 @@ export default function PredictPage() {
         <Typography variant="h5" fontWeight={700}>Predict</Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Forecasts stay in the same range as your dashboard KPIs. Use <strong>Sync live KPIs</strong>, then
-        adjust inputs slightly or describe a small what-if (e.g. load +10%). Extreme values are clamped to
-        a realistic band vs baseline.
+        {predictConfig?.description ||
+          'Forecasts use averages from your uploaded operational data. Choose the column to predict, adjust the other inputs, then run.'}
       </Typography>
 
       <Grid container spacing={3}>
@@ -133,36 +176,51 @@ export default function PredictPage() {
                   onClick={syncFromLiveData}
                   disabled={syncing}
                 >
-                  {syncing ? 'Syncing…' : 'Sync live KPIs'}
+                  {syncing ? 'Syncing…' : 'Sync from data'}
                 </Button>
               </Stack>
               <Stack spacing={2}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel id="predict-target-label">Column to predict</InputLabel>
+                  <Select
+                    labelId="predict-target-label"
+                    label="Column to predict"
+                    value={targetField}
+                    onChange={(e) => setTargetField(String(e.target.value))}
+                  >
+                    {fields.map((f) => (
+                      <MenuItem key={f.key} value={f.key}>
+                        {f.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
                 <TextField
                   label="Scenario prompt (optional)"
-                  placeholder="What if machine load is 92% and downtime doubles?"
+                  placeholder="What if defect rate rises 10%?"
                   size="small"
                   multiline
                   minRows={2}
                   value={scenario}
                   onChange={(e) => setScenario(e.target.value)}
                 />
-                {FIELDS.map(({ key, label }) => (
+                {inputFields.map(({ key, label, unit }) => (
                   <TextField
                     key={key}
-                    label={label}
+                    label={unit ? `${label} (${unit})` : label}
                     type="number"
                     size="small"
-                    placeholder={baselineLoaded ? undefined : 'Sync live KPIs or run predict'}
-                    value={values[key]}
+                    placeholder={baselineLoaded ? undefined : 'Sync from data first'}
+                    value={values[key] ?? ''}
                     onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
                   />
                 ))}
-                <Button variant="contained" onClick={runPredict} disabled={loading || !baselineLoaded}>
-                  {loading ? 'Running forecast…' : 'Run prediction'}
+                <Button variant="contained" onClick={runPredict} disabled={loading || !baselineLoaded || !targetField}>
+                  {loading ? 'Running forecast…' : 'Predict'}
                 </Button>
                 {!baselineLoaded ? (
                   <Typography variant="caption" color="text.secondary">
-                    Sync live KPIs first so inputs and forecasts match your dashboard scale.
+                    Sync from data first so inputs match your app&apos;s operational columns.
                   </Typography>
                 ) : null}
                 {error ? <Typography color="error" variant="body2">{error}</Typography> : null}
@@ -175,11 +233,10 @@ export default function PredictPage() {
             <CardContent>
               <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 2 }}>Forecast indicators</Typography>
               {loading ? (
-                <Typography variant="body2" color="text.secondary">Computing forecast from live data…</Typography>
+                <Typography variant="body2" color="text.secondary">Computing forecast…</Typography>
               ) : !result ? (
                 <Typography variant="body2" color="text.secondary">
-                  No forecast yet. Sync live KPIs, add a scenario if you want, then run prediction.
-                  Chat forecasts also recompute on each message (you will see &quot;Thinking…&quot;).
+                  Choose a target column, fill the other fields, and click Predict.
                 </Typography>
               ) : (
                 <PredictionIndicators result={result} />

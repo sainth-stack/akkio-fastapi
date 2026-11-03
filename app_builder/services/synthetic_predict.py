@@ -36,8 +36,236 @@ def _collect_kpi_bag(defn: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return kpis
 
 
+def _predict_config(defn: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not defn:
+        return None
+    cfg = (defn.get("meta") or {}).get("predictConfig")
+    return cfg if isinstance(cfg, dict) else None
+
+
+def default_features_from_predict_config(defn: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    cfg = _predict_config(defn)
+    if not cfg:
+        return None
+    baseline = cfg.get("baseline") or {}
+    out: Dict[str, float] = {}
+    for field in cfg.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "")
+        if not key:
+            continue
+        out[key] = _float(baseline.get(key), 0.0)
+    return out or None
+
+
+def _field_meta(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
+    for field in cfg.get("fields") or []:
+        if isinstance(field, dict) and str(field.get("key")) == key:
+            return field
+    return {"key": key, "label": key.replace("_", " ").title(), "unit": ""}
+
+
+def merge_explicit_features_dynamic(
+    baseline: Dict[str, float],
+    features: Optional[Dict[str, Any]],
+    keys: Tuple[str, ...],
+) -> Dict[str, float]:
+    merged = dict(baseline)
+    if not features:
+        return merged
+    for key in keys:
+        if key not in features:
+            continue
+        raw = features[key]
+        if raw is None or raw == "":
+            continue
+        merged[key] = _float(raw, merged.get(key, 0.0))
+    return merged
+
+
+def clamp_scenario_dynamic(
+    features: Dict[str, float],
+    baseline: Dict[str, float],
+    keys: Tuple[str, ...],
+) -> Tuple[Dict[str, float], List[str]]:
+    notes: List[str] = []
+    out = dict(baseline)
+    out.update(features)
+    for key in keys:
+        b = float(baseline.get(key, out.get(key, 0)) or 0)
+        raw = float(out.get(key, b) or 0)
+        if "pct" in key or "rate" in key or "yield" in key or "oee" in key:
+            lo, hi = max(0.0, b * 0.5), min(100.0, max(b * 1.5, b + 1))
+        elif "count" in key or "orders" in key or "qty" in key or "units" in key:
+            lo, hi = 0.0, max(b * 3.5, b + 50, 20.0)
+        else:
+            lo = max(b * 0.35, 0.01) if b > 0 else raw
+            hi = max(b * 2.0, b * 1.01) if b > 0 else raw * 2
+        clamped = _clamp(raw, lo, hi)
+        if abs(clamped - raw) > 1e-6:
+            notes.append(
+                f"{key.replace('_', ' ')} adjusted from {round(raw, 2)} to {round(clamped, 2)} "
+                f"(allowed band vs uploaded data baseline)"
+            )
+        out[key] = round(clamped, 4)
+    return out, notes
+
+
+def predict_target_from_operational_inputs(
+    target_field: str,
+    features: Dict[str, float],
+    baseline: Dict[str, float],
+    cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Forecast the chosen source column using other numeric inputs + dashboard-scale baseline."""
+    target = str(target_field or cfg.get("targetField") or "")
+    meta = _field_meta(cfg, target)
+    base_target = float(baseline.get(target, 0) or 0)
+    current = _float(features.get(target), base_target)
+
+    def rel(cur: float, ref: float) -> float:
+        if ref <= 0:
+            return 0.0
+        return (cur - ref) / ref
+
+    tf = target.lower()
+    drivers: List[str] = []
+    pred = base_target
+
+    if "yield" in tf or "fpy" in tf:
+        defect_key = next((k for k in baseline if "defect" in k and "rate" in k), None)
+        if defect_key:
+            d_def = rel(_float(features.get(defect_key), baseline[defect_key]), baseline[defect_key])
+            pred = base_target * (1.0 - 0.22 * d_def - 0.08 * rel(current, base_target))
+            if d_def > 0.1:
+                drivers.append("Higher defect rate vs baseline reduces yield forecast")
+        scrap_key = next((k for k in baseline if "scrap" in k), None)
+        if scrap_key:
+            d_scrap = rel(_float(features.get(scrap_key), baseline[scrap_key]), baseline[scrap_key])
+            pred *= 1.0 - 0.12 * d_scrap
+    elif "defect" in tf:
+        yield_key = next((k for k in baseline if "yield" in k or "fpy" in k), None)
+        if yield_key:
+            d_y = rel(_float(features.get(yield_key), baseline[yield_key]), baseline[yield_key])
+            pred = base_target * (1.0 - 0.35 * d_y)
+            if d_y > 0.05:
+                drivers.append("Lower yield vs baseline increases defect forecast")
+        else:
+            pred = base_target * (1.0 + 0.15 * rel(current, base_target))
+    else:
+        deltas: List[float] = []
+        for key, base_val in baseline.items():
+            if key == target:
+                continue
+            b = float(base_val or 0)
+            if b <= 0:
+                continue
+            deltas.append(rel(_float(features.get(key), b), b))
+        avg_delta = sum(deltas) / len(deltas) if deltas else rel(current, base_target)
+        pred = base_target * (1.0 + 0.12 * avg_delta)
+        if abs(avg_delta) > 0.08:
+            drivers.append("Scenario inputs shifted vs uploaded-data averages")
+
+    if "pct" in tf or "rate" in tf or "yield" in tf:
+        pred = _clamp(pred, max(0.0, base_target * 0.72), min(100.0, base_target * 1.18))
+    else:
+        pred = _clamp(pred, base_target * 0.65 if base_target else pred * 0.5, base_target * 1.35 if base_target else pred * 1.5)
+
+    pred = round(pred, 2)
+    delta = _delta_pct(pred, base_target)
+    if delta is not None and delta > 8:
+        risk = "High"
+    elif delta is not None and abs(delta) > 3:
+        risk = "Medium"
+    else:
+        risk = "Low"
+
+    if not drivers:
+        drivers.append("Forecast anchored to your uploaded operational averages")
+
+    unit = str(meta.get("unit") or "")
+    label = str(meta.get("label") or target.replace("_", " ").title())
+    rec = (
+        f"Review inputs driving {label}; tighten controls on the largest negative deltas."
+        if risk == "High"
+        else f"Monitor {label} against baseline; re-run after new uploads."
+    )
+    spread = abs(rel(current, base_target))
+    for key in baseline:
+        if key != target:
+            spread += abs(rel(_float(features.get(key), baseline[key]), baseline[key])) * 0.15
+    confidence = round(_clamp(0.8 - spread * 0.1, 0.62, 0.92), 2)
+
+    return {
+        "target_field": target,
+        "target_label": label,
+        "target_unit": unit,
+        "predicted_value": pred,
+        "baseline_target": base_target,
+        "risk_level": risk,
+        "confidence": confidence,
+        "drivers": drivers,
+        "recommendation": rec,
+        "inputs_used": {k: _float(features.get(k), baseline.get(k, 0)) for k in baseline},
+        "baseline_reference": baseline,
+    }
+
+
+def build_dynamic_prediction_indicators(prediction: Dict[str, Any]) -> List[Dict[str, Any]]:
+    target = str(prediction.get("target_field") or "")
+    label = str(prediction.get("target_label") or "Predicted value")
+    unit = str(prediction.get("target_unit") or "")
+    pred = float(prediction.get("predicted_value") or 0)
+    base = float(prediction.get("baseline_target") or 0)
+    risk = str(prediction.get("risk_level") or "Low")
+    risk_sev = {"High": "error", "Medium": "warning", "Low": "success"}.get(risk, "info")
+    delta = _delta_pct(pred, base)
+    trend = "up" if delta and delta > 0 else "down" if delta and delta < 0 else "flat"
+    higher_bad = "defect" in target.lower() or "scrap" in target.lower() or "downtime" in target.lower()
+    if delta is not None and higher_bad:
+        sev = "error" if delta > 5 else "warning" if delta > 0 else "success"
+    elif delta is not None:
+        sev = "success" if delta > 0 else "warning" if delta < -5 else "info"
+    else:
+        sev = "info"
+    conf = float(prediction.get("confidence") or 0.75)
+    return [
+        {
+            "id": "risk",
+            "kind": "status",
+            "label": "Forecast risk",
+            "value": risk,
+            "severity": risk_sev,
+            "confidence": conf,
+        },
+        {
+            "id": "target",
+            "kind": "metric",
+            "label": f"Predicted {label}",
+            "value": pred,
+            "unit": unit,
+            "baseline": base,
+            "delta_pct": delta,
+            "trend": trend,
+            "severity": sev,
+        },
+        {
+            "id": "confidence",
+            "kind": "gauge",
+            "label": "Model confidence",
+            "value": round(conf * 100, 0),
+            "unit": "%",
+            "severity": "info" if conf >= 0.8 else "warning",
+        },
+    ]
+
+
 def default_features_from_definition(defn: Optional[Dict[str, Any]]) -> Dict[str, float]:
-    """Seed features from all KPI bundles in the live app definition."""
+    """Seed features from predictConfig or KPI bundles in the live app definition."""
+    from_predict = default_features_from_predict_config(defn)
+    if from_predict:
+        return from_predict
     kpis = _collect_kpi_bag(defn)
     if not kpis:
         return {
@@ -434,8 +662,34 @@ def run_live_prediction(
     *,
     features: Optional[Dict[str, Any]] = None,
     prompt: str = "",
+    target_field: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Merge dashboard baseline → form fields → prompt, clamp to KPI band, then forecast."""
+    """Merge uploaded-data baseline → form fields → prompt, clamp, then forecast."""
+    cfg = _predict_config(defn)
+    if cfg:
+        baseline = default_features_from_predict_config(defn) or {}
+        keys = tuple(str(f.get("key")) for f in cfg.get("fields") or [] if isinstance(f, dict) and f.get("key"))
+        target = str(target_field or cfg.get("targetField") or (keys[0] if keys else ""))
+        merged = merge_explicit_features_dynamic(baseline, features, keys)
+        merged, prompt_notes = apply_prompt_to_features(prompt, merged, baseline)
+        merged, clamp_notes = clamp_scenario_dynamic(merged, baseline, keys)
+        scenario_notes = list(prompt_notes) + clamp_notes
+        core = predict_target_from_operational_inputs(target, merged, baseline, cfg)
+        return {
+            **core,
+            "predicted_downtime_hours_next_period": core.get("predicted_value"),
+            "predicted_mtbf_hours": baseline.get("mtbf_hours", core.get("predicted_value")),
+            "predicted_production_output": baseline.get("production_output", core.get("predicted_value")),
+            "baseline": baseline,
+            "scenario_inputs": merged,
+            "indicators": build_dynamic_prediction_indicators(core),
+            "scenario_notes": scenario_notes,
+            "prompt": (prompt or "").strip(),
+            "computed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "predictConfig": cfg,
+            "target_field": target,
+        }
+
     baseline = default_features_from_definition(defn)
     merged = merge_explicit_features(baseline, features)
     merged, prompt_notes = apply_prompt_to_features(prompt, merged, baseline)

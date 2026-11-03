@@ -450,6 +450,7 @@ async def app_data_chat(
 class PredictRequest(BaseModel):
     features: Dict[str, Any] = {}
     prompt: Optional[str] = None
+    target_field: Optional[str] = None
     refresh_baseline_only: bool = False
     app_definition: Optional[Dict[str, Any]] = None
 
@@ -498,17 +499,24 @@ async def predict_synthetic(
     defn = body.app_definition or load_project_app_definition(project_id)
     defn_dict = defn if isinstance(defn, dict) else None
     if body.refresh_baseline_only:
+        from app_builder.services.predict_config import attach_predict_config
+
+        if defn_dict and not (defn_dict.get("meta") or {}).get("predictConfig"):
+            defn_dict = attach_predict_config(dict(defn_dict))
+        cfg = (defn_dict or {}).get("meta", {}).get("predictConfig") if defn_dict else None
         baseline = default_features_from_definition(defn_dict)
-        return JSONResponse(
-            content={
-                "baseline": baseline,
-                "kpi_snapshot": _collect_kpi_bag(defn_dict),
-            }
-        )
+        payload: Dict[str, Any] = {
+            "baseline": baseline,
+            "kpi_snapshot": _collect_kpi_bag(defn_dict),
+        }
+        if cfg:
+            payload["predictConfig"] = cfg
+        return JSONResponse(content=payload)
     result = run_live_prediction(
         defn_dict,
         features=body.features or {},
         prompt=body.prompt or "",
+        target_field=body.target_field,
     )
     return JSONResponse(content=result)
 

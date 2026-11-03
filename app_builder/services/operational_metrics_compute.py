@@ -137,24 +137,123 @@ def _aggregate_line_rows(
     series_fields: List[str],
     *,
     max_points: int = 16,
+    series_source_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
+    series_source_map = series_source_map or {}
     buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    date_field = None
+    if rows:
+        for cand in ("inspected_at", "occurred_at", "ordered_at", "date"):
+            if cand in rows[0]:
+                date_field = cand
+                break
     for r in rows:
-        x = str(r.get(x_field) or r.get("occurred_at") or r.get("inspected_at") or "")[:10]
-        if not x:
+        if x_field in r and x_field not in ("period", "date", "name", "label"):
+            x = str(r.get(x_field) or "Unknown")
+        elif date_field:
+            x = str(r.get(date_field) or "")[:10] or f"Period {len(buckets) + 1}"
+        else:
             x = f"Period {len(buckets) + 1}"
         buckets[x].append(r)
     keys = sorted(buckets.keys())[-max_points:]
     out: List[Dict[str, Any]] = []
+    x_out = x_field if x_field not in ("name", "label") else "period"
     for x in keys:
         group = buckets[x]
-        row: Dict[str, Any] = {x_field if x_field != "period" else "period": x}
+        row: Dict[str, Any] = {x_out: x}
+        main_val = 0.0
         for sf in series_fields:
-            nums = [_num(g.get(sf)) for g in group]
+            src = series_source_map.get(sf, sf)
+            nums = [_num(g.get(src)) for g in group]
             nums = [n for n in nums if n is not None]
-            row[sf] = round(sum(nums) / len(nums), 2) if nums else 0
+            val = round(sum(nums) / len(nums), 2) if nums else 0.0
+            row[sf] = val
+            if "target" not in sf.lower():
+                main_val = val or main_val
+        for sf in series_fields:
+            if "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+                row[sf] = round(main_val * 1.02, 2)
         out.append(row)
-    return out or [{"period": "P1", **{sf: 0 for sf in series_fields}}]
+    return out or [{x_out: "P1", **{sf: 0 for sf in series_fields}}]
+
+
+def _first_row_key(row: Dict[str, Any], candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in row:
+            return c
+    for k in row:
+        for c in candidates:
+            if _slug(k) == _slug(c):
+                return k
+    return None
+
+
+def _series_source_map(block: Dict[str, Any], sample: Dict[str, Any]) -> Dict[str, str]:
+    title = str(block.get("title") or "").lower()
+    out: Dict[str, str] = {}
+    for s in block.get("series") or []:
+        if not isinstance(s, dict):
+            continue
+        sk = str(s.get("dataKey") or "")
+        if not sk:
+            continue
+        name = str(s.get("name") or sk).lower()
+        blob = f"{sk} {name} {title}"
+        src = None
+        if re.search(r"fpy|first.pass|\byield\b", blob):
+            src = _first_row_key(sample, ["first_pass_yield_pct", "fpy", "yield_pct", "first_pass_yield"])
+        elif re.search(r"defect", blob):
+            src = _first_row_key(sample, ["defect_rate_pct", "defect_count", "defects", "defect_rate"])
+        elif re.search(r"target", blob):
+            src = _first_row_key(sample, ["target", "target_yield", "target_fpy", "target_defect_rate"])
+        elif sk in sample:
+            src = sk
+        else:
+            src = _first_row_key(sample, [sk, _slug(sk)])
+        out[sk] = src or sk
+    return out
+
+
+def _chart_x_field(block: Dict[str, Any], sample: Dict[str, Any]) -> str:
+    title = str(block.get("title") or "").lower()
+    x_key = str(block.get("xAxisKey") or "period")
+    if re.search(r"production line|by line|by category|pareto|defects by", title):
+        if "production_line" in sample:
+            return "production_line"
+        if "category" in sample:
+            return "category"
+    if x_key in sample and x_key not in ("name", "label"):
+        return x_key
+    return "period"
+
+
+def _aggregate_by_dimension(
+    rows: List[Dict[str, Any]],
+    dim: str,
+    series_fields: List[str],
+    series_source_map: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        key = str(r.get(dim) or "Other")
+        groups[key].append(r)
+    out: List[Dict[str, Any]] = []
+    for dim_val, grp in sorted(groups.items(), key=lambda x: -len(x[1]))[:12]:
+        row: Dict[str, Any] = {dim: dim_val}
+        main_val = 0.0
+        for sf in series_fields:
+            src = series_source_map.get(sf, sf)
+            nums = [_num(g.get(src)) for g in grp]
+            nums = [n for n in nums if n is not None]
+            val = round(sum(nums) / len(nums), 2) if nums else 0.0
+            row[sf] = val
+            if "target" not in sf.lower():
+                main_val = val or main_val
+        for sf in series_fields:
+            if "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+                row[sf] = round(main_val * 1.02, 2)
+        out.append(row)
+    return out
 
 
 def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,12 +279,45 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
 
             if btype == "kpiRow":
                 bundle: Dict[str, str] = {}
-                for item in block.get("items") or []:
+                items = list(block.get("items") or [])
+                colors = ("primary", "success", "warning", "error", "info", "default")
+                for item in items:
                     if not isinstance(item, dict):
                         continue
                     label = str(item.get("label") or "")
                     vk = str(item.get("valueKey") or _slug(label))
                     bundle[vk] = _compute_kpi_value(label, vk, rows)
+                    item.setdefault("valueKey", vk)
+                if not items and bundle:
+                    pass
+                if not items:
+                    for i, vk in enumerate(list(bundle.keys()) if bundle else []):
+                        items.append(
+                            {
+                                "label": vk.replace("_", " ").title(),
+                                "valueKey": vk,
+                                "color": colors[i % len(colors)],
+                            }
+                        )
+                if not bundle and items:
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        label = str(item.get("label") or "")
+                        vk = str(item.get("valueKey") or _slug(label))
+                        bundle[vk] = _compute_kpi_value(label, vk, rows)
+                if not items:
+                    # Fallback KPIs from common quality / maintenance metrics
+                    fallbacks = [
+                        ("First Pass Yield (FPY)", "first_pass_yield_pct"),
+                        ("Defect Rate", "defect_rate_pct"),
+                        ("Units Inspected", "units_inspected"),
+                    ]
+                    for i, (lab, vk) in enumerate(fallbacks):
+                        if rows and vk in rows[0]:
+                            items.append({"label": lab, "valueKey": vk, "color": colors[i % len(colors)]})
+                            bundle[vk] = _compute_kpi_value(lab, vk, rows)
+                block["items"] = items
                 bag[dk] = bundle
                 continue
 
@@ -202,7 +334,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                 continue
 
             if btype in ("lineChart", "barChart"):
-                x_key = str(block.get("xAxisKey") or "period")
+                sample = rows[0] if rows else {}
                 series_keys = [
                     str(s.get("dataKey"))
                     for s in (block.get("series") or [])
@@ -210,15 +342,22 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                 ]
                 if not series_keys:
                     series_keys = ["value"]
-                date_field = "occurred_at"
-                for cand in ("occurred_at", "inspected_at", "ordered_at", "date"):
-                    if rows and cand in rows[0]:
-                        date_field = cand
-                        break
-                if x_key == "period" or x_key == "date":
-                    bag[dk] = _aggregate_line_rows(rows, "period", series_keys, max_points=14)
+                smap = _series_source_map(block, sample)
+                x_field = _chart_x_field(block, sample)
+                if x_field in sample and x_field not in ("period", "date"):
+                    bag[dk] = _aggregate_by_dimension(rows, x_field, series_keys, smap)
+                    block["xAxisKey"] = x_field
                 else:
-                    bag[dk] = _aggregate_line_rows(rows, x_key, series_keys, max_points=14)
+                    bag[dk] = _aggregate_line_rows(
+                        rows,
+                        "period",
+                        series_keys,
+                        max_points=14,
+                        series_source_map=smap,
+                    )
+                    block["xAxisKey"] = str(block.get("xAxisKey") or "period")
+                    if block["xAxisKey"] in ("name", "label"):
+                        block["xAxisKey"] = "period"
                 continue
 
     out["data"] = bag
@@ -249,4 +388,7 @@ def apply_source_data_pipeline(
             bag[dk] = seed_rows_for_dataset(ds, row_count=36, human_headers=False)
     out["data"] = bag
     out.pop("mock", None)
+    from app_builder.services.predict_config import attach_predict_config
+
+    out = attach_predict_config(out)
     return recompute_derived_data(out)
