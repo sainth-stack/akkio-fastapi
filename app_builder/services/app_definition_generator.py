@@ -50,6 +50,18 @@ def _icon_for_label(label: str) -> str:
     return "Article"
 
 
+def _friendly_nav_label(page_id: str, title: str) -> str:
+    from app_builder.services.navigation_labels import friendly_nav_label
+
+    return friendly_nav_label(page_id, title)
+
+
+def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
+    from app_builder.services.navigation_labels import normalize_definition_navigation as _norm
+
+    return _norm(defn)
+
+
 def _title_from_requirement(requirement: str, fallback: str = "Workspace") -> str:
     line = (requirement or "").strip().split("\n")[0].strip()
     line = re.sub(r"^(build|create|generate|make)\s+(a|an|the|product)?\s*", "", line, flags=re.I).strip()
@@ -732,7 +744,8 @@ def finalize_app_definition(
     for i, nav in enumerate(defn.navigation):
         page_id = nav.pageId if nav.pageId in page_ids else (defn.pages[i].id if i < len(defn.pages) else nav.pageId)
         page_match = next((p for p in defn.pages if p.id == page_id), None)
-        label = page_match.title if page_match else nav.label
+        raw_label = page_match.title if page_match else nav.label
+        label = _friendly_nav_label(page_id, raw_label or nav.label)
         icon = nav.icon or "Article"
         if icon == "Dashboard" and label.lower() != "dashboard":
             icon = _icon_for_label(label)
@@ -761,6 +774,7 @@ def finalize_app_definition(
             "sourceDatasets": meta_p.get("sourceDatasets") or [],
             "dataModel": str(meta_p.get("dataModel") or "source_compute_v1"),
             "dataSource": str(meta_p.get("dataSource") or defn.meta.dataSource),
+            "predictConfig": meta_p.get("predictConfig"),
         }
     )
     defn.mock = piped.get("data") or {}

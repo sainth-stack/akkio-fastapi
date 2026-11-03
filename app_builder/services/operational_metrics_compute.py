@@ -227,6 +227,66 @@ def _chart_x_field(block: Dict[str, Any], sample: Dict[str, Any]) -> str:
     return "period"
 
 
+def _dedupe_series_keys(block: Dict[str, Any], sample: Dict[str, Any]) -> List[str]:
+    smap = _series_source_map(block, sample)
+    seen_src: set = set()
+    out: List[str] = []
+    for s in block.get("series") or []:
+        if not isinstance(s, dict):
+            continue
+        sk = str(s.get("dataKey") or "")
+        if not sk:
+            continue
+        src = smap.get(sk, sk)
+        if src in seen_src:
+            continue
+        seen_src.add(src)
+        out.append(sk)
+    return out
+
+
+def _pie_from_rows(block: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    title = str(block.get("title") or "").lower()
+    if not rows:
+        return []
+    if re.search(r"production line|by line", title):
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for r in rows:
+            groups[str(r.get("production_line") or "Other")].append(r)
+        metric = "defect_count"
+        if "yield" in title or "fpy" in title:
+            metric = "first_pass_yield_pct"
+        slices = []
+        for line, grp in sorted(groups.items(), key=lambda x: -len(x[1]))[:6]:
+            nums = [_num(g.get(metric)) for g in grp]
+            nums = [n for n in nums if n is not None]
+            val = round(sum(nums) / len(nums), 1) if nums else 0.0
+            slices.append({"name": line, "value": val})
+        return slices
+    if re.search(r"yield|fpy|target", title):
+        avg_fpy = _num(_compute_kpi_value("First pass yield", "first_pass_yield_pct", rows))
+        if avg_fpy is None:
+            vals = [_num(r.get("first_pass_yield_pct")) for r in rows]
+            vals = [v for v in vals if v is not None]
+            avg_fpy = sum(vals) / len(vals) if vals else 94.0
+        target = min(100.0, avg_fpy * 1.02)
+        gap = max(0.0, target - avg_fpy)
+        return [
+            {"name": "Actual FPY", "value": round(avg_fpy, 1)},
+            {"name": "Gap to target", "value": round(gap, 1)},
+            {"name": "Headroom", "value": round(max(0.0, 100 - target), 1)},
+        ]
+    return []
+
+
+def _rows_match_schema(row: Dict[str, Any], columns: List[Dict[str, Any]]) -> bool:
+    if not row:
+        return False
+    fields = {str(c.get("field") or "") for c in columns if isinstance(c, dict)}
+    overlap = fields.intersection(row.keys())
+    return len(overlap) >= max(2, len(fields) // 3)
+
+
 def _aggregate_by_dimension(
     rows: List[Dict[str, Any]],
     dim: str,
@@ -335,11 +395,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
 
             if btype in ("lineChart", "barChart"):
                 sample = rows[0] if rows else {}
-                series_keys = [
-                    str(s.get("dataKey"))
-                    for s in (block.get("series") or [])
-                    if isinstance(s, dict) and s.get("dataKey")
-                ]
+                series_keys = _dedupe_series_keys(block, sample)
                 if not series_keys:
                     series_keys = ["value"]
                 smap = _series_source_map(block, sample)
@@ -358,6 +414,12 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                     block["xAxisKey"] = str(block.get("xAxisKey") or "period")
                     if block["xAxisKey"] in ("name", "label"):
                         block["xAxisKey"] = "period"
+                continue
+
+            if btype == "pieChart":
+                pie = _pie_from_rows(block, rows)
+                if pie:
+                    bag[dk] = pie
                 continue
 
     out["data"] = bag
@@ -380,10 +442,19 @@ def apply_source_data_pipeline(
 
     out = ensure_source_datasets_on_definition(defn, requirement=requirement, prd=prd)
     bag = dict(out.get("data") or out.get("mock") or {})
+    active_keys = {str(ds.get("dataKey") or "") for ds in get_source_datasets(out)}
+    for key in list(bag.keys()):
+        if str(key).startswith(SOURCE_PREFIX) and key not in active_keys:
+            bag.pop(key, None)
     for ds in get_source_datasets(out):
         dk = str(ds.get("dataKey") or "")
+        cols = ds.get("columns") or []
         if not dk:
             continue
+        existing = bag.get(dk) if isinstance(bag.get(dk), list) else None
+        if existing and cols and not _rows_match_schema(existing[0], cols):
+            existing = None
+            bag.pop(dk, None)
         if seed_if_empty and (not isinstance(bag.get(dk), list) or not bag.get(dk)):
             bag[dk] = seed_rows_for_dataset(ds, row_count=36, human_headers=False)
     out["data"] = bag
@@ -391,4 +462,7 @@ def apply_source_data_pipeline(
     from app_builder.services.predict_config import attach_predict_config
 
     out = attach_predict_config(out)
-    return recompute_derived_data(out)
+    out = recompute_derived_data(out)
+    from app_builder.services.navigation_labels import normalize_definition_navigation
+
+    return normalize_definition_navigation(out)

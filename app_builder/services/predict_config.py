@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app_builder.services.source_dataset_planner import get_source_datasets
+
+_NON_PREDICT_FIELD = re.compile(
+    r"^(status|shift|product|production_line|root_cause|severity|event_type|"
+    r"customer|category|machine|equipment|inspection_id|work_order_id|order_id|"
+    r"customer_id|product_name|.*_id)$",
+    re.I,
+)
 
 
 def _slug(s: str) -> str:
@@ -17,6 +24,26 @@ def _avg_from_rows(rows: List[Dict[str, Any]], field: str) -> float:
     nums = [_num(r.get(field)) for r in rows]
     vals = [n for n in nums if n is not None]
     return sum(vals) / len(vals) if vals else 0.0
+
+
+def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[str, Any]]) -> bool:
+    if not field or _NON_PREDICT_FIELD.match(field):
+        return False
+    if ctype in ("string", "datetime"):
+        return False
+    if ctype == "number":
+        return True
+    if not re.search(
+        r"hours|pct|rate|qty|count|units|total|price|output|defect|yield|downtime|mtbf|mttr|oee|scrap|passed|inspected",
+        f"{field} {header}",
+        re.I,
+    ):
+        return False
+    if rows:
+        numeric_hits = sum(1 for r in rows[:12] if _num(r.get(field)) is not None)
+        if numeric_hits < max(1, len(rows[:12]) // 3):
+            return False
+    return True
 
 
 def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
@@ -37,24 +64,14 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
             field = str(col.get("field") or "")
             if not field or field in seen:
                 continue
+            header = str(col.get("header") or field.replace("_", " ").title())
             ctype = str(col.get("type") or "")
-            if ctype != "number" and ctype != "datetime":
-                if not re.search(
-                    r"hours|pct|rate|qty|count|units|total|price|output|defect|yield|downtime|mtbf|mttr|oee",
-                    field,
-                    re.I,
-                ):
-                    continue
+            if not _field_is_predictable(field, header, ctype, rows):
+                continue
             seen.add(field)
-            numeric_fields.append(
-                {
-                    "key": field,
-                    "label": str(col.get("header") or field.replace("_", " ").title()),
-                    "unit": _unit_for_field(field),
-                }
-            )
+            unit = _unit_for_field(field, header)
+            numeric_fields.append({"key": field, "label": header, "unit": unit})
 
-    # Prefer KPI-linked targets from dashboard labels
     kpi_targets: List[str] = []
     for page in defn.get("pages") or []:
         for block in page.get("blocks") or []:
@@ -64,8 +81,9 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
                 lab = str(item.get("label") or "").lower()
                 vk = str(item.get("valueKey") or "")
                 for f in numeric_fields:
-                    if _slug(f["key"]) in _slug(vk) or _slug(f["key"]) in _slug(lab):
-                        kpi_targets.append(f["key"])
+                    fk = f["key"]
+                    if _slug(fk) in _slug(vk) or _slug(fk) in _slug(lab):
+                        kpi_targets.append(fk)
                 if "yield" in lab or "fpy" in lab:
                     for f in numeric_fields:
                         if "yield" in f["key"]:
@@ -75,7 +93,8 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
                         if "defect" in f["key"]:
                             kpi_targets.append(f["key"])
 
-    default_target = kpi_targets[0] if kpi_targets else (numeric_fields[0]["key"] if numeric_fields else "value")
+    preferred = [k for k in kpi_targets if k in {f["key"] for f in numeric_fields}]
+    default_target = preferred[0] if preferred else (numeric_fields[0]["key"] if numeric_fields else "")
     baseline = {f["key"]: round(_avg_from_rows(rows, f["key"]), 4) for f in numeric_fields if rows}
 
     return {
@@ -90,18 +109,17 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
 def attach_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(defn)
     meta = dict(out.get("meta") or {})
-    if not meta.get("predictConfig"):
-        meta["predictConfig"] = build_predict_config(out)
+    meta["predictConfig"] = build_predict_config(out)
     out["meta"] = meta
     return out
 
 
-def _unit_for_field(field: str) -> str:
-    f = field.lower()
-    if "pct" in f or "rate" in f or "yield" in f or "oee" in f:
+def _unit_for_field(field: str, header: str = "") -> str:
+    blob = f"{field} {header}".lower()
+    if "pct" in blob or "rate" in blob or "yield" in blob or "oee" in blob:
         return "%"
-    if "hours" in f or "mtbf" in f or "mttr" in f or "downtime" in f:
+    if "hours" in blob or "mtbf" in blob or "mttr" in blob or "downtime" in blob:
         return "h"
-    if "price" in f or "total" in f or "revenue" in f:
+    if "price" in blob or "total" in blob or "revenue" in blob:
         return "$"
     return ""

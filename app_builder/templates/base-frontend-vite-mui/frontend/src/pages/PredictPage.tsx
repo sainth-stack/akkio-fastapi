@@ -28,6 +28,14 @@ type PredictConfig = {
   description?: string;
 };
 
+function fieldLabel(f: PredictField): string {
+  const { label, unit } = f;
+  if (!unit) return label;
+  const low = label.toLowerCase();
+  if (low.includes(`(${unit})`) || low.includes(unit)) return label;
+  return `${label} (${unit})`;
+}
+
 const LEGACY_FIELDS: PredictField[] = [
   { key: 'mtbf_hours', label: 'MTBF (hours)', unit: 'h' },
   { key: 'mttr_hours', label: 'MTTR (hours)', unit: 'h' },
@@ -204,15 +212,15 @@ export default function PredictPage() {
                   value={scenario}
                   onChange={(e) => setScenario(e.target.value)}
                 />
-                {inputFields.map(({ key, label, unit }) => (
+                {inputFields.map((f) => (
                   <TextField
-                    key={key}
-                    label={unit ? `${label} (${unit})` : label}
+                    key={f.key}
+                    label={fieldLabel(f)}
                     type="number"
                     size="small"
                     placeholder={baselineLoaded ? undefined : 'Sync from data first'}
-                    value={values[key] ?? ''}
-                    onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+                    value={values[f.key] ?? ''}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                   />
                 ))}
                 <Button variant="contained" onClick={runPredict} disabled={loading || !baselineLoaded || !targetField}>

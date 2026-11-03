@@ -106,6 +106,57 @@ def _retail_order_columns() -> List[Dict[str, str]]:
     ]
 
 
+def _column_fields(cols: List[Dict[str, Any]]) -> set:
+    return {str(c.get("field") or "") for c in cols if isinstance(c, dict)}
+
+
+def _columns_match_quality(cols: List[Dict[str, Any]]) -> bool:
+    f = _column_fields(cols)
+    return bool(f & {"first_pass_yield_pct", "defect_rate_pct", "units_inspected", "inspection_id"})
+
+
+def _columns_match_maintenance(cols: List[Dict[str, Any]]) -> bool:
+    f = _column_fields(cols)
+    return bool(f & {"work_order_id", "mtbf_hours", "mttr_hours", "downtime_hours"})
+
+
+def _domain_flags(ctx: str) -> Tuple[bool, bool, bool]:
+    is_quality = bool(re.search(r"quality|defect|scrap|\byield\b|fpy|inspection|first pass", ctx))
+    is_maint = bool(re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment", ctx))
+    is_retail = bool(re.search(r"retail|ecommerce|shop|store|cart|order line", ctx))
+    return is_quality, is_maint, is_retail
+
+
+def _pick_columns_for_context(
+    table_cols: List[Dict[str, str]],
+    ctx: str,
+) -> List[Dict[str, str]]:
+    is_quality, is_maint, is_retail = _domain_flags(ctx)
+    if is_quality and not is_maint:
+        if not _columns_match_quality(table_cols):
+            return _quality_event_columns()
+    if is_maint and not is_quality:
+        if not _columns_match_maintenance(table_cols):
+            return _maintenance_event_columns()
+    if is_retail and not is_maint:
+        if "order_id" not in _column_fields(table_cols):
+            return _retail_order_columns()
+    return table_cols
+
+
+def _existing_datasets_mismatch(defn: Dict[str, Any], ctx: str) -> bool:
+    existing = get_source_datasets(defn)
+    if not existing or not isinstance(existing[0], dict):
+        return False
+    cols = existing[0].get("columns") or []
+    is_quality, is_maint, _ = _domain_flags(ctx)
+    if is_quality and not is_maint and _columns_match_maintenance(cols) and not _columns_match_quality(cols):
+        return True
+    if is_maint and not is_quality and _columns_match_quality(cols) and not _columns_match_maintenance(cols):
+        return True
+    return False
+
+
 def infer_source_datasets(
     defn: Dict[str, Any],
     *,
@@ -115,21 +166,27 @@ def infer_source_datasets(
     """
     Derive 1–2 source tables from PRD + page blocks (agent can replace this later).
     """
+    ctx = _ctx(defn, requirement, prd)
     existing = (defn.get("meta") or {}).get("sourceDatasets")
-    if isinstance(existing, list) and existing:
+    if isinstance(existing, list) and existing and not _existing_datasets_mismatch(defn, ctx):
         return existing
 
-    ctx = _ctx(defn, requirement, prd)
     page_id, table_cols = _find_primary_table(defn)
 
     if table_cols:
+        table_cols = _pick_columns_for_context(table_cols, ctx)
         sid = "operational_records"
-        if "maintenance" in ctx or "mtbf" in ctx or "work order" in ctx:
+        is_quality, is_maint, is_retail = _domain_flags(ctx)
+        if is_maint and not is_quality:
             sid = "maintenance_events"
-        elif "quality" in ctx or "defect" in ctx or "yield" in ctx:
+        elif is_quality and not is_maint:
             sid = "quality_inspections"
-        elif "retail" in ctx or "ecommerce" in ctx or "order" in ctx:
+        elif is_retail:
             sid = "sales_orders"
+        elif _columns_match_quality(table_cols):
+            sid = "quality_inspections"
+        elif _columns_match_maintenance(table_cols):
+            sid = "maintenance_events"
         return [
             {
                 "id": sid,
