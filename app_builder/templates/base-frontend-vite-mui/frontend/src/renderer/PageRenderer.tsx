@@ -63,6 +63,12 @@ export default function PageRenderer({ pageId }: { pageId: string }) {
             {page.subtitle}
           </Typography>
         ) : null}
+        {segments.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No widgets configured for this page yet. Use Upload data on the dashboard or refresh after regenerating
+            the app.
+          </Typography>
+        ) : null}
         {segments.map((seg) => {
           if (seg.kind === 'single') {
             return (

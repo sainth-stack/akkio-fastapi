@@ -475,6 +475,7 @@ def apply_source_data_pipeline(
             )
     out["data"] = bag
     out.pop("mock", None)
+    out = _repair_definition_pages(out, prd=prd, requirement=requirement)
     from app_builder.services.predict_config import attach_predict_config
 
     out = attach_predict_config(out)
@@ -482,3 +483,23 @@ def apply_source_data_pipeline(
     from app_builder.services.navigation_labels import normalize_definition_navigation
 
     return normalize_definition_navigation(out)
+
+
+def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement: str = "") -> Dict[str, Any]:
+    """Rebuild empty page blocks from PRD (hosted apps often ship with dashboard-only blocks)."""
+    try:
+        from app_builder.schemas.app_definition import AppDefinition
+        from app_builder.services.page_layout_intent import (
+            enforce_page_role_blocks,
+            repair_pages_with_no_blocks,
+        )
+
+        model = AppDefinition.model_validate(defn)
+        model = repair_pages_with_no_blocks(model, prd=prd, requirement=requirement)
+        model = enforce_page_role_blocks(model, prd=prd)
+        return model.model_dump(mode="json")
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("[pipeline] page repair skipped: %s", exc)
+        return defn

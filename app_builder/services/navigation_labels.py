@@ -38,7 +38,11 @@ def friendly_nav_label(
         return "Analytics"
     if pid == "reports" or re.search(r"\breports?\b", t):
         return "Reports"
-    if pid == "predict" or re.search(r"\bpredict\b|\bforecast\b", t):
+    if pid == "predict":
+        return "Predict"
+    if pid in ("forecasting", "forecast") or re.search(r"\bforecasting\b", t):
+        return "Forecasting"
+    if re.search(r"\bpredict\b", t) and pid != "forecasting":
         return "Predict"
     if re.match(r"^(dashboard|home|overview|executive overview)\b", t.strip()):
         return "Dashboard"
@@ -82,6 +86,8 @@ def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
         path = str(item.get("path") or "/")
         if path in seen_paths:
             path = "/" if page_id == dash_id else f"/{page_id.replace('_', '-')}"
+        if page_id == "predict" and path != "/predict":
+            path = "/predict"
         seen_paths.add(path)
 
         page_match = next((p for p in pages if isinstance(p, dict) and str(p.get("id")) == page_id), None)

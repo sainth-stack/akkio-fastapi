@@ -7,6 +7,7 @@ import PredictPage from './pages/PredictPage';
 import { AppDefinitionProvider, useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
 import AppChatAssistant from './components/chat/AppChatAssistant';
+import { isPredictNavItem, resolveActiveNavItem } from './renderer/navMatch';
 
 function AppShellLayout() {
   const { definition } = useAppDefinition();
@@ -31,9 +32,7 @@ function AppShellLayout() {
 
   if (!definition) return null;
 
-  const activeNav = nav.find((n) =>
-    n.path === '/' ? location.pathname === '/' : location.pathname.startsWith(n.path),
-  );
+  const activeNav = resolveActiveNavItem(nav, location.pathname);
   const page = definition.pages.find((p) => p.id === activeNav?.pageId);
 
   const shellVariant =
@@ -88,7 +87,11 @@ function AppRoutes() {
               key={item.pageId}
               path={item.path}
               element={
-                item.pageId === 'predict' ? <PredictPage /> : <PageRenderer pageId={item.pageId} />
+                isPredictNavItem(item) ? (
+                  <PredictPage />
+                ) : (
+                  <PageRenderer pageId={item.pageId} />
+                )
               }
             />
           ))}

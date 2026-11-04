@@ -21,6 +21,7 @@ import {
 import MenuIcon from '@mui/icons-material/Menu';
 import * as MuiIcons from '@mui/icons-material';
 import DataUploadButton from '../data/DataUploadButton';
+import { navPathMatches } from '../../renderer/navMatch';
 
 const DRAWER_WIDTH = 256;
 
@@ -97,15 +98,13 @@ export default function AppShell({
       <Divider sx={{ borderColor: brand ? 'rgba(255,255,255,0.12)' : 'divider' }} />
       <List sx={{ flex: 1, py: 1 }}>
         {navItems.map((item) => {
-          const isActive =
-            item.path === '/'
-              ? location.pathname === '/'
-              : location.pathname.startsWith(item.path);
+          const isActive = navPathMatches(location.pathname, item.path);
           return (
             <ListItemButton
               key={item.pageId ?? item.path}
               component={NavLink}
               to={item.path}
+              end={item.path === '/'}
               selected={isActive}
               onClick={() => isMobile && setMobileOpen(false)}
               sx={{
