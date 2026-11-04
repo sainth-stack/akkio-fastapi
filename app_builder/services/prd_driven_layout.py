@@ -31,6 +31,53 @@ def _is_chart_bullet(line: str) -> bool:
     )
 
 
+def default_page_chart_blocks(
+    page_id: str,
+    title: str,
+    *,
+    inventory: bool = False,
+    cap: int = 2,
+) -> List[Dict[str, Any]]:
+    """Fallback charts when PRD section has no parseable chart bullets."""
+    cap = max(1, min(cap, 3))
+    if inventory:
+        specs = [
+            ("barChart", f"{title} by warehouse", "chart_{pid}_warehouse", "warehouse", "quantity_on_hand"),
+            ("lineChart", f"{title} trend", "chart_{pid}_trend", "period", "quantity_on_hand"),
+            ("pieChart", f"{title} by status", "chart_{pid}_status", "status", "quantity_on_hand"),
+        ]
+    else:
+        specs = [
+            ("lineChart", f"{title} trend", "chart_{pid}_trend", "period", "value"),
+            ("barChart", f"{title} breakdown", "chart_{pid}_breakdown", "category", "value"),
+        ]
+    pid = re.sub(r"[^a-z0-9]+", "_", (page_id or title).lower()).strip("_") or "page"
+    out: List[Dict[str, Any]] = []
+    for i, (ctype, t, dk_tpl, x_key, series_key) in enumerate(specs[:cap]):
+        dk = dk_tpl.format(pid=pid)
+        if ctype == "pieChart":
+            out.append(
+                {
+                    "type": "pieChart",
+                    "title": t,
+                    "dataKey": dk,
+                    "nameKey": x_key,
+                    "valueKey": series_key,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "type": ctype,
+                    "title": t,
+                    "dataKey": dk,
+                    "xAxisKey": x_key,
+                    "series": [{"dataKey": series_key, "name": series_key.replace("_", " ").title()}],
+                }
+            )
+    return out
+
+
 def _is_kpi_candidate(line: str) -> bool:
     if _JUNK_LINE.search(line) or _is_chart_bullet(line):
         return False
@@ -402,7 +449,10 @@ def ensure_minimum_blocks(
         )
     types = {b.get("type") for b in out}
     if len(out) < 2 and intent.wants_charts and not ({b.get("type") for b in out} & {"lineChart", "barChart", "pieChart"}):
-        out.extend(_extract_charts(section, page_id, 1))
+        out.extend(_extract_charts(section, page_id, max(1, intent.chart_cap or 2)))
+    if len(out) < 2 and intent.wants_charts and not ({b.get("type") for b in out} & {"lineChart", "barChart", "pieChart"}):
+        inv = bool(re.search(r"inventory|stock|sku", f"{page_id} {title}", re.I))
+        out.extend(default_page_chart_blocks(page_id, title, inventory=inv, cap=2))
     if len(out) < 2 and intent.wants_table and "dataTable" not in {b.get("type") for b in out}:
         out.append(
             {

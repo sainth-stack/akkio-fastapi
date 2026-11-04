@@ -130,6 +130,38 @@ class TestSourceDataPipeline(unittest.TestCase):
         self.assertIn("mtbf", kpis)
         self.assertIn("h", str(kpis.get("mtbf", "")))
 
+    def test_inventory_all_nav_pages_get_widgets(self):
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+        defn = {
+            "version": 1,
+            "meta": {"appName": "Inventory Visibility", "domain": "inventory"},
+            "navigation": [
+                {"label": "Dashboard", "path": "/", "icon": "Dashboard", "pageId": "dashboard"},
+                {"label": "Inventory", "path": "/inventory", "icon": "Inventory", "pageId": "inventory"},
+                {"label": "Reports", "path": "/reports", "icon": "Assessment", "pageId": "reports"},
+            ],
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "blocks": [{"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "SKUs", "valueKey": "skus"}]}],
+                },
+                {"id": "inventory", "title": "Inventory", "subtitle": "Browse stock", "blocks": []},
+                {"id": "reports", "title": "Reports", "subtitle": "Leadership summary", "blocks": []},
+            ],
+            "data": {},
+        }
+        out = apply_source_data_pipeline(defn, requirement="inventory visibility sku warehouse", prd="inventory app")
+        for pid in ("dashboard", "inventory", "reports"):
+            page = next(p for p in out["pages"] if p["id"] == pid)
+            types = [
+                b["type"]
+                for b in page.get("blocks") or []
+                if b.get("type") in ("kpiRow", "lineChart", "barChart", "pieChart", "dataTable")
+            ]
+            self.assertGreaterEqual(len(types), 2, msg=f"{pid} blocks={types}")
+
 
 if __name__ == "__main__":
     unittest.main()

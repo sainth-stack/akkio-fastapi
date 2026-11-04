@@ -637,7 +637,10 @@ def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement
         from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
         model = apply_dashboard_analytics_product_rules(model, prd=prd)
-        return model.model_dump(mode="json")
+        dumped = model.model_dump(mode="json")
+        from app_builder.services.app_definition_validator import validate_all_screens
+
+        return validate_all_screens(dumped, prd=prd, requirement=requirement)
     except Exception as exc:
         import logging
 

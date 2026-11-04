@@ -218,6 +218,14 @@ def apply_route_layout_policies(
         if not intent.wants_charts:
             intent.wants_charts = True
             intent.chart_cap = max(intent.chart_cap, 2)
+    else:
+        blob = f"{page_id} {title}".lower().replace("_", " ")
+        if re.search(r"inventory|stock|sku|warehouse|forecast", blob):
+            intent.wants_table = True
+            intent.wants_charts = True
+            intent.chart_cap = max(intent.chart_cap, 2)
+            if re.search(r"stock|status|inventory", blob):
+                intent.table_detail = True
 
     # Generated apps are view-only in the UI — no export/download toolbar unless explicitly required later.
     intent.wants_export_actions = False
@@ -239,6 +247,10 @@ def _infer_from_purpose_when_sparse(intent: PageLayoutIntent, purpose: str) -> N
     if re.search(r"\b(analy|trend|compare|pareto|insight|breakdown|distribution|forecast|correlat)\b", p):
         intent.wants_charts = True
         intent.chart_cap = max(intent.chart_cap, 3)
+    if re.search(r"\b(inventory|stock|sku|warehouse|reorder)\b", p):
+        intent.wants_table = True
+        intent.wants_charts = True
+        intent.chart_cap = max(intent.chart_cap, 2)
     if re.search(r"\b(create|add new|submit|intake)\b", p):
         intent.wants_create_action = True
 
@@ -456,14 +468,12 @@ def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = 
     new_pages = []
     for page in pages:
         blocks = list(page.blocks or [])
-        structural = [
+        visible = [
             b
             for b in blocks
-            if isinstance(b, dict)
-            and b.get("type") not in ("text",)
-            and not (b.get("type") == "text" and b.get("hidden"))
+            if isinstance(b, dict) and str(b.get("type") or "") in ("kpiRow", "lineChart", "barChart", "pieChart", "dataTable")
         ]
-        if not structural:
+        if len(visible) < 2:
             section = page_prompt_context(prd, requirement, page.title, page.id)
             if not section.strip():
                 section = f"### {page.title}\n{page.subtitle or page.title}\n"
@@ -649,6 +659,12 @@ def ensure_blocks_match_intent(
     if intent.wants_charts and not chart_types:
         cap = intent.chart_cap or 2
         shaped.extend(_extract_charts(section, page_id, cap))
+        chart_types = {b.get("type") for b in shaped} & {"lineChart", "barChart", "pieChart"}
+    if intent.wants_charts and not chart_types:
+        inv = bool(re.search(r"inventory|stock|sku|warehouse", f"{page_id} {title}", re.I))
+        from app_builder.services.prd_driven_layout import default_page_chart_blocks
+
+        shaped.extend(default_page_chart_blocks(page_id, title, inventory=inv, cap=intent.chart_cap or 2))
 
     if intent.wants_table and "dataTable" not in {b.get("type") for b in shaped}:
         cols = _extract_table_columns(section)
@@ -660,11 +676,16 @@ def ensure_blocks_match_intent(
             ):
                 cols = _maintenance_analytics_columns()
         if not cols:
-            cols = [
-                {"field": "id", "header": "ID"},
-                {"field": "name", "header": "Name"},
-                {"field": "status", "header": "Status"},
-            ]
+            if re.search(r"inventory|stock|sku|warehouse", f"{page_id} {title}", re.I):
+                from app_builder.services.source_dataset_planner import _inventory_columns
+
+                cols = _inventory_columns()[:8]
+            else:
+                cols = [
+                    {"field": "id", "header": "ID"},
+                    {"field": "name", "header": "Name"},
+                    {"field": "status", "header": "Status"},
+                ]
         shaped.append(
             {
                 "type": "dataTable",
