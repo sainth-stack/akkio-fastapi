@@ -10,7 +10,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from app_builder.services.runtime_paths import resolve_project_root
 
@@ -90,7 +90,58 @@ def _serve_index(static_dir: str, access_token: Optional[str] = None, project_id
         with open(index_path, "r", encoding="utf-8", errors="replace") as f:
             body = _inject_preview_auth(f.read(), access_token, project_id)
         return HTMLResponse(content=body)
-    return FileResponse(index_path)
+    # Always inject API base for hosted preview (same-origin /api/apps/{id})
+    with open(index_path, "r", encoding="utf-8", errors="replace") as f:
+        body = _inject_preview_auth(f.read(), access_token, project_id)
+    return HTMLResponse(content=body)
+
+
+def _guess_media_type(path: str) -> str:
+    lower = path.lower()
+    if lower.endswith(".js"):
+        return "application/javascript"
+    if lower.endswith(".css"):
+        return "text/css"
+    if lower.endswith(".json"):
+        return "application/json"
+    if lower.endswith(".svg"):
+        return "image/svg+xml"
+    if lower.endswith(".woff2"):
+        return "font/woff2"
+    return "application/octet-stream"
+
+
+def _serve_static_file(full_path: str) -> Response:
+    """Serve bytes with explicit Content-Length (avoids ERR_CONTENT_LENGTH_MISMATCH on some hosts)."""
+    expected = os.path.getsize(full_path)
+    body = b""
+    for attempt in range(3):
+        with open(full_path, "rb") as f:
+            body = f.read()
+        if len(body) == expected:
+            break
+        logger.warning(
+            "[static_app] size mismatch for %s (disk=%s read=%s attempt=%s)",
+            full_path,
+            expected,
+            len(body),
+            attempt + 1,
+        )
+        expected = os.path.getsize(full_path)
+    if len(body) != expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Asset still being written; retry in a few seconds.",
+        )
+    return Response(
+        content=body,
+        media_type=_guess_media_type(full_path),
+        headers={
+            "Content-Length": str(len(body)),
+            "Cache-Control": "public, max-age=3600",
+            "Accept-Ranges": "none",
+        },
+    )
 
 
 @router.get("/{project_id}")
@@ -117,6 +168,6 @@ async def serve_app_path(
     if not full_path.startswith(os.path.abspath(static_dir)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if os.path.isfile(full_path):
-        return FileResponse(full_path)
+        return _serve_static_file(full_path)
     # SPA fallback
     return _serve_index(static_dir, access_token, project_id)
