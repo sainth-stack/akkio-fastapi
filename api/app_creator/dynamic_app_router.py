@@ -537,9 +537,16 @@ async def get_app_definition(
         defn = load_data_json_from_project(root)
     if not defn:
         raise HTTPException(status_code=404, detail="App definition not found")
+    from app_builder.services.json_app_sample_export import load_builder_prompt_context
     from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
-    defn = apply_source_data_pipeline(defn, seed_if_empty=True)
+    requirement, prd = load_builder_prompt_context(project_id)
+    defn = apply_source_data_pipeline(
+        defn,
+        requirement=requirement,
+        prd=prd,
+        seed_if_empty=True,
+    )
     return JSONResponse(content=defn)
 
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from app_builder.schemas.app_definition import AppDefinition
 
-MIN_TABLE_ROWS = 24
+MIN_TABLE_ROWS = 12
 MIN_CHART_POINTS = 14
 
 

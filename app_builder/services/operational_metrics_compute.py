@@ -385,7 +385,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                 cols = block.get("columns") or []
                 fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
                 table_rows = []
-                for r in rows[:500]:
+                for r in rows[:24]:
                     if fields:
                         table_rows.append({f: r.get(f, "") for f in fields})
                     else:
@@ -437,11 +437,17 @@ def apply_source_data_pipeline(
     prd: str = "",
     seed_if_empty: bool = True,
 ) -> Dict[str, Any]:
+    from app_builder.services.source_data_constants import (
+        DEFAULT_SOURCE_SEED_ROWS,
+        MAX_AUTO_SOURCE_ROWS,
+    )
     from app_builder.services.source_data_seeder import seed_rows_for_dataset
     from app_builder.services.source_dataset_planner import ensure_source_datasets_on_definition
 
     out = ensure_source_datasets_on_definition(defn, requirement=requirement, prd=prd)
     bag = dict(out.get("data") or out.get("mock") or {})
+    meta = dict(out.get("meta") or {})
+    user_uploaded = str(meta.get("dataSource") or "") == "upload"
     active_keys = {str(ds.get("dataKey") or "") for ds in get_source_datasets(out)}
     for key in list(bag.keys()):
         if str(key).startswith(SOURCE_PREFIX) and key not in active_keys:
@@ -455,8 +461,18 @@ def apply_source_data_pipeline(
         if existing and cols and not _rows_match_schema(existing[0], cols):
             existing = None
             bag.pop(dk, None)
+        if (
+            not user_uploaded
+            and isinstance(bag.get(dk), list)
+            and len(bag[dk]) > MAX_AUTO_SOURCE_ROWS
+        ):
+            bag[dk] = bag[dk][:MAX_AUTO_SOURCE_ROWS]
         if seed_if_empty and (not isinstance(bag.get(dk), list) or not bag.get(dk)):
-            bag[dk] = seed_rows_for_dataset(ds, row_count=36, human_headers=False)
+            bag[dk] = seed_rows_for_dataset(
+                ds,
+                row_count=DEFAULT_SOURCE_SEED_ROWS,
+                human_headers=False,
+            )
     out["data"] = bag
     out.pop("mock", None)
     from app_builder.services.predict_config import attach_predict_config

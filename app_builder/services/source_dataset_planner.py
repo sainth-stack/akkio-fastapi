@@ -132,6 +132,10 @@ def _pick_columns_for_context(
     ctx: str,
 ) -> List[Dict[str, str]]:
     is_quality, is_maint, is_retail = _domain_flags(ctx)
+    is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", ctx))
+    if is_inventory and not is_retail and not is_quality:
+        if "quantity_on_hand" not in _column_fields(table_cols) and "sku" not in _column_fields(table_cols):
+            return _inventory_columns()
     if is_quality and not is_maint:
         if not _columns_match_quality(table_cols):
             return _quality_event_columns()
@@ -220,6 +224,17 @@ def infer_source_datasets(
             }
         ]
 
+    if re.search(r"inventory|stock|sku|warehouse", ctx):
+        return [
+            {
+                "id": "inventory_items",
+                "dataKey": f"{SOURCE_PREFIX}inventory_items",
+                "title": "Inventory levels",
+                "description": "One row per SKU/location. Stock KPIs are calculated from this sheet.",
+                "columns": _inventory_columns(),
+            }
+        ]
+
     if re.search(r"retail|ecommerce|shop|store|cart", ctx):
         return [
             {
@@ -283,11 +298,29 @@ def list_source_import_targets(defn: Dict[str, Any]) -> List[Dict[str, str]]:
     return targets
 
 
-def build_template_sheets(defn: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-    """Excel sheets: human-readable headers + sample rows (not KPI label/value)."""
+def _inventory_columns() -> List[Dict[str, str]]:
+    return [
+        {"field": "sku", "header": "SKU", "type": "string"},
+        {"field": "product_name", "header": "Product", "type": "string"},
+        {"field": "warehouse", "header": "Warehouse", "type": "string"},
+        {"field": "quantity_on_hand", "header": "Qty on hand", "type": "number"},
+        {"field": "reorder_point", "header": "Reorder point", "type": "number"},
+        {"field": "unit_cost", "header": "Unit cost", "type": "number"},
+        {"field": "status", "header": "Status", "type": "string"},
+        {"field": "last_counted_at", "header": "Last counted", "type": "datetime"},
+    ]
+
+
+def build_template_sheets(
+    defn: Dict[str, Any],
+    *,
+    row_count: int | None = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Excel sheets: human headers + moderate sample rows only (not live uploaded data)."""
+    from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
     from app_builder.services.source_data_seeder import seed_rows_for_dataset
 
-    bag = defn.get("data") or defn.get("mock") or {}
+    sample_rows = row_count if row_count is not None else TEMPLATE_SAMPLE_ROWS
     sheets: Dict[str, List[Dict[str, Any]]] = {}
     for ds in get_source_datasets(defn):
         if not isinstance(ds, dict):
@@ -297,21 +330,7 @@ def build_template_sheets(defn: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]
         if not dk or not cols:
             continue
         sheet_name = dk.replace(SOURCE_PREFIX, "")[:31]
-        existing = bag.get(dk) if isinstance(bag.get(dk), list) else None
-        if existing:
-            rows = []
-            for row in existing[:500]:
-                if not isinstance(row, dict):
-                    continue
-                out_row = {}
-                for c in cols:
-                    field = str(c.get("field") or "")
-                    header = str(c.get("header") or field)
-                    out_row[header] = row.get(field, "")
-                rows.append(out_row)
-            sheets[sheet_name] = rows
-        else:
-            sheets[sheet_name] = seed_rows_for_dataset(ds, row_count=24, human_headers=True)
+        sheets[sheet_name] = seed_rows_for_dataset(ds, row_count=sample_rows, human_headers=True)
     return sheets
 
 

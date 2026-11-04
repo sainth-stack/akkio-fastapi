@@ -150,7 +150,7 @@ def merge_upload_bytes(
     raw: bytes,
     target_key: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    from app_builder.services.operational_metrics_compute import apply_source_data_pipeline, recompute_derived_data
+    from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
     from app_builder.services.source_dataset_planner import get_source_datasets
 
     if not isinstance(defn, dict) or not defn.get("pages"):
@@ -168,10 +168,18 @@ def merge_upload_bytes(
     def _finish() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         defn2 = dict(defn)
         defn2["data"] = bag
-        defn2 = recompute_derived_data(defn2)
+        meta = dict(defn2.get("meta") or {})
+        meta["dataSource"] = "upload"
+        defn2["meta"] = meta
+        defn2 = apply_source_data_pipeline(defn2, seed_if_empty=False)
         summary["derivedKeys"] = [
             k for k in (defn2.get("data") or {}) if not str(k).startswith("source_")
         ]
+        summary["rowCount"] = sum(
+            len(defn2.get("data", {}).get(k) or [])
+            for k in summary.get("updatedKeys") or []
+            if isinstance(defn2.get("data", {}).get(k), list)
+        )
         return defn2, summary
 
     if name.endswith(".json"):

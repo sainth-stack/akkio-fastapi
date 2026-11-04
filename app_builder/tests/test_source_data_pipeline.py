@@ -46,6 +46,7 @@ class TestSourceDataPipeline(unittest.TestCase):
 
     def test_template_has_operational_columns_not_label_value(self):
         from app_builder.services.source_dataset_planner import build_template_sheets
+        from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
         defn = apply_source_data_pipeline(self._manufacturing_defn())
@@ -54,6 +55,23 @@ class TestSourceDataPipeline(unittest.TestCase):
         first = next(iter(sheets.values()))
         self.assertIn("Work order", first[0].keys())
         self.assertNotIn("label", first[0])
+        self.assertLessEqual(len(first), TEMPLATE_SAMPLE_ROWS)
+
+    def test_template_ignores_huge_live_bag(self):
+        from app_builder.services.source_dataset_planner import build_template_sheets
+        from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+        defn = apply_source_data_pipeline(self._manufacturing_defn())
+        bag = defn.get("data") or {}
+        for key in list(bag.keys()):
+            if str(key).startswith("source_") and isinstance(bag[key], list):
+                bag[key] = bag[key] * 20
+                break
+        defn["data"] = bag
+        sheets = build_template_sheets(defn)
+        rows = next(iter(sheets.values()))
+        self.assertLessEqual(len(rows), TEMPLATE_SAMPLE_ROWS)
 
     def test_quality_charts_map_source_columns(self):
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
@@ -87,7 +105,7 @@ class TestSourceDataPipeline(unittest.TestCase):
         bag = out.get("data") or {}
         trend = bag.get("chart_fpy_trend") or []
         self.assertTrue(trend)
-        self.assertTrue(any((row.get("fpy") or 0) > 0 for row in trend))
+        self.assertTrue(any((row.get("fpy") or 0) > 10 for row in trend))
         by_line = bag.get("chart_defects_line") or []
         self.assertTrue(by_line)
         self.assertIn("production_line", by_line[0])

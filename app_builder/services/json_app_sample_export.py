@@ -120,6 +120,20 @@ def _sheet_title(data_key: str, used: set) -> str:
     return title
 
 
+def load_builder_prompt_context(project_name: str) -> tuple[str, str]:
+    """Requirement + PRD from builder_meta.json for domain-aware source datasets."""
+    root = resolve_project_root(project_name)
+    meta_path = os.path.join(root, "builder_meta.json")
+    requirement = ""
+    prd = ""
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        requirement = str(meta.get("requirement") or meta.get("prompt") or "")
+        prd = str(meta.get("prd") or "")
+    return requirement, prd
+
+
 def build_import_template_sheets(project_name: str) -> Dict[str, List[Dict[str, Any]]] | None:
     """
     Excel template: source operational tables only (human column headers).
@@ -128,9 +142,15 @@ def build_import_template_sheets(project_name: str) -> Dict[str, List[Dict[str, 
     defn = _load_full_data_json(project_name)
     if not defn:
         return None
+    requirement, prd = load_builder_prompt_context(project_name)
     from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
-    defn = apply_source_data_pipeline(defn, seed_if_empty=True)
+    defn = apply_source_data_pipeline(
+        defn,
+        requirement=requirement,
+        prd=prd,
+        seed_if_empty=True,
+    )
     from app_builder.services.source_dataset_planner import build_template_sheets
 
     sheets = build_template_sheets(defn)
