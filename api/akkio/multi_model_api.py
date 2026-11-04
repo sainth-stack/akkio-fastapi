@@ -25,7 +25,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-from db import PostgresDatabase
+from db import MongoDatabase
 from .multi_model_agents import MultiModelAgentSystem
 from .usage_tracking import set_current_email, reset_current_email
 from .usage_tracking import record_llm_usage
@@ -40,7 +40,7 @@ except ImportError as e:
 
 router = APIRouter()
 
-db = PostgresDatabase()
+db = MongoDatabase()
 
 _chroma_client = None
 

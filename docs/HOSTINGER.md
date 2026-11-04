@@ -17,7 +17,7 @@ WebSockets connect directly to `ws://YOUR_IP:8000/api/codegen/...` (no reverse p
 
 - **Node.js 20+** (`node -v`)
 - **Python 3.9+** with project venv
-- **PostgreSQL** (Neon or local)
+- **MongoDB** (Atlas or self-hosted)
 - **pm2** or **systemd** for process restart
 
 ## Firewall
@@ -39,7 +39,8 @@ PUBLIC_BASE_URL=http://YOUR_IP:8000
 APP_BUILDER_RUNTIME_DIR=/var/akkio/runtime/projects
 CORS_ORIGINS=http://YOUR_IP:3002
 OPENAI_API_KEY=...
-PGHOST=...
+MONGODB_URI=mongodb+srv://USER:PASSWORD@cluster.mongodb.net/
+MONGODB_DB_NAME=akkio
 JWT_SECRET=...
 NPM_INSTALL_TIMEOUT=300
 NPM_BUILD_TIMEOUT=600

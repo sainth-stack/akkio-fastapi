@@ -29,6 +29,9 @@ db = MongoDatabase()
 async def lifespan(app: FastAPI):
     try:
         init_schemas()
+        from db.mongodb import MONGODB_DB_NAME
+
+        logger.info("Database backend: MongoDB (db=%s)", MONGODB_DB_NAME)
     except Exception as exc:
         logger.error("Database initialization failed: %s", exc)
         raise

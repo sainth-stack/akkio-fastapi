@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 from dotenv import dotenv_values, load_dotenv
 
-from db import PostgresDatabase
+from db import MongoDatabase
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(_ENV_PATH, override=True)
@@ -236,7 +236,7 @@ def get_llm_config(user_email: Optional[str] = None) -> Dict[str, str]:
         return config
 
     try:
-        db = PostgresDatabase()
+        db = MongoDatabase()
         db.ensure_connection()
 
         user_settings = db.get_llm_settings(user_email)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Optional, Dict
 
-from db import PostgresDatabase
+from db import MongoDatabase
 
 from .usage_store import deduct_tokens
 
@@ -48,7 +48,7 @@ def end_token_aggregation(token, email: str = None, description: str = "Multi-Mo
             if not email:
                 email = get_current_email()
             
-            db = PostgresDatabase()
+            db = MongoDatabase()
             db.ensure_connection()
             # We use deduct_tokens directly, which will log a single transaction
             # Note: deduct_tokens inside usage_store.py needs to support a custom description if we want "Multi-Model Agent Task"
@@ -128,7 +128,7 @@ def record_llm_usage(email: Optional[str], llm_response_obj: Any) -> Optional[di
             return None # Deferred
             
         # Immediate deduction
-        db = PostgresDatabase()
+        db = MongoDatabase()
         db.ensure_connection()
         row = deduct_tokens(db, email, total_tokens)
         try:

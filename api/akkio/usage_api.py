@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from db import PostgresDatabase
+from db import MongoDatabase
 
 from api.auth.dependencies import CurrentUser
 from api.auth.request_auth import resolve_user, user_email_from
@@ -20,7 +20,7 @@ _DEFAULT_USAGE = {
 async def get_usage(current: CurrentUser = Depends(resolve_user)):
     user_email = user_email_from(current)
     try:
-        db = PostgresDatabase()
+        db = MongoDatabase()
         db.ensure_connection()
         row = get_or_init_usage(db, user_email)
         try:
