@@ -26,11 +26,48 @@ def _avg_from_rows(rows: List[Dict[str, Any]], field: str) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
+def _source_rows(defn: Dict[str, Any]) -> List[Dict[str, Any]]:
+    bag = defn.get("data") or defn.get("mock") or {}
+    for ds in get_source_datasets(defn):
+        dk = str(ds.get("dataKey") or "")
+        src_rows = bag.get(dk) if isinstance(bag.get(dk), list) else []
+        if src_rows:
+            return src_rows
+    for key, val in bag.items():
+        if str(key).startswith("source_") and isinstance(val, list) and val:
+            return val
+    return []
+
+
+def resolve_predict_baseline(defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float]:
+    """Use stored baseline when present; otherwise (or when zero) average from source rows."""
+    rows = _source_rows(defn)
+    keys = [str(f.get("key") or "") for f in cfg.get("fields") or [] if isinstance(f, dict) and f.get("key")]
+    stored = cfg.get("baseline") if isinstance(cfg.get("baseline"), dict) else {}
+    out: Dict[str, float] = {}
+    for key in keys:
+        raw = stored.get(key)
+        val = float(raw) if raw not in (None, "") else 0.0
+        if rows and (val == 0.0 or key not in stored):
+            avg = round(_avg_from_rows(rows, key), 4)
+            if avg:
+                val = avg
+        out[key] = val
+    return out
+
+
 def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[str, Any]]) -> bool:
+    from app_builder.services.operational_metrics_compute import _num
+
     if not field or _NON_PREDICT_FIELD.match(field):
         return False
-    if ctype in ("string", "datetime"):
+    if ctype == "string":
         return False
+    numeric_hits = 0
+    if rows:
+        numeric_hits = sum(1 for r in rows[:12] if _num(r.get(field)) is not None)
+    if ctype == "datetime":
+        return numeric_hits >= max(1, len(rows[:12]) // 3)
     if ctype == "number":
         return True
     if not re.search(
@@ -40,7 +77,6 @@ def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[s
     ):
         return False
     if rows:
-        numeric_hits = sum(1 for r in rows[:12] if _num(r.get(field)) is not None)
         if numeric_hits < max(1, len(rows[:12]) // 3):
             return False
     return True
@@ -48,16 +84,11 @@ def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[s
 
 def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Fields derived from sourceDatasets + dashboard KPI labels (prompt-specific)."""
-    rows: List[Dict[str, Any]] = []
-    bag = defn.get("data") or defn.get("mock") or {}
+    rows: List[Dict[str, Any]] = _source_rows(defn)
     numeric_fields: List[Dict[str, Any]] = []
     seen: set = set()
 
     for ds in get_source_datasets(defn):
-        dk = str(ds.get("dataKey") or "")
-        src_rows = bag.get(dk) if isinstance(bag.get(dk), list) else []
-        if src_rows:
-            rows = src_rows
         for col in ds.get("columns") or []:
             if not isinstance(col, dict):
                 continue

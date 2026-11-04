@@ -199,14 +199,16 @@ def _aggregate_line_rows(
         main_val = 0.0
         for sf in series_fields:
             src = series_source_map.get(sf, sf)
-            nums = [_num(g.get(src)) for g in group]
-            nums = [n for n in nums if n is not None]
-            val = round(sum(nums) / len(nums), 2) if nums else 0.0
+            val = _series_numeric_value(group, src)
             row[sf] = val
-            if "target" not in sf.lower():
+            if "target" not in sf.lower() and "benchmark" not in sf.lower():
                 main_val = val or main_val
         for sf in series_fields:
-            if "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+            src = series_source_map.get(sf, sf)
+            if src == _BENCHMARK_METRIC or "benchmark" in sf.lower():
+                if (row.get(sf) or 0) == 0 and main_val:
+                    row[sf] = round(main_val * 1.08, 2)
+            elif "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
                 row[sf] = round(main_val * 1.02, 2)
         out.append(row)
     return out or [{x_out: "P1", **{sf: 0 for sf in series_fields}}]
@@ -220,6 +222,71 @@ def _first_row_key(row: Dict[str, Any], candidates: List[str]) -> Optional[str]:
         for c in candidates:
             if _slug(k) == _slug(c):
                 return k
+    return None
+
+
+_COUNT_METRIC = "__count__"
+_BENCHMARK_METRIC = "__benchmark__"
+
+_TABLE_FIELD_ALIASES: Dict[str, List[str]] = {
+    "id": ["work_order_id", "order_id", "item_id", "sku", "id"],
+    "name": ["machine", "product_name", "equipment", "production_line", "name"],
+    "updated_at": ["occurred_at", "ordered_at", "inspected_at", "updated_at", "date"],
+}
+
+
+def _table_field_value(row: Dict[str, Any], field: str) -> Any:
+    if field in row and row[field] not in (None, ""):
+        return row[field]
+    for alt in _TABLE_FIELD_ALIASES.get(field, []):
+        if alt in row and row[alt] not in (None, ""):
+            return row[alt]
+    for k, v in row.items():
+        if _slug(k) == _slug(field) and v not in (None, ""):
+            return v
+    return row.get(field, "")
+
+
+def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
+    title_l = (title or "").lower()
+    if re.search(r"mttr|time to repair", title_l):
+        return _first_row_key(sample, ["mttr_hours", "mttr"])
+    if re.search(r"mtbf|between failures", title_l):
+        return _first_row_key(sample, ["mtbf_hours", "mtbf"])
+    if re.search(r"downtime", title_l):
+        return _first_row_key(sample, ["downtime_hours", "downtime"])
+    if re.search(r"event|work order|maintenance", title_l):
+        return _COUNT_METRIC
+    return _first_row_key(sample, ["downtime_hours", "mttr_hours", "mtbf_hours", "quantity_on_hand"])
+
+
+def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:
+    if src == _COUNT_METRIC:
+        return float(len(group))
+    nums = [_num(g.get(src)) for g in group]
+    nums = [n for n in nums if n is not None]
+    if not nums:
+        return 0.0
+    return round(sum(nums) / len(nums), 2)
+
+
+def _pick_breakdown_dimension(sample: Dict[str, Any], title: str, x_key: str) -> Optional[str]:
+    title_l = (title or "").lower()
+    if "machine" in title_l and "machine" in sample:
+        return "machine"
+    if x_key in sample and x_key not in ("name", "label", "category"):
+        return x_key
+    for dim in (
+        "machine",
+        "production_line",
+        "event_type",
+        "equipment",
+        "warehouse",
+        "category",
+        "production_line",
+    ):
+        if dim in sample:
+            return dim
     return None
 
 
@@ -241,6 +308,10 @@ def _series_source_map(block: Dict[str, Any], sample: Dict[str, Any]) -> Dict[st
             src = _first_row_key(sample, ["defect_rate_pct", "defect_count", "defects", "defect_rate"])
         elif re.search(r"target", blob):
             src = _first_row_key(sample, ["target", "target_yield", "target_fpy", "target_defect_rate"])
+        elif sk in (_BENCHMARK_METRIC, "benchmark") or "benchmark" in name:
+            src = _BENCHMARK_METRIC
+        elif sk in ("value", "actual") or name in ("value", "actual"):
+            src = _metric_from_title(title, sample) or _first_row_key(sample, [sk, _slug(sk)])
         elif sk in sample:
             src = sk
         else:
@@ -250,13 +321,24 @@ def _series_source_map(block: Dict[str, Any], sample: Dict[str, Any]) -> Dict[st
 
 
 def _chart_x_field(block: Dict[str, Any], sample: Dict[str, Any]) -> str:
-    title = str(block.get("title") or "").lower()
+    title = str(block.get("title") or "")
+    title_l = title.lower()
     x_key = str(block.get("xAxisKey") or "period")
-    if re.search(r"production line|by line|by category|pareto|defects by", title):
-        if "production_line" in sample:
-            return "production_line"
-        if "category" in sample:
-            return "category"
+    if re.search(
+        r"production line|by line|by category|by machine|pareto|defects by|breakdown|events by",
+        title_l,
+    ):
+        dim = _pick_breakdown_dimension(sample, title, x_key)
+        if dim:
+            return dim
+    if x_key in ("category", "name") and x_key not in sample:
+        dim = _pick_breakdown_dimension(sample, title, x_key)
+        if dim:
+            return dim
+    if re.search(r"breakdown", title_l):
+        dim = _pick_breakdown_dimension(sample, title, x_key)
+        if dim:
+            return dim
     if x_key in sample and x_key not in ("name", "label"):
         return x_key
     return "period"
@@ -338,14 +420,16 @@ def _aggregate_by_dimension(
         main_val = 0.0
         for sf in series_fields:
             src = series_source_map.get(sf, sf)
-            nums = [_num(g.get(src)) for g in grp]
-            nums = [n for n in nums if n is not None]
-            val = round(sum(nums) / len(nums), 2) if nums else 0.0
+            val = _series_numeric_value(grp, src)
             row[sf] = val
-            if "target" not in sf.lower():
+            if "target" not in sf.lower() and "benchmark" not in sf.lower():
                 main_val = val or main_val
         for sf in series_fields:
-            if "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+            src = series_source_map.get(sf, sf)
+            if src == _BENCHMARK_METRIC or "benchmark" in sf.lower():
+                if (row.get(sf) or 0) == 0 and main_val:
+                    row[sf] = round(main_val * 1.08, 2)
+            elif "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
                 row[sf] = round(main_val * 1.02, 2)
         out.append(row)
     return out
@@ -523,7 +607,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                 table_rows = []
                 for r in rows[:24]:
                     if fields:
-                        table_rows.append({f: r.get(f, "") for f in fields})
+                        table_rows.append({f: _table_field_value(r, f) for f in fields})
                     else:
                         table_rows.append(dict(r))
                 bag[dk] = table_rows

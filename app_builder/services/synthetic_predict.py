@@ -47,7 +47,9 @@ def default_features_from_predict_config(defn: Optional[Dict[str, Any]]) -> Opti
     cfg = _predict_config(defn)
     if not cfg:
         return None
-    baseline = cfg.get("baseline") or {}
+    from app_builder.services.predict_config import resolve_predict_baseline
+
+    baseline = resolve_predict_baseline(defn or {}, cfg)
     out: Dict[str, float] = {}
     for field in cfg.get("fields") or []:
         if not isinstance(field, dict):
@@ -667,7 +669,12 @@ def run_live_prediction(
     """Merge uploaded-data baseline → form fields → prompt, clamp, then forecast."""
     cfg = _predict_config(defn)
     if cfg:
-        baseline = default_features_from_predict_config(defn) or {}
+        from app_builder.services.predict_config import attach_predict_config, resolve_predict_baseline
+
+        if defn:
+            defn = attach_predict_config(dict(defn))
+            cfg = (defn.get("meta") or {}).get("predictConfig") or cfg
+        baseline = resolve_predict_baseline(defn or {}, cfg)
         keys = tuple(str(f.get("key")) for f in cfg.get("fields") or [] if isinstance(f, dict) and f.get("key"))
         target = str(target_field or cfg.get("targetField") or (keys[0] if keys else ""))
         merged = merge_explicit_features_dynamic(baseline, features, keys)

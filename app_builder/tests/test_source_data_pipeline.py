@@ -163,5 +163,76 @@ class TestSourceDataPipeline(unittest.TestCase):
             self.assertGreaterEqual(len(types), 2, msg=f"{pid} blocks={types}")
 
 
+    def test_generic_dashboard_blocks_map_from_source(self):
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+        defn = {
+            "meta": {"domain": "manufacturing_maintenance", "description": "MTBF MTTR maintenance"},
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "blocks": [
+                        {
+                            "type": "lineChart",
+                            "title": "Dashboard trend",
+                            "dataKey": "chart_dashboard_trend",
+                            "xAxisKey": "period",
+                            "series": [{"dataKey": "value", "name": "Value"}],
+                        },
+                        {
+                            "type": "barChart",
+                            "title": "Dashboard breakdown",
+                            "dataKey": "chart_dashboard_breakdown",
+                            "xAxisKey": "category",
+                            "series": [{"dataKey": "value", "name": "Value"}],
+                        },
+                        {
+                            "type": "dataTable",
+                            "title": "Dashboard records",
+                            "dataKey": "table_dashboard",
+                            "columns": [
+                                {"field": "id", "header": "ID"},
+                                {"field": "name", "header": "Name"},
+                                {"field": "status", "header": "Status"},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "id": "analytics",
+                    "title": "Analytics",
+                    "blocks": [
+                        {
+                            "type": "barChart",
+                            "title": "Maintenance events by machine",
+                            "dataKey": "series_analytics_1_bar",
+                            "xAxisKey": "category",
+                            "series": [
+                                {"dataKey": "actual", "name": "Actual"},
+                                {"dataKey": "benchmark", "name": "Benchmark"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+            "navigation": [{"pageId": "dashboard", "path": "/", "label": "Dashboard"}],
+            "data": {},
+        }
+        out = apply_source_data_pipeline(defn)
+        bag = out.get("data") or {}
+        trend = bag.get("chart_dashboard_trend") or []
+        self.assertTrue(trend)
+        self.assertTrue(any((row.get("value") or 0) > 0 for row in trend))
+        breakdown = bag.get("chart_dashboard_breakdown") or []
+        self.assertTrue(breakdown)
+        self.assertIn("machine", breakdown[0])
+        table = bag.get("table_dashboard") or []
+        self.assertTrue(table[0].get("id"))
+        self.assertTrue(table[0].get("name"))
+        bar = bag.get("series_analytics_1_bar") or []
+        self.assertTrue(any((row.get("actual") or 0) > 0 for row in bar))
+
+
 if __name__ == "__main__":
     unittest.main()

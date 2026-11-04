@@ -106,3 +106,40 @@ def test_dynamic_predict_uses_target_field():
     assert out["target_field"] == "first_pass_yield_pct"
     assert out["predicted_value"] is not None
     assert out["indicators"]
+
+
+def test_predict_config_empty_baseline_uses_source_averages():
+    defn = {
+        "meta": {
+            "predictConfig": {
+                "targetField": "mtbf_hours",
+                "fields": [
+                    {"key": "mtbf_hours", "label": "MTBF (h)", "unit": "h"},
+                    {"key": "mttr_hours", "label": "MTTR (h)", "unit": "h"},
+                ],
+                "baseline": {},
+            }
+        },
+        "meta_source": {
+            "sourceDatasets": [
+                {
+                    "dataKey": "source_sales_orders",
+                    "columns": [
+                        {"field": "mtbf_hours", "type": "number"},
+                        {"field": "mttr_hours", "type": "number"},
+                    ],
+                }
+            ]
+        },
+        "data": {
+            "source_sales_orders": [
+                {"mtbf_hours": 300, "mttr_hours": 2.0},
+                {"mtbf_hours": 260, "mttr_hours": 1.6},
+            ],
+        },
+    }
+    defn["meta"]["sourceDatasets"] = defn.pop("meta_source")["sourceDatasets"]
+    out = run_live_prediction(defn, features={"mttr_hours": 2.0}, target_field="mtbf_hours")
+    assert out["baseline"]["mtbf_hours"] == 280.0
+    assert out["baseline"]["mttr_hours"] == 1.8
+    assert out["predicted_value"] > 0

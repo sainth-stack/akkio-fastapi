@@ -350,11 +350,11 @@ async def predict_synthetic(
 
     defn = body.app_definition or load_project_app_definition(project_id)
     defn_dict = defn if isinstance(defn, dict) else None
-    if body.refresh_baseline_only:
+    if defn_dict:
         from app_builder.services.predict_config import attach_predict_config
 
-        if defn_dict and not (defn_dict.get("meta") or {}).get("predictConfig"):
-            defn_dict = attach_predict_config(dict(defn_dict))
+        defn_dict = attach_predict_config(dict(defn_dict))
+    if body.refresh_baseline_only:
         cfg = (defn_dict or {}).get("meta", {}).get("predictConfig") if defn_dict else None
         baseline = default_features_from_definition(defn_dict)
         payload: Dict[str, Any] = {
