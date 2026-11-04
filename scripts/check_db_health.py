@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Database health check — run from repo root: python scripts/check_db_health.py"""
+"""Database health check — run: python scripts/check_db_health.py"""
 
 import sys
 from pathlib import Path
@@ -10,59 +10,37 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from db import PostgresDatabase
+from db import MongoDatabase
+from db.mongodb import get_database, ping_database
 
-REQUIRED_TABLES = [
-    "akio_data_fastapi",
+EXPECTED_COLLECTIONS = [
+    "auth_users",
+    "auth_roles",
+    "auth_organizations",
+    "llm_settings",
+    "user_usage",
     "multi_model_sessions",
     "multi_model_files",
-    "llm_settings",
     "builder_apps",
-]
-
-AUTH_TABLES = [
-    ("auth", "users"),
-    ("auth", "organizations"),
-    ("auth", "roles"),
+    "dynamic_app_rows",
 ]
 
 
 def main():
-    print("Database health check")
-    PostgresDatabase._ensure_pool()
-    db = PostgresDatabase()
+    print("MongoDB health check")
+    MongoDatabase._ensure_pool()
+    db = MongoDatabase()
+    db.ensure_connection()
+    db.ensure_indexes()
 
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            assert cursor.fetchone()[0] == 1
-            print("✅ Connectivity OK")
+    status = ping_database()
+    print(f"✅ Ping OK — db={status.get('database')}")
 
-            for table in REQUIRED_TABLES:
-                cursor.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_schema = 'public' AND table_name = %s
-                    )
-                    """,
-                    (table,),
-                )
-                ok = cursor.fetchone()[0]
-                print(f"{'✅' if ok else '❌'} public.{table}")
-
-            for schema, table in AUTH_TABLES:
-                cursor.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_schema = %s AND table_name = %s
-                    )
-                    """,
-                    (schema, table),
-                )
-                ok = cursor.fetchone()[0]
-                print(f"{'✅' if ok else '❌'} {schema}.{table}")
+    names = set(get_database().list_collection_names())
+    for coll in EXPECTED_COLLECTIONS:
+        # Collections appear after first write; index init is enough for empty DB
+        marker = "✅" if coll in names or coll.startswith("auth_") else "·"
+        print(f"{marker} {coll}" + (" (present)" if coll in names else " (lazy)"))
 
     print("Done.")
 

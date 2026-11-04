@@ -18,11 +18,11 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("akkio")
 
-from db import PostgresDatabase
+from db import MongoDatabase
 from db.init_db import init_schemas, shutdown_db
 from api.cors_config import build_cors_middleware_kwargs
 
-db = PostgresDatabase()
+db = MongoDatabase()
 
 
 @asynccontextmanager
@@ -110,12 +110,9 @@ async def health_check():
         "database": {},
     }
     try:
-        pool_status = PostgresDatabase.get_pool_status()
+        pool_status = MongoDatabase.get_pool_status()
         health_status["database"] = pool_status
-        with db.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
+        db.ensure_connection()
         health_status["database"]["connectivity"] = "connected"
     except Exception as e:
         health_status["database"] = {"status": "error", "error": str(e)}

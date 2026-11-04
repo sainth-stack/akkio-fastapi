@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import logging
 
-from db import PostgresDatabase
+from db import MongoDatabase
+from db.dynamic_app_store import ensure_indexes as ensure_dynamic_app_indexes
 
 logger = logging.getLogger(__name__)
 
 
 def init_schemas() -> None:
-    PostgresDatabase._ensure_pool()
-    db = PostgresDatabase()
+    MongoDatabase._ensure_pool()
+    db = MongoDatabase()
     try:
         db.ensure_connection()
+        db.ensure_indexes()
+        ensure_dynamic_app_indexes()
         db.create_table()
         db.ensure_training_tables()
         db.create_llm_settings_table()
@@ -28,9 +31,9 @@ def init_schemas() -> None:
 
     get_app_builder_db().init_schema()
 
-    logger.info("Database schemas initialized")
+    logger.info("Database schemas initialized (MongoDB)")
 
 
 def shutdown_db() -> None:
-    PostgresDatabase.close_all_connections()
-    logger.info("Database connection pool closed")
+    MongoDatabase.close_all_connections()
+    logger.info("Database connection closed")

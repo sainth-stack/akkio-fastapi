@@ -6,7 +6,7 @@ Usage (from akkio-fastapi directory):
   python scripts/seed_admin.py
 
 Environment:
-  PGHOST, PGUSER, PGPASSWORD, PGDATABASE  — Postgres connection
+  MONGODB_URI, MONGODB_DB_NAME  — MongoDB connection
   SEED_ADMIN_EMAIL    (default: admin@gmail.com)
   SEED_ADMIN_PASSWORD (default: Admin@123)
   SEED_ADMIN_NAME     (default: Akkio Admin)

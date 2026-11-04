@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +29,7 @@ from app_builder.services.demo_api_data import (
     resolve_special_subresource,
     supply_chain_dashboard_kpis,
 )
+from db import dynamic_app_store as dyn_store
 
 logger = logging.getLogger("app_builder")
 
@@ -71,154 +71,6 @@ def _ensure_collection_registered(config: Dict[str, Any], collection: str) -> Di
     out["tables"] = tables + [collection]
     out.setdefault("fields", {})[collection] = ["title"]
     return out
-
-
-def _execute_with_schema_heal(
-    conn: sqlite3.Connection,
-    project_id: str,
-    config: Dict[str, Any],
-    collection: str,
-    operation,
-):
-    """Run DB op; on 'no such table', create schema and retry once."""
-    try:
-        return operation(conn)
-    except sqlite3.OperationalError as e:
-        if "no such table" not in str(e).lower():
-            raise
-        logger.warning("[dynamic_app] healing missing table %s for %s", collection, project_id)
-        healed = _ensure_collection_registered(config, collection)
-        _ensure_schema(conn, "", healed)
-        _migrate_schema(conn, healed)
-        return operation(conn)
-
-
-def _get_project_db_path(project_id: str) -> str:
-    """Path to per-project SQLite DB."""
-    project_root = resolve_project_root(project_id)
-    data_dir = os.path.join(project_root, "data")
-    os.makedirs(data_dir, exist_ok=True)
-    return os.path.join(data_dir, "app.db")
-
-
-def _extract_fields_from_contract(api_contract: Dict[str, Any]) -> Dict[str, List[str]]:
-    """Derive field names per collection from api_contract (used when config.fields is empty)."""
-    fields: Dict[str, List[str]] = {}
-    endpoints = api_contract.get("endpoints") or {}
-    for path_spec, spec in endpoints.items():
-        parts = path_spec.split()
-        if len(parts) < 2:
-            continue
-        path = parts[1].strip("/")
-        segment = path.split("/")[0]
-        if not segment or segment.isdigit() or segment == "api":
-            continue
-        response = spec.get("response") or {}
-        if isinstance(response, dict):
-            field_names = [k for k in response.keys() if k != "id"]
-        elif isinstance(response, list) and response and isinstance(response[0], dict):
-            field_names = [k for k in response[0].keys() if k != "id"]
-        else:
-            continue
-        if field_names and (segment not in fields or len(field_names) > len(fields.get(segment, []))):
-            fields[segment] = field_names
-    return fields
-
-
-def _build_schema_from_config(config: Dict[str, Any]) -> str:
-    """Generate CREATE TABLE SQL from config tables and fields. Works for any project (todos, users, orders, etc.)."""
-    tables = config.get("tables") or []
-    fields = config.get("fields") or {}
-    if not fields and config.get("api_contract"):
-        fields = _extract_fields_from_contract(config["api_contract"])
-    statements = []
-    for table in tables:
-        cols = fields.get(table, [])
-        col_defs = ["id INTEGER PRIMARY KEY AUTOINCREMENT"]
-        for col in cols:
-            col_defs.append(f'"{col}" TEXT')
-        statements.append(f'CREATE TABLE IF NOT EXISTS "{table}" ({", ".join(col_defs)})')
-    return "; ".join(statements)
-
-
-def _ensure_schema(conn: sqlite3.Connection, db_schema: str, config: Dict[str, Any]) -> None:
-    """Create tables from db_schema if valid SQL, else from config tables/fields."""
-    schema_sql = ""
-    if db_schema and "CREATE TABLE" in db_schema.upper():
-        schema_sql = db_schema
-    if not schema_sql:
-        schema_sql = _build_schema_from_config(config)
-    if not schema_sql.strip():
-        return
-    statements = [
-        s.strip() for s in schema_sql.split(";") if s.strip() and not s.strip().startswith("--")
-    ]
-    for stmt in statements:
-        if not stmt.upper().startswith("CREATE"):
-            continue
-        try:
-            conn.execute(stmt)
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            if "already exists" not in str(e).lower():
-                logger.warning("[dynamic_app] schema stmt failed: %s", e)
-
-
-def _get_table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
-    """Return existing column names for a table. Empty if table does not exist."""
-    try:
-        cursor = conn.execute(f'PRAGMA table_info("{table}")')
-        return [row[1] for row in cursor.fetchall()]
-    except sqlite3.OperationalError:
-        return []
-
-
-def _get_expected_columns(config: Dict[str, Any]) -> Dict[str, List[str]]:
-    """Get expected columns per table from config (fields + api_contract fallback)."""
-    tables = config.get("tables") or []
-    fields = config.get("fields") or {}
-    if not fields and config.get("api_contract"):
-        fields = _extract_fields_from_contract(config["api_contract"])
-    return {t: fields.get(t, []) for t in tables}
-
-
-def _ensure_columns(conn: sqlite3.Connection, table: str, expected_cols: List[str]) -> None:
-    """Add any missing columns to existing table. Handles schema evolution (e.g. new 'priority' field)."""
-    existing = _get_table_columns(conn, table)
-    for col in expected_cols:
-        if col not in existing:
-            try:
-                conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" TEXT')
-                conn.commit()
-                logger.info("[dynamic_app] added column %s to %s", col, table)
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e).lower():
-                    logger.warning("[dynamic_app] add column failed: %s", e)
-
-
-def _migrate_schema(conn: sqlite3.Connection, config: Dict[str, Any], extra_cols: Optional[Dict[str, List[str]]] = None) -> None:
-    """Ensure tables exist and have all expected columns. Adds missing columns from config or request body."""
-    expected = _get_expected_columns(config)
-    if extra_cols:
-        for table, cols in extra_cols.items():
-            expected.setdefault(table, []).extend(c for c in cols if c not in expected.get(table, []))
-    for table, cols in expected.items():
-        _ensure_columns(conn, table, cols)
-
-
-def _get_connection(project_id: str, config: Dict[str, Any], extra_cols: Optional[Dict[str, List[str]]] = None) -> sqlite3.Connection:
-    """Get SQLite connection for project, ensuring schema exists and is migrated (add missing columns)."""
-    db_path = _get_project_db_path(project_id)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    schema = config.get("db_schema") or ""
-    _ensure_schema(conn, schema, config)
-    _migrate_schema(conn, config, extra_cols)
-    return conn
-
-
-def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
-    return dict(row) if row else {}
 
 
 # --- Custom endpoint handlers (dynamic for all app types) ---
@@ -700,18 +552,11 @@ async def list_collection(
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
-    conn = _get_connection(project_id, config)
     try:
-        def _op(c):
-            cursor = c.execute(f'SELECT * FROM "{collection}"')
-            return cursor.fetchall()
-
-        rows = _execute_with_schema_heal(conn, project_id, config, collection, _op)
-        return JSONResponse(content=[_row_to_dict(r) for r in rows])
-    except sqlite3.OperationalError as e:
+        items = dyn_store.list_items(project_id, collection)
+        return JSONResponse(content=items)
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
-    finally:
-        conn.close()
 
 
 _DEMO_KPIS: Dict[str, Any] = {
@@ -818,20 +663,15 @@ async def get_item(
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
-    conn = _get_connection(project_id, config)
     try:
-        def _op(c):
-            cursor = c.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (int_id,))
-            return cursor.fetchone()
-
-        row = _execute_with_schema_heal(conn, project_id, config, collection, _op)
+        row = dyn_store.get_item(project_id, collection, int_id)
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
-        return JSONResponse(content=_row_to_dict(row))
-    except sqlite3.OperationalError as e:
+        return JSONResponse(content=row)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
-    finally:
-        conn.close()
 
 
 @router.post("/{project_id}/{collection}")
@@ -870,26 +710,11 @@ async def create_item(
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
     body = await _safe_json_body(request)
-    extra = {collection: [k for k in body.keys() if k != "id"]}
-    conn = _get_connection(project_id, config, extra_cols=extra)
     try:
-        cols = [k for k in body.keys() if k != "id"]
-        vals = [body[k] for k in cols]
-        placeholders = ",".join("?" * len(cols))
-        col_str = ",".join(f'"{c}"' for c in cols)
-        conn.execute(
-            f'INSERT INTO "{collection}" ({col_str}) VALUES ({placeholders})',
-            vals,
-        )
-        conn.commit()
-        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        cursor = conn.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (rid,))
-        row = cursor.fetchone()
-        return JSONResponse(content=_row_to_dict(row), status_code=201)
-    except sqlite3.OperationalError as e:
+        row = dyn_store.create_item(project_id, collection, body)
+        return JSONResponse(content=row, status_code=201)
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
-    finally:
-        conn.close()
 
 
 @router.put("/{project_id}/{collection}/{item_id}")
@@ -917,25 +742,15 @@ async def update_item(
     cols = [k for k in body.keys() if k != "id"]
     if not cols:
         raise HTTPException(status_code=400, detail="No fields to update")
-    extra = {collection: cols}
-    conn = _get_connection(project_id, config, extra_cols=extra)
     try:
-        set_clause = ",".join(f'"{c}" = ?' for c in cols)
-        vals = [body[k] for k in cols] + [int_id]
-        conn.execute(
-            f'UPDATE "{collection}" SET {set_clause} WHERE id = ?',
-            vals,
-        )
-        conn.commit()
-        cursor = conn.execute(f'SELECT * FROM "{collection}" WHERE id = ?', (int_id,))
-        row = cursor.fetchone()
+        row = dyn_store.update_item(project_id, collection, int_id, body)
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
-        return JSONResponse(content=_row_to_dict(row))
-    except sqlite3.OperationalError as e:
+        return JSONResponse(content=row)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
-    finally:
-        conn.close()
 
 
 @router.patch("/{project_id}/{collection}/{item_id}")
@@ -970,13 +785,12 @@ async def delete_item(
     tables = config.get("tables") or []
     if collection not in tables:
         raise HTTPException(status_code=404, detail=f"Collection {collection} not found")
-    conn = _get_connection(project_id, config)
     try:
-        conn.execute(f'DELETE FROM "{collection}" WHERE id = ?', (int_id,))
-        conn.commit()
+        if not dyn_store.delete_item(project_id, collection, int_id):
+            raise HTTPException(status_code=404, detail="Not found")
         return JSONResponse(content={"status": "deleted"})
-    except sqlite3.OperationalError as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database error: {e}") from e
-    finally:
-        conn.close()
 
