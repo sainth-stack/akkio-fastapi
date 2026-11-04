@@ -154,6 +154,12 @@ def _existing_datasets_mismatch(defn: Dict[str, Any], ctx: str) -> bool:
         return False
     cols = existing[0].get("columns") or []
     is_quality, is_maint, _ = _domain_flags(ctx)
+    is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", ctx))
+    if is_inventory and not is_maint and not is_quality:
+        inv_fields = _column_fields(_inventory_columns())
+        have = _column_fields(cols)
+        if have and not (have & inv_fields):
+            return True
     if is_quality and not is_maint and _columns_match_maintenance(cols) and not _columns_match_quality(cols):
         return True
     if is_maint and not is_quality and _columns_match_quality(cols) and not _columns_match_maintenance(cols):

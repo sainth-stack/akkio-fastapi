@@ -50,7 +50,42 @@ def _primary_source_rows(defn: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]
 def _compute_kpi_value(label: str, value_key: str, rows: List[Dict[str, Any]]) -> str:
     lab = f"{label} {value_key}".lower()
     if not rows:
+        if re.search(r"sku|skus", lab):
+            return "128"
+        if re.search(r"unit", lab) and re.search(r"hand|stock|on_hand", lab):
+            return "3,420"
+        if re.search(r"reorder|below", lab) or "low_stock" in lab:
+            return "14"
+        if "yield" in lab or "fpy" in lab or "first pass" in lab:
+            return _fmt_pct(96.2)
+        if "defect" in lab:
+            return _fmt_pct(1.8)
         return "—"
+
+    if re.search(r"sku|skus", lab) and re.search(r"track|total|count|active", lab):
+        skus = {str(r.get("sku") or r.get("item_id") or i) for i, r in enumerate(rows) if r}
+        return _fmt_count(len(skus) or len(rows))
+
+    if (re.search(r"unit", lab) and re.search(r"hand|stock", lab)) or value_key in (
+        "quantity_on_hand",
+        "total_units_on_hand",
+        "on_hand",
+    ):
+        total = sum(
+            _num(r.get("quantity_on_hand")) or _num(r.get("on_hand")) or _num(r.get("qty")) or 0
+            for r in rows
+        )
+        if total:
+            return _fmt_count(total)
+
+    if re.search(r"reorder|below", lab) or "low_stock" in lab:
+        below = 0
+        for r in rows:
+            on_hand = _num(r.get("quantity_on_hand")) or _num(r.get("on_hand")) or 0
+            reorder = _num(r.get("reorder_point")) or _num(r.get("min_stock")) or 0
+            if on_hand is not None and reorder is not None and on_hand < reorder:
+                below += 1
+        return _fmt_count(below)
 
     if "work order" in lab or "open" in lab and "order" in lab:
         ids = {str(r.get("work_order_id") or r.get("order_id") or i) for i, r in enumerate(rows)}
@@ -316,15 +351,116 @@ def _aggregate_by_dimension(
     return out
 
 
-def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
-    """Fill KPI bundles, analytics tables, and chart series from source_* rows."""
+def _ensure_minimum_dashboard_charts(out: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """If dashboard only has KPIs, add default charts so the page is not empty."""
+    from app_builder.services.page_layout_intent import resolve_dashboard_page_id
+
+    if not rows:
+        return out
+    pages = list(out.get("pages") or [])
+    nav = out.get("navigation") or []
+    dash_id = resolve_dashboard_page_id(
+        [(str(p.get("id") or ""), str(p.get("title") or "")) for p in pages if isinstance(p, dict)],
+        [str(n.get("pageId") or "") for n in nav if isinstance(n, dict)],
+    )
+    if not dash_id:
+        return out
+    sample = rows[0]
+    new_pages = []
+    for page in pages:
+        if not isinstance(page, dict) or str(page.get("id") or "") != dash_id:
+            new_pages.append(page)
+            continue
+        blocks = list(page.get("blocks") or [])
+        has_chart = any(
+            isinstance(b, dict) and b.get("type") in ("lineChart", "barChart", "pieChart") for b in blocks
+        )
+        if has_chart:
+            new_pages.append(page)
+            continue
+        bag = dict(out.get("data") or {})
+        if "warehouse" in sample:
+            bar_key = "chart_dashboard_stock_by_warehouse"
+            blocks.append(
+                {
+                    "type": "barChart",
+                    "title": "Stock by warehouse",
+                    "dataKey": bar_key,
+                    "xAxisKey": "warehouse",
+                    "series": [{"dataKey": "quantity_on_hand", "name": "Units on hand"}],
+                }
+            )
+            bag[bar_key] = _aggregate_by_dimension(
+                rows,
+                "warehouse",
+                ["quantity_on_hand"],
+                {"quantity_on_hand": "quantity_on_hand"},
+            )
+        line_key = "chart_dashboard_units_trend"
+        blocks.append(
+            {
+                "type": "lineChart",
+                "title": "Units on hand trend",
+                "dataKey": line_key,
+                "xAxisKey": "period",
+                "series": [{"dataKey": "quantity_on_hand", "name": "Units on hand"}],
+            }
+        )
+        bag[line_key] = _aggregate_line_rows(
+            rows,
+            "period",
+            ["quantity_on_hand"],
+            max_points=12,
+            series_source_map={"quantity_on_hand": "quantity_on_hand"},
+        )
+        out["data"] = bag
+        new_pages.append({**page, "blocks": blocks})
+    out["pages"] = new_pages
+    return out
+
+
+def _seed_source_rows_in_bag(defn: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure every declared source dataset has rows before KPI/chart compute."""
+    from app_builder.services.source_data_constants import DEFAULT_SOURCE_SEED_ROWS
+    from app_builder.services.source_data_seeder import seed_rows_for_dataset
+
     out = dict(defn)
     bag = dict(out.get("data") or out.get("mock") or {})
-    _, rows = _primary_source_rows(out)
-    if not rows:
+    meta = dict(out.get("meta") or {})
+    user_uploaded = str(meta.get("dataSource") or "") == "upload"
+    changed = False
+    for ds in get_source_datasets(out):
+        if not isinstance(ds, dict):
+            continue
+        dk = str(ds.get("dataKey") or "")
+        cols = ds.get("columns") or []
+        if not dk or not cols:
+            continue
+        existing = bag.get(dk) if isinstance(bag.get(dk), list) else None
+        if existing and cols and not _rows_match_schema(existing[0], cols):
+            bag.pop(dk, None)
+            existing = None
+            changed = True
+        if user_uploaded and isinstance(existing, list) and existing:
+            continue
+        if not isinstance(bag.get(dk), list) or not bag.get(dk):
+            bag[dk] = seed_rows_for_dataset(
+                ds,
+                row_count=DEFAULT_SOURCE_SEED_ROWS,
+                human_headers=False,
+            )
+            changed = True
+    if changed:
         out["data"] = bag
         out.pop("mock", None)
-        return out
+    return out
+
+
+def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill KPI bundles, analytics tables, and chart series from source_* rows."""
+    out = _seed_source_rows_in_bag(defn)
+    bag = dict(out.get("data") or out.get("mock") or {})
+    _, rows = _primary_source_rows(out)
 
     for page in out.get("pages") or []:
         if not isinstance(page, dict):
@@ -424,6 +560,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
 
     out["data"] = bag
     out.pop("mock", None)
+    out = _ensure_minimum_dashboard_charts(out, rows)
     meta = dict(out.get("meta") or {})
     meta["dataSource"] = "computed_from_source"
     out["meta"] = meta
@@ -497,6 +634,9 @@ def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement
         model = AppDefinition.model_validate(defn)
         model = repair_pages_with_no_blocks(model, prd=prd, requirement=requirement)
         model = enforce_page_role_blocks(model, prd=prd)
+        from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
+
+        model = apply_dashboard_analytics_product_rules(model, prd=prd)
         return model.model_dump(mode="json")
     except Exception as exc:
         import logging
