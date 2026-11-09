@@ -92,14 +92,16 @@ def validate_all_screens(
     inventory_app = bool(re.search(r"inventory|stock|sku|warehouse", ctx))
 
     pages_by_id = {p.id: p for p in model.pages}
-    nav_ids = [n.pageId for n in model.navigation if n.pageId != "predict"]
+    nav_ids = [
+        n.pageId for n in model.navigation if n.pageId not in ("predict", "observability")
+    ]
     dash_id = resolve_dashboard_page_id([(p.id, p.title) for p in model.pages], nav_ids)
 
     changed = False
     new_pages: List[PageDef] = []
 
     for page in model.pages:
-        if page.id == "predict":
+        if page.id in ("predict", "observability"):
             new_pages.append(page)
             continue
         if page.id not in nav_ids and page.id != dash_id:

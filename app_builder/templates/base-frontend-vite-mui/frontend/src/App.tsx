@@ -4,10 +4,11 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import AppShell from './components/ui/AppShell';
 import PageRenderer from './renderer/PageRenderer';
 import PredictPage from './pages/PredictPage';
+import ObservabilityPage from './pages/ObservabilityPage';
 import { AppDefinitionProvider, useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
 import AppChatAssistant from './components/chat/AppChatAssistant';
-import { isPredictNavItem, resolveActiveNavItem } from './renderer/navMatch';
+import { isObservabilityNavItem, isPredictNavItem, resolveActiveNavItem } from './renderer/navMatch';
 
 function AppShellLayout() {
   const { definition } = useAppDefinition();
@@ -89,6 +90,8 @@ function AppRoutes() {
               element={
                 isPredictNavItem(item) ? (
                   <PredictPage />
+                ) : isObservabilityNavItem(item) ? (
+                  <ObservabilityPage />
                 ) : (
                   <PageRenderer pageId={item.pageId} />
                 )

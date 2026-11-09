@@ -27,3 +27,14 @@ export function isPredictNavItem(item: { pageId?: string; path: string; label?: 
   if (item.path === '/predict' || item.path.endsWith('/predict')) return true;
   return false;
 }
+
+export function isObservabilityNavItem(item: {
+  pageId?: string;
+  path: string;
+  label?: string;
+}): boolean {
+  const pid = (item.pageId || '').toLowerCase();
+  if (pid === 'observability') return true;
+  if (item.path === '/observability' || item.path.endsWith('/observability')) return true;
+  return false;
+}

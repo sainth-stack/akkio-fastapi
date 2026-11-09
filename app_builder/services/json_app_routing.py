@@ -42,7 +42,10 @@ def should_force_json_app_track(requirement: str, prd: str = "", uiux: str = "")
         return True
 
     if is_multi_page_dashboard_prompt(requirement or prd):
-        if re.search(r"\b(rag|data assistant|predict|forecast|what.?if)\b", text):
+        if re.search(
+            r"\b(rag|data assistant|predict|forecast|what.?if|observability|llm usage|token usage)\b",
+            text,
+        ):
             return True
         if re.search(r"maintenance|manufacturing|kpi|chart", text):
             return True

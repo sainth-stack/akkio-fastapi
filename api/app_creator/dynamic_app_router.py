@@ -199,7 +199,7 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 
 # --- App assistant (must register before /{collection} CRUD or "chat" is treated as a table) ---
 
-_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict"})
+_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict", "observability"})
 
 
 class LLMRequest(BaseModel):
@@ -273,13 +273,22 @@ async def app_data_chat(
     try:
         from app_builder.services.app_chat_service import answer_app_chat
 
-        content = await answer_app_chat(
+        result = await answer_app_chat(
             project_id,
             body.messages,
             page_id=body.page_id,
             app_definition=body.app_definition,
         )
-        return JSONResponse(content={"role": "assistant", "content": content})
+        content = result.get("content") if isinstance(result, dict) else str(result)
+        usage = result.get("observability") if isinstance(result, dict) else None
+        if usage:
+            from app_builder.services.llm_observability_store import append_observability_event
+
+            append_observability_event(project_id, usage)
+        payload: Dict[str, Any] = {"role": "assistant", "content": content}
+        if usage:
+            payload["usage"] = usage
+        return JSONResponse(content=payload)
     except ValueError as e:
         msg = str(e)
         low = msg.lower()
@@ -371,6 +380,25 @@ async def predict_synthetic(
         target_field=body.target_field,
     )
     return JSONResponse(content=result)
+
+
+@router.get("/{project_id}/observability")
+async def get_llm_observability(
+    project_id: str,
+    request: Request,
+    limit: int = 100,
+):
+    """LLM call log: prompts, outputs, tokens, and estimated USD cost."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.llm_observability_store import (
+        list_observability_events,
+        summarize_observability,
+    )
+
+    lim = max(1, min(int(limit or 100), 500))
+    events = list_observability_events(project_id, limit=lim)
+    summary = summarize_observability(events)
+    return JSONResponse(content={"events": events, "summary": summary})
 
 
 @router.get("/{project_id}/definition")
@@ -518,7 +546,30 @@ async def llm_proxy(
                     chunks.append(chunk.content)
             return JSONResponse(content={"content": "".join(chunks)})
         response = await llm.ainvoke(messages)
-        return JSONResponse(content={"content": response.content})
+        content = str(getattr(response, "content", response) or "")
+        from llm_config import get_llm_config
+
+        llm_cfg = get_llm_config(None)
+        model = str(llm_cfg.get("model") or "gpt-4o-mini")
+        last_user = ""
+        for m in reversed(request.messages):
+            if (m.get("role") or "").lower() == "user":
+                last_user = str(m.get("content") or "")
+                break
+        from app_builder.services.llm_observability_store import (
+            append_observability_event,
+            build_observability_event,
+        )
+
+        usage = build_observability_event(
+            source="llm_proxy",
+            model=model,
+            prompt=last_user,
+            output=content,
+            llm_response_obj=response,
+        )
+        append_observability_event(project_id, usage)
+        return JSONResponse(content={"content": content, "usage": usage})
     except ImportError as e:
         raise HTTPException(status_code=503, detail=f"AI service is not configured: {e}")
     except Exception as e:

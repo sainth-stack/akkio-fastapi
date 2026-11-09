@@ -41,7 +41,7 @@ async def answer_app_chat(
     *,
     page_id: Optional[str] = None,
     app_definition: Optional[Dict[str, Any]] = None,
-) -> str:
+) -> Dict[str, Any]:
     defn = app_definition or load_project_app_definition(project_id)
     if not defn:
         raise ValueError("App definition not found for this project.")
@@ -56,10 +56,12 @@ async def answer_app_chat(
     if re.search(r"\b(download|export)\b.*\b(rag|context|data)\b", low) or re.search(
         r"\brag data\b", low
     ):
-        return (
-            "Use **Download RAG data (PDF)** in this chat panel to export the grounded context "
-            "(KPIs, charts, tables, and catalog data) used for answers."
-        )
+        return {
+            "content": (
+                "Use **Download RAG data (PDF)** in this chat panel to export the grounded context "
+                "(KPIs, charts, tables, and catalog data) used for answers."
+            )
+        }
 
     predict_mode = _is_predict_intent(last_user)
     context = build_rag_context(
@@ -112,4 +114,15 @@ async def answer_app_chat(
             lc_messages.append(HumanMessage(content=content))
 
     response = await llm.ainvoke(lc_messages)
-    return str(getattr(response, "content", response) or "").strip()
+    content = str(getattr(response, "content", response) or "").strip()
+    model = str(llm_cfg.get("model") or getattr(llm, "model_name", None) or "gpt-4o-mini")
+    from app_builder.services.llm_observability_store import build_observability_event
+
+    observability = build_observability_event(
+        source="app_chat",
+        model=model,
+        prompt=last_user,
+        output=content,
+        llm_response_obj=response,
+    )
+    return {"content": content, "observability": observability}

@@ -54,6 +54,11 @@ function wantsPredictNav(text: string): boolean {
   return /\b(open|go to)\b.*\bpredict\b/.test(low) || /\bpredict page\b/.test(low);
 }
 
+function wantsObservabilityNav(text: string): boolean {
+  const low = text.toLowerCase();
+  return /\b(open|go to|show)\b.*\bobservability\b/.test(low) || /\b(llm usage|token usage)\b/.test(low);
+}
+
 export default function AppChatAssistant({
   definition,
   pageId,
@@ -69,6 +74,7 @@ export default function AppChatAssistant({
   const showRagExport =
     !caps.length || caps.includes('rag_export') || caps.includes('rag_chat');
   const hasPredictNav = definition.navigation?.some((n) => n.pageId === 'predict');
+  const hasObservabilityNav = definition.navigation?.some((n) => n.pageId === 'observability');
   const [open, setOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [input, setInput] = useState('');
@@ -133,6 +139,19 @@ export default function AppChatAssistant({
       return;
     }
 
+    if (wantsObservabilityNav(text) && hasObservabilityNav) {
+      const nextUser: ChatMessage = { role: 'user', content: text };
+      setMessages((prev) => [
+        ...prev,
+        nextUser,
+        { role: 'assistant', content: 'Opening Observability to review prompts, outputs, tokens, and cost.' },
+      ]);
+      setInput('');
+      navigate('/observability');
+      scrollToEnd();
+      return;
+    }
+
     if (!apiBase) {
       setMessages((prev) => [
         ...prev,
@@ -172,11 +191,29 @@ export default function AppChatAssistant({
           },
         }),
       });
-      const data = (await res.json()) as { content?: string; detail?: unknown };
+      const data = (await res.json()) as {
+        content?: string;
+        detail?: unknown;
+        usage?: { total_tokens?: number; cost_usd?: number; model?: string };
+      };
       if (!res.ok) {
         throw new Error(formatApiDetail(data.detail) || `Request failed (${res.status})`);
       }
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.content || 'No response.' }]);
+      let reply = data.content || 'No response.';
+      const usage = data.usage;
+      if (usage?.total_tokens) {
+        const cost =
+          usage.cost_usd != null
+            ? usage.cost_usd >= 0.01
+              ? `$${usage.cost_usd.toFixed(2)}`
+              : `$${usage.cost_usd.toFixed(4)}`
+            : '';
+        reply += `\n\n— ${usage.model || 'model'} · ${usage.total_tokens} tokens${cost ? ` · est. ${cost}` : ''}`;
+        if (hasObservabilityNav) {
+          reply += ' · see **Observability** for full log';
+        }
+      }
+      setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Something went wrong.';
       const needsKeyHint = /api key|openai_api_key|not configured|503/i.test(msg);
@@ -194,7 +231,18 @@ export default function AppChatAssistant({
       setLoading(false);
       scrollToEnd();
     }
-  }, [apiBase, definition, hasPredictNav, input, loading, messages, navigate, pageId, runRagExport]);
+  }, [
+    apiBase,
+    definition,
+    hasObservabilityNav,
+    hasPredictNav,
+    input,
+    loading,
+    messages,
+    navigate,
+    pageId,
+    runRagExport,
+  ]);
 
   return (
     <>
