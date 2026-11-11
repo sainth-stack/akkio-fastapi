@@ -2,7 +2,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -45,6 +44,9 @@ type AppDefinitionContextValue = {
   definition: AppDefinition | null;
   loading: boolean;
   error: string | null;
+  /** Replace UI state from server (e.g. after data upload). Does not call /definition. */
+  applyDefinition: (next: AppDefinition) => void;
+  /** Optional: fetch latest from GET /definition (off by default on app load). */
   refreshDefinition: () => Promise<void>;
   importTargets: ImportTarget[];
 };
@@ -85,6 +87,11 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const applyDefinition = useCallback((next: AppDefinition) => {
+    setDefinition(next);
+    setError(null);
+  }, []);
+
   const refreshDefinition = useCallback(async () => {
     const base = getAkkioApiBase();
     if (!base) {
@@ -115,10 +122,6 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
     }
   }, [staticDef]);
 
-  useEffect(() => {
-    void refreshDefinition();
-  }, [refreshDefinition]);
-
   const importTargets = useMemo(
     () => (definition ? collectImportTargets(definition) : []),
     [definition],
@@ -129,10 +132,11 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
       definition,
       loading,
       error,
+      applyDefinition,
       refreshDefinition,
       importTargets,
     }),
-    [definition, loading, error, refreshDefinition, importTargets],
+    [definition, loading, error, applyDefinition, refreshDefinition, importTargets],
   );
 
   return <AppDefinitionContext.Provider value={value}>{children}</AppDefinitionContext.Provider>;
@@ -146,6 +150,7 @@ export function useAppDefinition(): AppDefinitionContextValue {
       definition,
       loading: false,
       error: null,
+      applyDefinition: () => {},
       refreshDefinition: async () => {},
       importTargets: collectImportTargets(definition),
     };

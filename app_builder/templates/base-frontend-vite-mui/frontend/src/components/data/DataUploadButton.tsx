@@ -24,7 +24,7 @@ import { getAkkioAccessToken, getAkkioApiBase } from '../../renderer/akkioApi';
 import { useAppDefinition } from '../../renderer/useAppDefinition';
 
 export default function DataUploadButton() {
-  const { definition, refreshDefinition, importTargets } = useAppDefinition();
+  const { definition, applyDefinition, importTargets } = useAppDefinition();
   const apiBase = getAkkioApiBase();
   const fileRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -98,6 +98,7 @@ export default function DataUploadButton() {
         message?: string;
         updatedKeys?: string[];
         summary?: { updatedKeys?: string[]; rowCount?: number };
+        definition?: import('../../renderer/useAppDefinition').AppDefinition;
       };
       if (!res.ok) {
         const detail =
@@ -108,7 +109,9 @@ export default function DataUploadButton() {
               : 'Upload failed';
         throw new Error(detail);
       }
-      await refreshDefinition();
+      if (data.definition) {
+        applyDefinition(data.definition);
+      }
       const keys = data.updatedKeys || data.summary?.updatedKeys || [];
       setSnack({
         severity: 'success',

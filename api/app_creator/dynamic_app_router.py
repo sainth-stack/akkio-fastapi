@@ -406,7 +406,7 @@ async def get_app_definition(
     project_id: str,
     request: Request,
 ):
-    """Latest data.json for hosted preview (after upload or rebuild)."""
+    """Optional refresh of data.json (recompute pipeline). Apps use bundled mock/data.json on load; call after upload or tooling only."""
     await _optional_project_access(project_id, request, None)
     from app_builder.services.data_import_service import load_data_json_from_project
     from app_builder.services.runtime_paths import resolve_project_root
@@ -508,6 +508,7 @@ async def import_app_data(
             "updatedKeys": summary.get("updatedKeys") or [],
             "summary": summary,
             "targets": list_import_targets(updated),
+            "definition": updated,
         }
     )
 
