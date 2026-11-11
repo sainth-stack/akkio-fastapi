@@ -118,6 +118,63 @@ def _is_nav_screen_title(title: str) -> bool:
     return True
 
 
+_CAPABILITY_NOT_PAGE = re.compile(
+    r"(rag\s*chat|data assistant|\bpredict\b|forecast|observability|"
+    r"\bllm\b|\btoken|model cost|prompts?|\boutputs?\b|chatbot|assistant|"
+    r"what.?if|usage monitoring|to track)",
+    re.I,
+)
+
+_RESERVED_SCREEN_IDS = frozenset(
+    {"predict", "observability", "chat", "rag_chat", "llm", "tokens", "outputs", "model_cost"}
+)
+
+
+def _is_plausible_app_page_name(name: str) -> bool:
+    """Nav screen title — not an LLM/RAG/Predict capability phrase."""
+    n = re.sub(r"^\d+[\).\s]+", "", (name or "").strip())
+    n = re.sub(r"\s+screen(s)?$", "", n, flags=re.I).strip()
+    if not _is_nav_screen_title(n):
+        return False
+    if _CAPABILITY_NOT_PAGE.search(n):
+        return False
+    if re.search(r"\bto track\b", n, re.I):
+        return False
+    return True
+
+
+def _screen_dict(title: str) -> Dict[str, str]:
+    t = title.strip()
+    label = t[0].upper() + t[1:] if t.islower() else t
+    return {"id": _slug(label), "title": label, "purpose": label}
+
+
+def _screens_from_parenthetical_list(text: str) -> List[Dict[str, str]]:
+    """Parse '(Dashboard, Analytics, Reports)' in the user prompt."""
+    if not text:
+        return []
+    out: List[Dict[str, str]] = []
+    for m in re.finditer(r"\(([^)]+)\)", text):
+        chunk = m.group(1)
+        if not re.search(
+            r"\b(dashboard|analytics|reports?|inventory|settings|overview|home)\b",
+            chunk,
+            re.I,
+        ):
+            continue
+        parts = re.split(r",|;|/|\band\b", chunk)
+        page_candidates: List[Dict[str, str]] = []
+        for p in parts:
+            name = p.strip()
+            if _is_plausible_app_page_name(name):
+                page_candidates.append(_screen_dict(name))
+        if len(page_candidates) >= 2:
+            return page_candidates
+        if len(page_candidates) > len(out):
+            out = page_candidates
+    return out
+
+
 def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
     """Parse '… with dashboard, analytics and reports' style lists."""
     text = _normalize_prompt_text(text)
@@ -126,6 +183,9 @@ def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
     numbered = _screens_from_numbered_prompt_list(text)
     if len(numbered) >= 2:
         return numbered
+    paren = _screens_from_parenthetical_list(text)
+    if len(paren) >= 2:
+        return paren
     pages_list = re.search(r"with\s+\d+\s+pages?\s*:\s*([^.;\n]+)", text, re.I)
     if pages_list:
         chunk = pages_list.group(1)
@@ -133,9 +193,8 @@ def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
         out: List[Dict[str, str]] = []
         for p in parts:
             name = p.strip()
-            if 2 < len(name) < 48 and _is_nav_screen_title(name):
-                title = name[0].upper() + name[1:] if name.islower() else name
-                out.append({"id": _slug(title), "title": title, "purpose": title})
+            if _is_plausible_app_page_name(name):
+                out.append(_screen_dict(name))
         if len(out) >= 2:
             return out
     low = text.lower()
@@ -147,8 +206,14 @@ def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
         if not m:
             continue
         chunk = m.group(1)
+        if _CAPABILITY_NOT_PAGE.search(chunk) and not re.search(
+            r"\b(dashboard|analytics|reports?|inventory)\b",
+            chunk,
+            re.I,
+        ):
+            continue
         parts = re.split(r",|;|/|\band\b", chunk)
-        out: List[Dict[str, str]] = []
+        out = []
         for p in parts:
             name = re.sub(r"^\d+[\).\s]+", "", p.strip())
             name = re.sub(r"\s+screen(s)?$", "", name, flags=re.I).strip()
@@ -164,13 +229,17 @@ def _screens_from_requirement_phrase(text: str) -> List[Dict[str, str]]:
                         title = tok[0].upper() + tok[1:].lower()
                         if title.lower() == "session":
                             title = "Sessions"
-                        out.append({"id": _slug(title), "title": title, "purpose": title})
+                        if _is_plausible_app_page_name(title):
+                            out.append(_screen_dict(title))
+                    if len(out) >= 2:
+                        return out
                     continue
-            if 2 < len(name) < 48:
-                title = name[0].upper() + name[1:]
-                out.append({"id": _slug(title), "title": title, "purpose": title})
-        if out:
+            if _is_plausible_app_page_name(name):
+                out.append(_screen_dict(name))
+        if len(out) >= 2:
             return out
+    if paren:
+        return paren
     return []
 
 
@@ -231,8 +300,11 @@ def _dedupe_screens(screens: List[Dict[str, str]]) -> List[Dict[str, str]]:
     seen: set = set()
     out: List[Dict[str, str]] = []
     for s in screens:
-        sid = s.get("id") or _slug(s.get("title", "page"))
-        if sid in seen:
+        title = str(s.get("title") or "")
+        if not _is_plausible_app_page_name(title):
+            continue
+        sid = s.get("id") or _slug(title or "page")
+        if sid in _RESERVED_SCREEN_IDS or sid in seen:
             continue
         seen.add(sid)
         out.append({**s, "id": sid})

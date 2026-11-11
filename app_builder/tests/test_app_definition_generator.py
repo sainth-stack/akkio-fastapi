@@ -14,6 +14,24 @@ class TestAppDefinitionGenerator(unittest.TestCase):
         self.assertIn("analytics", titles)
         self.assertIn("reports", titles)
 
+    def test_parenthetical_pages_ignore_capability_with_clause(self):
+        from app_builder.services.app_definition_generator import extract_screens_from_plan
+
+        screens = extract_screens_from_plan(
+            requirement=(
+                "Build a manufacturing operations dashboard (Dashboard, Analytics, Reports) "
+                "with RAG chat, Predict, and LLM observability to track prompts, outputs, tokens, and model cost."
+            ),
+        )
+        titles = [s["title"].lower() for s in screens]
+        ids = [s["id"] for s in screens]
+        self.assertEqual(len(screens), 3)
+        self.assertIn("dashboard", ids)
+        self.assertIn("analytics", ids)
+        self.assertIn("reports", ids)
+        self.assertFalse(any("token" in t for t in titles))
+        self.assertFalse(any("observability" in t and "track" in t for t in titles))
+
     def test_resolve_sync_builds_three_pages(self):
         from app_builder.services.app_definition_generator import resolve_app_definition_sync
 

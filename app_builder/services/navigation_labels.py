@@ -40,6 +40,8 @@ def friendly_nav_label(
         return "Reports"
     if pid == "predict":
         return "Predict"
+    if pid == "observability":
+        return "Observability"
     if pid in ("forecasting", "forecast") or re.search(r"\bforecasting\b", t):
         return "Forecasting"
     if re.search(r"\bpredict\b", t) and pid != "forecasting":
@@ -49,10 +51,50 @@ def friendly_nav_label(
     return (title or page_id or "Page").strip()
 
 
+def _prune_junk_nav_pages(defn: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop LLM capability phrases mistaken for nav pages (e.g. 'Tokens', 'RAG chat')."""
+    from app_builder.services.app_definition_generator import (
+        _RESERVED_SCREEN_IDS,
+        _is_plausible_app_page_name,
+    )
+
+    out = dict(defn)
+    keep_ids = {"predict", "observability"}
+    pages = [
+        p
+        for p in (out.get("pages") or [])
+        if isinstance(p, dict)
+        and (
+            str(p.get("id") or "") in keep_ids
+            or (
+                str(p.get("id") or "") not in _RESERVED_SCREEN_IDS
+                and _is_plausible_app_page_name(str(p.get("title") or p.get("id") or ""))
+            )
+        )
+    ]
+    page_ids = {str(p.get("id") or "") for p in pages}
+    nav = [
+        n
+        for n in (out.get("navigation") or [])
+        if isinstance(n, dict)
+        and (
+            str(n.get("pageId") or "") in keep_ids
+            or (
+                str(n.get("pageId") or "") in page_ids
+                and str(n.get("pageId") or "") not in _RESERVED_SCREEN_IDS
+                and _is_plausible_app_page_name(str(n.get("label") or n.get("pageId") or ""))
+            )
+        )
+    ]
+    out["pages"] = pages
+    out["navigation"] = nav
+    return out
+
+
 def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
     from app_builder.services.page_layout_intent import resolve_dashboard_page_id
 
-    out = dict(defn)
+    out = _prune_junk_nav_pages(defn)
     pages = out.get("pages") or []
     nav = out.get("navigation") or []
     if not nav:
@@ -88,6 +130,8 @@ def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
             path = "/" if page_id == dash_id else f"/{page_id.replace('_', '-')}"
         if page_id == "predict" and path != "/predict":
             path = "/predict"
+        if page_id == "observability" and path != "/observability":
+            path = "/observability"
         seen_paths.add(path)
 
         page_match = next((p for p in pages if isinstance(p, dict) and str(p.get("id")) == page_id), None)
