@@ -208,7 +208,10 @@ def _aggregate_line_rows(
             if src == _BENCHMARK_METRIC or "benchmark" in sf.lower():
                 if (row.get(sf) or 0) == 0 and main_val:
                     row[sf] = round(main_val * 1.08, 2)
-            elif "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+            elif (
+                src == _TARGET_SYNTHETIC
+                or "target" in sf.lower()
+            ) and (row.get(sf) or 0) == 0 and main_val:
                 row[sf] = round(main_val * 1.02, 2)
         out.append(row)
     return out or [{x_out: "P1", **{sf: 0 for sf in series_fields}}]
@@ -227,6 +230,13 @@ def _first_row_key(row: Dict[str, Any], candidates: List[str]) -> Optional[str]:
 
 _COUNT_METRIC = "__count__"
 _BENCHMARK_METRIC = "__benchmark__"
+_TARGET_SYNTHETIC = "__target_line__"
+
+_MAX_KPI_ITEMS = 6
+_KPI_LABEL_SKIP = re.compile(
+    r"(work_order_id|open,\s*in progress|downtime duration|number of work orders)",
+    re.I,
+)
 
 _TABLE_FIELD_ALIASES: Dict[str, List[str]] = {
     "id": ["work_order_id", "order_id", "item_id", "sku", "id"],
@@ -261,12 +271,16 @@ def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
 
 
 def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:
+    if src == _TARGET_SYNTHETIC:
+        return 0.0
     if src == _COUNT_METRIC:
         return float(len(group))
     nums = [_num(g.get(src)) for g in group]
     nums = [n for n in nums if n is not None]
     if not nums:
         return 0.0
+    if "downtime" in (src or ""):
+        return round(sum(nums), 2)
     return round(sum(nums) / len(nums), 2)
 
 
@@ -276,14 +290,16 @@ def _pick_breakdown_dimension(sample: Dict[str, Any], title: str, x_key: str) ->
         return "machine"
     if x_key in sample and x_key not in ("name", "label", "category"):
         return x_key
+    if re.search(r"cause|pareto|downtime", title_l) and "root_cause" in sample:
+        return "root_cause"
     for dim in (
         "machine",
+        "root_cause",
         "production_line",
         "event_type",
         "equipment",
         "warehouse",
         "category",
-        "production_line",
     ):
         if dim in sample:
             return dim
@@ -307,7 +323,15 @@ def _series_source_map(block: Dict[str, Any], sample: Dict[str, Any]) -> Dict[st
         elif re.search(r"defect", blob):
             src = _first_row_key(sample, ["defect_rate_pct", "defect_count", "defects", "defect_rate"])
         elif re.search(r"target", blob):
-            src = _first_row_key(sample, ["target", "target_yield", "target_fpy", "target_defect_rate"])
+            src = _TARGET_SYNTHETIC
+        elif re.search(r"\boee\b|equipment effectiveness", blob):
+            src = _first_row_key(sample, ["oee_pct", "oee", "machine_load_pct"])
+        elif re.search(r"\bmtbf\b", blob):
+            src = _first_row_key(sample, ["mtbf_hours", "mtbf"])
+        elif re.search(r"\bmttr\b", blob):
+            src = _first_row_key(sample, ["mttr_hours", "mttr"])
+        elif sk in ("work_order_id", "work_orders") or re.search(r"work\s*order", name):
+            src = _COUNT_METRIC
         elif sk in (_BENCHMARK_METRIC, "benchmark") or "benchmark" in name:
             src = _BENCHMARK_METRIC
         elif sk in ("value", "actual") or name in ("value", "actual"):
@@ -325,7 +349,7 @@ def _chart_x_field(block: Dict[str, Any], sample: Dict[str, Any]) -> str:
     title_l = title.lower()
     x_key = str(block.get("xAxisKey") or "period")
     if re.search(
-        r"production line|by line|by category|by machine|pareto|defects by|breakdown|events by",
+        r"production line|by line|by category|by machine|pareto|defects by|breakdown|events by|cause",
         title_l,
     ):
         dim = _pick_breakdown_dimension(sample, title, x_key)
@@ -393,6 +417,15 @@ def _pie_from_rows(block: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Di
             {"name": "Gap to target", "value": round(gap, 1)},
             {"name": "Headroom", "value": round(max(0.0, 100 - target), 1)},
         ]
+    if re.search(r"status|open|in progress|completed|distribution", title):
+        groups: Dict[str, int] = defaultdict(int)
+        for r in rows:
+            st = str(r.get("status") or "Unknown")
+            groups[st] += 1
+        return [
+            {"name": name, "value": float(cnt)}
+            for name, cnt in sorted(groups.items(), key=lambda x: -x[1])[:8]
+        ]
     return []
 
 
@@ -429,7 +462,10 @@ def _aggregate_by_dimension(
             if src == _BENCHMARK_METRIC or "benchmark" in sf.lower():
                 if (row.get(sf) or 0) == 0 and main_val:
                     row[sf] = round(main_val * 1.08, 2)
-            elif "target" in sf.lower() and (row.get(sf) or 0) == 0 and main_val:
+            elif (
+                src == _TARGET_SYNTHETIC
+                or "target" in sf.lower()
+            ) and (row.get(sf) or 0) == 0 and main_val:
                 row[sf] = round(main_val * 1.02, 2)
         out.append(row)
     return out
@@ -560,6 +596,14 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
             if btype == "kpiRow":
                 bundle: Dict[str, str] = {}
                 items = list(block.get("items") or [])
+                items = [
+                    it
+                    for it in items
+                    if isinstance(it, dict)
+                    and not _KPI_LABEL_SKIP.search(
+                        f"{it.get('label') or ''} {it.get('valueKey') or ''}"
+                    )
+                ][: _MAX_KPI_ITEMS]
                 colors = ("primary", "success", "warning", "error", "info", "default")
                 for item in items:
                     if not isinstance(item, dict):

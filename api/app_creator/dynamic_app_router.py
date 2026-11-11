@@ -199,7 +199,7 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 
 # --- App assistant (must register before /{collection} CRUD or "chat" is treated as a table) ---
 
-_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict", "observability"})
+_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict", "observability", "compute"})
 
 
 class LLMRequest(BaseModel):
@@ -380,6 +380,31 @@ async def predict_synthetic(
         target_field=body.target_field,
     )
     return JSONResponse(content=result)
+
+
+@router.post("/{project_id}/data/compute")
+async def compute_app_data(
+    project_id: str,
+    body: AppChatRequest,
+    request: Request,
+):
+    """Recompute KPIs/charts/tables from source_* rows (no full /definition or nav rewrite)."""
+    await _optional_project_access(project_id, request, body)
+    from app_builder.services.app_data_rag import load_project_app_definition
+    from app_builder.services.operational_metrics_compute import recompute_derived_data
+
+    defn = body.app_definition or load_project_app_definition(project_id)
+    if not isinstance(defn, dict) or not defn.get("pages"):
+        raise HTTPException(status_code=404, detail="App definition not found")
+    out = recompute_derived_data(dict(defn))
+    meta = dict(out.get("meta") or defn.get("meta") or {})
+    return JSONResponse(
+        content={
+            "data": out.get("data") or {},
+            "pages": out.get("pages") or [],
+            "meta": meta,
+        }
+    )
 
 
 @router.get("/{project_id}/observability")

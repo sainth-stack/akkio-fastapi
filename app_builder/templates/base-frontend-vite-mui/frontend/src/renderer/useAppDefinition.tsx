@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -91,6 +92,52 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
     setDefinition(next);
     setError(null);
   }, []);
+
+  const recomputeFromSource = useCallback(async () => {
+    const base = getAkkioApiBase();
+    if (!base) return;
+    const model = staticDef.meta?.dataModel || '';
+    if (model !== 'source_compute_v1') return;
+    setLoading(true);
+    setError(null);
+    try {
+      const token = getAkkioAccessToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`${base}/data/compute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          messages: [],
+          app_definition: staticDef,
+        }),
+      });
+      const payload = (await res.json()) as {
+        data?: AppDefinition['data'];
+        pages?: AppDefinition['pages'];
+        meta?: AppDefinition['meta'];
+        detail?: unknown;
+      };
+      if (!res.ok) {
+        throw new Error(String(payload.detail || 'Could not compute chart data'));
+      }
+      setDefinition((prev) => ({
+        ...prev,
+        data: payload.data ?? prev.data,
+        pages: payload.pages ?? prev.pages,
+        meta: { ...prev.meta, ...(payload.meta || {}) },
+      }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to compute metrics');
+      setDefinition(staticDef);
+    } finally {
+      setLoading(false);
+    }
+  }, [staticDef]);
+
+  useEffect(() => {
+    void recomputeFromSource();
+  }, [recomputeFromSource]);
 
   const refreshDefinition = useCallback(async () => {
     const base = getAkkioApiBase();

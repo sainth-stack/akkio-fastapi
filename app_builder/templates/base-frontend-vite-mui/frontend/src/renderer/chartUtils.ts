@@ -5,7 +5,19 @@ export function resolveXAxisKey(
   if (!data?.length) return preferred || 'name';
   const row = data[0];
   if (preferred && preferred in row) return preferred;
-  for (const k of ['label', 'name', 'week', 'shift', 'hour', 'date', 'period', 'production_line', 'category']) {
+  for (const k of [
+    'label',
+    'name',
+    'week',
+    'shift',
+    'hour',
+    'date',
+    'period',
+    'machine',
+    'root_cause',
+    'production_line',
+    'category',
+  ]) {
     if (k in row) return k;
   }
   return preferred || 'name';
