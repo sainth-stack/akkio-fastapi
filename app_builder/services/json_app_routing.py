@@ -38,6 +38,9 @@ def should_force_json_app_track(requirement: str, prd: str = "", uiux: str = "")
     ):
         return False
 
+    if re.search(r"\bsap\b.*\b(ticket|similar)|similar ticket|create ticket", text):
+        return True
+
     if is_operations_dashboard_prompt(requirement, prd, uiux):
         return True
 

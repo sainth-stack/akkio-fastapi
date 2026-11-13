@@ -28,6 +28,26 @@ export function isPredictNavItem(item: { pageId?: string; path: string; label?: 
   return false;
 }
 
+export function isCreateTicketNavItem(item: {
+  pageId?: string;
+  path: string;
+  label?: string;
+}): boolean {
+  const pid = (item.pageId || '').toLowerCase();
+  if (pid === 'create_ticket') return true;
+  return item.path === '/create-ticket' || item.path.endsWith('/create-ticket');
+}
+
+export function isSimilarTicketsNavItem(item: {
+  pageId?: string;
+  path: string;
+  label?: string;
+}): boolean {
+  const pid = (item.pageId || '').toLowerCase();
+  if (pid === 'similar_tickets') return true;
+  return item.path === '/similar-tickets' || item.path.endsWith('/similar-tickets');
+}
+
 export function isObservabilityNavItem(item: {
   pageId?: string;
   path: string;

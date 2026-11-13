@@ -207,6 +207,20 @@ def infer_source_datasets(
             }
         ]
 
+    if re.search(r"\bsap\b|similar ticket|service ticket", ctx):
+        from app_builder.services.sap_similar_tickets import sap_ticket_columns
+
+        cols = sap_ticket_columns()
+        return [
+            {
+                "id": "sap_tickets",
+                "dataKey": f"{SOURCE_PREFIX}sap_tickets",
+                "title": "SAP service tickets",
+                "description": "One row per incident. New tickets appear at the top; use Similar Tickets to match history.",
+                "columns": cols,
+            }
+        ]
+
     if re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment", ctx):
         cols = _maintenance_event_columns()
         return [

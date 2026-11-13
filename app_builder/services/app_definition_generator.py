@@ -157,7 +157,8 @@ def _screens_from_parenthetical_list(text: str) -> List[Dict[str, str]]:
     for m in re.finditer(r"\(([^)]+)\)", text):
         chunk = m.group(1)
         if not re.search(
-            r"\b(dashboard|analytics|reports?|inventory|settings|overview|home)\b",
+            r"\b(dashboard|analytics|reports?|inventory|settings|overview|home|"
+            r"create ticket|similar tickets?)\b",
             chunk,
             re.I,
         ):
@@ -787,6 +788,9 @@ def finalize_app_definition(
     from app_builder.services.llm_observability_pages import ensure_observability_features
 
     defn = ensure_observability_features(defn, prd=prd, requirement=requirement)
+    from app_builder.services.sap_similar_tickets import ensure_sap_similar_ticket_features
+
+    defn = ensure_sap_similar_ticket_features(defn, prd=prd, requirement=requirement)
     from app_builder.services.block_normalizer import repair_broken_data_table_blocks
 
     defn = repair_broken_data_table_blocks(defn, prd=prd)

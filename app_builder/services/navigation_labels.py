@@ -59,7 +59,7 @@ def _prune_junk_nav_pages(defn: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     out = dict(defn)
-    keep_ids = {"predict", "observability"}
+    keep_ids = {"predict", "observability", "create_ticket", "similar_tickets"}
     pages = [
         p
         for p in (out.get("pages") or [])
@@ -132,6 +132,10 @@ def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
             path = "/predict"
         if page_id == "observability" and path != "/observability":
             path = "/observability"
+        if page_id == "create_ticket" and path != "/create-ticket":
+            path = "/create-ticket"
+        if page_id == "similar_tickets" and path != "/similar-tickets":
+            path = "/similar-tickets"
         seen_paths.add(path)
 
         page_match = next((p for p in pages if isinstance(p, dict) and str(p.get("id")) == page_id), None)

@@ -744,6 +744,9 @@ def apply_source_data_pipeline(
     from app_builder.services.predict_config import attach_predict_config
 
     out = attach_predict_config(out)
+    from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
+
+    out = seed_sap_tickets_if_empty(out)
     out = recompute_derived_data(out)
     from app_builder.services.navigation_labels import normalize_definition_navigation
 
@@ -770,6 +773,9 @@ def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement
 
         model = ensure_intelligence_features(model, prd=prd, requirement=requirement)
         model = ensure_observability_features(model, prd=prd, requirement=requirement)
+        from app_builder.services.sap_similar_tickets import ensure_sap_similar_ticket_features
+
+        model = ensure_sap_similar_ticket_features(model, prd=prd, requirement=requirement)
         dumped = model.model_dump(mode="json")
         from app_builder.services.app_definition_validator import validate_all_screens
 

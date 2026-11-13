@@ -5,10 +5,18 @@ import AppShell from './components/ui/AppShell';
 import PageRenderer from './renderer/PageRenderer';
 import PredictPage from './pages/PredictPage';
 import ObservabilityPage from './pages/ObservabilityPage';
+import CreateTicketPage from './pages/CreateTicketPage';
+import SimilarTicketsPage from './pages/SimilarTicketsPage';
 import { AppDefinitionProvider, useAppDefinition } from './renderer/useAppDefinition';
 import { createAppTheme } from './theme/createAppTheme';
 import AppChatAssistant from './components/chat/AppChatAssistant';
-import { isObservabilityNavItem, isPredictNavItem, resolveActiveNavItem } from './renderer/navMatch';
+import {
+  isCreateTicketNavItem,
+  isObservabilityNavItem,
+  isPredictNavItem,
+  isSimilarTicketsNavItem,
+  resolveActiveNavItem,
+} from './renderer/navMatch';
 
 function AppShellLayout() {
   const { definition } = useAppDefinition();
@@ -92,6 +100,10 @@ function AppRoutes() {
                   <PredictPage />
                 ) : isObservabilityNavItem(item) ? (
                   <ObservabilityPage />
+                ) : isCreateTicketNavItem(item) ? (
+                  <CreateTicketPage />
+                ) : isSimilarTicketsNavItem(item) ? (
+                  <SimilarTicketsPage />
                 ) : (
                   <PageRenderer pageId={item.pageId} />
                 )

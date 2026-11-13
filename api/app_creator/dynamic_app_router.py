@@ -199,7 +199,7 @@ async def _dispatch_custom_endpoint(project_id: str, action: str, body: Dict[str
 
 # --- App assistant (must register before /{collection} CRUD or "chat" is treated as a table) ---
 
-_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict", "observability", "compute"})
+_RESERVED_PATH_SEGMENTS = frozenset({"chat", "llm", "predict", "observability", "compute", "tickets"})
 
 
 class LLMRequest(BaseModel):
@@ -316,6 +316,15 @@ class PredictRequest(BaseModel):
     app_definition: Optional[Dict[str, Any]] = None
 
 
+class TicketCreateRequest(BaseModel):
+    title: str
+    description: str = ""
+    category: str = ""
+    component: str = ""
+    priority: str = "Medium"
+    reported_by: str = ""
+
+
 @router.post("/{project_id}/chat/rag-export")
 async def rag_export(
     project_id: str,
@@ -380,6 +389,54 @@ async def predict_synthetic(
         target_field=body.target_field,
     )
     return JSONResponse(content=result)
+
+
+@router.get("/{project_id}/tickets")
+async def list_sap_tickets(
+    project_id: str,
+    request: Request,
+    ticket_id: Optional[str] = None,
+):
+    """List SAP tickets (newest first) and optional similar matches for ticket_id."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.sap_ticket_store import list_project_tickets, similar_for_ticket_id
+
+    tickets = list_project_tickets(project_id)
+    payload: Dict[str, Any] = {"tickets": tickets}
+    if ticket_id:
+        ref, similar = similar_for_ticket_id(project_id, ticket_id)
+        payload["reference"] = ref
+        payload["similar"] = similar
+    return JSONResponse(content=payload)
+
+
+@router.post("/{project_id}/tickets")
+async def create_sap_ticket(
+    project_id: str,
+    body: TicketCreateRequest,
+    request: Request,
+):
+    """Create a ticket (prepended to source_sap_tickets) and return similar historical tickets."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.sap_ticket_store import add_project_ticket
+
+    if not (body.title or "").strip():
+        raise HTTPException(status_code=400, detail="title required")
+    try:
+        ticket, similar, defn = add_project_ticket(project_id, body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return JSONResponse(
+        content={
+            "ticket": ticket,
+            "similar": similar,
+            "tickets": (defn.get("data") or {}).get("source_sap_tickets") or [],
+            "definition": {
+                "data": defn.get("data"),
+                "meta": defn.get("meta"),
+            },
+        }
+    )
 
 
 @router.post("/{project_id}/data/compute")

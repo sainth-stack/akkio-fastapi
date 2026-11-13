@@ -29,6 +29,27 @@ def _slug(s: str) -> str:
 def _cell(field: str, header: str, i: int, rng: random.Random) -> Any:
     f = field.lower()
     h = header.lower()
+    if "ticket_id" in f:
+        return f"TKT-{2000 + i}"
+    if "title" in f and "ticket" in h:
+        return rng.choice(
+            (
+                "IDoc status 51 on goods receipt",
+                "BAPI timeout on order create",
+                "Workflow stuck in SAP inbox",
+                "Authorization error on RFC",
+            )
+        )
+    if "description" in f:
+        return "SAP incident details for support triage and similar-ticket search."
+    if f == "category":
+        return rng.choice(("Materials Management", "Sales & Distribution", "Finance", "PP"))
+    if f == "component":
+        return rng.choice(("IDoc", "BAPI", "RFC", "User exit", "Workflow", "Authorization"))
+    if f == "priority":
+        return rng.choice(("Low", "Medium", "High"))
+    if "reported_by" in f or "reported" in f:
+        return rng.choice(_OPERATORS)
     if "work_order" in f or f == "id" and "order" in h:
         return f"WO-{1000 + i}"
     if "inspection" in f and "id" in f:

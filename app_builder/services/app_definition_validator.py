@@ -93,7 +93,9 @@ def validate_all_screens(
 
     pages_by_id = {p.id: p for p in model.pages}
     nav_ids = [
-        n.pageId for n in model.navigation if n.pageId not in ("predict", "observability")
+        n.pageId
+        for n in model.navigation
+        if n.pageId not in ("predict", "observability", "create_ticket", "similar_tickets")
     ]
     dash_id = resolve_dashboard_page_id([(p.id, p.title) for p in model.pages], nav_ids)
 
@@ -101,7 +103,7 @@ def validate_all_screens(
     new_pages: List[PageDef] = []
 
     for page in model.pages:
-        if page.id in ("predict", "observability"):
+        if page.id in ("predict", "observability", "create_ticket", "similar_tickets"):
             new_pages.append(page)
             continue
         if page.id not in nav_ids and page.id != dash_id:
