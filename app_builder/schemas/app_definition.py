@@ -15,6 +15,7 @@ class AppMeta(BaseModel):
     capabilities: List[str] = Field(default_factory=list)
     dataModel: str = ""
     sourceDatasets: List[Dict[str, Any]] = Field(default_factory=list)
+    sapTicketSeedCount: Optional[int] = None
 
 
 class AppTheme(BaseModel):

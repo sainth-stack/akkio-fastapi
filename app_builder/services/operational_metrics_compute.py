@@ -767,7 +767,7 @@ def apply_source_data_pipeline(
     out = attach_predict_config(out)
     from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
 
-    out = seed_sap_tickets_if_empty(out)
+    out = seed_sap_tickets_if_empty(out, prd=prd, requirement=requirement)
     out = recompute_derived_data(out)
     from app_builder.services.navigation_labels import normalize_definition_navigation
 

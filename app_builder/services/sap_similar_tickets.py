@@ -250,6 +250,52 @@ def similarity_score(reference: Dict[str, Any], candidate: Dict[str, Any]) -> fl
     return round(min(1.0, jaccard), 4)
 
 
+def parse_sap_ticket_count(prd: str, requirement: str) -> Optional[int]:
+    """Read requested seed count from prompt, e.g. 'seed 10 SAP community tickets'."""
+    blob = f"{prd}\n{requirement}"
+    patterns = [
+        r"\b(?:seed|create|generate|with|load)\s+(\d{1,3})\s+(?:synthetic\s+)?(?:sap\s+)?(?:community\s+)?tickets?\b",
+        r"\b(\d{1,3})\s+(?:synthetic\s+)?(?:sap\s+)?(?:community\s+)?tickets?\b",
+        r"\b(\d{1,3})\s+community\s+questions?\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, blob, re.I)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 200:
+                return n
+    return None
+
+
+def synthetic_tickets_for_count(count: int) -> List[Dict[str, Any]]:
+    """Build N community-style tickets by cycling curated templates."""
+    count = max(1, min(200, int(count)))
+    base = _SAP_SYNTHETIC_TICKETS
+    out: List[Dict[str, Any]] = []
+    for i in range(count):
+        t = dict(base[i % len(base)])
+        if i >= len(base):
+            t["ticket_id"] = f"SCN-{90000 + i}"
+            suffix = f" (variant {i + 1})"
+            t["title"] = str(t.get("title") or "SAP incident") + suffix
+        out.append(t)
+    return out
+
+
+def resolve_sap_ticket_seed_count(defn: Dict[str, Any], *, prd: str = "", requirement: str = "") -> int:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    parsed = parse_sap_ticket_count(prd, requirement)
+    if parsed is not None:
+        return parsed
+    stored = meta.get("sapTicketSeedCount")
+    if stored is not None:
+        try:
+            return max(1, min(200, int(stored)))
+        except (TypeError, ValueError):
+            pass
+    return len(_SAP_SYNTHETIC_TICKETS)
+
+
 def find_similar_tickets(
     reference: Dict[str, Any],
     pool: List[Dict[str, Any]],
@@ -271,18 +317,36 @@ def find_similar_tickets(
     return [row for _, row in scored[:limit]]
 
 
-def seed_sap_tickets_if_empty(defn: Dict[str, Any]) -> Dict[str, Any]:
+def seed_sap_tickets(
+    defn: Dict[str, Any],
+    *,
+    prd: str = "",
+    requirement: str = "",
+) -> Dict[str, Any]:
     out = dict(defn)
+    count = resolve_sap_ticket_seed_count(out, prd=prd, requirement=requirement)
+    meta = dict(out.get("meta") or {})
+    meta["sapTicketSeedCount"] = count
+    out["meta"] = meta
     bag = dict(out.get("data") or out.get("mock") or {})
     key = "source_sap_tickets"
     rows = bag.get(key) if isinstance(bag.get(key), list) else []
     if not rows:
-        bag[key] = [dict(t) for t in _SAP_SYNTHETIC_TICKETS]
+        bag[key] = synthetic_tickets_for_count(count)
         out["data"] = bag
         out.pop("mock", None)
     from app_builder.services.sap_community_rag import enrich_definition_tickets
 
     return enrich_definition_tickets(out)
+
+
+def seed_sap_tickets_if_empty(
+    defn: Dict[str, Any],
+    *,
+    prd: str = "",
+    requirement: str = "",
+) -> Dict[str, Any]:
+    return seed_sap_tickets(defn, prd=prd, requirement=requirement)
 
 
 def new_ticket_row(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -391,11 +455,13 @@ def ensure_sap_similar_ticket_features(
         caps.append("sap_similar_tickets")
     if "rag_chat" not in caps:
         caps.append("rag_chat")
+    seed_n = parse_sap_ticket_count(prd, requirement) or len(_SAP_SYNTHETIC_TICKETS)
     defn.meta = defn.meta.model_copy(
         update={
             "capabilities": caps,
             "domain": "sap",
             "dataModel": "source_compute_v1",
+            "sapTicketSeedCount": seed_n,
             "description": defn.meta.description
             or "SAP Similarity Tickets — dashboard and assistant over historical incidents.",
         }

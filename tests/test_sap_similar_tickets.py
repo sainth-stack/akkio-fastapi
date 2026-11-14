@@ -2,6 +2,8 @@ from app_builder.schemas.app_definition import AppDefinition, AppMeta, NavItemDe
 from app_builder.services.sap_similar_tickets import (
     ensure_sap_similar_ticket_features,
     find_similar_tickets,
+    parse_sap_ticket_count,
+    seed_sap_tickets,
     seed_sap_tickets_if_empty,
     wants_sap_similar_tickets,
 )
@@ -10,6 +12,18 @@ from app_builder.services.sap_similar_tickets import (
 def test_wants_sap_prompt():
     assert wants_sap_similar_tickets("", "Build SAP similar tickets app with create and match")
     assert wants_sap_similar_tickets("", "Find similar ticket for SAP IDoc errors")
+
+
+def test_parse_ticket_count_from_prompt():
+    assert parse_sap_ticket_count("", "Seed 10 SAP community tickets with RAG") == 10
+    assert parse_sap_ticket_count("SAP app", "Dashboard with 25 tickets") == 25
+    assert parse_sap_ticket_count("", "no count here") is None
+
+
+def test_seed_respects_prompt_count():
+    defn = seed_sap_tickets({"data": {}}, requirement="generate 12 synthetic sap tickets")
+    assert defn["meta"]["sapTicketSeedCount"] == 12
+    assert len(defn["data"]["source_sap_tickets"]) == 12
 
 
 def test_seed_and_similarity():
@@ -55,10 +69,12 @@ def test_default_sap_dashboard_not_two_screens():
     out = ensure_sap_similar_ticket_features(
         defn,
         prd="SAP similarity tickets",
-        requirement="Dashboard with KPIs and table. Chatbot finds similar historical SAP tickets.",
+        requirement="Dashboard with KPIs. Seed 15 SAP community tickets. Chatbot finds similar tickets.",
     )
+    assert out.meta.sapTicketSeedCount == 15
     assert out.meta.domain == "sap"
     assert "rag_chat" in (out.meta.capabilities or [])
+    assert (out.meta.sapTicketSeedCount or 0) >= 1
     assert any(p.id == "dashboard" for p in out.pages)
     dash = next(p for p in out.pages if p.id == "dashboard")
     types = [b.get("type") for b in dash.blocks if isinstance(b, dict)]
