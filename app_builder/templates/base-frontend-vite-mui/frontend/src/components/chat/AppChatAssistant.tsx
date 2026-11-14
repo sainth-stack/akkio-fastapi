@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import type { AppDefinition } from '../../renderer/useAppDefinition';
 import { getAkkioAccessToken, getAkkioApiBase } from '../../renderer/akkioApi';
 import { downloadRagDataPdf } from '../../utils/ragDownload';
+import { ChatMessageContent } from './chatMessageContent';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
@@ -71,18 +72,24 @@ export default function AppChatAssistant({
   const apiBase = getAkkioApiBase();
   const navigate = useNavigate();
   const caps = definition.meta?.capabilities || [];
+  const isSapTickets =
+    definition.meta?.domain === 'sap' || caps.includes('sap_similar_tickets');
   const showRagExport =
     !caps.length || caps.includes('rag_export') || caps.includes('rag_chat');
+  const sapGreeting =
+    "Hello! I'm your Similarity Tickets assistant. Describe an error, incident or issue and I'll search " +
+    'the historical ticket data for similar cases, likely causes and fixes. You can also paste a ticket ID, ' +
+    "or ask things like 'how many critical tickets in 2025?'.";
   const hasPredictNav = definition.navigation?.some((n) => n.pageId === 'predict');
   const hasObservabilityNav = definition.navigation?.some((n) => n.pageId === 'observability');
   const [open, setOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
     {
       role: 'assistant',
-      content: 'How can I help you?',
+      content: isSapTickets ? sapGreeting : 'How can I help you?',
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -276,7 +283,7 @@ export default function AppChatAssistant({
       >
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, pb: 1 }}>
           <Typography variant="subtitle1" fontWeight={700} color="text.primary">
-            Assistant
+            {isSapTickets ? 'Similarity Tickets assistant' : 'Assistant'}
           </Typography>
           <IconButton onClick={() => setOpen(false)} aria-label="Close chat">
             <CloseIcon />
@@ -329,9 +336,7 @@ export default function AppChatAssistant({
                 border: m.role === 'user' ? 'none' : `1px solid ${theme.palette.divider}`,
               })}
             >
-              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                {m.content}
-              </Typography>
+              <ChatMessageContent content={m.content} isUser={m.role === 'user'} />
             </Paper>
           ))}
           {loading ? (
@@ -346,7 +351,11 @@ export default function AppChatAssistant({
           <TextField
             fullWidth
             size="small"
-            placeholder="Ask a question…"
+            placeholder={
+              isSapTickets
+                ? 'Describe an issue, paste a ticket ID, or ask for ticket counts…'
+                : 'Ask a question…'
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

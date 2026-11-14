@@ -20,6 +20,7 @@ import { resolveRowKey, resolveXAxisKey } from './chartUtils';
 import { usePageFilters } from './PageFilterContext';
 import { useChartPalette } from '../theme/useChartPalette';
 import { repairTableRows, rowsLookPlaceholder } from './tableDataRepair';
+import SapCommunityFeed from '../components/sap/SapCommunityFeed';
 
 type Block = Record<string, unknown>;
 
@@ -231,6 +232,17 @@ export default function BlockRenderer({
         {displayTitle ? <ChartCardTitle title={displayTitle} /> : null}
         <PieChart data={data} height={chartHeight} />
       </Paper>
+    );
+  }
+
+  if (type === 'sapCommunityFeed') {
+    return (
+      <SapCommunityFeed
+        definition={definition}
+        dataKey={String(normalized.dataKey || 'source_sap_tickets')}
+        defaultQuery={String(normalized.defaultQuery || '')}
+        title={displayTitle || undefined}
+      />
     );
   }
 

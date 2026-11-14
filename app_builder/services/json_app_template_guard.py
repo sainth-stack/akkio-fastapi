@@ -19,6 +19,8 @@ _JSON_APP_PROTECTED: Tuple[str, ...] = (
     "frontend/src/pages/CreateTicketPage.tsx",
     "frontend/src/pages/SimilarTicketsPage.tsx",
     "frontend/src/components/chat/",
+    "frontend/src/components/chat/chatMessageContent.tsx",
+    "frontend/src/components/sap/",
     "frontend/src/components/data/",
     "frontend/src/components/predict/",
     "frontend/src/utils/ragDownload.ts",

@@ -208,6 +208,31 @@ def build_knowledge_chunks(
     ).strip()
     chunks.append(("app", app_line))
 
+    meta_domain = str(meta.get("domain") or "").lower()
+    caps = meta.get("capabilities") or []
+    if meta_domain == "sap" or (isinstance(caps, list) and "sap_similar_tickets" in caps):
+        tickets = data.get("source_sap_tickets")
+        if isinstance(tickets, list) and tickets:
+            tlines = [f"SAP ticket store ({len(tickets)} records):"]
+            for row in tickets[:48]:
+                if not isinstance(row, dict):
+                    continue
+                tlines.append(
+                    "  • "
+                    f"{row.get('ticket_id')}: {row.get('title')} | "
+                    f"{row.get('category')} | {row.get('component')} | "
+                    f"{row.get('priority')} | {row.get('status')}"
+                )
+            chunks.append(("sap_tickets", "\n".join(tlines)))
+        rag_bag = data.get("sap_ticket_rag")
+        if isinstance(rag_bag, dict):
+            for tid, rag in list(rag_bag.items())[:32]:
+                if not isinstance(rag, dict):
+                    continue
+                ans = str(rag.get("suggested_answer") or "")[:2000]
+                if ans:
+                    chunks.append((f"ticket_rag:{tid}", f"Ticket {tid} suggested answer:\n{ans}"))
+
     for page in defn.get("pages") or []:
         if not isinstance(page, dict):
             continue
@@ -276,6 +301,12 @@ def retrieve_chunks(
         if any(w in q_tokens for w in ("product", "price", "stock", "order", "cart", "laptop")):
             if "product" in low or "catalog" in low or "₹" in text:
                 score += 2
+        if any(
+            w in q_tokens
+            for w in ("ticket", "idoc", "sap", "incident", "reconciliation", "determination")
+        ):
+            if "sap ticket" in low or "ticket store" in low or "RETMFG" in text:
+                score += 3
         scored.append((score, text))
     scored.sort(key=lambda x: (-x[0], len(x[1])))
     picked = [t for s, t in scored if s > 0][:top_k]

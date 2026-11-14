@@ -43,9 +43,18 @@ def add_project_ticket(
     bag[TICKET_DATA_KEY] = rows
     defn["data"] = bag
     defn.pop("mock", None)
+    from app_builder.services.sap_community_rag import build_ticket_rag_record, enrich_ticket_row
+
+    rag = build_ticket_rag_record(row)
+    rag_bag = dict(bag.get("sap_ticket_rag") or {})
+    rag_bag[str(row["ticket_id"])] = rag
+    bag["sap_ticket_rag"] = rag_bag
+    rows[0] = enrich_ticket_row(row, rag)
+    bag[TICKET_DATA_KEY] = rows
+    defn["data"] = bag
     similar = find_similar_tickets(row, rows, exclude_id=row["ticket_id"])
     save_data_json_to_project(project_id, defn)
-    return row, similar, defn
+    return rows[0], similar, defn
 
 
 def similar_for_ticket_id(

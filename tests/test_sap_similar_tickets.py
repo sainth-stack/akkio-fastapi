@@ -43,3 +43,47 @@ def test_ensure_two_screens():
     assert "sap_similar_tickets" in out.meta.capabilities
     ids = [p.id for p in out.pages]
     assert ids == ["create_ticket", "similar_tickets"]
+
+
+def test_default_sap_dashboard_not_two_screens():
+    defn = AppDefinition(
+        meta=AppMeta(appName="Similarity Tickets", description="", domain="generic"),
+        theme={},
+        navigation=[],
+        pages=[],
+    )
+    out = ensure_sap_similar_ticket_features(
+        defn,
+        prd="SAP similarity tickets",
+        requirement="Dashboard with KPIs and table. Chatbot finds similar historical SAP tickets.",
+    )
+    assert out.meta.domain == "sap"
+    assert "rag_chat" in (out.meta.capabilities or [])
+    assert any(p.id == "dashboard" for p in out.pages)
+    dash = next(p for p in out.pages if p.id == "dashboard")
+    types = [b.get("type") for b in dash.blocks if isinstance(b, dict)]
+    assert "kpiRow" in types
+    assert "sapCommunityFeed" in types or "dataTable" in types
+
+
+def test_ticket_rag_enrich():
+    from app_builder.services.sap_community_rag import enrich_definition_tickets
+
+    defn = seed_sap_tickets_if_empty({"data": {}})
+    out = enrich_definition_tickets(defn)
+    row = out["data"]["source_sap_tickets"][0]
+    assert row.get("snippet")
+    assert row.get("suggested_answer")
+    assert out["data"]["sap_ticket_rag"]
+
+
+def test_sap_chat_account_determination():
+    from app_builder.services.sap_ticket_chat import answer_sap_ticket_chat
+
+    defn = seed_sap_tickets_if_empty({"meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"]}})
+    out = answer_sap_ticket_chat(defn, [{"role": "user", "content": "account determination id"}])
+    assert out
+    body = out["content"]
+    assert "Problem Description" in body
+    assert "RETMFG" in body
+    assert "Suggested Solution" in body

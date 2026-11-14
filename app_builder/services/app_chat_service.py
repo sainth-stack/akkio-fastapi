@@ -63,6 +63,27 @@ async def answer_app_chat(
             )
         }
 
+    from app_builder.services.sap_ticket_chat import (
+        SAP_TICKET_CHAT_SYSTEM,
+        answer_sap_ticket_chat,
+        is_sap_ticket_app,
+    )
+
+    if is_sap_ticket_app(defn):
+        deterministic = answer_sap_ticket_chat(defn, messages)
+        if deterministic and deterministic.get("content"):
+            from app_builder.services.llm_observability_store import build_observability_event
+
+            content = str(deterministic["content"])
+            observability = build_observability_event(
+                source="sap_ticket_chat",
+                model="rules/similarity",
+                prompt=last_user,
+                output=content,
+                llm_response_obj=None,
+            )
+            return {"content": content, "observability": observability}
+
     predict_mode = _is_predict_intent(last_user)
     context = build_rag_context(
         defn,

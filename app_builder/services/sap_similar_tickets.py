@@ -13,15 +13,104 @@ _TOKEN = re_module.compile(r"[a-z0-9]{2,}")
 
 _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
     {
+        "ticket_id": "SCN-58841",
+        "title": "Account determination ID missing in master data contract account (FI-CA)",
+        "description": (
+            "Hello, I have a problem with the account determination ID in FI-CA. "
+            "It is missing in the master data contract account and posting fails."
+        ),
+        "category": "Finance",
+        "component": "Account determination",
+        "product": "SAP ERP",
+        "document_type": "Question",
+        "priority": "High",
+        "status": "Open",
+        "reported_by": "Community user",
+        "created_at": "2011-08-09 12:05",
+        "posted_at": "Aug 9, 2011, 12:05 PM",
+        "community_url": "https://community.sap.com/t5/forums/searchpage/tab/message?q=account+determination+fi-ca",
+    },
+    {
+        "ticket_id": "SCN-91204",
+        "title": "FI-AR Account determination",
+        "description": (
+            "Where should account determination be set for FI-AR postings so customer "
+            "line items use the correct reconciliation accounts?"
+        ),
+        "category": "Finance",
+        "component": "Account determination",
+        "product": "SAP ERP",
+        "document_type": "Question",
+        "priority": "Medium",
+        "status": "Open",
+        "reported_by": "Community user",
+        "created_at": "2013-12-13 02:55",
+        "posted_at": "Dec 13, 2013, 2:55 AM",
+    },
+    {
+        "ticket_id": "SCN-44102",
+        "title": "Account Determination in Debit / Credit Memo",
+        "description": (
+            "We create debit and credit memos in SD; account determination does not pick "
+            "the expected revenue accounts. What customizing should we review?"
+        ),
+        "category": "Sales & Distribution",
+        "component": "Account determination",
+        "product": "SAP ERP",
+        "document_type": "Question",
+        "priority": "Medium",
+        "status": "Open",
+        "reported_by": "Community user",
+        "created_at": "2011-04-06 23:59",
+        "posted_at": "Apr 6, 2011, 11:59 PM",
+    },
+    {
+        "ticket_id": "SCN-99231023",
+        "title": "account determination id in DOCUBATCH",
+        "description": (
+            "Is there an inconsistency in account determination when IDOC is processed "
+            "via DOCUBATCH with regards to the FI-CA account determination?"
+        ),
+        "category": "Finance",
+        "component": "Account determination",
+        "product": "SAP ERP",
+        "document_type": "Question",
+        "priority": "Medium",
+        "status": "Open",
+        "reported_by": "Community user",
+        "created_at": "2012-11-28 15:56",
+        "posted_at": "Nov 28, 2012, 3:56 PM",
+    },
+    {
+        "ticket_id": "RETMFG00869",
+        "title": "Invoice posting failed — vendor reconciliation account missing",
+        "description": (
+            "Account determination error during FI invoice posting; vendor master lacks "
+            "reconciliation account in company code 1000."
+        ),
+        "category": "Finance",
+        "component": "Account determination",
+        "product": "SAP ERP",
+        "document_type": "Question",
+        "priority": "High",
+        "status": "Open",
+        "reported_by": "Plant AP team",
+        "created_at": "2025-11-02 08:15",
+        "posted_at": "Nov 2, 2025, 8:15 AM",
+    },
+    {
         "ticket_id": "TKT-2001",
         "title": "IDoc failure in MM goods receipt",
         "description": "Inbound IDoc 740 failed with status 51 during GR posting for plant 1000.",
         "category": "Materials Management",
         "component": "IDoc",
+        "product": "SAP ERP",
+        "document_type": "Question",
         "priority": "High",
         "status": "Open",
         "reported_by": "A. Chen",
         "created_at": "2026-06-01 09:00",
+        "posted_at": "Jun 1, 2026, 9:00 AM",
     },
     {
         "ticket_id": "TKT-2002",
@@ -191,22 +280,104 @@ def seed_sap_tickets_if_empty(defn: Dict[str, Any]) -> Dict[str, Any]:
         bag[key] = [dict(t) for t in _SAP_SYNTHETIC_TICKETS]
         out["data"] = bag
         out.pop("mock", None)
-    return out
+    from app_builder.services.sap_community_rag import enrich_definition_tickets
+
+    return enrich_definition_tickets(out)
 
 
 def new_ticket_row(payload: Dict[str, Any]) -> Dict[str, Any]:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(timezone.utc)
+    created = now.strftime("%Y-%m-%d %H:%M")
+    posted = now.strftime("%b %d, %Y, %I:%M %p").replace(" 0", " ")
+    desc = str(payload.get("description") or "").strip()
+    title = str(payload.get("title") or "").strip()
     return {
         "ticket_id": f"TKT-{uuid4().hex[:6].upper()}",
-        "title": str(payload.get("title") or "").strip(),
-        "description": str(payload.get("description") or "").strip(),
+        "title": title,
+        "description": desc,
+        "snippet": desc[:220] + ("…" if len(desc) > 220 else ""),
         "category": str(payload.get("category") or "General").strip(),
         "component": str(payload.get("component") or "Other").strip(),
+        "product": str(payload.get("product") or "SAP ERP").strip(),
+        "document_type": "Question",
         "priority": str(payload.get("priority") or "Medium").strip(),
         "status": "Open",
         "reported_by": str(payload.get("reported_by") or "App user").strip(),
-        "created_at": now,
+        "created_at": created,
+        "posted_at": posted,
+        "rag_status": "pending",
     }
+
+
+def sap_dashboard_blocks() -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "kpiRow",
+            "dataKey": "kpis_dashboard",
+            "items": [
+                {"label": "Open tickets", "valueKey": "open_tickets", "color": "warning"},
+                {"label": "High priority", "valueKey": "high_priority_tickets", "color": "error"},
+                {"label": "Total tickets", "valueKey": "total_tickets", "color": "primary"},
+                {"label": "Closed", "valueKey": "closed_tickets", "color": "success"},
+            ],
+        },
+        {
+            "type": "sapCommunityFeed",
+            "title": "Community tickets",
+            "dataKey": "source_sap_tickets",
+            "defaultQuery": "account determination id",
+        },
+    ]
+
+
+def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
+    """Default UX: dashboard KPIs + ticket table (not separate create/similar screens)."""
+    pages = list(defn.pages or [])
+    dash = next((p for p in pages if p.id == "dashboard"), None)
+    sap_blocks = sap_dashboard_blocks()
+    if dash is None:
+        dash = PageDef(
+            id="dashboard",
+            title="Dashboard",
+            subtitle="Ticket volume and recent SAP incidents",
+            blocks=sap_blocks,
+        )
+        pages.insert(0, dash)
+    else:
+        blocks = list(dash.blocks or [])
+        blocks = [
+            sap_blocks[1]
+            if isinstance(b, dict)
+            and b.get("type") == "dataTable"
+            and str(b.get("dataKey") or "").startswith("table_dashboard")
+            else b
+            for b in blocks
+        ]
+        has_table = any(
+            isinstance(b, dict) and b.get("type") in ("dataTable", "sapCommunityFeed")
+            for b in blocks
+        )
+        has_kpi = any(isinstance(b, dict) and b.get("type") == "kpiRow" for b in blocks)
+        if not has_kpi:
+            blocks = [sap_blocks[0], *blocks]
+        if not has_table:
+            blocks = [*blocks, sap_blocks[1]]
+        dash = dash.model_copy(
+            update={
+                "blocks": blocks,
+                "subtitle": dash.subtitle or "Ticket volume and recent SAP incidents",
+            }
+        )
+        pages = [dash if p.id == "dashboard" else p for p in pages]
+    nav = list(defn.navigation or [])
+    if not any(n.pageId == "dashboard" for n in nav):
+        nav.insert(
+            0,
+            NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard"),
+        )
+    defn.pages = pages
+    defn.navigation = nav
+    return defn
 
 
 def ensure_sap_similar_ticket_features(
@@ -218,13 +389,15 @@ def ensure_sap_similar_ticket_features(
     caps = list(defn.meta.capabilities or [])
     if "sap_similar_tickets" not in caps:
         caps.append("sap_similar_tickets")
+    if "rag_chat" not in caps:
+        caps.append("rag_chat")
     defn.meta = defn.meta.model_copy(
         update={
             "capabilities": caps,
             "domain": "sap",
             "dataModel": "source_compute_v1",
             "description": defn.meta.description
-            or "SAP service tickets — create incidents and find similar historical tickets.",
+            or "SAP Similarity Tickets — dashboard and assistant over historical incidents.",
         }
     )
     datasets = list(defn.meta.sourceDatasets or [])
@@ -264,14 +437,8 @@ def ensure_sap_similar_ticket_features(
         defn.navigation = [nav_create, nav_similar]
         return defn
 
-    nav = list(defn.navigation or [])
-    pages = list(defn.pages or [])
-    if not any(n.pageId == "create_ticket" for n in nav):
-        nav.append(nav_create)
-        pages.append(create_page)
-    if not any(n.pageId == "similar_tickets" for n in nav):
-        nav.append(nav_similar)
-        pages.append(similar_page)
-    defn.navigation = nav
-    defn.pages = pages
+    defn = _merge_sap_dashboard(defn)
+    # Remove legacy create/similar-only nav if a prior build added them without "two screens"
+    defn.navigation = [n for n in defn.navigation if n.pageId not in ("create_ticket", "similar_tickets")]
+    defn.pages = [p for p in defn.pages if p.id not in ("create_ticket", "similar_tickets")]
     return defn

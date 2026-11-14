@@ -150,6 +150,27 @@ def _compute_kpi_value(label: str, value_key: str, rows: List[Dict[str, Any]]) -
     if "order" in lab and "total" not in lab:
         return _fmt_count(len(rows))
 
+    if "ticket" in lab:
+        if "open" in lab:
+            open_rows = [
+                r
+                for r in rows
+                if str(r.get("status") or "").lower() in ("open", "in progress", "scheduled")
+            ]
+            return _fmt_count(len(open_rows))
+        if "high" in lab or "critical" in lab or value_key == "high_priority_tickets":
+            hi = [
+                r
+                for r in rows
+                if str(r.get("priority") or "").lower() in ("high", "critical")
+            ]
+            return _fmt_count(len(hi))
+        if "closed" in lab:
+            closed = [r for r in rows if str(r.get("status") or "").lower() == "closed"]
+            return _fmt_count(len(closed))
+        if "total" in lab or value_key == "total_tickets":
+            return _fmt_count(len(rows))
+
     vals = []
     for r in rows:
         for k, v in r.items():
