@@ -59,6 +59,18 @@ def test_ensure_two_screens():
     assert ids == ["create_ticket", "similar_tickets"]
 
 
+def test_ensure_when_blueprint_domain_sap_without_keywords():
+    defn = AppDefinition(
+        meta=AppMeta(appName="SAP Desk", description="", domain="sap"),
+        theme={},
+        navigation=[],
+        pages=[],
+    )
+    out = ensure_sap_similar_ticket_features(defn, prd="", requirement="Dashboard with KPIs only")
+    assert out.meta.domain == "sap"
+    assert "sap_similar_tickets" in (out.meta.capabilities or [])
+
+
 def test_default_sap_dashboard_not_two_screens():
     defn = AppDefinition(
         meta=AppMeta(appName="Similarity Tickets", description="", domain="generic"),

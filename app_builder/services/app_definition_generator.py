@@ -958,6 +958,14 @@ Architecture JSON:
 """
 
     llm = get_llm_for_user(None, temperature=0.25, streaming=False)
+    blueprint = plan_json.get("blueprint") if isinstance(plan_json.get("blueprint"), dict) else {}
+    selected_domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "").lower()
+    if selected_domain == "sap":
+        user_prompt = (
+            "MANDATORY domain: sap (SAP Similarity Tickets — community feed, per-ticket RAG, assistant).\n\n"
+            + user_prompt
+        )
+
     gen = await extract_validated(
         llm=llm,
         system_prompt=_APP_DEF_LLM_SYSTEM,
@@ -968,6 +976,9 @@ Architecture JSON:
     )
     if gen is None:
         return None
+
+    if selected_domain == "sap":
+        gen = gen.model_copy(update={"domain": "sap"})
 
     theme = _theme_from_tokens(
         plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None

@@ -198,12 +198,18 @@ async def run_json_app_codegen(
         plan_json=merged_plan,
         app_name=app_name or project_name,
     )
+    blueprint0 = merged_plan.get("blueprint") if isinstance(merged_plan.get("blueprint"), dict) else {}
+    sap_track = str(blueprint0.get("selected_domain") or blueprint0.get("domain") or "").lower() == "sap"
     await emit({
         "event": "pipeline_log",
         "agent": "codegen",
         "message": (
-            f"Production pipeline started — json_app track | target: {display_name} | "
-            "PRD → theme → AppDefinition → template → build verify."
+            f"SAP 4-agent pipeline | {display_name} | Dashboard → Data → RAG (step 2) → Integration."
+            if sap_track
+            else (
+                f"Production pipeline started — json_app track | target: {display_name} | "
+                "PRD → theme → AppDefinition → template → build verify."
+            )
         ),
     })
     await emit({
@@ -211,22 +217,39 @@ async def run_json_app_codegen(
         "message": f"Generating production UI for {display_name}…",
     })
 
-    screens = await run_planner_phase(
-        emit,
-        app_name=display_name,
-        requirement=requirement,
-        prd_text=prd_text,
-        uiux_text=uiux_text,
-        plan_json=merged_plan,
-    )
+    blueprint = merged_plan.get("blueprint") if isinstance(merged_plan.get("blueprint"), dict) else {}
+    selected_domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "").lower()
+    is_sap = selected_domain == "sap"
 
-    await run_styling_phase(emit, plan_json=merged_plan, app_name=display_name)
+    if is_sap:
+        from app_builder.services.sap_json_app_codegen_pipeline import (
+            run_sap_dashboard_phase,
+            run_sap_data_definition_phase,
+            run_sap_integration_phase,
+            run_sap_rag_phase_pending,
+        )
+
+        screens = await run_sap_dashboard_phase(
+            emit, app_name=display_name, requirement=requirement, plan_json=merged_plan
+        )
+    else:
+        screens = await run_planner_phase(
+            emit,
+            app_name=display_name,
+            requirement=requirement,
+            prd_text=prd_text,
+            uiux_text=uiux_text,
+            plan_json=merged_plan,
+        )
+        await run_styling_phase(emit, plan_json=merged_plan, app_name=display_name)
+
+    agent_def = "sap_data_definition_agent" if is_sap else "app_definition_agent"
 
     async def _on_def_progress(msg: str) -> None:
-        await emit({"event": "agent_progress", "agent": "app_definition_agent", "message": msg})
+        await emit({"event": "agent_progress", "agent": agent_def, "message": msg})
 
     async def _resolve() -> AppDefinition:
-        return await resolve_app_definition(
+        defn = await resolve_app_definition(
             requirement=requirement,
             prd=prd_text,
             uiux=uiux_text,
@@ -235,12 +258,19 @@ async def run_json_app_codegen(
             use_llm=use_llm,
             on_progress=_on_def_progress,
         )
+        if is_sap:
+            defn.meta = defn.meta.model_copy(update={"domain": "sap", "sapRagPhase": "dashboard"})
+        return defn
 
-    definition = await run_app_definition_phase(
-        emit,
-        screens=screens,
-        resolve_coro=_resolve,
-    )
+    if is_sap:
+        definition = await run_sap_data_definition_phase(emit, screens=screens, resolve_coro=_resolve)
+        await run_sap_rag_phase_pending(emit)
+    else:
+        definition = await run_app_definition_phase(
+            emit,
+            screens=screens,
+            resolve_coro=_resolve,
+        )
 
     await emit({
         "event": "app_definition_json",
@@ -261,14 +291,21 @@ async def run_json_app_codegen(
     data_blob = files.get("frontend/src/mock/data.json") or ""
     data_kb = len(data_blob.encode("utf-8")) / 1024.0
 
-    await run_coding_phase(
-        emit,
-        definition=definition,
-        file_count=len(files),
-        data_json_kb=data_kb,
-    )
-
-    await run_integration_phase(emit, definition=definition, template_name=TEMPLATE_NAME)
-    await run_validator_handoff(emit)
+    if is_sap:
+        await run_sap_integration_phase(
+            emit,
+            definition=definition,
+            file_count=len(files),
+            data_json_kb=data_kb,
+        )
+    else:
+        await run_coding_phase(
+            emit,
+            definition=definition,
+            file_count=len(files),
+            data_json_kb=data_kb,
+        )
+        await run_integration_phase(emit, definition=definition, template_name=TEMPLATE_NAME)
+        await run_validator_handoff(emit)
 
     return files

@@ -108,9 +108,18 @@ def _needs_rag_refresh(row: Dict[str, Any], rag: Optional[Dict[str, Any]]) -> bo
     return False
 
 
+def _defer_rag_search(defn: Dict[str, Any]) -> bool:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    if str(meta.get("domain") or "").lower() != "sap":
+        return False
+    phase = str(meta.get("sapRagPhase") or "dashboard").lower()
+    return phase != "rag_complete"
+
+
 def enrich_definition_tickets(defn: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
     """Run SAP search + RAG build for every ticket (one search per ticket)."""
     out = dict(defn)
+    defer = _defer_rag_search(out) and not force
     bag = dict(out.get("data") or out.get("mock") or {})
     rows = bag.get("source_sap_tickets")
     if not isinstance(rows, list):
@@ -122,7 +131,15 @@ def enrich_definition_tickets(defn: Dict[str, Any], *, force: bool = False) -> D
             continue
         tid = str(row.get("ticket_id") or "")
         rag = rag_bag.get(tid) if tid else None
-        if force or _needs_rag_refresh(row, rag if isinstance(rag, dict) else None):
+        if defer:
+            rag = {
+                "ticket_id": tid,
+                "search_query": _search_query_from_ticket(row),
+                "status": "pending",
+                "suggested_answer": "Send step 2 in chat to search SAP Community and build context for this ticket.",
+                "chunks": [],
+            }
+        elif force or _needs_rag_refresh(row, rag if isinstance(rag, dict) else None):
             rag = build_ticket_rag_record(row, force=force)
             if tid:
                 rag_bag[tid] = rag

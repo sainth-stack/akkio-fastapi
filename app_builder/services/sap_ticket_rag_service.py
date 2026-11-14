@@ -21,6 +21,9 @@ def refresh_project_ticket_rag(
         raise ValueError("App definition not found")
     defn = seed_sap_tickets(defn, prd=prd, requirement=requirement)
     defn = enrich_definition_tickets(defn, force=force)
+    meta = dict(defn.get("meta") or {})
+    meta["sapRagPhase"] = "rag_complete"
+    defn["meta"] = meta
     save_data_json_to_project(project_id, defn)
     bag = defn.get("data") or {}
     rows = bag.get("source_sap_tickets") or []

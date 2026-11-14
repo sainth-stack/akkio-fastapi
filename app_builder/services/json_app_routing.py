@@ -25,11 +25,16 @@ def is_operations_dashboard_prompt(requirement: str, prd: str = "", uiux: str = 
     return (ops and pages) or explicit or named
 
 
-def should_force_json_app_track(requirement: str, prd: str = "", uiux: str = "") -> bool:
+def should_force_json_app_track(
+    requirement: str, prd: str = "", uiux: str = "", *, selected_domain: str = ""
+) -> bool:
     """
     Use json_app codegen when the user asked for a data-driven multi-page dashboard
     (RAG chat, Predict, KPIs in JSON) — not fullstack AI pages or anomaly_detection legacy.
     """
+    if (selected_domain or "").strip().lower() == "sap":
+        return True
+
     text = f"{requirement or ''}\n{prd or ''}\n{uiux or ''}".lower()
     if re.search(r"\b(ecommerce|shopping cart|online store|product catalog)\b", text):
         return False

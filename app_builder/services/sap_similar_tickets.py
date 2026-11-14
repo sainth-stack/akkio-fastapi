@@ -447,7 +447,8 @@ def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
 def ensure_sap_similar_ticket_features(
     defn: AppDefinition, *, prd: str = "", requirement: str = ""
 ) -> AppDefinition:
-    if not wants_sap_similar_tickets(prd, requirement):
+    meta_domain = str(defn.meta.domain or "").lower()
+    if meta_domain != "sap" and not wants_sap_similar_tickets(prd, requirement):
         return defn
 
     caps = list(defn.meta.capabilities or [])
@@ -456,12 +457,14 @@ def ensure_sap_similar_ticket_features(
     if "rag_chat" not in caps:
         caps.append("rag_chat")
     seed_n = parse_sap_ticket_count(prd, requirement) or len(_SAP_SYNTHETIC_TICKETS)
+    rag_phase = str(defn.meta.sapRagPhase or "dashboard")
     defn.meta = defn.meta.model_copy(
         update={
             "capabilities": caps,
             "domain": "sap",
             "dataModel": "source_compute_v1",
             "sapTicketSeedCount": seed_n,
+            "sapRagPhase": rag_phase,
             "description": defn.meta.description
             or "SAP Similarity Tickets — dashboard and assistant over historical incidents.",
         }

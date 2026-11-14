@@ -326,13 +326,25 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
             except Exception:
                 pass
 
-        # Maintenance / multi-page dashboard prompts → json_app (not anomaly legacy or fullstack AI)
-        try:
-            from app_builder.services.json_app_routing import should_force_json_app_track
+        _bp = (plan_json_req or {}).get("blueprint") if isinstance(plan_json_req, dict) else {}
+        if not isinstance(_bp, dict):
+            _bp = {}
+        _selected_domain = str(_bp.get("selected_domain") or _bp.get("domain") or "").lower()
 
-            _force_json_app = should_force_json_app_track(requirement, prd, uiux)
-        except Exception:
-            _force_json_app = False
+        if _selected_domain == "sap":
+            _track = "json_app"
+            _domain = "sap"
+            _force_json_app = True
+        else:
+            # Maintenance / multi-page dashboard prompts → json_app (not anomaly legacy or fullstack AI)
+            try:
+                from app_builder.services.json_app_routing import should_force_json_app_track
+
+                _force_json_app = should_force_json_app_track(
+                    requirement, prd, uiux, selected_domain=_selected_domain
+                )
+            except Exception:
+                _force_json_app = False
 
         if _force_json_app:
             try:
@@ -340,8 +352,10 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
 
                 if _kw_static not in ("ecommerce", "doc_chat"):
                     _track = "json_app"
-                    if not _domain or _domain in STATIC_DOMAINS:
-                        _domain = "manufacturing"
+                    if _selected_domain == "sap":
+                        _domain = "sap"
+                    elif not _domain or _domain in STATIC_DOMAINS:
+                        _domain = _selected_domain or "manufacturing"
             except Exception:
                 _track = "json_app"
             await websocket.send_text(json.dumps({

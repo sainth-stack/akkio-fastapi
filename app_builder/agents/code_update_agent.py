@@ -370,6 +370,20 @@ async def update_code_from_chat(
     print(f"Request: {user_request}")
     print(f"{'='*60}")
 
+    try:
+        from app_builder.services.sap_rag_update import run_sap_rag_update
+
+        sap_result = await run_sap_rag_update(
+            project_name=project_name,
+            project_root=project_root,
+            user_request=user_request,
+            websocket=websocket,
+        )
+        if sap_result is not None:
+            return sap_result
+    except Exception as sap_exc:
+        print(f"[update_code] SAP RAG path skipped: {sap_exc}")
+
     llm = get_llm_for_user(None, temperature=0.15)
     # Use stored PRD and architecture as context only — do NOT update them
     current_prd = prd
