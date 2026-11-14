@@ -219,7 +219,9 @@ async def run_json_app_codegen(
 
     blueprint = merged_plan.get("blueprint") if isinstance(merged_plan.get("blueprint"), dict) else {}
     selected_domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "").lower()
-    is_sap = selected_domain == "sap"
+    from app_builder.services.sap_similar_tickets import wants_sap_similar_tickets
+
+    is_sap = selected_domain == "sap" or wants_sap_similar_tickets(prd_text, requirement)
 
     if is_sap:
         from app_builder.services.sap_json_app_codegen_pipeline import (

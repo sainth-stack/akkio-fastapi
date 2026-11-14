@@ -9,6 +9,28 @@ from typing import Any, Dict, Optional
 from app_builder.services.runtime_paths import resolve_project_root
 
 
+def _looks_like_sap_definition(data: Dict[str, Any]) -> bool:
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    caps = meta.get("capabilities") or []
+    if str(meta.get("domain") or "").lower() == "sap":
+        return True
+    if isinstance(caps, list) and "sap_similar_tickets" in caps:
+        return True
+    name = str(meta.get("appName") or "").lower()
+    if "sap" in name and "similar" in name:
+        return True
+    bag = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if isinstance(bag.get("source_sap_tickets"), list):
+        return True
+    for page in data.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if isinstance(block, dict) and block.get("type") == "sapCommunityFeed":
+                return True
+    return False
+
+
 def is_sap_json_project(project_root: str) -> bool:
     for rel in (
         "frontend/src/mock/data.json",
@@ -20,20 +42,23 @@ def is_sap_json_project(project_root: str) -> bool:
         try:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
-            meta = data.get("meta") or {}
-            caps = meta.get("capabilities") or []
-            if str(meta.get("domain") or "").lower() == "sap":
-                return True
-            if isinstance(caps, list) and "sap_similar_tickets" in caps:
+            if _looks_like_sap_definition(data):
                 return True
         except (OSError, json.JSONDecodeError):
             continue
+    name = os.path.basename(project_root.rstrip(os.sep)).lower()
+    if "sap" in name and "similar" in name:
+        return True
     return False
 
 
 def wants_sap_rag_followup(text: str) -> bool:
     low = (text or "").lower()
     if re.search(r"\b(step\s*2|prompt\s*2|second prompt)\b", low):
+        return True
+    if re.search(r"\bstep\s*2\b.*\b(load|rag|context|community)\b", low):
+        return True
+    if "load sap ticket" in low or "sap data & rag" in low:
         return True
     if re.search(r"\b(rag|community|per-ticket|ticket context|sap context|search sap)\b", low):
         return True
@@ -113,11 +138,17 @@ async def run_sap_rag_update(
         "message": "Refreshing app data bundle…",
     })
     from app_builder.services.app_data_rag import load_project_app_definition
+    from app_builder.services.sap_similar_tickets import ensure_sap_similar_ticket_features_dict
 
     updated: Dict[str, str] = {}
+    data_rel = "frontend/src/mock/data.json"
     full = load_project_app_definition(project_name)
     if full:
-        updated["frontend/src/mock/data.json"] = json.dumps(full, indent=2, ensure_ascii=False)
+        full = ensure_sap_similar_ticket_features_dict(full, requirement=user_request)
+        full_meta = full.get("meta") if isinstance(full.get("meta"), dict) else {}
+        full_meta["sapRagPhase"] = "rag_complete"
+        full["meta"] = full_meta
+        updated[data_rel] = json.dumps(full, indent=2, ensure_ascii=False)
         try:
             from app_builder.schemas.files import GeneratedFiles
             from app_builder.services.file_writer import file_writer
@@ -140,7 +171,7 @@ async def run_sap_rag_update(
     return {
         "status": "success",
         "analysis": f"SAP RAG agent enriched {rag_n} tickets from Community search.",
-        "updated_files": list(updated.keys()) or [data_path],
+        "updated_files": list(updated.keys()) or [data_rel],
         "updated_code_dict": updated,
         "update_type": "sap_rag",
     }

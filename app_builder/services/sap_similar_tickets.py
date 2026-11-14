@@ -210,6 +210,22 @@ def wants_two_ticket_screens_only(prd: str, requirement: str) -> bool:
     )
 
 
+DEFAULT_SAP_TICKET_SEED = 10
+
+
+def sap_dashboard_table_columns() -> List[Dict[str, str]]:
+    """Dashboard table columns (KPIs + table only — no community feed UI)."""
+    return [
+        {"field": "ticket_id", "header": "Ticket ID", "type": "string"},
+        {"field": "title", "header": "Title", "type": "string"},
+        {"field": "posted_at", "header": "Posted", "type": "string"},
+        {"field": "snippet", "header": "Description", "type": "string"},
+        {"field": "category", "header": "Category", "type": "string"},
+        {"field": "priority", "header": "Priority", "type": "string"},
+        {"field": "status", "header": "Status", "type": "string"},
+    ]
+
+
 def sap_ticket_columns() -> List[Dict[str, str]]:
     return [
         {"field": "ticket_id", "header": "Ticket ID", "type": "string"},
@@ -293,7 +309,7 @@ def resolve_sap_ticket_seed_count(defn: Dict[str, Any], *, prd: str = "", requir
             return max(1, min(200, int(stored)))
         except (TypeError, ValueError):
             pass
-    return len(_SAP_SYNTHETIC_TICKETS)
+    return DEFAULT_SAP_TICKET_SEED
 
 
 def find_similar_tickets(
@@ -386,20 +402,21 @@ def sap_dashboard_blocks() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "type": "sapCommunityFeed",
-            "title": "Community tickets",
-            "dataKey": "source_sap_tickets",
-            "defaultQuery": "account determination id",
+            "type": "dataTable",
+            "title": "SAP tickets",
+            "dataKey": "table_sap_tickets",
+            "searchable": True,
+            "columns": sap_dashboard_table_columns(),
         },
     ]
 
 
 def _enforce_sap_single_dashboard(defn: AppDefinition) -> AppDefinition:
-    """SAP apps: one screen only — Dashboard with KPIs + Community ticket feed (no extra nav)."""
+    """SAP apps: one screen only — Dashboard with KPIs + ticket table (no extra nav)."""
     dash = PageDef(
         id="dashboard",
         title="Dashboard",
-        subtitle="SAP Community tickets — search, KPIs, and similarity assistant",
+        subtitle="Ticket KPIs and ticket list",
         blocks=sap_dashboard_blocks(),
     )
     defn.pages = [dash]
@@ -432,13 +449,25 @@ def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
         blocks = [
             sap_blocks[1]
             if isinstance(b, dict)
-            and b.get("type") == "dataTable"
-            and str(b.get("dataKey") or "").startswith("table_dashboard")
+            and (
+                b.get("type") == "sapCommunityFeed"
+                or (
+                    b.get("type") == "dataTable"
+                    and str(b.get("dataKey") or "").startswith("table_dashboard")
+                )
+            )
             else b
             for b in blocks
         ]
+        blocks = [
+            b
+            for b in blocks
+            if not (isinstance(b, dict) and b.get("type") == "sapCommunityFeed")
+        ]
         has_table = any(
-            isinstance(b, dict) and b.get("type") in ("dataTable", "sapCommunityFeed")
+            isinstance(b, dict)
+            and b.get("type") == "dataTable"
+            and str(b.get("dataKey") or "") in ("table_sap_tickets", "table_dashboard")
             for b in blocks
         )
         has_kpi = any(isinstance(b, dict) and b.get("type") == "kpiRow" for b in blocks)
@@ -476,7 +505,7 @@ def ensure_sap_similar_ticket_features(
         caps.append("sap_similar_tickets")
     if "rag_chat" not in caps:
         caps.append("rag_chat")
-    seed_n = parse_sap_ticket_count(prd, requirement) or len(_SAP_SYNTHETIC_TICKETS)
+    seed_n = parse_sap_ticket_count(prd, requirement) or DEFAULT_SAP_TICKET_SEED
     rag_phase = str(defn.meta.sapRagPhase or "dashboard")
     defn.meta = defn.meta.model_copy(
         update={
@@ -528,3 +557,15 @@ def ensure_sap_similar_ticket_features(
 
     defn = _enforce_sap_single_dashboard(defn)
     return defn
+
+
+def ensure_sap_similar_ticket_features_dict(
+    defn: Dict[str, Any], *, prd: str = "", requirement: str = ""
+) -> Dict[str, Any]:
+    """Dict wrapper for enrich/RAG refresh paths."""
+    try:
+        model = AppDefinition.model_validate(defn)
+        out = ensure_sap_similar_ticket_features(model, prd=prd, requirement=requirement)
+        return out.model_dump(mode="json", exclude_none=True)
+    except Exception:
+        return defn

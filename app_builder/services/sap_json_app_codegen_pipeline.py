@@ -39,7 +39,7 @@ async def run_sap_dashboard_phase(
         "message": "Step 1 — designing your SAP tickets dashboard…",
     })
     await _progress(emit, AGENT_SAP_DASHBOARD, f"App name: {app_name}")
-    await _progress(emit, AGENT_SAP_DASHBOARD, "Layout: KPI row + SAP Community ticket feed + assistant")
+    await _progress(emit, AGENT_SAP_DASHBOARD, "Layout: KPI row + SAP tickets table")
     if screens:
         await _progress(emit, AGENT_SAP_DASHBOARD, f"Pages: {', '.join(s['title'] for s in screens[:6])}")
     else:
@@ -64,7 +64,7 @@ async def run_sap_data_definition_phase(
         "message": "Defining SAP ticket data (schema, seed rows, ticket count)…",
     })
     await _progress(emit, AGENT_SAP_DATA_DEFINITION, "Dataset: source_sap_tickets + columns")
-    await _progress(emit, AGENT_SAP_DATA_DEFINITION, "Blocks: sapCommunityFeed, kpiRow")
+    await _progress(emit, AGENT_SAP_DATA_DEFINITION, "Blocks: kpiRow + dataTable (table_sap_tickets)")
     definition = await resolve_coro()
     n_tickets = 0
     try:

@@ -91,6 +91,8 @@ def test_sap_single_dashboard_nav_only():
     assert out.navigation[0].pageId == "dashboard"
     assert len(out.pages) == 1
     assert out.pages[0].id == "dashboard"
+    block_types = [b.get("type") for b in out.pages[0].blocks if isinstance(b, dict)]
+    assert block_types == ["kpiRow", "dataTable"]
     assert "predict" not in (out.meta.capabilities or [])
 
 
@@ -114,7 +116,8 @@ def test_default_sap_dashboard_not_two_screens():
     dash = next(p for p in out.pages if p.id == "dashboard")
     types = [b.get("type") for b in dash.blocks if isinstance(b, dict)]
     assert "kpiRow" in types
-    assert "sapCommunityFeed" in types or "dataTable" in types
+    assert "dataTable" in types
+    assert "sapCommunityFeed" not in types
 
 
 def test_ticket_rag_enrich():
@@ -126,6 +129,39 @@ def test_ticket_rag_enrich():
     assert row.get("snippet")
     assert row.get("suggested_answer")
     assert out["data"]["sap_ticket_rag"]
+
+
+def test_merge_replaces_community_feed_with_table():
+    defn = AppDefinition(
+        meta=AppMeta(appName="Sap Similarity", description="", domain="sap"),
+        theme={},
+        navigation=[NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard")],
+        pages=[
+            PageDef(
+                id="dashboard",
+                title="Dashboard",
+                blocks=[
+                    {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": []},
+                    {"type": "sapCommunityFeed", "dataKey": "source_sap_tickets"},
+                ],
+            )
+        ],
+    )
+    out = ensure_sap_similar_ticket_features(defn, prd="SAP", requirement="dashboard KPIs table only")
+    dash = next(p for p in out.pages if p.id == "dashboard")
+    types = [b.get("type") for b in dash.blocks if isinstance(b, dict)]
+    assert "sapCommunityFeed" not in types
+    assert "dataTable" in types
+
+
+def test_wants_sap_rag_step2_prompt():
+    from app_builder.services.sap_rag_update import wants_sap_rag_followup
+
+    step2 = (
+        "Step 2 — load SAP ticket data and context.\n"
+        "For each ticket, search SAP Community and build per-ticket RAG."
+    )
+    assert wants_sap_rag_followup(step2)
 
 
 def test_sap_chat_account_determination():

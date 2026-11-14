@@ -6,7 +6,10 @@ from typing import Any, Dict
 from app_builder.services.app_data_rag import load_project_app_definition
 from app_builder.services.data_import_service import save_data_json_to_project
 from app_builder.services.sap_community_rag import enrich_definition_tickets
-from app_builder.services.sap_similar_tickets import seed_sap_tickets
+from app_builder.services.sap_similar_tickets import (
+    ensure_sap_similar_ticket_features_dict,
+    seed_sap_tickets,
+)
 
 
 def refresh_project_ticket_rag(
@@ -23,7 +26,14 @@ def refresh_project_ticket_rag(
     defn = enrich_definition_tickets(defn, force=force)
     meta = dict(defn.get("meta") or {})
     meta["sapRagPhase"] = "rag_complete"
+    meta["domain"] = "sap"
+    caps = list(meta.get("capabilities") or [])
+    for c in ("sap_similar_tickets", "rag_chat"):
+        if c not in caps:
+            caps.append(c)
+    meta["capabilities"] = caps
     defn["meta"] = meta
+    defn = ensure_sap_similar_ticket_features_dict(defn, prd=prd, requirement=requirement)
     save_data_json_to_project(project_id, defn)
     bag = defn.get("data") or {}
     rows = bag.get("source_sap_tickets") or []

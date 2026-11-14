@@ -963,7 +963,7 @@ Architecture JSON:
     if selected_domain == "sap":
         user_prompt = (
             "MANDATORY domain: sap (SAP Similarity Tickets).\n"
-            "Exactly ONE page in navigation: Dashboard only (KPI row + Community ticket list with search).\n"
+            "Exactly ONE page in navigation: Dashboard only (KPI row + dataTable of SAP tickets — no charts, no search feed).\n"
             "Do NOT add Predict, Analytics, Reports, Ticket List, Ticket Details, or extra screens.\n"
             "Chat assistant is in-app FAB — not a separate page.\n\n"
             + user_prompt
