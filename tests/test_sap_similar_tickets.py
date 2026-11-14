@@ -71,6 +71,29 @@ def test_ensure_when_blueprint_domain_sap_without_keywords():
     assert "sap_similar_tickets" in (out.meta.capabilities or [])
 
 
+def test_sap_single_dashboard_nav_only():
+    defn = AppDefinition(
+        meta=AppMeta(appName="SAP Desk", description="", domain="generic"),
+        theme={},
+        navigation=[
+            NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard"),
+            NavItemDef(label="Ticket List", path="/tickets", icon="List", pageId="ticket_list"),
+            NavItemDef(label="Predict", path="/predict", icon="TrendingUp", pageId="predict"),
+        ],
+        pages=[
+            PageDef(id="dashboard", title="Dashboard", blocks=[]),
+            PageDef(id="ticket_list", title="Ticket List", blocks=[]),
+            PageDef(id="predict", title="Predict", blocks=[]),
+        ],
+    )
+    out = ensure_sap_similar_ticket_features(defn, prd="SAP", requirement="similar tickets dashboard")
+    assert len(out.navigation) == 1
+    assert out.navigation[0].pageId == "dashboard"
+    assert len(out.pages) == 1
+    assert out.pages[0].id == "dashboard"
+    assert "predict" not in (out.meta.capabilities or [])
+
+
 def test_default_sap_dashboard_not_two_screens():
     defn = AppDefinition(
         meta=AppMeta(appName="Similarity Tickets", description="", domain="generic"),

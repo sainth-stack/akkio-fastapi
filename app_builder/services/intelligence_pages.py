@@ -17,6 +17,15 @@ def _wants_intelligence(prd: str, requirement: str) -> bool:
 
 
 def ensure_intelligence_features(defn: AppDefinition, *, prd: str = "", requirement: str = "") -> AppDefinition:
+    if str(defn.meta.domain or "").lower() == "sap":
+        # Chat assistant is FAB-only; no Predict nav for SAP Similarity Tickets.
+        caps = list(defn.meta.capabilities or [])
+        for c in ("rag_chat", "rag_export", "sap_similar_tickets"):
+            if c not in caps:
+                caps.append(c)
+        caps = [c for c in caps if c != "predict"]
+        defn.meta = defn.meta.model_copy(update={"capabilities": caps})
+        return defn
     if defn.meta.domain == "ecommerce" or defn.meta.appName.lower().find("shop") >= 0:
         return defn
     if not _wants_intelligence(prd, requirement):

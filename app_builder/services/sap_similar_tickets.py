@@ -394,6 +394,26 @@ def sap_dashboard_blocks() -> List[Dict[str, Any]]:
     ]
 
 
+def _enforce_sap_single_dashboard(defn: AppDefinition) -> AppDefinition:
+    """SAP apps: one screen only — Dashboard with KPIs + Community ticket feed (no extra nav)."""
+    dash = PageDef(
+        id="dashboard",
+        title="Dashboard",
+        subtitle="SAP Community tickets — search, KPIs, and similarity assistant",
+        blocks=sap_dashboard_blocks(),
+    )
+    defn.pages = [dash]
+    defn.navigation = [
+        NavItemDef(label="Dashboard", path="/", icon="Dashboard", pageId="dashboard"),
+    ]
+    caps = [c for c in list(defn.meta.capabilities or []) if c != "predict"]
+    for c in ("sap_similar_tickets", "rag_chat"):
+        if c not in caps:
+            caps.append(c)
+    defn.meta = defn.meta.model_copy(update={"capabilities": caps})
+    return defn
+
+
 def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
     """Default UX: dashboard KPIs + ticket table (not separate create/similar screens)."""
     pages = list(defn.pages or [])
@@ -506,8 +526,5 @@ def ensure_sap_similar_ticket_features(
         defn.navigation = [nav_create, nav_similar]
         return defn
 
-    defn = _merge_sap_dashboard(defn)
-    # Remove legacy create/similar-only nav if a prior build added them without "two screens"
-    defn.navigation = [n for n in defn.navigation if n.pageId not in ("create_ticket", "similar_tickets")]
-    defn.pages = [p for p in defn.pages if p.id not in ("create_ticket", "similar_tickets")]
+    defn = _enforce_sap_single_dashboard(defn)
     return defn

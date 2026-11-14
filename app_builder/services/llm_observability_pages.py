@@ -24,6 +24,8 @@ def wants_observability_screen(prd: str, requirement: str) -> bool:
 def ensure_observability_features(
     defn: AppDefinition, *, prd: str = "", requirement: str = ""
 ) -> AppDefinition:
+    if str(defn.meta.domain or "").lower() == "sap":
+        return defn
     if not wants_observability_screen(prd, requirement):
         return defn
 

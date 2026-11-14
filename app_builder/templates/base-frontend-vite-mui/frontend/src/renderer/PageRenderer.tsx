@@ -53,11 +53,14 @@ export default function PageRenderer({ pageId }: { pageId: string }) {
     pageId === 'dashboard' ||
     page.title.toLowerCase() === 'dashboard' ||
     definition.navigation[0]?.pageId === pageId;
+  const isSapDomain =
+    definition.meta?.domain === 'sap' ||
+    (definition.meta?.capabilities || []).includes('sap_similar_tickets');
 
   return (
     <PageFilterProvider>
       <Box sx={{ maxWidth: 1440, mx: 'auto' }}>
-        {isDashboard ? <DataUploadHint /> : null}
+        {isDashboard && !isSapDomain ? <DataUploadHint /> : null}
         {showSubtitle ? (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
             {page.subtitle}
