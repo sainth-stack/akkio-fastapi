@@ -159,7 +159,7 @@ export default function SapCommunityFeed({
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                     {String(row.snippet || row.description)}
                   </Typography>
-                  <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+                  <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap' }}>
                     <Chip
                       size="small"
                       label={String(row.document_type || 'Question')}
@@ -168,7 +168,15 @@ export default function SapCommunityFeed({
                     {row.product ? (
                       <Chip size="small" label={String(row.product)} variant="outlined" />
                     ) : null}
+                    {row.rag_source ? (
+                      <Chip size="small" label={`RAG: ${String(row.rag_source)}`} variant="outlined" />
+                    ) : null}
                   </Stack>
+                  {row.search_query ? (
+                    <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 0.75 }}>
+                      SAP search: {String(row.search_query)}
+                    </Typography>
+                  ) : null}
                 </Box>
               );
             })}

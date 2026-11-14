@@ -439,6 +439,23 @@ async def create_sap_ticket(
     )
 
 
+@router.post("/{project_id}/tickets/rag/enrich")
+async def enrich_sap_ticket_rag(
+    project_id: str,
+    request: Request,
+    force: bool = False,
+):
+    """Run SAP Community search + RAG for each ticket (one search query per ticket title)."""
+    await _optional_project_access(project_id, request, None)
+    from app_builder.services.sap_ticket_rag_service import refresh_project_ticket_rag
+
+    try:
+        payload = refresh_project_ticket_rag(project_id, force=force)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return JSONResponse(content=payload)
+
+
 @router.post("/{project_id}/data/compute")
 async def compute_app_data(
     project_id: str,

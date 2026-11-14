@@ -768,6 +768,12 @@ def apply_source_data_pipeline(
     from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
 
     out = seed_sap_tickets_if_empty(out, prd=prd, requirement=requirement)
+    from app_builder.services.sap_community_rag import enrich_definition_tickets
+
+    meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+    caps = meta.get("capabilities") or []
+    if meta.get("domain") == "sap" or (isinstance(caps, list) and "sap_similar_tickets" in caps):
+        out = enrich_definition_tickets(out, force=False)
     out = recompute_derived_data(out)
     from app_builder.services.navigation_labels import normalize_definition_navigation
 
