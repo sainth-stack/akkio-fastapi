@@ -6,6 +6,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SOURCE_PREFIX = "source_"
 
+_PROCUREMENT_RE = re.compile(
+    r"procurement|purchase order|purchase orders|\bpo\b|sourcing|requisition|"
+    r"vendor spend|supplier contract|indirect spend",
+    re.I,
+)
+
+
+def _is_procurement(ctx: str) -> bool:
+    return bool(_PROCUREMENT_RE.search(ctx or ""))
+
 
 def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
@@ -120,20 +130,29 @@ def _columns_match_maintenance(cols: List[Dict[str, Any]]) -> bool:
     return bool(f & {"work_order_id", "mtbf_hours", "mttr_hours", "downtime_hours"})
 
 
-def _domain_flags(ctx: str) -> Tuple[bool, bool, bool]:
+def _domain_flags(ctx: str) -> Tuple[bool, bool, bool, bool]:
+    is_procurement = _is_procurement(ctx)
     is_quality = bool(re.search(r"quality|defect|scrap|\byield\b|fpy|inspection|first pass", ctx))
     is_maint = bool(re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment", ctx))
     is_retail = bool(re.search(r"retail|ecommerce|shop|store|cart|order line", ctx))
-    return is_quality, is_maint, is_retail
+    return is_procurement, is_quality, is_maint, is_retail
+
+
+def _columns_match_procurement(table_cols: List[Dict[str, str]]) -> bool:
+    fields = _column_fields(table_cols)
+    return bool(fields & {"po_number", "order_value", "vendor"})
 
 
 def _pick_columns_for_context(
     table_cols: List[Dict[str, str]],
     ctx: str,
 ) -> List[Dict[str, str]]:
-    is_quality, is_maint, is_retail = _domain_flags(ctx)
+    is_procurement, is_quality, is_maint, is_retail = _domain_flags(ctx)
     is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", ctx))
-    if is_inventory and not is_retail and not is_quality:
+    if is_procurement and not is_retail and not is_quality:
+        if not _columns_match_procurement(table_cols):
+            return _procurement_columns()
+    if is_inventory and not is_retail and not is_quality and not is_procurement:
         if "quantity_on_hand" not in _column_fields(table_cols) and "sku" not in _column_fields(table_cols):
             return _inventory_columns()
     if is_quality and not is_maint:
@@ -153,9 +172,14 @@ def _existing_datasets_mismatch(defn: Dict[str, Any], ctx: str) -> bool:
     if not existing or not isinstance(existing[0], dict):
         return False
     cols = existing[0].get("columns") or []
-    is_quality, is_maint, _ = _domain_flags(ctx)
+    is_procurement, is_quality, is_maint, _ = _domain_flags(ctx)
     is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", ctx))
-    if is_inventory and not is_maint and not is_quality:
+    if is_procurement and not is_maint and not is_quality:
+        proc_fields = _column_fields(_procurement_columns())
+        have = _column_fields(cols)
+        if have and not (have & proc_fields):
+            return True
+    if is_inventory and not is_maint and not is_quality and not is_procurement:
         inv_fields = _column_fields(_inventory_columns())
         have = _column_fields(cols)
         if have and not (have & inv_fields):
@@ -186,13 +210,17 @@ def infer_source_datasets(
     if table_cols:
         table_cols = _pick_columns_for_context(table_cols, ctx)
         sid = "operational_records"
-        is_quality, is_maint, is_retail = _domain_flags(ctx)
-        if is_maint and not is_quality:
+        is_procurement, is_quality, is_maint, is_retail = _domain_flags(ctx)
+        if is_procurement and not is_quality and not is_maint:
+            sid = "purchase_orders"
+        elif is_maint and not is_quality:
             sid = "maintenance_events"
-        elif is_quality and not is_maint:
+        elif is_quality and not is_maint and not is_procurement:
             sid = "quality_inspections"
         elif is_retail:
             sid = "sales_orders"
+        elif _columns_match_procurement(table_cols):
+            sid = "purchase_orders"
         elif _columns_match_quality(table_cols):
             sid = "quality_inspections"
         elif _columns_match_maintenance(table_cols):
@@ -233,7 +261,21 @@ def infer_source_datasets(
             }
         ]
 
-    if re.search(r"quality|defect|scrap|yield|inspection|manufacturing", ctx):
+    if _is_procurement(ctx):
+        return [
+            {
+                "id": "purchase_orders",
+                "dataKey": f"{SOURCE_PREFIX}purchase_orders",
+                "title": "Purchase orders & requisitions",
+                "description": (
+                    "One row per PO or requisition. Spend, cycle time, and vendor KPIs "
+                    "are calculated from this sheet."
+                ),
+                "columns": _procurement_columns(),
+            }
+        ]
+
+    if re.search(r"quality|defect|scrap|\byield\b|fpy|inspection", ctx) and not _is_procurement(ctx):
         return [
             {
                 "id": "quality_inspections",
@@ -244,7 +286,7 @@ def infer_source_datasets(
             }
         ]
 
-    if re.search(r"inventory|stock|sku|warehouse", ctx):
+    if re.search(r"inventory|stock|sku|warehouse", ctx) and not _is_procurement(ctx):
         return [
             {
                 "id": "inventory_items",
@@ -316,6 +358,19 @@ def list_source_import_targets(defn: Dict[str, Any]) -> List[Dict[str, str]]:
             }
         )
     return targets
+
+
+def _procurement_columns() -> List[Dict[str, str]]:
+    return [
+        {"field": "po_number", "header": "PO #", "type": "string"},
+        {"field": "vendor", "header": "Vendor", "type": "string"},
+        {"field": "category", "header": "Category", "type": "string"},
+        {"field": "status", "header": "Status", "type": "string"},
+        {"field": "order_value", "header": "PO value (USD)", "type": "number"},
+        {"field": "lines", "header": "Lines", "type": "number"},
+        {"field": "lead_time_days", "header": "Lead time (days)", "type": "number"},
+        {"field": "ordered_at", "header": "Ordered", "type": "datetime"},
+    ]
 
 
 def _inventory_columns() -> List[Dict[str, str]]:

@@ -191,16 +191,87 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
     },
 ]
 
+_SAP_TICKET_BY_ID: Dict[str, Dict[str, Any]] = {
+    str(t["ticket_id"]): t for t in _SAP_SYNTHETIC_TICKETS if t.get("ticket_id")
+}
+
+# 10-ticket demo: 3 + 3 + 3 + 1 — grouped so similarity search returns same-category neighbors.
+_SAP_TICKET_GROUPS: List[Dict[str, Any]] = [
+    {
+        "similarity_group": "fi_account_determination",
+        "category": "Finance",
+        "component": "Account determination",
+        "ticket_ids": ["SCN-58841", "SCN-91204", "SCN-99231023", "RETMFG00869"],
+    },
+    {
+        "similarity_group": "mm_idoc_rfc",
+        "category": "Materials Management",
+        "component": "IDoc",
+        "ticket_ids": ["TKT-2001", "TKT-2004", "TKT-2007"],
+    },
+    {
+        "similarity_group": "sd_bapi_jobs",
+        "category": "Sales & Distribution",
+        "component": "BAPI",
+        "ticket_ids": ["TKT-2002", "TKT-2005", "TKT-2006"],
+    },
+]
+
+_GROUP_DESCRIPTION_TAIL: Dict[str, str] = {
+    "fi_account_determination": (
+        "Account determination and reconciliation settings in FI/SD often cause this symptom "
+        "when master data or customizing keys are incomplete."
+    ),
+    "mm_idoc_rfc": (
+        "Materials Management interfaces (IDoc, RFC, workflow) frequently fail when plant data, "
+        "authorizations, or segment mappings do not match the application posting."
+    ),
+    "sd_bapi_jobs": (
+        "Sales & Distribution order and pricing flows fail when RFC/BAPI timeouts, user exits, "
+        "or background jobs hit inconsistent pricing or incomplete document data."
+    ),
+}
+
+
+def _expand_ticket_description(row: Dict[str, Any], *, group_key: str) -> str:
+    """Ensure at least two paragraphs for RAG / similarity token overlap."""
+    desc = str(row.get("description") or "").strip()
+    tail = _GROUP_DESCRIPTION_TAIL.get(group_key, "")
+    p1 = desc if desc else str(row.get("title") or "SAP incident")
+    if "\n\n" in p1:
+        return p1
+    p2 = (
+        tail
+        or f"Operational context: {row.get('category')} / {row.get('component')} — "
+        "check SAP Notes and Community threads with the same component label."
+    )
+    return f"{p1}\n\n{p2}"
+
 
 def wants_sap_similar_tickets(prd: str, requirement: str) -> bool:
     blob = f"{prd}\n{requirement}".lower()
     return bool(
         re.search(
-            r"\b(sap\b.*\b(similar|ticket|incident)|similar ticket|find similar|"
-            r"service ticket|sap service|mm\b.*\bsd\b.*\bticket)",
+            r"\b(sap\b.*\b(similar|ticket|incident|similarity)|similarity tickets?|"
+            r"similar ticket|find similar|service ticket|sap service|mm\b.*\bsd\b.*\bticket)",
             blob,
         )
     )
+
+
+def is_sap_similarity_app(defn: Dict[str, Any]) -> bool:
+    """Hosted JSON app: SAP Similarity Tickets (not generic manufacturing)."""
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    if str(meta.get("domain") or "").lower() == "sap":
+        return True
+    caps = meta.get("capabilities") or []
+    if isinstance(caps, list) and "sap_similar_tickets" in caps:
+        return True
+    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+    if isinstance(bag.get("source_sap_tickets"), list) and bag.get("source_sap_tickets"):
+        return True
+    name = str(meta.get("appName") or "").lower()
+    return "sap" in name and "similar" in name
 
 
 def wants_two_ticket_screens_only(prd: str, requirement: str) -> bool:
@@ -263,6 +334,10 @@ def similarity_score(reference: Dict[str, Any], candidate: Dict[str, Any]) -> fl
         jaccard += 0.15
     if str(reference.get("component") or "") == str(candidate.get("component") or ""):
         jaccard += 0.2
+    ref_group = str(reference.get("similarity_group") or "")
+    cand_group = str(candidate.get("similarity_group") or "")
+    if ref_group and ref_group == cand_group:
+        jaccard += 0.35
     return round(min(1.0, jaccard), 4)
 
 
@@ -284,18 +359,32 @@ def parse_sap_ticket_count(prd: str, requirement: str) -> Optional[int]:
 
 
 def synthetic_tickets_for_count(count: int) -> List[Dict[str, Any]]:
-    """Build N community-style tickets by cycling curated templates."""
+    """
+    Build N tickets in similarity groups (3 per category for the default 10-ticket demo).
+    Layout: 3× Finance, 3× Materials Management, 3× Sales & Distribution, then repeat groups.
+    """
     count = max(1, min(200, int(count)))
-    base = _SAP_SYNTHETIC_TICKETS
+    per_group = 3
     out: List[Dict[str, Any]] = []
-    for i in range(count):
-        t = dict(base[i % len(base)])
-        if i >= len(base):
-            t["ticket_id"] = f"SCN-{90000 + i}"
-            suffix = f" (variant {i + 1})"
-            t["title"] = str(t.get("title") or "SAP incident") + suffix
-        out.append(t)
-    return out
+    g = 0
+    while len(out) < count:
+        group = _SAP_TICKET_GROUPS[g % len(_SAP_TICKET_GROUPS)]
+        group_key = str(group["similarity_group"])
+        ids = list(group.get("ticket_ids") or [])
+        take = min(per_group, count - len(out))
+        for off in range(take):
+            tid = ids[off % len(ids)] if ids else "TKT-0000"
+            template = dict(_SAP_TICKET_BY_ID.get(tid) or _SAP_SYNTHETIC_TICKETS[0])
+            row = dict(template)
+            row["category"] = group["category"]
+            row.setdefault("component", str(group.get("component") or ""))
+            row["similarity_group"] = group_key
+            row["description"] = _expand_ticket_description(row, group_key=group_key)
+            if off >= len(ids):
+                row["ticket_id"] = f"{tid}-V{g + 1}"
+            out.append(row)
+        g += 1
+    return out[:count]
 
 
 def resolve_sap_ticket_seed_count(defn: Dict[str, Any], *, prd: str = "", requirement: str = "") -> int:
@@ -445,40 +534,10 @@ def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
         )
         pages.insert(0, dash)
     else:
-        blocks = list(dash.blocks or [])
-        blocks = [
-            sap_blocks[1]
-            if isinstance(b, dict)
-            and (
-                b.get("type") == "sapCommunityFeed"
-                or (
-                    b.get("type") == "dataTable"
-                    and str(b.get("dataKey") or "").startswith("table_dashboard")
-                )
-            )
-            else b
-            for b in blocks
-        ]
-        blocks = [
-            b
-            for b in blocks
-            if not (isinstance(b, dict) and b.get("type") == "sapCommunityFeed")
-        ]
-        has_table = any(
-            isinstance(b, dict)
-            and b.get("type") == "dataTable"
-            and str(b.get("dataKey") or "") in ("table_sap_tickets", "table_dashboard")
-            for b in blocks
-        )
-        has_kpi = any(isinstance(b, dict) and b.get("type") == "kpiRow" for b in blocks)
-        if not has_kpi:
-            blocks = [sap_blocks[0], *blocks]
-        if not has_table:
-            blocks = [*blocks, sap_blocks[1]]
         dash = dash.model_copy(
             update={
-                "blocks": blocks,
-                "subtitle": dash.subtitle or "Ticket volume and recent SAP incidents",
+                "blocks": sap_blocks,
+                "subtitle": dash.subtitle or "Ticket KPIs and ticket list",
             }
         )
         pages = [dash if p.id == "dashboard" else p for p in pages]
@@ -557,6 +616,75 @@ def ensure_sap_similar_ticket_features(
 
     defn = _enforce_sap_single_dashboard(defn)
     return defn
+
+
+def _sap_ticket_kpis(rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    open_status = {"open", "in progress", "scheduled", "pending"}
+    high_pri = {"high", "critical"}
+    closed_status = {"closed", "resolved"}
+
+    def _norm(v: Any) -> str:
+        return str(v or "").strip().lower()
+
+    open_n = sum(1 for r in rows if _norm(r.get("status")) in open_status)
+    high_n = sum(1 for r in rows if _norm(r.get("priority")) in high_pri)
+    closed_n = sum(1 for r in rows if _norm(r.get("status")) in closed_status)
+    total = len(rows)
+    return {
+        "open_tickets": str(open_n),
+        "high_priority_tickets": str(high_n),
+        "total_tickets": str(total),
+        "closed_tickets": str(closed_n),
+    }
+
+
+def _sap_table_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    desc = str(row.get("description") or "")
+    snippet = str(row.get("snippet") or (desc[:220] + ("…" if len(desc) > 220 else "")))
+    posted = str(row.get("posted_at") or row.get("created_at") or "")
+    return {
+        "ticket_id": str(row.get("ticket_id") or ""),
+        "title": str(row.get("title") or ""),
+        "posted_at": posted,
+        "snippet": snippet,
+        "category": str(row.get("category") or ""),
+        "priority": str(row.get("priority") or ""),
+        "status": str(row.get("status") or ""),
+    }
+
+
+def recompute_sap_dashboard_from_tickets(defn: Dict[str, Any]) -> Dict[str, Any]:
+    """KPI row + ticket table only — no inventory/quality charts."""
+    out = dict(defn)
+    bag = dict(out.get("data") or out.get("mock") or {})
+    rows = bag.get("source_sap_tickets")
+    if not isinstance(rows, list):
+        rows = []
+    bag["kpis_dashboard"] = _sap_ticket_kpis(rows)
+    fields = [c["field"] for c in sap_dashboard_table_columns()]
+    bag["table_sap_tickets"] = [_sap_table_row(r) for r in rows if isinstance(r, dict)]
+    for key in list(bag.keys()):
+        if key.startswith("chart_dashboard"):
+            bag.pop(key, None)
+    pages = []
+    for page in out.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        if str(page.get("id") or "") == "dashboard":
+            page = {
+                **page,
+                "blocks": sap_dashboard_blocks(),
+                "subtitle": page.get("subtitle") or "Ticket KPIs and ticket list",
+            }
+        pages.append(page)
+    out["pages"] = pages
+    out["data"] = bag
+    out.pop("mock", None)
+    meta = dict(out.get("meta") or {})
+    meta["dataSource"] = "computed_from_source"
+    meta["domain"] = meta.get("domain") or "sap"
+    out["meta"] = meta
+    return out
 
 
 def ensure_sap_similar_ticket_features_dict(

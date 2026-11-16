@@ -87,8 +87,12 @@ def infer_page_profile(
         return "dashboard"
     if any(k in ctx for k in ("transformer", "substation", "hv ", "monitoring", "product monitor")):
         return "transformer_monitoring"
-    if any(k in ctx for k in ("inventory", "material", "sku", "warehouse", "supplier", "purchase")):
+    if any(k in ctx for k in ("procurement", "purchase order", "requisition", "sourcing")):
+        return "procurement"
+    if any(k in ctx for k in ("inventory", "material", "sku", "warehouse")) and "procurement" not in ctx:
         return "inventory"
+    if any(k in ctx for k in ("supplier", "purchase")) and "procurement" in ctx:
+        return "procurement"
     if "manufacturing" in ctx or "plant" in ctx or "oee" in ctx:
         return "manufacturing"
     return "operations"
@@ -141,6 +145,13 @@ def default_kpi_bundle(profile: str, page_id: str) -> Dict[str, str]:
             "reports_published": "24",
             "on_time_delivery": "94.8%",
             "open_drafts": "3",
+        }
+    if profile == "procurement":
+        return {
+            "open_purchase_orders": "42",
+            "spend_mtd": "$1.8M",
+            "avg_po_cycle_days": "6.4d",
+            "vendor_on_time_pct": "93.5%",
         }
     if profile == "inventory":
         return {

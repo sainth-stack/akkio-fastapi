@@ -62,6 +62,32 @@ class TestAppDefinitionGenerator(unittest.TestCase):
         self.assertNotIn("mock", data)
         self.assertNotIn('"oee": "1,240"', json.dumps(data["data"]))
 
+    def test_procurement_prompt_not_quality_dataset(self):
+        from app_builder.services.app_definition_generator import (
+            extract_screens_from_plan,
+            resolve_app_definition_sync,
+        )
+        from app_builder.services.source_dataset_planner import infer_source_datasets
+
+        req = (
+            "Build a manufacturing procurement dashboard (Dashboard, Analytics, Reports) "
+            "with RAG chat, Predict, and LLM observability to track prompts, outputs, tokens, and model cost."
+        )
+        screens = extract_screens_from_plan(requirement=req)
+        ids = [s["id"] for s in screens]
+        self.assertEqual(ids, ["dashboard", "analytics", "reports"])
+
+        app = resolve_app_definition_sync(
+            requirement=req,
+            plan_json={"blueprint": {"selected_domain": "manufacturing"}},
+        )
+        self.assertIn("predict", [c for c in (app.meta.capabilities or [])])
+        self.assertIn("llm_observability", [c for c in (app.meta.capabilities or [])])
+        defn_dict = app.to_json_dict()
+        datasets = infer_source_datasets(defn_dict, requirement=req, prd="")
+        self.assertEqual(datasets[0]["id"], "purchase_orders")
+        self.assertNotEqual(datasets[0]["id"], "quality_inspections")
+
     def test_production_kpi_bundles_per_page(self):
         from app_builder.services.json_app_generator import generate_json_app_files
 

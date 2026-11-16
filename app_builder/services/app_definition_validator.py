@@ -89,7 +89,8 @@ def validate_all_screens(
         return defn
 
     ctx = _ctx(defn, requirement, prd)
-    inventory_app = bool(re.search(r"inventory|stock|sku|warehouse", ctx))
+    procurement_app = bool(re.search(r"procurement|purchase order|sourcing|requisition", ctx))
+    inventory_app = bool(re.search(r"inventory|stock|sku|warehouse", ctx)) and not procurement_app
 
     pages_by_id = {p.id: p for p in model.pages}
     nav_ids = [
@@ -144,13 +145,21 @@ def validate_all_screens(
                 )
             )
             if "dataTable" not in {b.get("type") for b in rebuilt}:
-                from app_builder.services.source_dataset_planner import _inventory_columns
+                from app_builder.services.source_dataset_planner import (
+                    _inventory_columns,
+                    _procurement_columns,
+                )
 
-                cols = _inventory_columns() if inventory_app else [
-                    {"field": "id", "header": "ID"},
-                    {"field": "name", "header": "Name"},
-                    {"field": "status", "header": "Status"},
-                ]
+                if procurement_app:
+                    cols = _procurement_columns()
+                elif inventory_app:
+                    cols = _inventory_columns()
+                else:
+                    cols = [
+                        {"field": "id", "header": "ID"},
+                        {"field": "name", "header": "Name"},
+                        {"field": "status", "header": "Status"},
+                    ]
                 rebuilt.append(
                     {
                         "type": "dataTable",

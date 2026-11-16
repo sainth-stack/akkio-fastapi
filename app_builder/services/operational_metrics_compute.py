@@ -147,6 +147,31 @@ def _compute_kpi_value(label: str, value_key: str, rows: List[Dict[str, Any]]) -
         totals = [_num(r.get("order_total")) or (_num(r.get("unit_price")) or 0) * (_num(r.get("quantity")) or 1) for r in rows]
         return f"${sum(totals):,.0f}"
 
+    if re.search(r"procurement|purchase|\bpo\b", lab) or value_key in (
+        "open_purchase_orders",
+        "open_pos",
+    ):
+        open_rows = [
+            r
+            for r in rows
+            if str(r.get("status") or "").lower()
+            in ("draft", "approved", "in transit", "open", "pending")
+        ]
+        if "spend" in lab or "value" in lab:
+            total = sum(_num(r.get("order_value")) or 0 for r in rows)
+            if total:
+                if total >= 1_000_000:
+                    return f"${total / 1_000_000:.1f}M"
+                return f"${total:,.0f}"
+        if "cycle" in lab or "lead" in lab:
+            vals = [_num(r.get("lead_time_days")) for r in rows]
+            nums = [v for v in vals if v is not None]
+            if nums:
+                return f"{sum(nums) / len(nums):.1f}d"
+        if "open" in lab:
+            return _fmt_count(len(open_rows) or len(rows))
+        return _fmt_count(len(rows))
+
     if "order" in lab and "total" not in lab:
         return _fmt_count(len(rows))
 
@@ -495,6 +520,10 @@ def _aggregate_by_dimension(
 def _ensure_minimum_dashboard_charts(out: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """If dashboard only has KPIs, add default charts so the page is not empty."""
     from app_builder.services.page_layout_intent import resolve_dashboard_page_id
+    from app_builder.services.sap_similar_tickets import is_sap_similarity_app
+
+    if is_sap_similarity_app(out):
+        return out
 
     if not rows:
         return out
@@ -599,6 +628,17 @@ def _seed_source_rows_in_bag(defn: Dict[str, Any]) -> Dict[str, Any]:
 
 def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Fill KPI bundles, analytics tables, and chart series from source_* rows."""
+    from app_builder.services.sap_similar_tickets import (
+        is_sap_similarity_app,
+        recompute_sap_dashboard_from_tickets,
+    )
+
+    if is_sap_similarity_app(defn):
+        from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
+
+        seeded = seed_sap_tickets_if_empty(defn)
+        return recompute_sap_dashboard_from_tickets(seeded)
+
     out = _seed_source_rows_in_bag(defn)
     bag = dict(out.get("data") or out.get("mock") or {})
     _, rows = _primary_source_rows(out)

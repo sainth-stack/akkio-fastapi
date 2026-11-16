@@ -140,6 +140,23 @@ def _finalize_maintenance_row(row: Dict[str, Any], rng: random.Random) -> None:
         row["mttr_hours"] = round(rng.uniform(0.8, 2.8), 1)
 
 
+def _finalize_procurement_row(row: Dict[str, Any], rng: random.Random) -> None:
+    if not row.get("order_value"):
+        row["order_value"] = round(rng.uniform(4200, 185000), 2)
+    if not row.get("lines"):
+        row["lines"] = rng.randint(1, 24)
+    if not row.get("lead_time_days"):
+        row["lead_time_days"] = rng.randint(3, 28)
+    if not row.get("status"):
+        row["status"] = rng.choice(["Draft", "Approved", "In Transit", "Received", "Closed"])
+    if not row.get("vendor"):
+        row["vendor"] = rng.choice(
+            ["Apex Metals", "Nova Components", "Grid Industrial", "Precision Forge Co."]
+        )
+    if not row.get("po_number"):
+        row["po_number"] = f"PO-{rng.randint(8800, 9999)}"
+
+
 def _finalize_inventory_row(row: Dict[str, Any], rng: random.Random) -> None:
     on_hand = int(row.get("quantity_on_hand") or row.get("on_hand") or row.get("qty") or rng.randint(50, 500))
     reorder = int(row.get("reorder_point") or row.get("min_stock") or max(10, on_hand // 4))
@@ -165,6 +182,8 @@ def _finalize_row(row: Dict[str, Any], dataset: Dict[str, Any], rng: random.Rand
         _finalize_quality_row(row, rng)
     elif "maintenance" in sid or "work_order_id" in fields:
         _finalize_maintenance_row(row, rng)
+    elif "purchase" in sid or "procurement" in sid or "po_number" in fields:
+        _finalize_procurement_row(row, rng)
     elif "inventory" in sid or "quantity_on_hand" in fields or "on_hand" in fields:
         _finalize_inventory_row(row, rng)
     elif "sales" in sid or "order_id" in fields:

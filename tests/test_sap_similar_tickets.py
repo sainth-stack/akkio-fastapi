@@ -26,6 +26,32 @@ def test_seed_respects_prompt_count():
     assert len(defn["data"]["source_sap_tickets"]) == 12
 
 
+def test_ten_tickets_grouped_by_category():
+    from app_builder.services.sap_similar_tickets import synthetic_tickets_for_count
+
+    rows = synthetic_tickets_for_count(10)
+    assert len(rows) == 10
+    cats = [r["category"] for r in rows]
+    assert cats[:3] == ["Finance", "Finance", "Finance"]
+    assert cats[3:6] == ["Materials Management", "Materials Management", "Materials Management"]
+    assert cats[6:9] == ["Sales & Distribution", "Sales & Distribution", "Sales & Distribution"]
+    groups = [r.get("similarity_group") for r in rows]
+    assert groups[0] == groups[1] == groups[2]
+    assert groups[3] == groups[4] == groups[5]
+    for r in rows:
+        assert "\n\n" in str(r.get("description") or "")
+
+
+def test_similarity_prefers_same_group():
+    from app_builder.services.sap_similar_tickets import synthetic_tickets_for_count
+
+    rows = synthetic_tickets_for_count(10)
+    anchor = rows[0]
+    similar = find_similar_tickets(anchor, rows, exclude_id=str(anchor["ticket_id"]), limit=5)
+    assert similar
+    assert all(s.get("similarity_group") == anchor.get("similarity_group") for s in similar[:2])
+
+
 def test_seed_and_similarity():
     defn = seed_sap_tickets_if_empty({"data": {}})
     rows = defn["data"]["source_sap_tickets"]
@@ -152,6 +178,36 @@ def test_merge_replaces_community_feed_with_table():
     types = [b.get("type") for b in dash.blocks if isinstance(b, dict)]
     assert "sapCommunityFeed" not in types
     assert "dataTable" in types
+
+
+def test_sap_recompute_no_inventory_charts():
+    from app_builder.services.operational_metrics_compute import recompute_derived_data
+    from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
+
+    defn = seed_sap_tickets_if_empty(
+        {
+            "meta": {"appName": "Sap Similarity", "domain": "sap", "capabilities": ["sap_similar_tickets"]},
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "blocks": [
+                        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": []},
+                        {"type": "dataTable", "dataKey": "table_sap_tickets", "columns": []},
+                    ],
+                }
+            ],
+            "navigation": [{"label": "Dashboard", "path": "/", "pageId": "dashboard"}],
+        }
+    )
+    out = recompute_derived_data(defn)
+    dash = next(p for p in out["pages"] if p["id"] == "dashboard")
+    types = [b.get("type") for b in dash.get("blocks") or []]
+    assert types == ["kpiRow", "dataTable"]
+    assert "chart_dashboard_units_trend" not in (out.get("data") or {})
+    rows = out["data"]["table_sap_tickets"]
+    assert len(rows) == 10
+    assert all(r.get("ticket_id") for r in rows)
 
 
 def test_wants_sap_rag_step2_prompt():

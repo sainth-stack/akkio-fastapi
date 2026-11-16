@@ -11,6 +11,23 @@ def test_search_query_from_ticket_uses_title():
     assert "status 51" not in q or "IDoc" in q
 
 
+def test_rag_answer_has_two_paragraphs():
+    from app_builder.services.sap_community_rag import build_ticket_rag_record, count_paragraphs
+
+    row = {
+        "ticket_id": "X1",
+        "title": "Account determination ID missing in master data contract account (FI-CA)",
+        "description": "Posting fails when ID is missing.\n\nWe already checked FK02.",
+        "category": "Finance",
+        "component": "Account determination",
+        "similarity_group": "fi_account_determination",
+    }
+    rag = build_ticket_rag_record(row, force=True)
+    assert count_paragraphs(rag["suggested_answer"]) >= 2
+    assert rag["chunks"]
+    assert len(rag["chunks"][0]["text"]) > 80
+
+
 def test_each_ticket_gets_own_rag():
     row_a = {"ticket_id": "A", "title": "Account determination ID missing in master data contract account (FI-CA)"}
     row_b = {"ticket_id": "B", "title": "BAPI timeout on sales order create"}
