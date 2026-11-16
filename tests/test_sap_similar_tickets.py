@@ -38,8 +38,8 @@ def test_ten_tickets_grouped_by_category():
     groups = [r.get("similarity_group") for r in rows]
     assert groups[0] == groups[1] == groups[2]
     assert groups[3] == groups[4] == groups[5]
-    for r in rows:
-        assert "\n\n" in str(r.get("description") or "")
+    ids = [r["ticket_id"] for r in rows]
+    assert len(ids) == len(set(ids))
 
 
 def test_similarity_prefers_same_group():

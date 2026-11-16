@@ -138,8 +138,6 @@ def _suggested_from_body(body: str, title: str) -> str:
 
 
 def _hit_from_catalog(query: str) -> CommunitySearchHit:
-    from app_builder.services.sap_community_rag import ensure_min_paragraphs
-
     entry = catalog_best_match(query) or {}
     body = str(entry.get("body") or entry.get("snippet") or "")
     suggested_raw = str(entry.get("suggested_answer") or _suggested_from_body(body, query))
@@ -147,8 +145,8 @@ def _hit_from_catalog(query: str) -> CommunitySearchHit:
         url=str(entry.get("url") or ""),
         title=str(entry.get("title") or query),
         snippet=str(entry.get("snippet") or body[:220]),
-        body=ensure_min_paragraphs(body, minimum=2),
-        suggested_answer=ensure_min_paragraphs(suggested_raw, minimum=2),
+        body=body,
+        suggested_answer=suggested_raw,
         product=str(entry.get("product") or "SAP ERP"),
         source="catalog",
     )

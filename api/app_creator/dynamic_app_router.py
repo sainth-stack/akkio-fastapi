@@ -333,14 +333,21 @@ async def rag_export(
 ):
     """Return full RAG context for PDF download in the chat UI."""
     await _optional_project_access(project_id, request, body)
-    from app_builder.services.app_data_rag import build_rag_context, load_project_app_definition
+    from app_builder.services.app_data_rag import load_project_app_definition
 
     defn = body.app_definition or load_project_app_definition(project_id)
     if not defn:
         raise HTTPException(status_code=404, detail="App definition not found")
     meta = defn.get("meta") or {}
-    query = "full export of KPIs charts tables products and dashboard data"
-    context = build_rag_context(defn, query, focus_page_id=body.page_id)
+    from app_builder.services.app_data_rag import build_sap_rag_export, _is_sap_similarity_definition
+
+    if _is_sap_similarity_definition(defn):
+        context = build_sap_rag_export(defn)
+    else:
+        query = "full export of KPIs charts tables products and dashboard data"
+        from app_builder.services.app_data_rag import build_rag_context
+
+        context = build_rag_context(defn, query, focus_page_id=body.page_id)
     return JSONResponse(
         content={
             "appName": meta.get("appName") or "Application",

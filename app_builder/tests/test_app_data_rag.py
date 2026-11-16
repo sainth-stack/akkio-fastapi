@@ -42,6 +42,22 @@ class TestAppDataRag(unittest.TestCase):
         self.assertIn("downtime", ctx.lower())
 
 
+    def test_sap_rag_export_ticket_and_solution_only(self):
+        from app_builder.services.app_data_rag import build_sap_rag_export
+        from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
+
+        defn = seed_sap_tickets_if_empty(
+            {"meta": {"appName": "Sap Similarity", "domain": "sap", "capabilities": ["sap_similar_tickets"]}}
+        )
+        text = build_sap_rag_export(defn)
+        self.assertIn("Ticket SCN-58841", text)
+        self.assertNotIn("Open tickets:", text)
+        self.assertNotIn("kpis_dashboard", text)
+        self.assertNotIn("Units on hand", text)
+        self.assertNotIn("SAP ticket store (10 records)", text)
+        ids = text.count("Ticket SCN-") + text.count("Ticket TKT-") + text.count("Ticket RETMFG")
+        self.assertGreaterEqual(ids, 8)
+
     def test_ecommerce_context_includes_products(self):
         from app_builder.services.app_data_rag import build_rag_context
 

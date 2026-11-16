@@ -32,7 +32,12 @@ _CATALOG: List[Dict[str, Any]] = [
         "title": "FI-AR Account determination",
         "snippet": "Where should account determination be set for FI-AR postings?",
         "body": "FI-AR account determination is maintained via customer account groups and reconciliation accounts in FK02/FK03 and OBYC settings.",
-        "suggested_answer": "For FI-AR, verify customer master reconciliation account assignment and account determination in customizing (OBYC / account assignment).",
+        "suggested_answer": (
+            "For FI-AR, assign reconciliation accounts on the customer master (FK02) per company code "
+            "and verify account determination in OBYC for the customer account group.\n\n"
+            "Post a test FI document in the sandbox; if posting still fails, compare VKOA/OBYC keys with "
+            "a working customer and document the customizing path before transport."
+        ),
         "product": "SAP ERP",
     },
     {

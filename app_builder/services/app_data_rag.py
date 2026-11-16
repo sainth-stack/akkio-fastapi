@@ -144,6 +144,75 @@ def _is_ecommerce_definition(defn: Dict[str, Any]) -> bool:
     return defn.get("appKind") == "ecommerce" or isinstance(defn.get("products"), list)
 
 
+def _is_sap_similarity_definition(defn: Dict[str, Any]) -> bool:
+    from app_builder.services.sap_similar_tickets import is_sap_similarity_app
+
+    return is_sap_similarity_app(defn)
+
+
+def build_sap_rag_export(defn: Dict[str, Any]) -> str:
+    """PDF/text export: one ticket number + solution text per entry (no KPIs, counts, or dashboard noise)."""
+    data = _data_bag(defn)
+    meta = defn.get("meta") or {}
+    lines: List[str] = [
+        f"Application: {meta.get('appName') or 'SAP Similarity'}",
+        "Format: ticket number and solution text only.",
+        "",
+    ]
+    tickets = data.get("source_sap_tickets")
+    if not isinstance(tickets, list):
+        tickets = []
+    rag_bag = data.get("sap_ticket_rag") if isinstance(data.get("sap_ticket_rag"), dict) else {}
+    seen: set[str] = set()
+    for row in tickets:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("ticket_id") or "").strip()
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        rag = rag_bag.get(tid) if isinstance(rag_bag, dict) else {}
+        solution = ""
+        if isinstance(rag, dict):
+            solution = str(rag.get("suggested_answer") or "").strip()
+        if not solution or "step 2" in solution.lower():
+            from app_builder.services.sap_community_rag import build_ticket_rag_record
+
+            built = build_ticket_rag_record(row, force=True)
+            solution = str(built.get("suggested_answer") or "")
+        solution = re.sub(r"\n{3,}", "\n\n", solution).strip()
+        lines.append(f"Ticket {tid}")
+        lines.append(solution or "(No solution loaded — run Step 2 RAG enrich.)")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _build_sap_knowledge_chunks(defn: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Chat RAG: ticket id + solution (no KPI/table/chart export noise)."""
+    data = _data_bag(defn)
+    chunks: List[Tuple[str, str]] = []
+    tickets = data.get("source_sap_tickets")
+    rag_bag = data.get("sap_ticket_rag") if isinstance(data.get("sap_ticket_rag"), dict) else {}
+    if not isinstance(tickets, list):
+        return chunks
+    seen: set[str] = set()
+    for row in tickets:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("ticket_id") or "").strip()
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        rag = rag_bag.get(tid) if isinstance(rag_bag, dict) else {}
+        solution = ""
+        if isinstance(rag, dict):
+            solution = str(rag.get("suggested_answer") or "").strip()
+        if not solution:
+            continue
+        chunks.append((f"ticket:{tid}", f"Ticket {tid}\n{solution}"))
+    return chunks
+
+
 def _build_ecommerce_knowledge_chunks(defn: Dict[str, Any]) -> List[Tuple[str, str]]:
     meta = defn.get("meta") or {}
     chunks: List[Tuple[str, str]] = []
@@ -198,6 +267,9 @@ def build_knowledge_chunks(
     if _is_ecommerce_definition(defn):
         return _build_ecommerce_knowledge_chunks(defn)
 
+    if _is_sap_similarity_definition(defn):
+        return _build_sap_knowledge_chunks(defn)
+
     data = _data_bag(defn)
     meta = defn.get("meta") or {}
     chunks: List[Tuple[str, str]] = []
@@ -207,31 +279,6 @@ def build_knowledge_chunks(
         f"Description: {meta.get('description', '')}"
     ).strip()
     chunks.append(("app", app_line))
-
-    meta_domain = str(meta.get("domain") or "").lower()
-    caps = meta.get("capabilities") or []
-    if meta_domain == "sap" or (isinstance(caps, list) and "sap_similar_tickets" in caps):
-        tickets = data.get("source_sap_tickets")
-        if isinstance(tickets, list) and tickets:
-            tlines = [f"SAP ticket store ({len(tickets)} records):"]
-            for row in tickets[:48]:
-                if not isinstance(row, dict):
-                    continue
-                tlines.append(
-                    "  • "
-                    f"{row.get('ticket_id')}: {row.get('title')} | "
-                    f"{row.get('category')} | {row.get('component')} | "
-                    f"{row.get('priority')} | {row.get('status')}"
-                )
-            chunks.append(("sap_tickets", "\n".join(tlines)))
-        rag_bag = data.get("sap_ticket_rag")
-        if isinstance(rag_bag, dict):
-            for tid, rag in list(rag_bag.items())[:32]:
-                if not isinstance(rag, dict):
-                    continue
-                ans = str(rag.get("suggested_answer") or "")[:2000]
-                if ans:
-                    chunks.append((f"ticket_rag:{tid}", f"Ticket {tid} suggested answer:\n{ans}"))
 
     for page in defn.get("pages") or []:
         if not isinstance(page, dict):
@@ -321,8 +368,15 @@ def build_rag_context(
     *,
     focus_page_id: Optional[str] = None,
 ) -> str:
+    if _is_sap_similarity_definition(defn) and re.search(
+        r"\b(export|download|full)\b", (query or "").lower()
+    ):
+        return build_sap_rag_export(defn)
     chunks = build_knowledge_chunks(defn, focus_page_id=focus_page_id)
-    selected = retrieve_chunks(query, chunks, top_k=12)
+    if _is_sap_similarity_definition(defn):
+        selected = [text for _, text in chunks]
+    else:
+        selected = retrieve_chunks(query, chunks, top_k=12)
     body = "\n\n---\n\n".join(selected)
     if len(body) > _MAX_CONTEXT_CHARS:
         body = body[:_MAX_CONTEXT_CHARS] + "\n…(truncated)"

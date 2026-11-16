@@ -50,7 +50,7 @@ export async function downloadRagDataPdf(
 h1{font-size:20px}pre{white-space:pre-wrap;font-size:12px;line-height:1.5;background:#f8fafc;padding:16px;border-radius:8px}
 </style></head><body>
 <h1>RAG data export — ${escapeHtml(appName)}</h1>
-<p>Grounded context used by the in-app data assistant.</p>
+<p>Ticket number and solution text (SAP Similarity).</p>
 <pre>${escapeHtml(context)}</pre>
 </body></html>`;
   const win = window.open('', '_blank');

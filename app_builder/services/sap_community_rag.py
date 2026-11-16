@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from app_builder.services.sap_community_search import (
     CommunitySearchHit,
@@ -19,7 +19,10 @@ _KNOWLEDGE_FALLBACK = (
     "then align account determination, authorizations, or RFC destinations before reprocessing."
 )
 
-_MIN_RAG_PARAGRAPHS = 2
+_GENERIC_RAG_TAIL_RE = re.compile(
+    r"cross-check similar incidents|compare this ticket with others in group",
+    re.I,
+)
 
 
 def _split_paragraphs(text: str) -> List[str]:
@@ -42,24 +45,32 @@ def _split_paragraphs(text: str) -> List[str]:
     return parts
 
 
-def ensure_min_paragraphs(text: str, *, minimum: int = _MIN_RAG_PARAGRAPHS, tail: str = "") -> str:
-    """RAG answers and bodies should read as at least two short paragraphs."""
-    paras = _split_paragraphs(text)
-    component_hint = (tail or "").strip()
-    generic_second = (
-        "Cross-check similar incidents in your historical ticket list (same category and SAP "
-        "component) before changing transports. Document the customizing path and retest in a "
-        "non-production client when possible."
-    )
-    while len(paras) < minimum:
-        if component_hint and len(paras) == 1:
-            paras.append(
-                f"For this {component_hint} area, validate master data and application logs, then "
-                "re-run the failing transaction. " + generic_second
-            )
-        else:
-            paras.append(generic_second)
-    return "\n\n".join(paras[: max(minimum, len(paras))])
+def _strip_generic_boilerplate(text: str) -> str:
+    paras = [p for p in _split_paragraphs(text) if p and not _GENERIC_RAG_TAIL_RE.search(p)]
+    return "\n\n".join(paras).strip()
+
+
+def compose_ticket_solution(
+    row: Dict[str, Any],
+    hit: Union["CommunitySearchHit", Dict[str, Any]],
+) -> str:
+    """Solution text for export/chat — no KPIs, no similarity filler, no duplicate boilerplate."""
+    if isinstance(hit, dict):
+        suggested = str(hit.get("suggested_answer") or "").strip()
+        body = str(hit.get("body") or hit.get("snippet") or "").strip()
+    else:
+        suggested = str(hit.suggested_answer or "").strip()
+        body = str(hit.body or hit.snippet or "").strip()
+    if not suggested:
+        suggested = body
+    if not suggested:
+        suggested = str(row.get("description") or row.get("title") or "").strip()
+    if not suggested:
+        suggested = _KNOWLEDGE_FALLBACK
+    if body and body not in suggested and len(body) > 40:
+        if not re.search(re.escape(body[:40]), suggested, re.I):
+            suggested = f"{suggested}\n\n{body}"
+    return _strip_generic_boilerplate(suggested)
 
 
 def count_paragraphs(text: str) -> int:
@@ -85,54 +96,16 @@ def _live_search_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def _ticket_narrative(row: Dict[str, Any]) -> str:
-    """Two-paragraph incident context stored in RAG (independent of Community hit)."""
-    title = str(row.get("title") or "SAP incident")
-    desc = str(row.get("description") or "").strip()
-    category = str(row.get("category") or "SAP")
-    component = str(row.get("component") or "Application")
-    p1 = (
-        f"Incident: {title}. Reported under {category} / {component}. "
-        f"{desc or 'Users see a posting or interface failure in the SAP ERP landscape.'}"
-    )
-    p2 = (
-        f"Similarity hint: compare this ticket with others in group "
-        f"'{row.get('similarity_group') or category}' sharing the same component "
-        f"'{component}' and error patterns (status codes, dumps, missing master data)."
-    )
-    return ensure_min_paragraphs(f"{p1}\n\n{p2}", minimum=_MIN_RAG_PARAGRAPHS, tail=component)
-
-
 def build_ticket_rag_record(row: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
     """Search SAP Community for this ticket's query and build RAG chunks."""
     q = _search_query_from_ticket(row)
     ticket_id = str(row.get("ticket_id") or "")
     title = str(row.get("title") or "")
-    component = str(row.get("component") or "")
     hit: CommunitySearchHit = search_sap_community_first(q, live=_live_search_enabled())
     url = hit.url or community_search_link(q)
-    narrative = _ticket_narrative(row)
-    community_body = ensure_min_paragraphs(
-        hit.body or hit.snippet or "",
-        minimum=_MIN_RAG_PARAGRAPHS,
-        tail=component,
-    )
-    suggested = ensure_min_paragraphs(
-        hit.suggested_answer or _KNOWLEDGE_FALLBACK,
-        minimum=_MIN_RAG_PARAGRAPHS,
-        tail=component,
-    )
-    body = "\n\n".join(
-        [
-            narrative,
-            (
-                f"SAP Community reference — {hit.title or title}\n"
-                f"Query: {q}\nURL: {url}\nSource: {hit.source}\n\n{community_body}"
-            ),
-            f"Suggested answer:\n{suggested}",
-        ]
-    )
-    chunks = _chunk_text(body, max_len=900)
+    solution = compose_ticket_solution(row, hit)
+    chunks = _chunk_text(solution, max_len=900)
+    desc = str(row.get("description") or "").strip()
     return {
         "ticket_id": ticket_id,
         "search_query": q,
@@ -140,12 +113,8 @@ def build_ticket_rag_record(row: Dict[str, Any], *, force: bool = False) -> Dict
         "source_title": hit.title or title,
         "status": "ready",
         "product": hit.product or row.get("product") or "SAP ERP",
-        "snippet": ensure_min_paragraphs(
-            hit.snippet or str(row.get("description") or "")[:400],
-            minimum=1,
-            tail=component,
-        )[:480],
-        "suggested_answer": suggested,
+        "snippet": (hit.snippet or desc)[:220],
+        "suggested_answer": solution,
         "rag_source": hit.source,
         "chunks": [{"id": f"c{i}", "text": t} for i, t in enumerate(chunks)],
     }
@@ -216,11 +185,8 @@ def enrich_definition_tickets(defn: Dict[str, Any], *, force: bool = False) -> D
         tid = str(row.get("ticket_id") or "")
         rag = rag_bag.get(tid) if tid else None
         if defer:
-            pending = ensure_min_paragraphs(
-                "Send step 2 in the app builder chat to search SAP Community and build "
-                "per-ticket RAG (at least two paragraphs of context per ticket).",
-                minimum=_MIN_RAG_PARAGRAPHS,
-                tail=str(row.get("component") or ""),
+            pending = (
+                "Run Step 2 in the app builder to load the SAP Community solution for this ticket."
             )
             rag = {
                 "ticket_id": tid,
