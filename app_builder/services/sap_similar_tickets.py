@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import re as re_module
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -26,8 +26,8 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
         "priority": "High",
         "status": "Open",
         "reported_by": "Community user",
-        "created_at": "2011-08-09 12:05",
-        "posted_at": "Aug 9, 2011, 12:05 PM",
+        "created_at": "2026-01-08 09:05",
+        "posted_at": "Jan 8, 2026, 9:05 AM",
         "community_url": "https://community.sap.com/t5/forums/searchpage/tab/message?q=account+determination+fi-ca",
     },
     {
@@ -44,8 +44,8 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
         "priority": "Medium",
         "status": "Open",
         "reported_by": "Community user",
-        "created_at": "2013-12-13 02:55",
-        "posted_at": "Dec 13, 2013, 2:55 AM",
+        "created_at": "2026-01-10 14:55",
+        "posted_at": "Jan 10, 2026, 2:55 PM",
     },
     {
         "ticket_id": "SCN-44102",
@@ -61,8 +61,8 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
         "priority": "Medium",
         "status": "Open",
         "reported_by": "Community user",
-        "created_at": "2011-04-06 23:59",
-        "posted_at": "Apr 6, 2011, 11:59 PM",
+        "created_at": "2026-02-14 11:30",
+        "posted_at": "Feb 14, 2026, 11:30 AM",
     },
     {
         "ticket_id": "SCN-99231023",
@@ -78,8 +78,8 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
         "priority": "Medium",
         "status": "Open",
         "reported_by": "Community user",
-        "created_at": "2012-11-28 15:56",
-        "posted_at": "Nov 28, 2012, 3:56 PM",
+        "created_at": "2026-02-16 15:56",
+        "posted_at": "Feb 16, 2026, 3:56 PM",
     },
     {
         "ticket_id": "RETMFG00869",
@@ -95,8 +95,8 @@ _SAP_SYNTHETIC_TICKETS: List[Dict[str, Any]] = [
         "priority": "High",
         "status": "Open",
         "reported_by": "Plant AP team",
-        "created_at": "2025-11-02 08:15",
-        "posted_at": "Nov 2, 2025, 8:15 AM",
+        "created_at": "2026-02-18 08:15",
+        "posted_at": "Feb 18, 2026, 8:15 AM",
     },
     {
         "ticket_id": "TKT-2001",
@@ -388,6 +388,36 @@ def synthetic_tickets_for_count(count: int) -> List[Dict[str, Any]]:
     return assign_sequential_ticket_ids(out[:count])
 
 
+def _demo_dates_for_seq(seq: int) -> Tuple[str, str]:
+    """Dashboard Posted column — all demo incidents in 2026."""
+    base = datetime(2026, 1, 8, 9, 0)
+    dt = base + timedelta(days=max(0, seq - 1) * 2, hours=seq % 7)
+    created = dt.strftime("%Y-%m-%d %H:%M")
+    hour = dt.strftime("%I").lstrip("0") or "12"
+    posted = f"{dt.strftime('%b')} {dt.day}, {dt.year}, {hour}:{dt.strftime('%M')} {dt.strftime('%p')}"
+    return created, posted
+
+
+def normalize_sap_ticket_dates(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remap legacy Community years (2011–2015) to 2026 for hosted dashboards."""
+    out: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        r = dict(row)
+        seq = int(r.get("ticket_seq") or 0) or (i + 1)
+        blob = f"{r.get('created_at') or ''} {r.get('posted_at') or ''}"
+        if not re.search(r"\b2026\b", blob):
+            created, posted = _demo_dates_for_seq(seq)
+            r["created_at"] = created
+            r["posted_at"] = posted
+        elif not str(r.get("posted_at") or "").strip():
+            _created, posted = _demo_dates_for_seq(seq)
+            r["posted_at"] = posted
+        out.append(r)
+    return out
+
+
 def assign_sequential_ticket_ids(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Display IDs SAP-0001…n; keep community lookup on title + external_ref."""
     out: List[Dict[str, Any]] = []
@@ -397,8 +427,12 @@ def assign_sequential_ticket_ids(rows: List[Dict[str, Any]]) -> List[Dict[str, A
         r = dict(row)
         if not r.get("external_ref"):
             r["external_ref"] = str(r.get("ticket_id") or "")
-        r["ticket_seq"] = i + 1
-        r["ticket_id"] = f"SAP-{i + 1:04d}"
+        seq = i + 1
+        r["ticket_seq"] = seq
+        r["ticket_id"] = f"SAP-{seq:04d}"
+        created, posted = _demo_dates_for_seq(seq)
+        r["created_at"] = created
+        r["posted_at"] = posted
         out.append(r)
     return out
 
@@ -475,6 +509,8 @@ def seed_sap_tickets(
                     entry["ticket_id"] = new_key
                 remapped[new_key] = entry
             bag["sap_ticket_rag"] = remapped
+    if isinstance(bag.get(key), list):
+        bag[key] = normalize_sap_ticket_dates(bag[key])
     out["data"] = bag
     out.pop("mock", None)
     from app_builder.services.sap_community_rag import enrich_definition_tickets
@@ -654,6 +690,13 @@ def ensure_sap_similar_ticket_features(
         return defn
 
     defn = _enforce_sap_single_dashboard(defn)
+    from app_builder.services.llm_observability_pages import ensure_observability_features
+
+    defn = ensure_observability_features(
+        defn,
+        prd=prd,
+        requirement=requirement or "LLM observability for chat prompts tokens and model cost",
+    )
     return defn
 
 
@@ -699,6 +742,8 @@ def recompute_sap_dashboard_from_tickets(defn: Dict[str, Any]) -> Dict[str, Any]
     rows = bag.get("source_sap_tickets")
     if not isinstance(rows, list):
         rows = []
+    rows = normalize_sap_ticket_dates(rows)
+    bag["source_sap_tickets"] = rows
     bag["kpis_dashboard"] = _sap_ticket_kpis(rows)
     fields = [c["field"] for c in sap_dashboard_table_columns()]
     ordered = sorted(

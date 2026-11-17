@@ -63,7 +63,46 @@ def _extract_ticket_id(query: str, rows: List[Dict[str, Any]]) -> Optional[str]:
 
 def _is_placeholder_solution(text: str) -> bool:
     low = (text or "").lower()
-    return "step 2" in low or "app builder chat" in low
+    return (
+        "step 2" in low
+        or "app builder chat" in low
+        or "search sap community" in low
+        or low.startswith("start from the ticket title and component")
+    )
+
+
+def wants_solution_only(query: str) -> bool:
+    """User asked for the fix/answer only (e.g. 'provide solution for SAP-0001')."""
+    q = (query or "").strip()
+    if not q:
+        return False
+    low = q.lower()
+    if _TICKET_ID_RE.search(q) and re.search(
+        r"\b(provide|give|show|share|tell|what is|need|want)\b.{0,40}\b(solution|answer|fix|resolution)\b",
+        low,
+    ):
+        return True
+    if _TICKET_ID_RE.search(q) and re.search(r"\b(solution|answer)\s+(for|to)\b", low):
+        return True
+    if re.search(r"\bprovide\s+solution\b", low) and re.search(r"\bsap-\d{4}\b", low, re.I):
+        return True
+    return False
+
+
+def answer_solution_only(defn: Dict[str, Any], messages: List[Dict[str, str]]) -> Optional[str]:
+    """Return RAG solution text only — no structured template."""
+    query = _last_user(messages)
+    if not wants_solution_only(query):
+        return None
+    rows = _ticket_rows(defn)
+    ticket_id = _extract_ticket_id(query, rows)
+    anchor, _ = _pick_anchor(query, rows, ticket_id)
+    solution = _rag_solution(defn, anchor).strip()
+    if not solution or _is_placeholder_solution(solution):
+        return None
+    solution = re.sub(r"^\*\*Suggested Solution.*?\*\*\s*", "", solution, flags=re.I | re.S)
+    solution = re.sub(r"^#+\s*.+\n", "", solution).strip()
+    return solution or None
 
 
 def _rag_solution(defn: Dict[str, Any], row: Dict[str, Any]) -> str:
@@ -211,6 +250,7 @@ When the user describes an error, pastes a ticket ID (e.g. SAP-0001 or SCN-58841
 3. **Cause of the problem** must be a short analyst summary — do NOT paste the user's greeting ("Hello, I have a problem…").
 4. For count questions, output only **Summary:** with counts.
 5. SAP area labels: SAP ECC (FI), SAP ECC (MM), or SAP ECC (SD) from ticket category.
+6. If the user only asks for a **solution** or **answer** for a ticket ID (e.g. SAP-0002), output ONLY the RAG solution paragraphs — no headers, no referenced IDs, no problem template.
 
 SIMILARITY HINTS:
 {similarity_hints}

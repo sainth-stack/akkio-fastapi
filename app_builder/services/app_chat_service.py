@@ -78,6 +78,23 @@ async def answer_app_chat(
         )
 
         rows = _ticket_rows(defn)
+        from app_builder.services.sap_ticket_chat import answer_solution_only
+
+        solution_only = answer_solution_only(defn, messages)
+        if solution_only:
+            from app_builder.services.llm_observability_store import build_observability_event
+
+            return {
+                "content": solution_only,
+                "observability": build_observability_event(
+                    source="sap_ticket_chat",
+                    model="rag/solution-only",
+                    prompt=last_user,
+                    output=solution_only,
+                    llm_response_obj=None,
+                ),
+            }
+
         count_answer = _answer_count(last_user, rows)
         if count_answer:
             from app_builder.services.llm_observability_store import build_observability_event

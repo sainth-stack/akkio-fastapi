@@ -224,6 +224,38 @@ def test_wants_sap_rag_step2_prompt():
     assert wants_sap_rag_followup(step2)
 
 
+def test_sap_ticket_dates_are_2026():
+    from app_builder.services.sap_similar_tickets import normalize_sap_ticket_dates, seed_sap_tickets_if_empty
+
+    defn = seed_sap_tickets_if_empty(
+        {"data": {}, "meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"]}}
+    )
+    rows = defn["data"]["source_sap_tickets"]
+    assert rows
+    for r in rows:
+        assert "2026" in str(r.get("created_at") or "")
+        assert "2026" in str(r.get("posted_at") or "")
+
+
+def test_sap_similarity_has_observability_nav():
+    from app_builder.services.sap_similar_tickets import ensure_sap_similar_ticket_features
+    from app_builder.schemas.app_definition import AppDefinition, AppMeta
+
+    defn = AppDefinition(meta=AppMeta(appName="Sap Similarity", description="", domain="manufacturing"))
+    out = ensure_sap_similar_ticket_features(defn, prd="SAP", requirement="similarity tickets dashboard")
+    assert "llm_observability" in (out.meta.capabilities or [])
+    assert any(n.pageId == "observability" for n in out.navigation)
+    assert any(p.id == "observability" for p in out.pages)
+
+
+def test_wants_solution_only_prompt():
+    from app_builder.services.sap_ticket_chat import wants_solution_only
+
+    assert wants_solution_only("provide solution for SAP-0002")
+    assert wants_solution_only("SAP-0001 give me the answer")
+    assert not wants_solution_only("what happened on SAP-0002")
+
+
 def test_sap_chat_hints_primary_ticket():
     from app_builder.services.sap_ticket_chat import build_sap_similarity_hints, _extract_ticket_id
 

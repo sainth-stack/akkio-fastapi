@@ -24,9 +24,11 @@ def wants_observability_screen(prd: str, requirement: str) -> bool:
 def ensure_observability_features(
     defn: AppDefinition, *, prd: str = "", requirement: str = ""
 ) -> AppDefinition:
-    if str(defn.meta.domain or "").lower() == "sap":
-        return defn
-    if not wants_observability_screen(prd, requirement):
+    caps_existing = list(defn.meta.capabilities or [])
+    sap_similar = (
+        str(defn.meta.domain or "").lower() == "sap" or "sap_similar_tickets" in caps_existing
+    )
+    if not wants_observability_screen(prd, requirement) and not sap_similar:
         return defn
 
     existing = list(defn.meta.capabilities or [])
