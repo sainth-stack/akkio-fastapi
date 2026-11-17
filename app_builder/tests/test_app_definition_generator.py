@@ -88,6 +88,30 @@ class TestAppDefinitionGenerator(unittest.TestCase):
         self.assertEqual(datasets[0]["id"], "purchase_orders")
         self.assertNotEqual(datasets[0]["id"], "quality_inspections")
 
+    def test_procurement_pipeline_not_sap_ticket_dashboard(self):
+        from app_builder.services.app_definition_generator import resolve_app_definition_sync
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+        from app_builder.services.sap_similar_tickets import is_sap_similarity_app
+
+        req = (
+            "Build a manufacturing procurement dashboard (Dashboard, Analytics, Reports) "
+            "with RAG chat, Predict, and LLM observability to track prompts, outputs, tokens, and model cost."
+        )
+        app = resolve_app_definition_sync(
+            requirement=req,
+            plan_json={"blueprint": {"selected_domain": "manufacturing"}},
+        )
+        out = apply_source_data_pipeline(app.to_json_dict(), requirement=req, prd="")
+        self.assertFalse(is_sap_similarity_app(out))
+        data = out.get("data") or {}
+        self.assertNotIn("source_sap_tickets", data)
+        self.assertNotIn("table_sap_tickets", data)
+        dash = next(p for p in (out.get("pages") or []) if p.get("id") == "dashboard")
+        for block in dash.get("blocks") or []:
+            if isinstance(block, dict):
+                self.assertNotEqual(block.get("dataKey"), "table_sap_tickets")
+                self.assertNotIn("ticket", (block.get("title") or "").lower())
+
     def test_production_kpi_bundles_per_page(self):
         from app_builder.services.json_app_generator import generate_json_app_files
 

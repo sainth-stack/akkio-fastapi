@@ -252,18 +252,24 @@ def wants_sap_similar_tickets(prd: str, requirement: str) -> bool:
 
 
 def is_sap_similarity_app(defn: Dict[str, Any]) -> bool:
-    """Hosted JSON app: SAP Similarity Tickets (not generic manufacturing)."""
+    """Hosted JSON app: SAP Similarity Tickets (not manufacturing procurement/inventory)."""
     meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
     if str(meta.get("domain") or "").lower() == "sap":
         return True
     caps = meta.get("capabilities") or []
     if isinstance(caps, list) and "sap_similar_tickets" in caps:
         return True
-    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
-    if isinstance(bag.get("source_sap_tickets"), list) and bag.get("source_sap_tickets"):
-        return True
     name = str(meta.get("appName") or "").lower()
     return "sap" in name and "similar" in name
+
+
+def should_seed_sap_tickets(
+    defn: Dict[str, Any], *, prd: str = "", requirement: str = ""
+) -> bool:
+    """Only seed SAP ticket rows for real Similarity Tickets apps — never generic manufacturing."""
+    if is_sap_similarity_app(defn):
+        return True
+    return wants_sap_similar_tickets(prd, requirement)
 
 
 def wants_two_ticket_screens_only(prd: str, requirement: str) -> bool:
@@ -482,6 +488,8 @@ def seed_sap_tickets_if_empty(
     prd: str = "",
     requirement: str = "",
 ) -> Dict[str, Any]:
+    if not should_seed_sap_tickets(defn, prd=prd, requirement=requirement):
+        return defn
     return seed_sap_tickets(defn, prd=prd, requirement=requirement)
 
 

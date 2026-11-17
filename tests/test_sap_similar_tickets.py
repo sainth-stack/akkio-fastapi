@@ -53,7 +53,9 @@ def test_similarity_prefers_same_group():
 
 
 def test_seed_and_similarity():
-    defn = seed_sap_tickets_if_empty({"data": {}})
+    defn = seed_sap_tickets_if_empty(
+        {"data": {}, "meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"]}}
+    )
     rows = defn["data"]["source_sap_tickets"]
     assert len(rows) >= 6
     ref = {
@@ -149,7 +151,9 @@ def test_default_sap_dashboard_not_two_screens():
 def test_ticket_rag_enrich():
     from app_builder.services.sap_community_rag import enrich_definition_tickets
 
-    defn = seed_sap_tickets_if_empty({"data": {}})
+    defn = seed_sap_tickets_if_empty(
+        {"data": {}, "meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"]}}
+    )
     out = enrich_definition_tickets(defn)
     row = out["data"]["source_sap_tickets"][0]
     assert row.get("snippet")

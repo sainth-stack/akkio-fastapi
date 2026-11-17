@@ -805,8 +805,19 @@ def apply_source_data_pipeline(
     from app_builder.services.predict_config import attach_predict_config
 
     out = attach_predict_config(out)
-    from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty
+    from app_builder.services.sap_similar_tickets import (
+        seed_sap_tickets_if_empty,
+        should_seed_sap_tickets,
+    )
 
+    if not should_seed_sap_tickets(out, prd=prd, requirement=requirement):
+        for stale in (
+            "source_sap_tickets",
+            "sap_ticket_rag",
+            "table_sap_tickets",
+        ):
+            bag.pop(stale, None)
+        out["data"] = bag
     out = seed_sap_tickets_if_empty(out, prd=prd, requirement=requirement)
     from app_builder.services.sap_community_rag import enrich_definition_tickets
 
