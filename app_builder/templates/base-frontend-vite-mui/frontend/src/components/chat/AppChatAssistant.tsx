@@ -11,6 +11,7 @@ import {
   Stack,
   TextField,
   Typography,
+  useTheme,
 } from '@mui/material';
 import ChatIcon from '@mui/icons-material/Chat';
 import CloseIcon from '@mui/icons-material/Close';
@@ -69,6 +70,9 @@ export default function AppChatAssistant({
   pageId?: string;
   pageTitle?: string;
 }) {
+  const theme = useTheme();
+  const appBarOffset =
+    typeof theme.mixins.toolbar.minHeight === 'number' ? theme.mixins.toolbar.minHeight : 64;
   const apiBase = getAkkioApiBase();
   const navigate = useNavigate();
   const caps = definition.meta?.capabilities || [];
@@ -201,25 +205,11 @@ export default function AppChatAssistant({
       const data = (await res.json()) as {
         content?: string;
         detail?: unknown;
-        usage?: { total_tokens?: number; cost_usd?: number; model?: string };
       };
       if (!res.ok) {
         throw new Error(formatApiDetail(data.detail) || `Request failed (${res.status})`);
       }
-      let reply = data.content || 'No response.';
-      const usage = data.usage;
-      if (usage?.total_tokens) {
-        const cost =
-          usage.cost_usd != null
-            ? usage.cost_usd >= 0.01
-              ? `$${usage.cost_usd.toFixed(2)}`
-              : `$${usage.cost_usd.toFixed(4)}`
-            : '';
-        reply += `\n\n— ${usage.model || 'model'} · ${usage.total_tokens} tokens${cost ? ` · est. ${cost}` : ''}`;
-        if (hasObservabilityNav) {
-          reply += ' · see **Observability** for full log';
-        }
-      }
+      const reply = data.content || 'No response.';
       setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Something went wrong.';
@@ -241,7 +231,6 @@ export default function AppChatAssistant({
   }, [
     apiBase,
     definition,
-    hasObservabilityNav,
     hasPredictNav,
     input,
     loading,
@@ -271,13 +260,24 @@ export default function AppChatAssistant({
         anchor="right"
         open={open}
         onClose={() => setOpen(false)}
+        ModalProps={{ keepMounted: true, hideBackdrop: true }}
+        sx={{
+          zIndex: (t) => t.zIndex.appBar - 1,
+          '& .MuiDrawer-paper': {
+            top: appBarOffset,
+            height: `calc(100% - ${appBarOffset}px)`,
+          },
+        }}
         PaperProps={{
           sx: {
-            width: { xs: '100%', sm: 'min(560px, 92vw)', md: 600 },
+            width: { xs: '100%', sm: 'min(720px, 52vw)', md: 720 },
             display: 'flex',
             flexDirection: 'column',
             bgcolor: 'background.paper',
             color: 'text.primary',
+            borderLeft: 1,
+            borderColor: 'divider',
+            boxShadow: 8,
           },
         }}
       >
