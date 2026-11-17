@@ -63,35 +63,83 @@ async def answer_app_chat(
             )
         }
 
-    from app_builder.services.sap_ticket_chat import (
-        SAP_TICKET_CHAT_SYSTEM,
-        answer_sap_ticket_chat,
-        is_sap_ticket_app,
-    )
-
-    if is_sap_ticket_app(defn):
-        deterministic = answer_sap_ticket_chat(defn, messages)
-        if deterministic and deterministic.get("content"):
-            from app_builder.services.llm_observability_store import build_observability_event
-
-            content = str(deterministic["content"])
-            observability = build_observability_event(
-                source="sap_ticket_chat",
-                model="rules/similarity",
-                prompt=last_user,
-                output=content,
-                llm_response_obj=None,
-            )
-            return {"content": content, "observability": observability}
+    from app_builder.services.sap_ticket_chat import is_sap_ticket_app
 
     predict_mode = _is_predict_intent(last_user)
+    meta = defn.get("meta") or {}
+    app_name = str(meta.get("appName") or "Dashboard")
+
+    if is_sap_ticket_app(defn):
+        from app_builder.services.sap_ticket_chat import (
+            SAP_TICKET_CHAT_SYSTEM,
+            _answer_count,
+            _ticket_rows,
+            build_sap_similarity_hints,
+        )
+
+        rows = _ticket_rows(defn)
+        count_answer = _answer_count(last_user, rows)
+        if count_answer:
+            from app_builder.services.llm_observability_store import build_observability_event
+
+            return {
+                "content": count_answer,
+                "observability": build_observability_event(
+                    source="sap_ticket_chat",
+                    model="rules/count",
+                    prompt=last_user,
+                    output=count_answer,
+                    llm_response_obj=None,
+                ),
+            }
+        _, _, hints = build_sap_similarity_hints(defn, messages)
+        context = build_rag_context(defn, last_user or "similarity", focus_page_id=page_id)
+        system = SAP_TICKET_CHAT_SYSTEM.format(
+            app_name=app_name,
+            similarity_hints=hints,
+            context=context,
+        )
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        from llm_config import get_llm_config
+        from llm_helper import get_llm_for_user
+
+        llm_cfg = get_llm_config(None)
+        if not (llm_cfg.get("api_key") or "").strip():
+            raise ValueError(
+                "No LLM API key on the server. Set OPENAI_API_KEY in akkio-fastapi/.env and restart."
+            )
+        llm = get_llm_for_user(user_email=None, temperature=0.2)
+        lc_messages: List[Any] = [SystemMessage(content=system)]
+        for m in messages[-12:]:
+            role = (m.get("role") or "user").lower()
+            content = str(m.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            elif role == "user":
+                lc_messages.append(HumanMessage(content=content))
+        response = await llm.ainvoke(lc_messages)
+        content = str(getattr(response, "content", response) or "").strip()
+        model = str(llm_cfg.get("model") or getattr(llm, "model_name", None) or "gpt-4o-mini")
+        from app_builder.services.llm_observability_store import build_observability_event
+
+        return {
+            "content": content,
+            "observability": build_observability_event(
+                source="sap_ticket_chat",
+                model=model,
+                prompt=last_user,
+                output=content,
+                llm_response_obj=response,
+            ),
+        }
+
     context = build_rag_context(
         defn,
         last_user or "overview",
         focus_page_id=page_id,
     )
-    meta = defn.get("meta") or {}
-    app_name = str(meta.get("appName") or "Dashboard")
     if predict_mode and not _is_ecommerce_definition(defn):
         from app_builder.services.synthetic_predict import (
             default_features_from_definition,

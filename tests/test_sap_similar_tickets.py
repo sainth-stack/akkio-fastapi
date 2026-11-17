@@ -220,13 +220,19 @@ def test_wants_sap_rag_step2_prompt():
     assert wants_sap_rag_followup(step2)
 
 
-def test_sap_chat_account_determination():
-    from app_builder.services.sap_ticket_chat import answer_sap_ticket_chat
+def test_sap_chat_hints_primary_ticket():
+    from app_builder.services.sap_ticket_chat import build_sap_similarity_hints, _extract_ticket_id
 
     defn = seed_sap_tickets_if_empty({"meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"]}})
-    out = answer_sap_ticket_chat(defn, [{"role": "user", "content": "account determination id"}])
-    assert out
-    body = out["content"]
-    assert "Problem Description" in body
-    assert "RETMFG" in body
-    assert "Suggested Solution" in body
+    rows = defn["data"]["source_sap_tickets"]
+    assert str(rows[0]["ticket_id"]).startswith("SAP-")
+    anchor, similar, hints = build_sap_similarity_hints(
+        defn, [{"role": "user", "content": rows[0]["ticket_id"]}]
+    )
+    assert "100.00%" in hints
+    assert str(anchor.get("ticket_id")) == rows[0]["ticket_id"]
+    assert len(similar) <= 2
+    ext = rows[0].get("external_ref") or ""
+    if ext:
+        tid = _extract_ticket_id(ext, rows)
+        assert tid == rows[0]["ticket_id"]

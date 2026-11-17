@@ -40,6 +40,13 @@ export default function DataUploadButton() {
     return null;
   }
 
+  const caps = definition.meta?.capabilities || [];
+  const isSapTickets =
+    definition.meta?.domain === 'sap' || caps.includes('sap_similar_tickets');
+  if (isSapTickets) {
+    return null;
+  }
+
   const targets = importTargets.length ? importTargets : [];
   const appLabel = definition.meta?.appName || 'app';
 

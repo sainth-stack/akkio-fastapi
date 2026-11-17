@@ -183,7 +183,10 @@ def enrich_definition_tickets(defn: Dict[str, Any], *, force: bool = False) -> D
         if not isinstance(row, dict):
             continue
         tid = str(row.get("ticket_id") or "")
+        ext = str(row.get("external_ref") or "")
         rag = rag_bag.get(tid) if tid else None
+        if not isinstance(rag, dict) and ext:
+            rag = rag_bag.get(ext)
         if defer:
             pending = (
                 "Run Step 2 in the app builder to load the SAP Community solution for this ticket."
@@ -197,8 +200,11 @@ def enrich_definition_tickets(defn: Dict[str, Any], *, force: bool = False) -> D
             }
         elif force or _needs_rag_refresh(row, rag if isinstance(rag, dict) else None):
             rag = build_ticket_rag_record(row, force=force)
+            rag["ticket_id"] = tid or ext
             if tid:
                 rag_bag[tid] = rag
+            if ext:
+                rag_bag[ext] = rag
         new_rows.append(enrich_ticket_row(row, rag if isinstance(rag, dict) else None))
     bag["source_sap_tickets"] = new_rows
     bag["sap_ticket_rag"] = rag_bag

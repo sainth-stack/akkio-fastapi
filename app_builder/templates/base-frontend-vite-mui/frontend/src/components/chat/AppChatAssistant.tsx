@@ -273,7 +273,7 @@ export default function AppChatAssistant({
         onClose={() => setOpen(false)}
         PaperProps={{
           sx: {
-            width: { xs: '100%', sm: 400 },
+            width: { xs: '100%', sm: 'min(560px, 92vw)', md: 600 },
             display: 'flex',
             flexDirection: 'column',
             bgcolor: 'background.paper',

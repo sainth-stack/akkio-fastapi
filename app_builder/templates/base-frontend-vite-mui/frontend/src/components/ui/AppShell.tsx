@@ -117,7 +117,20 @@ export default function AppShell({
                       color: '#fff',
                       '& .MuiListItemIcon-root': { color: '#fff' },
                     }
-                  : undefined,
+                  : {
+                      bgcolor: 'action.selected',
+                      color: 'primary.main',
+                      '& .MuiListItemIcon-root': { color: 'primary.main' },
+                    },
+                '&.active': brand
+                  ? {
+                      bgcolor: 'rgba(255,255,255,0.14)',
+                      color: '#fff',
+                    }
+                  : {
+                      bgcolor: 'action.selected',
+                      color: 'primary.main',
+                    },
                 '&:hover': brand ? { bgcolor: 'rgba(255,255,255,0.08)' } : undefined,
               }}
             >

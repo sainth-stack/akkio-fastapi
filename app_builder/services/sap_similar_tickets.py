@@ -329,7 +329,7 @@ def similarity_score(reference: Dict[str, Any], candidate: Dict[str, Any]) -> fl
     ref_group = str(reference.get("similarity_group") or "")
     cand_group = str(candidate.get("similarity_group") or "")
     if ref_group and ref_group == cand_group:
-        jaccard += 0.35
+        jaccard += 0.12
     return round(min(1.0, jaccard), 4)
 
 
@@ -379,7 +379,22 @@ def synthetic_tickets_for_count(count: int) -> List[Dict[str, Any]]:
                 row["ticket_id"] = f"{tid}-V{g + 1}"
             out.append(row)
         g += 1
-    return out[:count]
+    return assign_sequential_ticket_ids(out[:count])
+
+
+def assign_sequential_ticket_ids(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Display IDs SAP-0001…n; keep community lookup on title + external_ref."""
+    out: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        r = dict(row)
+        if not r.get("external_ref"):
+            r["external_ref"] = str(r.get("ticket_id") or "")
+        r["ticket_seq"] = i + 1
+        r["ticket_id"] = f"SAP-{i + 1:04d}"
+        out.append(r)
+    return out
 
 
 def resolve_sap_ticket_seed_count(defn: Dict[str, Any], *, prd: str = "", requirement: str = "") -> int:
@@ -431,10 +446,31 @@ def seed_sap_tickets(
     bag = dict(out.get("data") or out.get("mock") or {})
     key = "source_sap_tickets"
     rows = bag.get(key) if isinstance(bag.get(key), list) else []
+    _seq_re = re.compile(r"^SAP-\d{4}$", re.I)
     if not rows:
         bag[key] = synthetic_tickets_for_count(count)
-        out["data"] = bag
-        out.pop("mock", None)
+    elif not all(_seq_re.match(str(r.get("ticket_id") or "")) for r in rows if isinstance(r, dict)):
+        ordered = sorted(
+            [r for r in rows if isinstance(r, dict)],
+            key=lambda r: int(r.get("ticket_seq") or 0) or 0,
+        )
+        bag[key] = assign_sequential_ticket_ids(ordered)
+        rag_bag = bag.get("sap_ticket_rag") if isinstance(bag.get("sap_ticket_rag"), dict) else {}
+        if rag_bag:
+            by_ext = {
+                str(r.get("external_ref") or ""): str(r.get("ticket_id") or "")
+                for r in bag[key]
+            }
+            remapped: Dict[str, Any] = {}
+            for old_key, rag in rag_bag.items():
+                new_key = by_ext.get(str(old_key), str(old_key))
+                entry = dict(rag) if isinstance(rag, dict) else rag
+                if isinstance(entry, dict):
+                    entry["ticket_id"] = new_key
+                remapped[new_key] = entry
+            bag["sap_ticket_rag"] = remapped
+    out["data"] = bag
+    out.pop("mock", None)
     from app_builder.services.sap_community_rag import enrich_definition_tickets
 
     return enrich_definition_tickets(out)
@@ -657,7 +693,11 @@ def recompute_sap_dashboard_from_tickets(defn: Dict[str, Any]) -> Dict[str, Any]
         rows = []
     bag["kpis_dashboard"] = _sap_ticket_kpis(rows)
     fields = [c["field"] for c in sap_dashboard_table_columns()]
-    bag["table_sap_tickets"] = [_sap_table_row(r) for r in rows if isinstance(r, dict)]
+    ordered = sorted(
+        [r for r in rows if isinstance(r, dict)],
+        key=lambda r: int(r.get("ticket_seq") or 0),
+    )
+    bag["table_sap_tickets"] = [_sap_table_row(r) for r in ordered]
     for key in list(bag.keys()):
         if key.startswith("chart_dashboard"):
             bag.pop(key, None)
