@@ -48,15 +48,26 @@ export async function downloadRagDataPdf(
   const html = `<!DOCTYPE html><html><head><title>RAG Data — ${escapeHtml(appName)}</title>
 <style>body{font-family:Inter,system-ui,sans-serif;padding:24px;max-width:900px;margin:0 auto}
 h1{font-size:20px}pre{white-space:pre-wrap;font-size:12px;line-height:1.5;background:#f8fafc;padding:16px;border-radius:8px}
+@media print{body{padding:12px} pre{background:#fff;border:1px solid #e2e8f0}}
 </style></head><body>
 <h1>RAG data export — ${escapeHtml(appName)}</h1>
-<p>Ticket number and solution text (SAP Similarity).</p>
+<p>Ticket number and solution text (SAP Similarity). Open this file in a browser and use Print → Save as PDF if needed.</p>
 <pre>${escapeHtml(context)}</pre>
 </body></html>`;
-  const win = window.open('', '_blank');
-  if (!win) throw new Error('Allow pop-ups to save the PDF, then use Print → Save as PDF.');
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
+
+  const safeName = String(appName).replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').slice(0, 60) || 'app';
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${safeName}-rag-data.html`;
+    anchor.rel = 'noopener';
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

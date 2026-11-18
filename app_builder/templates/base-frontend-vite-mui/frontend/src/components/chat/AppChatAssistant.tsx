@@ -97,6 +97,7 @@ export default function AppChatAssistant({
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
   const scrollToEnd = () => {
     requestAnimationFrame(() => {
@@ -114,6 +115,9 @@ export default function AppChatAssistant({
       scrollToEnd();
     } finally {
       setExporting(false);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
     }
   }, [definition, pageId]);
 
@@ -128,7 +132,8 @@ export default function AppChatAssistant({
         nextUser,
         {
           role: 'assistant',
-          content: 'Opening the RAG data export — use Print → Save as PDF in the new window.',
+          content:
+            'Downloading RAG data as an HTML file. Open it in your browser and use Print → Save as PDF if you need a PDF.',
         },
       ]);
       setInput('');
@@ -260,7 +265,13 @@ export default function AppChatAssistant({
         anchor="right"
         open={open}
         onClose={() => setOpen(false)}
-        ModalProps={{ keepMounted: true, hideBackdrop: true }}
+        ModalProps={{
+          keepMounted: true,
+          hideBackdrop: true,
+          disableScrollLock: true,
+          disableEnforceFocus: true,
+          disableRestoreFocus: true,
+        }}
         sx={{
           zIndex: (t) => t.zIndex.appBar - 1,
           '& .MuiDrawer-paper': {
@@ -351,6 +362,7 @@ export default function AppChatAssistant({
           <TextField
             fullWidth
             size="small"
+            inputRef={inputRef}
             placeholder={
               isSapTickets
                 ? 'Describe an issue, paste a ticket ID, or ask for ticket counts…'
@@ -364,11 +376,16 @@ export default function AppChatAssistant({
                 send();
               }
             }}
-            disabled={loading}
+            disabled={loading || exporting}
             multiline
             maxRows={4}
           />
-          <IconButton color="primary" onClick={send} disabled={loading || !input.trim()} aria-label="Send">
+          <IconButton
+            color="primary"
+            onClick={send}
+            disabled={loading || exporting || !input.trim()}
+            aria-label="Send"
+          >
             <SendIcon />
           </IconButton>
         </Stack>
