@@ -578,9 +578,10 @@ async def import_app_data(
     request: Request,
     file: UploadFile = File(...),
     target_key: Optional[str] = Form(None),
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
 ):
     """Upload CSV, JSON, or Excel and merge into frontend/src/mock/data.json datasets."""
-    await _optional_project_access(project_id, request, AppChatRequest(messages=[]))
+    assert_project_access(project_id, current)
 
     from app_builder.services.data_import_service import (
         list_import_targets,
@@ -591,7 +592,7 @@ async def import_app_data(
     from app_builder.services.runtime_paths import resolve_project_root
 
     root = resolve_project_root(project_id)
-    defn = load_data_json_from_project(root) or load_project_app_definition(project_id)
+    defn = load_project_app_definition(project_id) or load_data_json_from_project(root)
     if not defn:
         raise HTTPException(status_code=404, detail="App has no data.json — build the app first.")
 
@@ -618,6 +619,33 @@ async def import_app_data(
             "definition": updated,
         }
     )
+
+
+class DefinitionRecordRequest(BaseModel):
+    record: Dict[str, Any]
+    index: Optional[int] = None
+
+
+@router.post("/{project_id}/data/records/{data_key}")
+async def save_definition_record(
+    project_id: str,
+    data_key: str,
+    body: DefinitionRecordRequest,
+    current: CurrentUser = Depends(resolve_user_for_generated_app),
+):
+    assert_project_access(project_id, current)
+    from app_builder.services.definition_runtime import mutate_record, project_lock, save_definition
+
+    with project_lock(project_id):
+        definition = load_project_app_definition(project_id)
+        if not definition or (definition.get("meta") or {}).get("generationPolicy") != "strict_llm_v1":
+            raise HTTPException(status_code=400, detail="This app does not support definition records")
+        try:
+            updated = mutate_record(definition, data_key, body.record, body.index)
+            save_definition(project_id, updated)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content={"definition": updated})
 
 
 @router.post("/{project_id}/llm")

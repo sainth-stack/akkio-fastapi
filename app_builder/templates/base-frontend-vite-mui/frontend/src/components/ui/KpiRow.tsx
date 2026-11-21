@@ -1,7 +1,7 @@
 import { Box, Grid } from '@mui/material';
 import StatCard, { StatCardProps } from './StatCard';
 
-export interface KpiRowItem extends Omit<StatCardProps, 'sx'> {
+export interface KpiRowItem extends Omit<StatCardProps, 'sx' | 'value'> {
   valueKey: string;
 }
 

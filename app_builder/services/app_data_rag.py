@@ -14,6 +14,11 @@ _MAX_CHART_POINTS = 8
 
 
 def load_project_app_definition(project_id: str) -> Optional[Dict[str, Any]]:
+    from app_builder.services.definition_runtime import load_definition
+
+    persisted = load_definition(project_id)
+    if persisted is not None:
+        return persisted
     root = resolve_project_root(project_id)
     if not os.path.isdir(root):
         return None

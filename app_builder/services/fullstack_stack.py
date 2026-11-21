@@ -29,7 +29,7 @@ STACK_SUMMARY = """LOCKED TECH STACK (do not deviate):
 Frontend: React, TypeScript, Vite, Material UI, React Router, TanStack Query, Recharts.
 Backend: Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL, REST APIs.
 Architecture layers: React Frontend → FastAPI REST API → Service Layer → PostgreSQL → AI/Risk services.
-Frontend must work end-to-end even if the backend is down, using a mock API layer."""
+Frontend must show explicit errors when the backend is unavailable. Never substitute mock responses for failed live APIs."""
 
 
 def is_fullstack(builder_kind: Optional[str]) -> bool:

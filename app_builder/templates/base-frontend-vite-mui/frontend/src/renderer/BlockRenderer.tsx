@@ -19,7 +19,6 @@ import { normalizeBlock } from './blockNormalize';
 import { resolveRowKey, resolveXAxisKey } from './chartUtils';
 import { usePageFilters } from './PageFilterContext';
 import { useChartPalette } from '../theme/useChartPalette';
-import { repairTableRows, rowsLookPlaceholder } from './tableDataRepair';
 import SapCommunityFeed from '../components/sap/SapCommunityFeed';
 
 type Block = Record<string, unknown>;
@@ -27,7 +26,7 @@ type Block = Record<string, unknown>;
 type KpiItem = {
   label: string;
   valueKey: string;
-  color?: string;
+  color?: 'primary' | 'success' | 'error' | 'warning' | 'info' | 'default';
   trendKey?: string;
   targetKey?: string;
 };
@@ -98,6 +97,18 @@ function filterRows(
           && String(v).toLowerCase().includes(filters.line.toLowerCase()),
       ),
     );
+  }
+  for (const [field, value] of Object.entries(filters.values)) {
+    if (!value) continue;
+    if (field.endsWith(':from') || field.endsWith(':to')) {
+      const key = field.slice(0, field.lastIndexOf(':'));
+      out = out.filter((row) => {
+        const date = String(row[key] ?? '').slice(0, 10);
+        return date !== '' && (field.endsWith(':from') ? date >= value : date <= value);
+      });
+    } else {
+      out = out.filter((row) => String(row[field] ?? '') === value);
+    }
   }
   return out;
 }
@@ -192,7 +203,7 @@ export default function BlockRenderer({
   }
 
   if (type === 'lineChart' || type === 'barChart') {
-    const data = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
+    const data = filterRows((getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [], filters);
     const series = (normalized.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
     const xAxisKey = resolveXAxisKey(data, (normalized.xAxisKey as string) || 'period');
     const Chart = type === 'lineChart' ? LineChart : BarChart;
@@ -249,10 +260,7 @@ export default function BlockRenderer({
   if (type === 'dataTable') {
     const rawRows = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
     const columns = (normalized.columns as Array<{ field: string; header: string; align?: string; variant?: string }>) || [];
-    const tableRows = rowsLookPlaceholder(rawRows)
-      ? repairTableRows(rawRows, columns)
-      : rawRows;
-    const rows = filterRows(tableRows, filters);
+    const rows = filterRows(rawRows, filters);
     const rowKey = resolveRowKey(rows, columns, normalized.rowKey as string | undefined);
     const detailView = Boolean(normalized.detailView);
     return (
@@ -262,7 +270,7 @@ export default function BlockRenderer({
             {displayTitle}
           </Typography>
         ) : null}
-        <DataTable
+        <DataTable<Record<string, unknown>>
           columns={columns.map((c) => ({
             field: c.field as keyof Record<string, unknown>,
             header: c.header,
@@ -282,12 +290,12 @@ export default function BlockRenderer({
           <>
             <SessionDetailModal
               open={Boolean(detailRow)}
-              title="Inspection session detail"
+              title={`${displayTitle || pageTitle || 'Record'} detail`}
               row={detailRow}
               onClose={() => setDetailRow(null)}
             />
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-              Select a row to view inspection results and measurements.
+              Select a row to view record details.
             </Typography>
           </>
         ) : null}
@@ -305,5 +313,5 @@ export default function BlockRenderer({
     );
   }
 
-  return null;
+  return <Typography color="error">Unsupported widget: {type}</Typography>;
 }

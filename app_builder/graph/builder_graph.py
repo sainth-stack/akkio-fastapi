@@ -36,6 +36,8 @@ class BuilderState(TypedDict):
     generated_files: Dict[str, str]
     validation_results: Dict[str, Any]
     error: str
+    user_email: str
+    model_name: str
 
 async def run_structuring_step(state: BuilderState):
     logger.info("[structuring] START")
@@ -48,7 +50,7 @@ async def run_structuring_step(state: BuilderState):
         desc = (req.description if hasattr(req, "description") else str(req)) if req else ""
 
         from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0)
+        llm = get_llm_for_user(user_email=state.get("user_email"), model_name=state.get("model_name"), temperature=0)
 
         if saved_prd:
             combined = UserRequirement(
@@ -76,13 +78,13 @@ async def run_structuring_step(state: BuilderState):
             logger.info("[structuring] DONE (from saved PRD/UIUX + entity extraction)")
             return {
                 "structured_requirement": structured,
-                "project_name": structured.get("project_name") or project_name,
+                "project_name": project_name,
                 "template_name": structured.get("template_name"),
             }
 
         logger.info("[structuring] requirement=%r", desc[:100] + "..." if len(desc) > 100 else desc)
         structured = await requirement_structuring_agent(req, llm=llm)
-        proj = structured.get("project_name", "app")
+        proj = project_name
         tmpl = structured.get("template_name")
         logger.info("[structuring] DONE | project_name=%s | template_name=%s", proj, tmpl)
         return {
@@ -104,7 +106,7 @@ async def run_architecture_step(state: BuilderState):
             return {"architecture": prebuilt}
 
         from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0.7)
+        llm = get_llm_for_user(user_email=state.get("user_email"), model_name=state.get("model_name"), temperature=0.7)
         structured = state.get("structured_requirement") or {}
         req_obj = state.get("user_requirement")
         desc = (req_obj.description if hasattr(req_obj, "description") else str(req_obj)) if req_obj else ""
@@ -125,7 +127,7 @@ async def run_contract_step(state: BuilderState):
     try:
         if state.get("error"): return {}
         from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0)
+        llm = get_llm_for_user(user_email=state.get("user_email"), model_name=state.get("model_name"), temperature=0)
         structured = state.get("structured_requirement")
         arch = state.get("architecture")
         contract = await api_contract_agent(structured, arch, llm=llm)
@@ -147,7 +149,7 @@ async def run_schema_step(state: BuilderState):
             logger.info("[schema] DONE (from architecture.database_schema)")
             return {"db_schema": {"schema": _json.dumps(tables)}}
         from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0)
+        llm = get_llm_for_user(user_email=state.get("user_email"), model_name=state.get("model_name"), temperature=0)
         structured = state.get("structured_requirement")
         schema = await database_schema_agent(structured, llm=llm)
         logger.info("[schema] DONE")
@@ -161,6 +163,23 @@ async def run_coding_step(state: BuilderState):
     try:
         if state.get("error"): return {}
         project_name = state.get("project_name", "app")
+        req = state.get("user_requirement")
+        requirement_text = (req.description if hasattr(req, "description") else str(req)) if req else ""
+        from ..services.fullstack_app_generator import STATIC_DOMAINS, _keyword_classify
+
+        if _keyword_classify(requirement_text, state.get("saved_prd") or "", state.get("saved_uiux") or "") not in STATIC_DOMAINS:
+            from ..services.json_app_generator import run_json_app_codegen
+
+            files = await run_json_app_codegen(
+                requirement=requirement_text,
+                plan_json={"architecture": state.get("architecture") or {}},
+                project_name=project_name,
+                prd=state.get("saved_prd") or "",
+                uiux=state.get("saved_uiux") or "",
+                user_email=state.get("user_email"),
+                model_name=state.get("model_name"),
+            )
+            return {"generated_files": files, "template_name": None}
         template_name = state.get("template_name")
         saved_prd = (state.get("saved_prd") or "").strip()
         prebuilt = state.get("prebuilt_architecture") or {}
@@ -204,7 +223,7 @@ async def run_coding_step(state: BuilderState):
 
         logger.info("[coding] generating via LLM (no template match)")
         from llm_helper import get_llm_for_user
-        llm = get_llm_for_user(user_email=None, temperature=0.2)
+        llm = get_llm_for_user(user_email=state.get("user_email"), model_name=state.get("model_name"), temperature=0.2)
         structured = state.get("structured_requirement")
         arch = state.get("architecture")
         contract = state.get("api_contract")
@@ -228,6 +247,25 @@ async def run_validation_step(state: BuilderState):
     try:
         if state.get("error"): return {}
         files = state.get("generated_files")
+        import json
+
+        raw = (files or {}).get("frontend/src/mock/data.json")
+        definition = json.loads(raw) if raw else {}
+        if (definition.get("meta") or {}).get("generationPolicy") == "strict_llm_v1":
+            from ..schemas.app_definition import AppDefinition
+            from ..services.definition_contract import validate_definition
+            from ..services.definition_runtime import save_definition
+            from api.app_creator.build_verify_service import verify_build_and_fix
+
+            model = AppDefinition.model_validate({**definition, "mock": definition.get("data") or {}})
+            validate_definition(model)
+            project_name = state.get("project_name", "app")
+            file_writer(project_name, GeneratedFiles(files=files))
+            files, ok, log = await verify_build_and_fix(project_name, files, state.get("user_email"), max_attempts=2)
+            if not ok:
+                raise ValueError(f"Frontend verification failed: {log[-1200:]}")
+            save_definition(project_name, definition)
+            return {"generated_files": files, "validation_results": {"status": "success"}}
         arch = state.get("architecture") or {}
         template_name = state.get("template_name")
         project_name = state.get("project_name", "app")

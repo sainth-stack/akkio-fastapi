@@ -102,6 +102,7 @@ export default function PredictPage() {
   const postPredict = useCallback(
     async (body: Record<string, unknown>) => {
       if (!apiBase) throw new Error('Open this app from the Akkio host to run predictions.');
+      if (!definition) throw new Error('App definition is not loaded.');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       const token = getAkkioAccessToken();
       if (token) headers.Authorization = `Bearer ${token}`;

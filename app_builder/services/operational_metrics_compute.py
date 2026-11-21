@@ -630,6 +630,10 @@ def _seed_source_rows_in_bag(defn: Dict[str, Any], *, project_id: str = "") -> D
 
 def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Fill KPI bundles, analytics tables, and chart series from source_* rows."""
+    if (defn.get("meta") or {}).get("generationPolicy") == "strict_llm_v1":
+        from app_builder.services.definition_metrics import compute_definition
+
+        return compute_definition(defn)
     from app_builder.services.sap_similar_tickets import (
         is_sap_similarity_app,
         recompute_sap_dashboard_from_tickets,
@@ -773,6 +777,10 @@ def apply_source_data_pipeline(
     project_id: str = "",
     recompute_from_source: Optional[bool] = None,
 ) -> Dict[str, Any]:
+    if (defn.get("meta") or {}).get("generationPolicy") == "strict_llm_v1":
+        from app_builder.services.definition_metrics import compute_definition
+
+        return compute_definition(defn)
     from app_builder.services.source_data_constants import (
         DEFAULT_SOURCE_SEED_ROWS,
         MAX_AUTO_SOURCE_ROWS,

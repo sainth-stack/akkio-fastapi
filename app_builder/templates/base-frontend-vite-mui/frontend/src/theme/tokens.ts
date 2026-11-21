@@ -29,7 +29,6 @@ export const tokens = {
     '#64748b',
   ],
   shellVariant: 'light' as 'light' | 'brand',
-  border: '#e2e8f0',
 } as const;
 
 export type Tokens = typeof tokens;

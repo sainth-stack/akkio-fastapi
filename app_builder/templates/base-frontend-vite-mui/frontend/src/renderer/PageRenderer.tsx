@@ -1,4 +1,4 @@
-import { Box, Grid, Typography } from '@mui/material';
+import { Alert, Box, Grid, Typography } from '@mui/material';
 import BlockRenderer from './BlockRenderer';
 import { shouldShowPageSubtitle } from './displayUtils';
 import { PageFilterProvider } from './PageFilterContext';
@@ -39,7 +39,7 @@ function segmentBlocks(blocks: Block[]): Segment[] {
 }
 
 export default function PageRenderer({ pageId }: { pageId: string }) {
-  const { definition } = useAppDefinition();
+  const { definition, error } = useAppDefinition();
   if (!definition) return null;
   const page = definition.pages.find((p) => p.id === pageId);
 
@@ -58,8 +58,10 @@ export default function PageRenderer({ pageId }: { pageId: string }) {
     (definition.meta?.capabilities || []).includes('sap_similar_tickets');
 
   return (
-    <PageFilterProvider>
+    <PageFilterProvider key={pageId}>
       <Box sx={{ maxWidth: 1440, mx: 'auto' }}>
+      {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+      {definition.meta.dataSource === 'llm_generated' || definition.meta.containsSyntheticData ? <Alert severity="info" sx={{ mb: 2 }}>This app contains synthetic data generated for the prompt. Replace all synthetic datasets with factory data for actual operational results.</Alert> : null}
         {isDashboard && !isSapDomain ? <DataUploadHint /> : null}
         {showSubtitle ? (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>

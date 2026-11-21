@@ -140,7 +140,12 @@ def _rows_for_source(defn: Dict[str, Any], dataset: Dict[str, Any], raw_rows: Li
     from app_builder.services.source_dataset_planner import map_upload_row_to_fields
 
     cols = dataset.get("columns") or []
-    return [map_upload_row_to_fields(r, cols) for r in raw_rows if isinstance(r, dict)]
+    rows = [map_upload_row_to_fields(r, cols) for r in raw_rows if isinstance(r, dict)]
+    if (defn.get("meta") or {}).get("generationPolicy") == "strict_llm_v1":
+        fields = {c["field"] for c in cols}
+        if any(not fields.issubset(row) for row in rows):
+            raise ValueError(f"Uploaded rows must include columns: {sorted(fields)}")
+    return rows
 
 
 def merge_upload_bytes(
@@ -262,7 +267,6 @@ def load_data_json_from_project(project_root: str) -> Optional[Dict[str, Any]]:
 
 
 def save_data_json_to_project(project_id: str, defn: Dict[str, Any]) -> None:
-    from app_builder.services.file_writer import write_project_file
+    from app_builder.services.definition_runtime import save_definition
 
-    payload = json.dumps(defn, indent=2, ensure_ascii=False)
-    write_project_file(project_id, _DATA_JSON_REL, payload)
+    save_definition(project_id, defn)

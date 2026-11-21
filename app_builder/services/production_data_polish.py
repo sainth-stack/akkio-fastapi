@@ -48,7 +48,7 @@ def polish_production_data_bag(defn: AppDefinition) -> Dict[str, Any]:
 def app_definition_to_client_json(defn: AppDefinition) -> Dict[str, Any]:
     """Serialize for frontend/src/mock/data.json — production `data` only (no duplicate mock bag)."""
     raw = defn.model_dump(mode="json")
-    datasets = polish_production_data_bag(defn)
+    datasets = dict(defn.mock) if defn.meta.generationPolicy == "strict_llm_v1" else polish_production_data_bag(defn)
     raw.pop("mock", None)
     raw["data"] = datasets
     meta = dict(raw.get("meta") or {})

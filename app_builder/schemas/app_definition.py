@@ -15,6 +15,12 @@ class AppMeta(BaseModel):
     capabilities: List[str] = Field(default_factory=list)
     dataModel: str = ""
     sourceDatasets: List[Dict[str, Any]] = Field(default_factory=list)
+    generationPolicy: str = ""
+    requirement: str = ""
+    prd: str = ""
+    promptHash: str = ""
+    containsSyntheticData: bool = False
+    predictConfig: Optional[Dict[str, Any]] = None
     sapTicketSeedCount: Optional[int] = None
     sapRagPhase: Optional[str] = None  # dashboard | rag_complete
 

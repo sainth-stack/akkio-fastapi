@@ -35,7 +35,14 @@ class AppShellPlan(BaseModel):
 
 
 class PageBlocksPlan(BaseModel):
-    blocks: List[Dict[str, Any]] = Field(min_length=2, max_length=24)
+    blocks: List[Dict[str, Any]] = Field(min_length=1, max_length=24)
+
+    @field_validator("blocks")
+    @classmethod
+    def valid_blocks(cls, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        from app_builder.services.definition_contract import validate_blocks
+
+        return validate_blocks(blocks)
 
 
 class PageDataPlan(BaseModel):
