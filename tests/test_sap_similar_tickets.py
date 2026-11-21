@@ -17,7 +17,21 @@ def test_wants_sap_prompt():
 def test_parse_ticket_count_from_prompt():
     assert parse_sap_ticket_count("", "Seed 10 SAP community tickets with RAG") == 10
     assert parse_sap_ticket_count("SAP app", "Dashboard with 25 tickets") == 25
+    assert parse_sap_ticket_count("", "table of 15 historical SAP tickets") == 15
+    assert parse_sap_ticket_count("", "numbered SAP-0001 through SAP-0015") == 15
     assert parse_sap_ticket_count("", "no count here") is None
+
+
+def test_seed_resizes_to_fifteen_when_prompt_says_15():
+    defn = seed_sap_tickets_if_empty(
+        {
+            "data": {"source_sap_tickets": [{"ticket_id": f"SAP-{i:04d}"} for i in range(1, 11)]},
+            "meta": {"domain": "sap", "capabilities": ["sap_similar_tickets"], "sapTicketSeedCount": 10},
+        },
+        requirement="table of 15 historical SAP tickets",
+    )
+    assert defn["meta"]["sapTicketSeedCount"] == 15
+    assert len(defn["data"]["source_sap_tickets"]) == 15
 
 
 def test_seed_respects_prompt_count():

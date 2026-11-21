@@ -557,9 +557,21 @@ def similarity_score(reference: Dict[str, Any], candidate: Dict[str, Any]) -> fl
 def parse_sap_ticket_count(prd: str, requirement: str) -> Optional[int]:
     """Read requested seed count from prompt, e.g. 'seed 10 SAP community tickets'."""
     blob = f"{prd}\n{requirement}"
+
+    range_m = re.search(
+        r"\bSAP-\d{4}\s*(?:through|to|-)\s*SAP-(\d{4})\b",
+        blob,
+        re.I,
+    )
+    if range_m:
+        n = int(range_m.group(1))
+        if 1 <= n <= 200:
+            return n
+
     patterns = [
         r"\b(?:seed|create|generate|with|load)\s+(\d{1,3})\s+(?:synthetic\s+)?(?:sap\s+)?(?:community\s+)?tickets?\b",
-        r"\b(\d{1,3})\s+(?:synthetic\s+)?(?:sap\s+)?(?:community\s+)?tickets?\b",
+        r"\b(?:table|list)\s+of\s+(\d{1,3})\b",
+        r"\b(\d{1,3})\s+(?:historical\s+)?(?:synthetic\s+)?(?:sap\s+)?(?:community\s+)?tickets?\b",
         r"\b(\d{1,3})\s+community\s+questions?\b",
     ]
     for pat in patterns:
@@ -701,10 +713,14 @@ def seed_sap_tickets(
     bag = dict(out.get("data") or out.get("mock") or {})
     key = "source_sap_tickets"
     rows = bag.get(key) if isinstance(bag.get(key), list) else []
+    row_list = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+    parsed_n = parse_sap_ticket_count(prd, requirement)
     _seq_re = re.compile(r"^SAP-\d{4}$", re.I)
-    if not rows:
+    if not row_list or len(row_list) != count:
         bag[key] = synthetic_tickets_for_count(count)
-    elif not all(_seq_re.match(str(r.get("ticket_id") or "")) for r in rows if isinstance(r, dict)):
+    elif parsed_n is not None and len(row_list) != parsed_n:
+        bag[key] = synthetic_tickets_for_count(count)
+    elif not all(_seq_re.match(str(r.get("ticket_id") or "")) for r in row_list):
         ordered = sorted(
             [r for r in rows if isinstance(r, dict)],
             key=lambda r: int(r.get("ticket_seq") or 0) or 0,
