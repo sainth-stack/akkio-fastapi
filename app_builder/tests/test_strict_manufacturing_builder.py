@@ -62,6 +62,17 @@ def test_missing_data_is_rejected(data):
         validate_page_data(definition()["pages"][0]["blocks"], data)
 
 
+def test_client_json_omits_null_predict_config():
+    from app_builder.services.production_data_polish import app_definition_to_client_json
+
+    model = AppDefinition.model_validate(definition())
+    assert model.meta.predictConfig is None
+    payload = app_definition_to_client_json(model)
+    assert "predictConfig" not in payload["meta"]
+    assert "sapRagPhase" not in payload["meta"]
+    assert payload["data"]["castings"][0]["status"] == "Closed"
+
+
 def test_empty_dataset_is_not_fabricated():
     payload = definition()
     payload["mock"]["castings"] = []
@@ -251,7 +262,7 @@ def test_reused_dataset_key_is_renamed_for_the_next_page(monkeypatch):
     assert result.pages[1].blocks[1]["dataKey"] == "chart_dashboard_2"
 
 
-def test_omitted_dataset_still_fails(monkeypatch):
+def test_omitted_dataset_renders_without_invented_values(monkeypatch):
     from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
 
     payload = definition()
@@ -269,8 +280,9 @@ def test_omitted_dataset_still_fails(monkeypatch):
             return SimpleNamespace(content=json.dumps(responses.pop(0)))
 
     monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
-    with pytest.raises(ValueError, match="Missing dataset: kpis_reports"):
-        asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+    result = asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+    assert result.mock["kpis_reports"]["rejected"] is None
+    assert result.mock["castings"] == payload["mock"]["castings"]
 
 
 def test_llm_pipeline_uses_selected_model_and_preserves_response(monkeypatch):

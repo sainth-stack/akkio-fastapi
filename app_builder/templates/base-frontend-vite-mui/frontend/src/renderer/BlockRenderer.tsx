@@ -73,6 +73,11 @@ function kpiValues(
   return out;
 }
 
+function asRows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object' && !Array.isArray(row));
+}
+
 function filterRows(
   rows: Record<string, unknown>[],
   filters: ReturnType<typeof usePageFilters>['filters'],
@@ -203,7 +208,7 @@ export default function BlockRenderer({
   }
 
   if (type === 'lineChart' || type === 'barChart') {
-    const data = filterRows((getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [], filters);
+    const data = filterRows(asRows(getDataSlice(definition, String(normalized.dataKey || ''))), filters);
     const series = (normalized.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
     const xAxisKey = resolveXAxisKey(data, (normalized.xAxisKey as string) || 'period');
     const Chart = type === 'lineChart' ? LineChart : BarChart;
@@ -236,12 +241,20 @@ export default function BlockRenderer({
   }
 
   if (type === 'pieChart') {
-    const data = (getDataSlice(definition, normalized.dataKey as string) as Array<{ name: string; value: number }>) || [];
+    const data = asRows(getDataSlice(definition, String(normalized.dataKey || ''))).flatMap((row) => {
+      const value = row.value;
+      if (typeof value !== 'number' || !Number.isFinite(value)) return [];
+      return [{ name: String(row.name ?? ''), value }];
+    });
     const chartHeight = (normalized.height as number) || (layout === 'grid' ? 280 : 320);
     return (
       <Paper sx={chartPaperSx[layout]} elevation={0}>
         {displayTitle ? <ChartCardTitle title={displayTitle} /> : null}
-        <PieChart data={data} height={chartHeight} />
+        {data.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">No chart data</Typography>
+        ) : (
+          <PieChart data={data} height={chartHeight} />
+        )}
       </Paper>
     );
   }
@@ -258,8 +271,18 @@ export default function BlockRenderer({
   }
 
   if (type === 'dataTable') {
-    const rawRows = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
-    const columns = (normalized.columns as Array<{ field: string; header: string; align?: string; variant?: string }>) || [];
+    const rawRows = asRows(getDataSlice(definition, String(normalized.dataKey || '')));
+    const columns = (Array.isArray(normalized.columns) ? normalized.columns : []).flatMap((col) => {
+      if (!col || typeof col !== 'object') return [];
+      const column = col as { field?: unknown; header?: unknown; align?: unknown; variant?: unknown };
+      if (typeof column.field !== 'string' || !column.field) return [];
+      return [{
+        field: column.field,
+        header: typeof column.header === 'string' && column.header ? column.header : column.field,
+        align: column.align === 'left' || column.align === 'center' || column.align === 'right' ? column.align : undefined,
+        variant: typeof column.variant === 'string' ? column.variant : undefined,
+      }];
+    });
     const rows = filterRows(rawRows, filters);
     const rowKey = resolveRowKey(rows, columns, normalized.rowKey as string | undefined);
     const detailView = Boolean(normalized.detailView);

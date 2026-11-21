@@ -60,7 +60,9 @@ function baselineToForm(fields: PredictField[], baseline: Record<string, number>
 export default function PredictPage() {
   const { definition } = useAppDefinition();
   const apiBase = getAkkioApiBase();
-  const predictConfig = (definition?.meta?.predictConfig as PredictConfig | undefined) ?? undefined;
+  const rawPredictConfig = definition?.meta?.predictConfig;
+  const predictConfig: PredictConfig | undefined =
+    rawPredictConfig && typeof rawPredictConfig === 'object' ? (rawPredictConfig as PredictConfig) : undefined;
 
   const fields = useMemo<PredictField[]>(() => {
     if (predictConfig?.fields?.length) {

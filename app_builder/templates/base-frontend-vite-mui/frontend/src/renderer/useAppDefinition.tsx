@@ -21,14 +21,15 @@ export interface AppDefinition {
     dataModel?: string;
     generationPolicy?: string;
     containsSyntheticData?: boolean;
-    predictConfig?: Record<string, unknown>;
+    /** Absent when Predict is not configured. JSON serialization may use null. */
+    predictConfig?: Record<string, unknown> | null;
     sourceDatasets?: Array<{
       id: string;
       dataKey: string;
       title: string;
-      description?: string;
-      columns: Array<{ field: string; header: string; type?: string }>;
-    }>;
+      description?: string | null;
+      columns: Array<Record<string, unknown>>;
+    }> | null;
   };
   theme: Record<string, unknown>;
   navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;
@@ -56,6 +57,91 @@ type AppDefinitionContextValue = {
 };
 
 const AppDefinitionContext = createContext<AppDefinitionContextValue | null>(null);
+
+function textValue(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+/** Accept generated data.json, including null optional fields, and return a renderer-safe definition. */
+export function readAppDefinition(raw: unknown): AppDefinition {
+  const root = recordValue(raw) || {};
+  const metaIn = recordValue(root.meta) || {};
+  const pages = (Array.isArray(root.pages) ? root.pages : []).flatMap((item) => {
+    const page = recordValue(item);
+    if (!page) return [];
+    const id = textValue(page.id, 'page');
+    return [{
+      id,
+      title: textValue(page.title, id),
+      subtitle: typeof page.subtitle === 'string' ? page.subtitle : undefined,
+      blocks: Array.isArray(page.blocks) ? page.blocks.filter((block) => block && typeof block === 'object' && !Array.isArray(block)) as Array<Record<string, unknown>> : [],
+    }];
+  });
+  const navigation = (Array.isArray(root.navigation) ? root.navigation : []).flatMap((item, index) => {
+    const nav = recordValue(item);
+    if (!nav) return [];
+    const pageId = textValue(nav.pageId, pages[index]?.id || `page_${index + 1}`);
+    return [{
+      label: textValue(nav.label, pageId),
+      path: index === 0 ? '/' : textValue(nav.path, `/${pageId}`),
+      icon: textValue(nav.icon, 'Article'),
+      pageId,
+    }];
+  });
+  const theme: Record<string, unknown> = {};
+  const themeIn = recordValue(root.theme);
+  if (themeIn) {
+    for (const [key, value] of Object.entries(themeIn)) {
+      if (typeof value === 'string') theme[key] = value;
+      if (key === 'chartPalette' && Array.isArray(value)) {
+        theme[key] = value.filter((color): color is string => typeof color === 'string');
+      }
+    }
+  }
+  const sources = Array.isArray(metaIn.sourceDatasets)
+    ? metaIn.sourceDatasets.flatMap((item) => {
+        const ds = recordValue(item);
+        if (!ds) return [];
+        const dataKey = textValue(ds.dataKey);
+        if (!dataKey) return [];
+        return [{
+          id: textValue(ds.id, dataKey),
+          dataKey,
+          title: textValue(ds.title, dataKey),
+          description: typeof ds.description === 'string' ? ds.description : undefined,
+          columns: Array.isArray(ds.columns)
+            ? ds.columns.filter((col) => col && typeof col === 'object') as Array<Record<string, unknown>>
+            : [],
+        }];
+      })
+    : undefined;
+
+  return {
+    version: typeof root.version === 'number' ? root.version : 1,
+    meta: {
+      appName: textValue(metaIn.appName, 'Application'),
+      description: typeof metaIn.description === 'string' ? metaIn.description : '',
+      domain: textValue(metaIn.domain, 'generic'),
+      capabilities: Array.isArray(metaIn.capabilities) ? metaIn.capabilities.filter((item): item is string => typeof item === 'string') : undefined,
+      dataSource: typeof metaIn.dataSource === 'string' ? metaIn.dataSource : undefined,
+      dataModel: typeof metaIn.dataModel === 'string' ? metaIn.dataModel : undefined,
+      generationPolicy: typeof metaIn.generationPolicy === 'string' ? metaIn.generationPolicy : undefined,
+      containsSyntheticData: metaIn.containsSyntheticData === true,
+      predictConfig: recordValue(metaIn.predictConfig),
+      sourceDatasets: sources,
+    },
+    theme,
+    navigation: navigation.length ? navigation : [{ label: pages[0]?.title || 'Dashboard', path: '/', icon: 'Dashboard', pageId: pages[0]?.id || 'dashboard' }],
+    pages: pages.length ? pages : [{ id: 'dashboard', title: 'Dashboard', blocks: [] }],
+    data: recordValue(root.data),
+    mock: recordValue(root.mock),
+  };
+}
 
 function collectImportTargets(defn: AppDefinition): ImportTarget[] {
   const fromMeta = defn.meta?.sourceDatasets;
@@ -86,7 +172,7 @@ function collectImportTargets(defn: AppDefinition): ImportTarget[] {
 }
 
 export function AppDefinitionProvider({ children }: { children: ReactNode }) {
-  const staticDef = definitionJson as AppDefinition;
+  const staticDef = readAppDefinition(definitionJson);
   const [definition, setDefinition] = useState<AppDefinition>(staticDef);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -112,8 +198,7 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
       if (!res.ok) {
         throw new Error(`Could not load app data (${res.status})`);
       }
-      const data = (await res.json()) as AppDefinition;
-      setDefinition(data);
+      setDefinition(readAppDefinition(await res.json()));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load definition');
     } finally {
@@ -148,7 +233,7 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
 export function useAppDefinition(): AppDefinitionContextValue {
   const ctx = useContext(AppDefinitionContext);
   if (!ctx) {
-    const definition = definitionJson as AppDefinition;
+    const definition = readAppDefinition(definitionJson);
     return {
       definition,
       loading: false,

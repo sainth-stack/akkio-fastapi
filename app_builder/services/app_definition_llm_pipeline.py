@@ -263,7 +263,13 @@ PRD:
                 else:
                     raise ValueError(f"LLM could not repair PRD gaps for {outline.id}")
 
-        from app_builder.services.definition_contract import dedupe_page_data_keys, dataset_shape_hint, retain_page_datasets, validate_page_data
+        from app_builder.services.definition_contract import (
+            complete_page_data,
+            dedupe_page_data_keys,
+            dataset_shape_hint,
+            retain_page_datasets,
+            validate_page_data,
+        )
 
         blocks_plan.blocks = dedupe_page_data_keys(blocks_plan.blocks, set(mock))
 
@@ -306,7 +312,20 @@ Required JSON shape (use these keys verbatim inside "data"):
             except ValueError as exc:
                 last_error = str(exc)
                 if attempt == 2:
-                    raise ValueError(f"Invalid LLM data for {outline.id}: {last_error}") from exc
+                    if "unique across pages" in last_error:
+                        raise ValueError(f"Invalid LLM data for {outline.id}: {last_error}") from exc
+                    shaped = complete_page_data(blocks_plan.blocks, data_plan.data if data_plan is not None else {})
+                    shaped = {key: value for key, value in shaped.items() if key not in mock}
+                    shaped = complete_page_data(blocks_plan.blocks, shaped)
+                    if set(shaped) & set(mock):
+                        raise ValueError(f"Invalid LLM data for {outline.id}: {last_error}") from exc
+                    validate_page_data(blocks_plan.blocks, shaped)
+                    if data_plan is None:
+                        data_plan = PageDataPlan(data=shaped)
+                    else:
+                        data_plan.data = shaped
+                    logger.warning("[app_definition_llm] kept empty structure for %s after %s", outline.id, last_error)
+                    break
                 logger.warning(
                     "[app_definition_llm] page data for %s missing required datasets (%s); received keys=%s",
                     outline.id,

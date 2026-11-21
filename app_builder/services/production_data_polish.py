@@ -61,5 +61,6 @@ def app_definition_to_client_json(defn: AppDefinition) -> Dict[str, Any]:
     if not meta.get("description"):
         meta["description"] = "Operational datasets loaded from data.json"
     meta.setdefault("dataSource", "static")
-    raw["meta"] = meta
+    # Optional objects are omitted, not null, so the frontend JSON import stays assignable.
+    raw["meta"] = {key: value for key, value in meta.items() if value is not None}
     return raw

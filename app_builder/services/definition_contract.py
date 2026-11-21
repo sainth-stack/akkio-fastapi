@@ -255,6 +255,74 @@ def retain_page_datasets(
     return kept
 
 
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _row_fields(block: Dict[str, Any]) -> List[str]:
+    kind = _binding_kind(block)
+    if kind == "dataTable":
+        return [str(col.get("field")) for col in block.get("columns") or [] if isinstance(col, dict) and col.get("field")]
+    if kind == "pieChart":
+        return ["name", "value"]
+    return [str(block.get("xAxisKey") or "period")] + [
+        str(series.get("dataKey")) for series in block.get("series") or [] if isinstance(series, dict) and series.get("dataKey")
+    ]
+
+
+def _numeric_fields(block: Dict[str, Any]) -> Set[str]:
+    kind = _binding_kind(block)
+    if kind in {"lineChart", "barChart"}:
+        return {str(series.get("dataKey")) for series in block.get("series") or [] if isinstance(series, dict) and series.get("dataKey")}
+    if kind == "pieChart":
+        return {"value"}
+    return set()
+
+
+def complete_page_data(blocks: List[Dict[str, Any]], data: Dict[str, Any]) -> Dict[str, Any]:
+    """Supply missing dataset structure with empty rows and null metrics, without inventing measurements."""
+    out = align_page_datasets(blocks, data if isinstance(data, dict) else {})
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        kind = _binding_kind(block)
+        key = str(block.get("dataKey") or "")
+        if kind == "kpiRow" and key:
+            bundle = out.get(key) if isinstance(out.get(key), dict) else {}
+            for item in block.get("items") or []:
+                value_key = item.get("valueKey") if isinstance(item, dict) else None
+                if value_key and value_key not in bundle:
+                    bundle[str(value_key)] = None
+            out[key] = bundle
+        elif kind in {"lineChart", "barChart", "pieChart", "dataTable"} and key:
+            fields = _row_fields(block)
+            numeric = _numeric_fields(block)
+            rows = out.get(key)
+            if not isinstance(rows, list):
+                out[key] = []
+            else:
+                fixed: List[Dict[str, Any]] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    nxt = dict(row)
+                    for field in fields:
+                        nxt.setdefault(field, None)
+                        if field in numeric and nxt[field] is not None and not _finite_number(nxt[field]):
+                            nxt[field] = None
+                    fixed.append(nxt)
+                out[key] = fixed
+        if kind == "filterBar":
+            for flt in block.get("filters") or []:
+                options_key = flt.get("optionsKey") if isinstance(flt, dict) else None
+                if not options_key:
+                    continue
+                options = out.get(str(options_key))
+                if not isinstance(options, list) or any(not isinstance(option, dict) or "value" not in option or "label" not in option for option in options):
+                    out[str(options_key)] = []
+    return out
+
+
 def dataset_shape_hint(blocks: List[Dict[str, Any]]) -> str:
     shape: Dict[str, Any] = {}
     for block in blocks:
