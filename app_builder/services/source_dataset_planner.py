@@ -133,7 +133,9 @@ def _columns_match_maintenance(cols: List[Dict[str, Any]]) -> bool:
 def _domain_flags(ctx: str) -> Tuple[bool, bool, bool, bool]:
     is_procurement = _is_procurement(ctx)
     is_quality = bool(re.search(r"quality|defect|scrap|\byield\b|fpy|inspection|first pass", ctx))
-    is_maint = bool(re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment", ctx))
+    is_maint = bool(
+        re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment|\boee\b|supply\s*chain", ctx)
+    )
     is_retail = bool(re.search(r"retail|ecommerce|shop|store|cart|order line", ctx))
     return is_procurement, is_quality, is_maint, is_retail
 

@@ -330,6 +330,22 @@ async def execute_code_generation(websocket: WebSocket, session_id: str):
         if not isinstance(_bp, dict):
             _bp = {}
         _selected_domain = str(_bp.get("selected_domain") or _bp.get("domain") or "").lower()
+        try:
+            from app_builder.services.sap_similar_tickets import resolve_codegen_domain
+
+            _selected_domain = resolve_codegen_domain(
+                _selected_domain,
+                prd=prd or "",
+                requirement=requirement or "",
+                uiux=uiux or "",
+            )
+            if isinstance(plan_json_req, dict):
+                bp = dict(plan_json_req.get("blueprint") or {})
+                bp["selected_domain"] = _selected_domain
+                bp["domain"] = _selected_domain
+                plan_json_req = {**plan_json_req, "blueprint": bp}
+        except Exception:
+            pass
 
         if _selected_domain == "sap":
             _track = "json_app"

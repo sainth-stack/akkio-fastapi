@@ -32,10 +32,22 @@ def should_force_json_app_track(
     Use json_app codegen when the user asked for a data-driven multi-page dashboard
     (RAG chat, Predict, KPIs in JSON) — not fullstack AI pages or anomaly_detection legacy.
     """
-    if (selected_domain or "").strip().lower() == "sap":
+    text = f"{requirement or ''}\n{prd or ''}\n{uiux or ''}".lower()
+
+    try:
+        from app_builder.services.sap_similar_tickets import resolve_codegen_domain
+
+        effective = resolve_codegen_domain(
+            selected_domain, prd=prd, requirement=requirement, uiux=uiux
+        )
+    except Exception:
+        effective = (selected_domain or "").strip().lower()
+
+    if effective == "sap":
         return True
 
-    text = f"{requirement or ''}\n{prd or ''}\n{uiux or ''}".lower()
+    if (selected_domain or "").strip().lower() == "sap" and effective != "sap":
+        pass
     if re.search(r"\b(ecommerce|shopping cart|online store|product catalog)\b", text):
         return False
     if re.search(r"\b(document upload|doc chat|rag over documents)\b", text) and not re.search(

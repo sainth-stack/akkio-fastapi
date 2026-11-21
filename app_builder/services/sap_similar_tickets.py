@@ -271,10 +271,32 @@ def wants_operational_supply_chain_app(prd: str, requirement: str) -> bool:
         re.search(
             r"\b(supply\s*chain|inventory|procurement|purchase\s*order|warehouse|"
             r"\bsku\b|reorder|stock\s*level|manufacturing\s+(dashboard|ops|operations|monitoring)|"
-            r"plant\s+ops|maintenance\s+event|quality\s+inspection)\b",
+            r"plant\s+ops|maintenance\s+event|quality\s+inspection|"
+            r"\boee\b|mtbf|mttr|work\s*order|downtime|equipment effectiveness)\b",
             blob,
         )
     )
+
+
+def resolve_codegen_domain(
+    selected_domain: str,
+    *,
+    prd: str = "",
+    requirement: str = "",
+    uiux: str = "",
+) -> str:
+    """Dropdown may be SAP while the prompt is manufacturing — treat prompt as source of truth."""
+    domain = (selected_domain or "").strip().lower()
+    if wants_sap_similar_tickets(prd, requirement):
+        return "sap"
+    from app_builder.services.json_app_routing import is_operations_dashboard_prompt
+
+    if domain == "sap" and (
+        wants_operational_supply_chain_app(prd, requirement)
+        or is_operations_dashboard_prompt(requirement, prd, uiux)
+    ):
+        return "manufacturing"
+    return domain or "manufacturing"
 
 
 def _operational_dataset_keys(defn: Dict[str, Any]) -> set:
@@ -387,6 +409,48 @@ def detach_sap_similarity_for_prompt(
         for n in (out.get("navigation") or [])
         if isinstance(n, dict) and str(n.get("pageId") or "") not in ("create_ticket", "similar_tickets")
     ]
+    out["navigation"] = nav
+
+    for page in pages:
+        if str(page.get("id") or "") == "dashboard":
+            sub = str(page.get("subtitle") or "").lower()
+            if "ticket" in sub:
+                page["subtitle"] = "Manufacturing KPIs and operational overview"
+
+    try:
+        from app_builder.services.app_definition_generator import extract_screens_from_plan
+
+        screens = extract_screens_from_plan(requirement=requirement, prd=prd)
+    except Exception:
+        screens = []
+    if len(screens) >= 2:
+        page_ids = {str(p.get("id") or "") for p in pages}
+        nav_ids = {str(n.get("pageId") or "") for n in nav if isinstance(n, dict)}
+        _icon = {"dashboard": "Dashboard", "analytics": "BarChart", "reports": "Assessment", "predict": "Insights"}
+        for scr in screens:
+            pid = str(scr.get("id") or "")
+            if not pid or pid in page_ids:
+                continue
+            pages.append(
+                {
+                    "id": pid,
+                    "title": scr.get("title") or pid.replace("_", " ").title(),
+                    "subtitle": scr.get("purpose") or "",
+                    "blocks": [],
+                }
+            )
+            page_ids.add(pid)
+            if pid not in nav_ids:
+                path = "/" if pid == "dashboard" else f"/{pid.replace('_', '-')}"
+                nav.append(
+                    {
+                        "label": scr.get("title") or pid.replace("_", " ").title(),
+                        "path": path,
+                        "icon": _icon.get(pid, "Article"),
+                        "pageId": pid,
+                    }
+                )
+    out["pages"] = pages
     out["navigation"] = nav
     return out
 
