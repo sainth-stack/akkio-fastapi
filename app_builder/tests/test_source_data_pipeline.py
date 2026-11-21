@@ -272,6 +272,52 @@ class TestSourceDataPipeline(unittest.TestCase):
         self.assertTrue(a["meta"].get("seedSalt"))
         self.assertNotEqual(a["meta"]["seedSalt"], b["meta"]["seedSalt"])
 
+    def test_llm_prompt_rows_and_kpis_are_kept(self):
+        from app_builder.schemas.app_definition import AppDefinition
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+        from app_builder.services.production_dataset_enhancer import enhance_production_datasets
+
+        model = AppDefinition.model_validate({
+            "meta": {"appName": "Stockroom", "domain": "inventory", "generatedBy": "llm_pipeline"},
+            "navigation": [{"label": "Dashboard", "path": "/", "pageId": "dashboard"}],
+            "pages": [{
+                "id": "dashboard",
+                "title": "Dashboard",
+                "blocks": [
+                    {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Days of supply", "valueKey": "days_of_supply"}]},
+                    {"type": "dataTable", "dataKey": "stock", "columns": [
+                        {"field": "sku", "header": "SKU"},
+                        {"field": "warehouse", "header": "Warehouse"},
+                        {"field": "quantity_on_hand", "header": "On hand"},
+                        {"field": "status", "header": "Status"},
+                    ]},
+                ],
+            }],
+            "mock": {
+                "kpis_dashboard": {"days_of_supply": "18 days"},
+                "stock": [
+                    {"sku": "BRG-440", "warehouse": "Pune DC", "quantity_on_hand": 240, "status": "Below reorder"},
+                    {"sku": "SEL-12", "warehouse": "Chennai DC", "quantity_on_hand": 80, "status": "Healthy"},
+                ],
+            },
+        })
+        enhanced = enhance_production_datasets(model)
+        self.assertEqual(enhanced.mock["kpis_dashboard"]["days_of_supply"], "18 days")
+        self.assertEqual(enhanced.mock["stock"][0]["status"], "Below reorder")
+        self.assertEqual(len(enhanced.mock["stock"]), 2)
+        piped = apply_source_data_pipeline(
+            {**enhanced.model_dump(mode="json"), "data": enhanced.mock},
+            requirement="manufacturing inventory dashboard for warehouse stock and reorder points",
+            seed_if_empty=True,
+            recompute_from_source=True,
+        )
+        stock = (piped.get("data") or {})["stock"]
+        self.assertEqual(stock[0]["sku"], "BRG-440")
+        self.assertEqual(stock[0]["warehouse"], "Pune DC")
+        self.assertEqual((piped.get("data") or {})["kpis_dashboard"]["days_of_supply"], "18 days")
+        self.assertNotIn("WO-", str(stock))
+        self.assertNotIn("CNC Mill", str(stock))
+
 
 if __name__ == "__main__":
     unittest.main()

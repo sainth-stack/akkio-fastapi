@@ -68,20 +68,18 @@ Rules:
 
 _DATA_SYSTEM = """You are a data engineer. Output ONLY valid JSON for PageDataPlan.
 
-Generate realistic operational sample data for ONE page's blocks.
+Generate realistic operational sample data for ONE page. Every name, metric, and number must come from THIS app's requirement and PRD — not from a generic factory template.
 
 Rules:
 - Keys MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists).
-- KPI bundles: objects with string values matching labels (%, counts, currency as in PRD).
+- KPI bundles: objects whose values match the KPI labels in the prompt (currency, %, days, counts). Do not invent MTBF, MTTR, OEE, or work orders unless the prompt asks for maintenance.
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
-- Tables: arrays of 28–36 objects; keys MUST match column field names exactly (never col1, col2, or field_0); use realistic manufacturing/maintenance names.
-- Production lines: Line A, Line B, Press 1; products: part numbers; operators: realistic names.
-- Charts: arrays of 14–20 objects; xAxis field must match block xAxisKey (period, category, shift, etc.).
-- Every series[].dataKey in blocks must exist on each chart row with realistic numeric values.
-- Match chart semantics from titles (OEE %, defects by line, shift comparison, etc.) — not generic value/target only.
-- pieChart data: [{ name, value }, ...] (5–8 segments).
-- filter select options: [{ value, label }, ...].
-- Use realistic labels from the PRD domain (product names, lines, metrics) — infer from context, no placeholder "Asset 1".
+- Tables: arrays of 12–24 objects. Keys MUST match column field names exactly (never col1, col2, or field_0).
+- Row text must look like a real business in the prompt: vendor names, SKUs, warehouses, purchase orders, inspection lots, or suppliers — whichever the prompt is about.
+- Do not reuse a default plant sheet (Line A, Press 1, CNC Mill, Bearing wear, WO-24000) unless the prompt is about shop-floor maintenance.
+- Charts: arrays of 8–16 objects; xAxis field must match block xAxisKey. Series numbers must be plausible for those KPI labels.
+- pieChart data: [{ name, value }, ...] (4–7 segments) named for the prompt's categories, not "Segment 1".
+- filter select options: [{ value, label }, ...] using the same categories as the table.
 - No duplicate keys; no commentary outside JSON.
 """
 
@@ -306,13 +304,16 @@ PRD:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")
 
         data_user = f"""Page: {outline.title} ({outline.id})
+User requirement (the data must describe this business, not a generic plant):
+{ctx['requirement'][:8000]}
+
 Blocks JSON:
 {json.dumps(blocks_plan.blocks, indent=2)[:24000]}
 
 PRD section:
 {section[:12000]}
 
-Generate complete data for every dataKey in these blocks.
+Generate complete data for every dataKey in these blocks. KPI values and table rows must use the nouns in the requirement.
 """
         data_plan: Optional[PageDataPlan] = await _llm_validated(
             llm, _DATA_SYSTEM, data_user, PageDataPlan, f"page_data_{outline.id}"

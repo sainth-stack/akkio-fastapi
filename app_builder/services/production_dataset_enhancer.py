@@ -22,8 +22,13 @@ def _slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:48]
 
 
+def _llm_authored(defn: AppDefinition) -> bool:
+    return "llm" in str(getattr(defn.meta, "generatedBy", "") or "").lower()
+
+
 def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
     bag: Dict[str, Any] = dict(defn.mock or {})
+    keep_prompt_rows = _llm_authored(defn)
 
     for page in defn.pages:
         for block in page.blocks:
@@ -67,11 +72,13 @@ def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
                     str(s.get("dataKey")) for s in (block.get("series") or []) if isinstance(s, dict) and s.get("dataKey")
                 ]
                 x_key = str(block.get("xAxisKey") or "period")
-                if isinstance(rows, list) and series_keys:
+                if isinstance(rows, list) and series_keys and not keep_prompt_rows:
                     bag[dk] = _extend_chart(rows, dk, series_keys, x_key, MIN_CHART_POINTS)
 
             elif btype == "pieChart":
                 dk = str(block.get("dataKey") or "")
+                if keep_prompt_rows:
+                    continue
                 if dk and (not isinstance(bag.get(dk), list) or len(bag.get(dk) or []) < 4):
                     rng = _seed(dk)
                     bag[dk] = [
@@ -91,6 +98,10 @@ def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
                 if not dk or not fields:
                     continue
                 rows = bag.get(dk)
+                if keep_prompt_rows:
+                    if isinstance(rows, list):
+                        bag[dk] = [row for row in rows if isinstance(row, dict)]
+                    continue
                 if isinstance(rows, list):
                     bag[dk] = _extend_table(rows, fields, dk, MIN_TABLE_ROWS, headers=headers)
                     bag[dk] = _polish_status_fields(bag[dk], fields)

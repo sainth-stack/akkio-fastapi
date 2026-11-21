@@ -134,7 +134,7 @@ def _domain_flags(ctx: str) -> Tuple[bool, bool, bool, bool]:
     is_procurement = _is_procurement(ctx)
     is_quality = bool(re.search(r"quality|defect|scrap|\byield\b|fpy|inspection|first pass", ctx))
     is_maint = bool(
-        re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment|\boee\b|supply\s*chain", ctx)
+        re.search(r"maintenance|mtbf|mttr|work order|downtime|equipment|\boee\b", ctx)
     )
     is_retail = bool(re.search(r"retail|ecommerce|shop|store|cart|order line", ctx))
     return is_procurement, is_quality, is_maint, is_retail
@@ -209,8 +209,10 @@ def infer_source_datasets(
 
     page_id, table_cols = _find_primary_table(defn)
 
+    llm_authored = "llm" in str((defn.get("meta") or {}).get("generatedBy") or "").lower()
     if table_cols:
-        table_cols = _pick_columns_for_context(table_cols, ctx)
+        if not llm_authored:
+            table_cols = _pick_columns_for_context(table_cols, ctx)
         sid = "operational_records"
         is_procurement, is_quality, is_maint, is_retail = _domain_flags(ctx)
         if is_procurement and not is_quality and not is_maint:
