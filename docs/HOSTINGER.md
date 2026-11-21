@@ -2,6 +2,14 @@
 
 Direct **HTTP on IP + ports** only. No Nginx, no Docker, no EC2 SSH deploy.
 
+## Repo layout
+
+```
+akkio-fastapi/     ← git clone root
+├── backend/       ← FastAPI (.env, venv, uvicorn)
+└── frontend/      ← Vite UI (npm start, port 3002)
+```
+
 ## URLs
 
 | Service | URL |
@@ -29,7 +37,7 @@ Allow inbound TCP:
 
 ## Environment
 
-### Backend (`akkio-fastapi/.env`)
+### Backend (`backend/.env`)
 
 ```bash
 ENV=production
@@ -51,23 +59,21 @@ Deploy runs **locally on this VPS** (no SSH). Flow: Run App (build) → Deploy t
 
 Do **not** set `DEPLOY_EC2_IP` / `DEPLOY_SSH_KEY_PATH`.
 
-### Frontend (`akkio-frontend/.env`)
-
-From repo root this file is `akkio-fastapi/akkio-frontend/.env` after clone.
+### Frontend (`frontend/.env`)
 
 ```bash
 VITE_BASE_URL=http://YOUR_IP:8000
 VITE_DEV_PORT=3002
 ```
 
-`HOST=0.0.0.0` is required so the UI is reachable via IP, not only localhost.
+Vite `server.host: true` binds `0.0.0.0` so the UI is reachable via IP, not only localhost.
 
 ## Run services
 
 ### FastAPI
 
 ```bash
-cd akkio-fastapi
+cd akkio-fastapi/backend
 source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -75,7 +81,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ### React (POC dev server)
 
 ```bash
-cd akkio-fastapi/akkio-frontend
+cd akkio-fastapi/frontend
 npm install
 npm start
 ```
@@ -83,14 +89,14 @@ npm start
 ### pm2 example
 
 ```bash
-pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi
-pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/akkio-frontend -- start
+pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi/backend
+pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/frontend -- start
 pm2 save
 ```
 
 ## Runtime disk
 
-Generated projects are stored under `APP_BUILDER_RUNTIME_DIR` (default: `app_builder/runtime/projects` in dev).
+Generated projects are stored under `APP_BUILDER_RUNTIME_DIR` (default: `backend/app_builder/runtime/projects` in dev).
 
 On Hostinger use a persistent path, e.g. `/var/akkio/runtime/projects`, not `/tmp`.
 
@@ -99,7 +105,7 @@ On Hostinger use a persistent path, e.g. `/var/akkio/runtime/projects`, not `/tm
 Run once after DB is configured:
 
 ```bash
-cd akkio-fastapi
+cd akkio-fastapi/backend
 ./venv/bin/python scripts/seed_admin.py
 ```
 

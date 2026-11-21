@@ -5,20 +5,28 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Runtime / generated data
-chroma_store/
-uploads_multi_model/
-generated_charts/
-validation_reports/
-app_builder/runtime/
+# Backend runtime / generated data
+backend/chroma_store/
+backend/uploads_multi_model/
+backend/generated_charts/
+backend/validation_reports/
+backend/app_builder/runtime/
+backend/venv/
+backend/.env
+backend/.env.local
 
 # Dependencies in templates
 node_modules/
-app_builder/templates/*/frontend/node_modules/
-app_builder/templates/*/backend/venv/
+backend/app_builder/templates/*/frontend/node_modules/
+backend/app_builder/templates/*/backend/venv/
 
-# App Builder UI (Vite) — lives in this repo under akkio-frontend/
-akkio-frontend/node_modules/
-akkio-frontend/build/
-akkio-frontend/.env
-akkio-frontend/.env.local
+# Frontend (Vite)
+frontend/node_modules/
+frontend/build/
+frontend/.env
+frontend/.env.local
+
+# Legacy paths (if any old deploy dirs remain at repo root)
+chroma_store/
+uploads_multi_model/
+app_builder/runtime/

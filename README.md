@@ -1,41 +1,55 @@
-# Akkio — App Builder (monorepo)
+# Akkio
 
-Single GitHub repository for the **FastAPI backend** and **App Builder UI**.
+Monorepo for **App Builder**: FastAPI backend + Vite React UI.
 
-| Path | Role |
-|------|------|
-| `/` | FastAPI (`main.py`, `api/`, `app_builder/`) |
-| `akkio-frontend/` | React + Vite UI (port **3002**) |
+```
+akkio-fastapi/          ← GitHub repo (clone root)
+├── backend/            ← Python / FastAPI (port 8000)
+├── frontend/           ← React + Vite (port 3002)
+├── docs/               ← VPS / deploy notes
+└── README.md
+```
 
-Deploy and VPS notes: [docs/HOSTINGER.md](docs/HOSTINGER.md).
+Deploy: [docs/HOSTINGER.md](docs/HOSTINGER.md).
 
 ## Local development
 
 ### Backend
 
 ```bash
-cd akkio-fastapi   # repo root
+cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # if present
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+cp .env.example .env    # edit MongoDB, keys, PUBLIC_BASE_URL
+python run_server.py    # or: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend
 
 ```bash
-cd akkio-frontend
-cp .env.example .env
+cd frontend
+cp .env.example .env    # VITE_BASE_URL=http://localhost:8000
 npm install
-npm start            # Vite dev server on PORT from .env (default 3002)
+npm start
 ```
 
-Set `VITE_BASE_URL` in `akkio-frontend/.env` to your API origin (e.g. `http://localhost:8000`).
-
-## Clone on VPS (one repo)
+## VPS (one clone)
 
 ```bash
 git clone https://github.com/sainth-stack/akkio-fastapi.git
 cd akkio-fastapi
-# backend + akkio-frontend/ are in this tree — no separate akkio-frontend repo
+git pull origin only-ai-models
+
+# API
+cd backend && source venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8000
+
+# UI
+cd ../frontend && npm install && npm start
+```
+
+pm2 example:
+
+```bash
+pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi/backend
+pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/frontend -- start
 ```
