@@ -24,6 +24,42 @@ from app_builder.services.json_app_codegen_pipeline import (
 
 logger = logging.getLogger("app_builder")
 
+
+def log_generated_app_schema(defn: AppDefinition) -> None:
+    """Print the labels this app actually shipped, so a new prompt is visible in the server console."""
+    kpis = []
+    columns = []
+    for page in defn.pages or []:
+        for block in page.blocks or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "kpiRow":
+                kpis.extend(
+                    str(item.get("label") or item.get("valueKey") or "")
+                    for item in (block.get("items") or [])
+                    if isinstance(item, dict)
+                )
+            if block.get("type") == "dataTable":
+                columns.extend(
+                    str(col.get("header") or col.get("field") or "")
+                    for col in (block.get("columns") or [])
+                    if isinstance(col, dict)
+                )
+    predict = []
+    cfg = defn.meta.predictConfig if isinstance(defn.meta.predictConfig, dict) else {}
+    for field in cfg.get("fields") or []:
+        if isinstance(field, dict):
+            predict.append(str(field.get("label") or field.get("key") or ""))
+    payload = {
+        "appName": defn.meta.appName,
+        "kpis": [label for label in kpis if label],
+        "tableColumns": [label for label in columns if label],
+        "predictFields": [label for label in predict if label],
+    }
+    line = json.dumps(payload, ensure_ascii=False)
+    print(f"[app-json] {line}", flush=True)
+    logger.info("[app-json] %s", line)
+
 TEMPLATE_NAME = "base-frontend-vite-mui"
 _TEMPLATES_BASE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -155,6 +191,7 @@ def generate_json_app_files(
     from app_builder.services.json_app_template_guard import ensure_json_app_renderer
 
     files, _ = ensure_json_app_renderer(files)
+    log_generated_app_schema(definition)
 
     logger.info(
         "[json_app] definition | pages=%d nav=%d mock_keys=%d",

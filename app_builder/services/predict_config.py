@@ -82,50 +82,76 @@ def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[s
     return True
 
 
+_MAINTENANCE_FIELD = re.compile(r"mtbf|mttr|downtime|oee|work_order", re.I)
+
+
+def _maintenance_context(defn: Dict[str, Any]) -> bool:
+    meta = defn.get("meta") or {}
+    blob = " ".join(
+        str(meta.get(key) or "")
+        for key in ("requirement", "prd", "description", "domain", "appName")
+    )
+    return bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b", blob, re.I))
+
+
+def _append_field(
+    fields: List[Dict[str, Any]],
+    seen: set,
+    key: str,
+    label: str,
+    unit: str = "",
+    *,
+    allow_maintenance: bool = False,
+) -> None:
+    if not key or key in seen:
+        return
+    if _MAINTENANCE_FIELD.search(f"{key} {label}") and not allow_maintenance:
+        return
+    seen.add(key)
+    fields.append({"key": key, "label": label or key.replace("_", " ").title(), "unit": unit})
+
+
 def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
-    """Fields derived from sourceDatasets + dashboard KPI labels (prompt-specific)."""
+    """Prediction inputs from this app's KPIs and table columns, not a fixed maintenance form."""
     rows: List[Dict[str, Any]] = _source_rows(defn)
     numeric_fields: List[Dict[str, Any]] = []
     seen: set = set()
+    allow_maintenance = _maintenance_context(defn)
+
+    for page in defn.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "kpiRow":
+                for item in block.get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("valueKey") or "")
+                    label = str(item.get("label") or key.replace("_", " ").title())
+                    _append_field(numeric_fields, seen, key, label, _unit_for_field(key, label), allow_maintenance=allow_maintenance)
+            if block.get("type") == "dataTable":
+                for col in block.get("columns") or []:
+                    if not isinstance(col, dict):
+                        continue
+                    field = str(col.get("field") or "")
+                    header = str(col.get("header") or field.replace("_", " ").title())
+                    if not _field_is_predictable(field, header, str(col.get("type") or ""), rows):
+                        continue
+                    _append_field(numeric_fields, seen, field, header, _unit_for_field(field, header), allow_maintenance=allow_maintenance)
 
     for ds in get_source_datasets(defn):
         for col in ds.get("columns") or []:
             if not isinstance(col, dict):
                 continue
             field = str(col.get("field") or "")
-            if not field or field in seen:
-                continue
             header = str(col.get("header") or field.replace("_", " ").title())
-            ctype = str(col.get("type") or "")
-            if not _field_is_predictable(field, header, ctype, rows):
+            if not _field_is_predictable(field, header, str(col.get("type") or ""), rows):
                 continue
-            seen.add(field)
-            unit = _unit_for_field(field, header)
-            numeric_fields.append({"key": field, "label": header, "unit": unit})
+            _append_field(numeric_fields, seen, field, header, _unit_for_field(field, header), allow_maintenance=allow_maintenance)
 
-    kpi_targets: List[str] = []
-    for page in defn.get("pages") or []:
-        for block in page.get("blocks") or []:
-            if block.get("type") != "kpiRow":
-                continue
-            for item in block.get("items") or []:
-                lab = str(item.get("label") or "").lower()
-                vk = str(item.get("valueKey") or "")
-                for f in numeric_fields:
-                    fk = f["key"]
-                    if _slug(fk) in _slug(vk) or _slug(fk) in _slug(lab):
-                        kpi_targets.append(fk)
-                if "yield" in lab or "fpy" in lab:
-                    for f in numeric_fields:
-                        if "yield" in f["key"]:
-                            kpi_targets.append(f["key"])
-                if "defect" in lab:
-                    for f in numeric_fields:
-                        if "defect" in f["key"]:
-                            kpi_targets.append(f["key"])
-
-    preferred = [k for k in kpi_targets if k in {f["key"] for f in numeric_fields}]
-    default_target = preferred[0] if preferred else (numeric_fields[0]["key"] if numeric_fields else "")
+    default_target = numeric_fields[0]["key"] if numeric_fields else ""
     baseline = {f["key"]: round(_avg_from_rows(rows, f["key"]), 4) for f in numeric_fields if rows}
 
     return {
@@ -133,7 +159,7 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
         "targetField": default_target,
         "fields": numeric_fields,
         "baseline": baseline,
-        "description": "Choose the metric to forecast; fill the other inputs from your operational data averages.",
+        "description": "Choose a metric from this app. Inputs use the same labels as the dashboard.",
     }
 
 

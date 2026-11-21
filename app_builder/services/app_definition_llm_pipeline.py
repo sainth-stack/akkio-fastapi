@@ -354,6 +354,9 @@ Generate complete data for every dataKey in these blocks. KPI values and table r
         requirement=requirement,
         plan_json=plan_json,
     )
+    from app_builder.services.json_app_generator import log_generated_app_schema
+
+    log_generated_app_schema(defn)
     logger.info(
         "[app_definition_llm] done | pages=%d blocks=%d data_keys=%d",
         len(defn.pages),

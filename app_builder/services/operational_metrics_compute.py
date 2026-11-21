@@ -313,7 +313,7 @@ def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
         return _first_row_key(sample, ["downtime_hours", "downtime"])
     if re.search(r"event|work order|maintenance", title_l):
         return _COUNT_METRIC
-    return _first_row_key(sample, ["downtime_hours", "mttr_hours", "mtbf_hours", "quantity_on_hand"])
+    return _first_row_key(sample, ["quantity_on_hand", "amount", "value", "count"])
 
 
 def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:
@@ -826,6 +826,10 @@ def apply_source_data_pipeline(
     out["data"] = bag
     out.pop("mock", None)
     out = _repair_definition_pages(out, prd=prd, requirement=requirement)
+    if requirement:
+        meta = dict(out.get("meta") or {})
+        meta["requirement"] = requirement
+        out["meta"] = meta
     from app_builder.services.predict_config import attach_predict_config
 
     out = attach_predict_config(out)

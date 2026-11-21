@@ -26,6 +26,12 @@ export interface AppDefinition {
       description?: string;
       columns: Array<{ field: string; header: string; type?: string }>;
     }>;
+    predictConfig?: {
+      targetField?: string;
+      fields?: Array<{ key: string; label?: string; unit?: string }>;
+      baseline?: Record<string, number>;
+      description?: string;
+    };
   };
   theme: Record<string, unknown>;
   navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;

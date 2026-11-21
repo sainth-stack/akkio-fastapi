@@ -44,27 +44,37 @@ Formatting:
 - For each page include only the subsections that apply, using these labels:
   **Purpose:**, **KPIs:**, **Charts:**, **Filters:**, **Actions:**, **Table columns:**
 - Charts: prefix with type — `Line chart:`, `Bar chart:`, `Donut chart:` (one idea per bullet).
-- KPIs: one metric per bullet (e.g. First Pass Yield (FPY), Defect Rate).
+- KPIs: one metric per bullet, using names from the user prompt.
 - Do not duplicate the same widget on every page unless the prompt says so.
 - **KPIs:** subsection ONLY on the Dashboard (or Home/Overview) page — never on other pages. Other pages use Charts, Table columns, Filters, Actions as needed.
 - Do not add a Tech Stack section unless building a fullstack enterprise app.
 - The generated app includes an in-app **Data assistant** chat (floating button) that answers from KPI/chart/table data — keep metrics in data.json consistent with PRD labels."""
 
 
-def _page_layout_hint(page: str) -> str:
+def _asks_maintenance(requirement: str) -> bool:
+    return bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b", requirement or "", re.I))
+
+
+def _page_layout_hint(page: str, requirement: str = "") -> str:
     low = (page or "").lower()
     if re.search(r"\b(dashboard|home|overview)\b", low):
+        if _asks_maintenance(requirement):
+            return (
+                "Layout: **KPIs** + **Charts** for the maintenance metrics named in the prompt. "
+                "Table columns describe those maintenance records."
+            )
         return (
-            "Layout: **KPIs** + **Charts** (Include/Charts bullets; charts should relate to KPIs — MTBF, MTTR, "
-            "work orders, downtime). Put **filterable maintenance event tables** on Dashboard only (Table columns), "
-            "not on Analytics."
+            "Layout: **KPIs** + **Charts** using only metrics named in the user prompt. "
+            "Do not import a maintenance, quality, or plant template. "
+            "Table columns must name the entities in the prompt."
         )
     if re.search(r"\breports?\b", low):
         return "Layout: **Charts only**. No **Table columns**, no **Actions** (no export/download buttons in the UI). Omit **Filters** unless the user requested filters."
     if re.search(r"\banalytics?\b", low):
         return (
-            "Layout: **Charts only** (trends, pareto, failure frequency, root cause) — **no Table columns** "
-            "(tables belong on Dashboard). Omit **Filters** unless the user requested filters."
+            "Layout: **Charts only** for the metrics in the user prompt. "
+            "Do not import a maintenance or plant template. "
+            "No **Table columns** (tables belong on Dashboard). Omit **Filters** unless the user requested filters."
         )
     return ""
 
@@ -93,17 +103,17 @@ def is_multi_page_dashboard_prompt(requirement: str) -> bool:
     )
 
 
-def _page_spec_template(page: str) -> str:
-    hint = _page_layout_hint(page)
+def _page_spec_template(page: str, requirement: str = "") -> str:
+    hint = _page_layout_hint(page, requirement)
     hint_line = f"\n[{hint}]\n" if hint else "\n"
     return f"""### {page}
 **Purpose:** [One sentence — what the user does on {page}; infer from the prompt, any domain]
 {hint_line}
 **KPIs:**
-- [Metric bullets ONLY if this page shows summary numbers; otherwise omit this whole subsection]
+- [Metric bullets ONLY if this page shows summary numbers from the user prompt; otherwise omit this whole subsection]
 
 **Charts:**
-- [Line/Bar/Donut chart bullets with concrete metrics — e.g. "Line chart: OEE % vs target over time"]
+- [Line/Bar/Donut chart bullets with the prompt's own metrics — e.g. "Line chart: the prompt's primary metric over time"]
 
 **Filters:**
 - [Search/date/select filters needed on this page only]
@@ -112,7 +122,7 @@ def _page_spec_template(page: str) -> str:
 - [Buttons such as Export PDF, Create record — only if relevant]
 
 **Table columns:**
-- [Column bullets ONLY if this page is a list, log, or catalog]
+- [Column bullets for the records named in the prompt; omit this subsection if the page is not a list]
 """
 
 
@@ -125,7 +135,7 @@ def build_prd_prompts(
     product_name = resolve_app_display_name(requirement=requirement)
     pages = infer_pages_from_requirement(requirement)
 
-    maintenance = bool(re.search(r"maintenance|mtbf|mttr|work order|downtime", requirement or "", re.I))
+    maintenance = _asks_maintenance(requirement)
     kpi_defs = ""
     if maintenance:
         kpi_defs = """
@@ -141,14 +151,14 @@ def build_prd_prompts(
 """
 
     if is_multi_page_dashboard_prompt(requirement):
-        page_block = "\n".join(_page_spec_template(p) for p in pages) if pages else _page_spec_template("Dashboard")
+        page_block = "\n".join(_page_spec_template(p, requirement) for p in pages) if pages else _page_spec_template("Dashboard", requirement)
         system_prompt = f"""You are a senior product manager writing a PRD for a multi-page SaaS web application.
 
 Product name (short brand — 1–2 words for the app shell): {product_name}
 
 The user prompt defines pages, KPIs, charts, tables, and workflows. You MUST:
 1. Use the exact application page names: {", ".join(pages) if pages else "as stated in the prompt"}.
-2. Expand each page with concrete KPIs, charts, filters, and table columns implied by the prompt (manufacturing quality, operations, etc. when applicable).
+2. Expand each page with concrete KPIs, charts, filters, and table columns taken only from the user prompt. Do not add metrics the user did not name.
 3. NEVER use document section titles (Product Overview, Business Requirements, Functional Requirements) as application page names.
 4. NEVER replace the product with a different concept (e.g. generic anomaly platform).
 

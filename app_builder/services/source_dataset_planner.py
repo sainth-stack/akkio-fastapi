@@ -312,7 +312,14 @@ def infer_source_datasets(
             }
         ]
 
-    cols = _maintenance_event_columns() if "plant" in ctx or "operations" in ctx else _quality_event_columns()
+    cols = _maintenance_event_columns() if re.search(r"maintenance|mtbf|mttr|work order|downtime", ctx) else [
+        {"field": "record_id", "header": "Record", "type": "string"},
+        {"field": "name", "header": "Name", "type": "string"},
+        {"field": "category", "header": "Category", "type": "string"},
+        {"field": "status", "header": "Status", "type": "string"},
+        {"field": "amount", "header": "Amount", "type": "number"},
+        {"field": "recorded_at", "header": "Recorded", "type": "datetime"},
+    ]
     return [
         {
             "id": "operational_events",

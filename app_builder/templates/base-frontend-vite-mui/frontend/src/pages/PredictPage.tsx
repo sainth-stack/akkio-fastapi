@@ -17,7 +17,7 @@ import {
 } from '@mui/material';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import SyncIcon from '@mui/icons-material/Sync';
-import { useAppDefinition } from '../renderer/useAppDefinition';
+import { useAppDefinition, type AppDefinition } from '../renderer/useAppDefinition';
 import { buildAppDefinitionPayload } from '../utils/ragDownload';
 import { getAkkioAccessToken, getAkkioApiBase } from '../renderer/akkioApi';
 import PredictionIndicators, { type LivePrediction } from '../components/predict/PredictionIndicators';
@@ -40,14 +40,48 @@ function fieldLabel(f: PredictField): string {
 
 const MIN_PREDICT_UI_MS = 800;
 
-const LEGACY_FIELDS: PredictField[] = [
-  { key: 'mtbf_hours', label: 'MTBF (hours)', unit: 'h' },
-  { key: 'mttr_hours', label: 'MTTR (hours)', unit: 'h' },
-  { key: 'downtime_hours', label: 'Downtime (hours)', unit: 'h' },
-  { key: 'open_work_orders', label: 'Open work orders' },
-  { key: 'machine_load_pct', label: 'Machine load / OEE (%)', unit: '%' },
-  { key: 'production_output', label: 'Production output' },
-];
+function fieldsFromDefinition(definition: AppDefinition | null): PredictField[] {
+  const configured = definition?.meta?.predictConfig?.fields;
+  if (configured?.length) {
+    return configured.map((f) => ({
+      key: f.key,
+      label: f.label || f.key.replace(/_/g, ' '),
+      unit: f.unit,
+    }));
+  }
+  const fields: PredictField[] = [];
+  const seen = new Set<string>();
+  const numeric = /pct|rate|qty|quantity|count|amount|cost|spend|days|hours|score|yield|on_hand|lead|value/i;
+  for (const page of definition?.pages || []) {
+    for (const block of page.blocks || []) {
+      const type = String(block.type || '');
+      if (type === 'kpiRow') {
+        const items = Array.isArray(block.items) ? block.items : [];
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const row = item as { valueKey?: string; label?: string };
+          const key = String(row.valueKey || '');
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          fields.push({ key, label: row.label || key.replace(/_/g, ' ') });
+        }
+      }
+      if (type === 'dataTable') {
+        const columns = Array.isArray(block.columns) ? block.columns : [];
+        for (const col of columns) {
+          if (!col || typeof col !== 'object') continue;
+          const row = col as { field?: string; header?: string };
+          const key = String(row.field || '');
+          const label = String(row.header || key);
+          if (!key || seen.has(key) || !numeric.test(`${key} ${label}`)) continue;
+          seen.add(key);
+          fields.push({ key, label });
+        }
+      }
+    }
+  }
+  return fields;
+}
 
 function baselineToForm(fields: PredictField[], baseline: Record<string, number>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -62,16 +96,7 @@ export default function PredictPage() {
   const apiBase = getAkkioApiBase();
   const predictConfig = (definition?.meta?.predictConfig as PredictConfig | undefined) ?? undefined;
 
-  const fields = useMemo<PredictField[]>(() => {
-    if (predictConfig?.fields?.length) {
-      return predictConfig.fields.map((f) => ({
-        key: f.key,
-        label: f.label || f.key.replace(/_/g, ' '),
-        unit: f.unit,
-      }));
-    }
-    return LEGACY_FIELDS;
-  }, [predictConfig]);
+  const fields = useMemo<PredictField[]>(() => fieldsFromDefinition(definition), [definition]);
 
   const [targetField, setTargetField] = useState('');
   const [values, setValues] = useState<Record<string, string>>({});
@@ -83,8 +108,7 @@ export default function PredictPage() {
   const [baselineLoaded, setBaselineLoaded] = useState(false);
 
   useEffect(() => {
-    const initialTarget =
-      predictConfig?.targetField || fields[0]?.key || 'production_output';
+    const initialTarget = predictConfig?.targetField || fields[0]?.key || '';
     setTargetField(initialTarget);
     const stored = predictConfig?.baseline || {};
     const hasBaseline = Object.values(stored).some((v) => v != null && Number(v) !== 0);
@@ -102,6 +126,7 @@ export default function PredictPage() {
   const postPredict = useCallback(
     async (body: Record<string, unknown>) => {
       if (!apiBase) throw new Error('Open this app from the Akkio host to run predictions.');
+      if (!definition) throw new Error('App definition is not loaded.');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       const token = getAkkioAccessToken();
       if (token) headers.Authorization = `Bearer ${token}`;

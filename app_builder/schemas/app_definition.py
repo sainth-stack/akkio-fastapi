@@ -17,6 +17,7 @@ class AppMeta(BaseModel):
     sourceDatasets: List[Dict[str, Any]] = Field(default_factory=list)
     sapTicketSeedCount: Optional[int] = None
     sapRagPhase: Optional[str] = None  # dashboard | rag_complete
+    predictConfig: Optional[Dict[str, Any]] = None
 
 
 class AppTheme(BaseModel):

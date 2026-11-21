@@ -20,14 +20,13 @@ def _slug(label: str) -> str:
 
 
 def align_dashboard_charts_to_kpis(defn: AppDefinition, *, dashboard_page_id: str) -> AppDefinition:
-    """Ensure dashboard chart series use the same semantic keys as KPI cards (MTBF, MTTR, work orders, downtime)."""
+    """Point dashboard chart series at KPI labels that are actually on the page."""
     for page in defn.pages:
         if page.id != dashboard_page_id:
             continue
         kpis = _kpi_items_from_page(page)
         if not kpis:
             return defn
-        # Chart series use numeric time-series keys (not KPI card string bundles).
         chart_keys = {
             "mtbf": ("mtbf_hours", "MTBF (h)"),
             "mttr": ("mttr_hours", "MTTR (h)"),
@@ -54,37 +53,23 @@ def align_dashboard_charts_to_kpis(defn: AppDefinition, *, dashboard_page_id: st
             title_low = str(b.get("title") or "").lower()
 
             def _add_chart_series(hint: str) -> None:
-                if hint not in chart_keys:
+                if hint not in chart_keys or hint not in present_hints:
                     return
                 dk, default_name = chart_keys[hint]
                 if dk in keys:
                     return
-                name = present_hints.get(hint, default_name)
-                series.append({"dataKey": dk, "name": name})
+                series.append({"dataKey": dk, "name": present_hints.get(hint, default_name)})
                 keys.add(dk)
 
-            if b.get("type") == "lineChart" and re.search(
-                r"trend|over time|downtime|output|mtbf|mttr|operational", title_low
-            ):
-                line_hints = list(present_hints.keys()) or ["downtime", "mtbf", "mttr"]
-                for hint in line_hints:
-                    if hint in chart_keys and (
-                        hint in present_hints
-                        or hint in title_low
-                        or hint.replace("_", " ") in title_low
-                    ):
+            if b.get("type") == "lineChart":
+                for hint in present_hints:
+                    if hint in title_low or hint.replace("_", " ") in title_low:
                         _add_chart_series(hint)
-                if "output" in title_low or "production" in title_low:
-                    _add_chart_series("output")
             if b.get("type") == "barChart" and re.search(
                 r"category|performance|by\s+\w+|pareto|breakdown", title_low
             ):
-                if "work_order" in present_hints or re.search(r"work order|wo\b", title_low):
+                if "work_order" in present_hints and re.search(r"work order|wo\b", title_low):
                     _add_chart_series("work_order")
-                if "maintenance" in title_low:
-                    dk = "events_by_category"
-                    if dk not in keys:
-                        series.append({"dataKey": dk, "name": "Events by category"})
 
             if series:
                 b["series"] = series[:6]
@@ -130,11 +115,12 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
     dash_blocks = list(dash_page.blocks or [])
     from app_builder.services.block_normalizer import _columns_are_invalid, repair_data_table_columns
 
+    maintenance_prd = bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime", (prd or ""), re.I))
     repaired_blocks: List[Any] = []
     for b in dash_blocks:
         if isinstance(b, dict) and b.get("type") == "dataTable":
             b = repair_data_table_columns(b)
-            if _columns_are_invalid(b.get("columns") or []):
+            if maintenance_prd and _columns_are_invalid(b.get("columns") or []):
                 b = {**b, "columns": _maintenance_analytics_columns(), "title": "Recent maintenance events"}
         repaired_blocks.append(b)
     dash_blocks = repaired_blocks
@@ -156,13 +142,14 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
             table_block = {
                 **table_block,
                 "dataKey": f"table_{dash_id}",
-                "title": table_block.get("title") or "Recent maintenance events",
+                "title": table_block.get("title") or ("Recent maintenance events" if maintenance_prd else "Records"),
                 "detailView": True,
                 "searchable": True,
             }
-            if not table_block.get("columns"):
+            if not table_block.get("columns") and maintenance_prd:
                 table_block["columns"] = _maintenance_analytics_columns()
-            dash_blocks.append(table_block)
+            if table_block.get("columns"):
+                dash_blocks.append(table_block)
 
     dash_page = type(dash_page)(
         id=dash_page.id,

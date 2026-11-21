@@ -319,5 +319,47 @@ class TestSourceDataPipeline(unittest.TestCase):
         self.assertNotIn("CNC Mill", str(stock))
 
 
+class TestPromptSchema(unittest.TestCase):
+    def test_inventory_prd_prompt_does_not_ask_for_mttr(self):
+        from app_builder.services.prd_prompt_builder import build_prd_prompts
+
+        system, _user = build_prd_prompts(
+            "Build a manufacturing inventory dashboard (Dashboard, Analytics, Reports) for warehouse stock and reorder points"
+        )
+        self.assertNotIn("MTTR", system)
+        self.assertNotIn("MTBF", system)
+
+    def test_maintenance_prd_prompt_keeps_mttr(self):
+        from app_builder.services.prd_prompt_builder import build_prd_prompts
+
+        system, _user = build_prd_prompts(
+            "Build a maintenance dashboard (Dashboard, Analytics) for MTBF and MTTR"
+        )
+        self.assertIn("MTTR", system)
+
+    def test_predict_fields_follow_the_prompt_not_mttr(self):
+        from app_builder.services.predict_config import build_predict_config
+
+        cfg = build_predict_config({
+            "meta": {"requirement": "manufacturing inventory warehouse stock"},
+            "pages": [{
+                "blocks": [
+                    {"type": "kpiRow", "items": [
+                        {"label": "Days of supply", "valueKey": "days_of_supply"},
+                        {"label": "MTTR", "valueKey": "mttr_hours"},
+                    ]},
+                    {"type": "dataTable", "columns": [
+                        {"field": "quantity_on_hand", "header": "Qty on hand", "type": "number"},
+                        {"field": "sku", "header": "SKU"},
+                    ]},
+                ],
+            }],
+        })
+        keys = [field["key"] for field in cfg["fields"]]
+        self.assertIn("days_of_supply", keys)
+        self.assertIn("quantity_on_hand", keys)
+        self.assertNotIn("mttr_hours", keys)
+
+
 if __name__ == "__main__":
     unittest.main()
