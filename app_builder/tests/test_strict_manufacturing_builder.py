@@ -91,6 +91,62 @@ def test_record_persistence_and_validation(tmp_path, monkeypatch):
         mutate_record(updated, "castings", {"batch": "", "status": "Scheduled"})
 
 
+def test_page_data_accepts_top_level_mock_and_renamed_keys():
+    from app_builder.schemas.app_definition_llm import PageDataPlan
+    from app_builder.services.definition_contract import align_page_datasets
+
+    blocks = definition()["pages"][0]["blocks"]
+    top_level = PageDataPlan.model_validate({"kpis_reports": {"rejected": 2}, "castings": [{"batch": "CAST-72", "status": "Closed"}]})
+    wrapped = PageDataPlan.model_validate({"mock": {"datasets": {"kpis_reports": {"rejected": 2}, "castings": [{"batch": "CAST-72", "status": "Closed"}]}}})
+    assert top_level.data["kpis_reports"]["rejected"] == 2
+    assert wrapped.data["castings"][0]["batch"] == "CAST-72"
+    aligned = align_page_datasets(blocks, {"reports_kpis": {"rejected": 4}, "castings": [{"batch": "CAST-72", "status": "Closed"}]})
+    validate_page_data(blocks, aligned)
+    assert aligned["kpis_reports"]["rejected"] == 4
+
+
+def test_llm_pipeline_accepts_datasets_emitted_outside_data(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    payload = definition()
+    responses = [
+        {"appName": "Casting Ops", "domain": "casting", "navigation": payload["navigation"], "pages": [{"id": "reports", "title": "Reports"}]},
+        {"blocks": payload["pages"][0]["blocks"]},
+        payload["mock"],
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+    assert result.mock["kpis_reports"] == payload["mock"]["kpis_reports"]
+    assert result.mock["castings"] == payload["mock"]["castings"]
+
+
+def test_omitted_dataset_still_fails(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    payload = definition()
+    incomplete = {"data": {"castings": payload["mock"]["castings"]}}
+    responses = [
+        {"appName": "Casting Ops", "domain": "casting", "navigation": payload["navigation"], "pages": [{"id": "reports", "title": "Reports"}]},
+        {"blocks": payload["pages"][0]["blocks"]},
+        incomplete,
+        incomplete,
+        incomplete,
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    with pytest.raises(ValueError, match="Missing dataset: kpis_reports"):
+        asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+
+
 def test_llm_pipeline_uses_selected_model_and_preserves_response(monkeypatch):
     from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
 

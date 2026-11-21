@@ -59,12 +59,13 @@ Rules:
 - Do NOT output mock/data — blocks only.
 """
 
-_DATA_SYSTEM = """You are a data engineer. Output ONLY valid JSON for PageDataPlan.
+_DATA_SYSTEM = """You are a data engineer. Output ONLY valid JSON with this shape:
+{"data": {"<dataKey>": <dataset>}}
 
 Generate prompt-specific synthetic operational data for ONE page's blocks. Never claim it is real factory data.
 
 Rules:
-- Keys MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists).
+- The object inside "data" MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists). Copy each dataKey verbatim. Do not put datasets at the top level, under "mock", or under a renamed key.
 - KPI bundles: objects with string values matching labels (%, counts, currency as in PRD).
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
 - Tables: keys MUST match column field names exactly. Honor user-provided names, dates, units, values, and row counts. Infer other synthetic values from the exact manufacturing process, not a canned domain dataset.
@@ -245,6 +246,8 @@ PRD:
         if on_progress:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")
 
+        from app_builder.services.definition_contract import align_page_datasets, dataset_shape_hint, validate_page_data
+
         data_user = f"""Page: {outline.title} ({outline.id})
 Blocks JSON:
 {json.dumps(blocks_plan.blocks, indent=2)[:24000]}
@@ -258,18 +261,19 @@ Full requirement:
 Previously generated datasets (preserve shared entity identities):
 {json.dumps(mock, ensure_ascii=False)[:16000]}
 
-Generate complete data for every dataKey in these blocks.
+Required JSON shape (use these keys verbatim inside "data"):
+{dataset_shape_hint(blocks_plan.blocks)}
 """
         data_plan: Optional[PageDataPlan] = await _llm_validated(
             llm, _DATA_SYSTEM, data_user, PageDataPlan, f"page_data_{outline.id}"
         )
-        from app_builder.services.definition_contract import validate_page_data
 
         last_error = "No page data generated"
         for attempt in range(3):
             try:
                 if data_plan is None:
                     raise ValueError(last_error)
+                data_plan.data = align_page_datasets(blocks_plan.blocks, data_plan.data)
                 validate_page_data(blocks_plan.blocks, data_plan.data)
                 if set(mock) & set(data_plan.data):
                     raise ValueError("Dataset keys must be unique across pages")
@@ -278,7 +282,19 @@ Generate complete data for every dataKey in these blocks.
                 last_error = str(exc)
                 if attempt == 2:
                     raise ValueError(f"Invalid LLM data for {outline.id}: {last_error}") from exc
-                data_plan = await _llm_validated(llm, _DATA_SYSTEM, f"{data_user}\nRepair error: {last_error}", PageDataPlan, f"page_data_repair_{outline.id}")
+                logger.warning(
+                    "[app_definition_llm] page data for %s missing required datasets (%s); received keys=%s",
+                    outline.id,
+                    last_error,
+                    list(data_plan.data) if data_plan is not None else [],
+                )
+                data_plan = await _llm_validated(
+                    llm,
+                    _DATA_SYSTEM,
+                    f"{data_user}\nRepair error: {last_error}\nReturn every required key inside the data object.",
+                    PageDataPlan,
+                    f"page_data_repair_{outline.id}",
+                )
         mock.update(data_plan.data)
 
         pages.append(

@@ -1,5 +1,7 @@
+import json
 import math
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 
 BLOCK_TYPES = frozenset({"filterBar", "actionBar", "kpiRow", "lineChart", "barChart", "pieChart", "dataTable", "text"})
@@ -43,6 +45,182 @@ def validate_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if action.get("actionType") == "create" and not action.get("dataKey"):
                     raise ValueError("Create action requires a table dataKey")
     return blocks
+
+
+_CONTAINER_KEYS = ("data", "mock", "datasets", "pageData", "datasetsByKey")
+_NEST_KEYS = {"datasets", "mock", "data", "pageData", "datasetsByKey", "meta", "payload"}
+_SKIP_KEYS = {"description", "notes", "commentary", "page", "pageId", "page_id", "title"}
+
+
+def _parse_json_object(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _datasets_from_list(items: List[Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("dataKey") or item.get("key") or item.get("id")
+        if not key:
+            continue
+        if "values" in item:
+            payload = item["values"]
+        elif "rows" in item:
+            payload = item["rows"]
+        elif "data" in item:
+            payload = item["data"]
+        else:
+            payload = {k: v for k, v in item.items() if k not in {"dataKey", "key", "id", "type", "title"}}
+        if payload is not None:
+            out[str(key)] = payload
+    return out
+
+
+def _unwrap_nested(payload: Dict[str, Any]) -> Dict[str, Any]:
+    current = dict(payload)
+    for _ in range(3):
+        nested = [key for key, value in current.items() if key in _NEST_KEYS and isinstance(value, dict)]
+        direct = [key for key, value in current.items() if key not in _NEST_KEYS and isinstance(value, (dict, list))]
+        if direct or len(nested) != 1:
+            return current
+        inner = current[nested[0]]
+        if not any(isinstance(value, (dict, list)) for value in inner.values()):
+            return current
+        current = dict(inner)
+    return current
+
+
+def coerce_page_data(value: Any) -> Dict[str, Any]:
+    """Collect datasets whether the model nested them under data/mock or emitted them as top-level keys."""
+    value = _parse_json_object(value)
+    if not isinstance(value, dict):
+        return {}
+    merged: Dict[str, Any] = {}
+    for name in _CONTAINER_KEYS:
+        raw = _parse_json_object(value.get(name))
+        if isinstance(raw, dict):
+            for key, item in _unwrap_nested(raw).items():
+                merged.setdefault(key, item)
+        elif isinstance(raw, list):
+            for key, item in _datasets_from_list(raw).items():
+                merged.setdefault(key, item)
+    for key, item in value.items():
+        if key in _CONTAINER_KEYS or key in _SKIP_KEYS:
+            continue
+        if isinstance(item, (dict, list)) and key not in merged:
+            merged[key] = item
+    return _unwrap_nested(merged)
+
+
+def _norm_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def _key_tokens(key: str) -> frozenset:
+    return frozenset(re.findall(r"[a-z0-9]+", key.lower()))
+
+
+def _binding_kind(block: Dict[str, Any]) -> str:
+    return str(block.get("type") or "")
+
+
+def _shape_ok(kind: str, value: Any) -> bool:
+    if kind == "kpiRow":
+        return isinstance(value, dict)
+    return isinstance(value, list)
+
+
+def required_bindings(blocks: List[Dict[str, Any]]) -> List[tuple]:
+    bindings = []
+    for block in blocks:
+        kind = _binding_kind(block)
+        key = block.get("dataKey")
+        if key and kind in {"kpiRow", "lineChart", "barChart", "pieChart", "dataTable"}:
+            bindings.append((str(key), kind))
+        if kind == "filterBar":
+            for flt in block.get("filters") or []:
+                if isinstance(flt, dict) and flt.get("optionsKey"):
+                    bindings.append((str(flt["optionsKey"]), "options"))
+    return bindings
+
+
+def _best_alias(key: str, kind: str, data: Dict[str, Any], required: set) -> Optional[str]:
+    wanted = _norm_key(key)
+    wanted_tokens = _key_tokens(key)
+    ranked = []
+    for name, value in data.items():
+        if name in required or str(name).endswith("_meta") or not _shape_ok(kind, value):
+            continue
+        tokens = _key_tokens(str(name))
+        if _norm_key(str(name)) == wanted or tokens == wanted_tokens:
+            ranked.append((0, str(name)))
+        elif kind == "kpiRow" and "kpi" in tokens and tokens <= wanted_tokens:
+            ranked.append((1, str(name)))
+    if ranked:
+        ranked.sort()
+        top = [name for rank, name in ranked if rank == ranked[0][0]]
+        return top[0] if len(top) == 1 else None
+    loose = [
+        str(name)
+        for name, value in data.items()
+        if name not in required and not str(name).endswith("_meta") and _shape_ok(kind, value) and (_key_tokens(str(name)) & wanted_tokens)
+    ]
+    return loose[0] if len(loose) == 1 else None
+
+
+def align_page_datasets(blocks: List[Dict[str, Any]], data: Dict[str, Any]) -> Dict[str, Any]:
+    """Bind misnamed LLM datasets onto the dataKeys declared by the page blocks."""
+    out = coerce_page_data(data if isinstance(data, dict) else {})
+    bindings = required_bindings(blocks)
+    required = {key for key, _kind in bindings}
+    for key, kind in bindings:
+        if key in out and _shape_ok(kind, out[key]):
+            continue
+        match = _best_alias(key, kind, out, required)
+        if match:
+            out[key] = out[match]
+    return out
+
+
+def dataset_shape_hint(blocks: List[Dict[str, Any]]) -> str:
+    shape: Dict[str, Any] = {}
+    for block in blocks:
+        kind = _binding_kind(block)
+        key = block.get("dataKey")
+        if key and kind == "kpiRow":
+            shape[str(key)] = {
+                str(item.get("valueKey")): "<string or number>"
+                for item in block.get("items") or []
+                if isinstance(item, dict) and item.get("valueKey")
+            }
+        elif key and kind in {"lineChart", "barChart"}:
+            row: Dict[str, Any] = {str(block.get("xAxisKey") or "period"): "<label>"}
+            for series in block.get("series") or []:
+                if isinstance(series, dict) and series.get("dataKey"):
+                    row[str(series["dataKey"])] = 0
+            shape[str(key)] = [row]
+        elif key and kind == "pieChart":
+            shape[str(key)] = [{"name": "<segment>", "value": 0}]
+        elif key and kind == "dataTable":
+            shape[str(key)] = [
+                {
+                    str(col.get("field")): "<value>"
+                    for col in block.get("columns") or []
+                    if isinstance(col, dict) and col.get("field")
+                }
+            ]
+        if kind == "filterBar":
+            for flt in block.get("filters") or []:
+                options_key = flt.get("optionsKey") if isinstance(flt, dict) else None
+                if options_key:
+                    shape[str(options_key)] = [{"value": "<id>", "label": "<label>"}]
+    return json.dumps({"data": shape}, indent=2)[:8000]
 
 
 def validate_page_data(blocks: List[Dict[str, Any]], data: Dict[str, Any]) -> None:

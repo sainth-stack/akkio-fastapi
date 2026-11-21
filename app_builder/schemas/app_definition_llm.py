@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class NavItemPlan(BaseModel):
@@ -47,3 +47,12 @@ class PageBlocksPlan(BaseModel):
 
 class PageDataPlan(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def nest_datasets(cls, value: Any) -> Any:
+        from app_builder.services.definition_contract import coerce_page_data
+
+        if not isinstance(value, dict):
+            return value
+        return {"data": coerce_page_data(value)}
