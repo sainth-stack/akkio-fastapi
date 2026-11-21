@@ -125,6 +125,86 @@ def test_llm_pipeline_accepts_datasets_emitted_outside_data(monkeypatch):
     assert result.mock["castings"] == payload["mock"]["castings"]
 
 
+def _shell(pages):
+    return {
+        "appName": "Manufacturing Vendor",
+        "domain": "manufacturing",
+        "navigation": [{"label": page["title"], "path": "/" if i == 0 else f"/{page['id']}", "pageId": page["id"]} for i, page in enumerate(pages)],
+        "pages": pages,
+    }
+
+
+def test_later_page_keeps_its_data_when_earlier_keys_are_echoed(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    dashboard_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Vendors", "valueKey": "vendors"}]},
+        {"type": "lineChart", "title": "Spend", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "spend", "name": "Spend"}]},
+    ]
+    analytics_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_analytics", "items": [{"label": "On time", "valueKey": "on_time"}]},
+        {"type": "barChart", "title": "Defects", "dataKey": "chart_analytics", "xAxisKey": "period", "series": [{"dataKey": "defects", "name": "Defects"}]},
+    ]
+    dashboard_data = {"kpis_dashboard": {"vendors": "12"}, "chart_dashboard": [{"period": "W1", "spend": 10}, {"period": "W2", "spend": 12}]}
+    analytics_data = {
+        **dashboard_data,
+        "kpis_analytics": {"on_time": "95%"},
+        "chart_analytics": [{"period": "W1", "defects": 3}, {"period": "W2", "defects": 1}],
+    }
+    responses = [
+        _shell([{"id": "dashboard", "title": "Dashboard"}, {"id": "analytics", "title": "Analytics"}]),
+        {"blocks": dashboard_blocks},
+        {"data": dashboard_data},
+        {"blocks": analytics_blocks},
+        {"data": analytics_data},
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Manufacturing vendor dashboard and analytics"))
+    assert result.mock["kpis_dashboard"] == {"vendors": "12"}
+    assert result.mock["kpis_analytics"] == {"on_time": "95%"}
+    assert result.mock["chart_dashboard"][0]["spend"] == 10
+    assert result.mock["chart_analytics"][0]["defects"] == 3
+    assert [page.id for page in result.pages] == ["dashboard", "analytics"]
+
+
+def test_reused_dataset_key_is_renamed_for_the_next_page(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    dashboard_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Vendors", "valueKey": "vendors"}]},
+        {"type": "lineChart", "title": "Spend", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "spend", "name": "Spend"}]},
+    ]
+    analytics_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "On time", "valueKey": "on_time"}]},
+        {"type": "barChart", "title": "Defects", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "defects", "name": "Defects"}]},
+    ]
+    responses = [
+        _shell([{"id": "dashboard", "title": "Dashboard"}, {"id": "analytics", "title": "Analytics"}]),
+        {"blocks": dashboard_blocks},
+        {"data": {"kpis_dashboard": {"vendors": "12"}, "chart_dashboard": [{"period": "W1", "spend": 10}]}},
+        {"blocks": analytics_blocks},
+        {"data": {"kpis_dashboard": {"on_time": "95%"}, "chart_dashboard": [{"period": "W1", "defects": 3}]}},
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Manufacturing vendor dashboard and analytics"))
+    assert result.mock["kpis_dashboard"] == {"vendors": "12"}
+    assert result.mock["kpis_dashboard_2"] == {"on_time": "95%"}
+    assert result.mock["chart_dashboard"][0]["spend"] == 10
+    assert result.mock["chart_dashboard_2"][0]["defects"] == 3
+    assert result.pages[1].blocks[0]["dataKey"] == "kpis_dashboard_2"
+    assert result.pages[1].blocks[1]["dataKey"] == "chart_dashboard_2"
+
+
 def test_omitted_dataset_still_fails(monkeypatch):
     from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
 

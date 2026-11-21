@@ -1,7 +1,8 @@
+import copy
 import json
 import math
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 BLOCK_TYPES = frozenset({"filterBar", "actionBar", "kpiRow", "lineChart", "barChart", "pieChart", "dataTable", "text"})
@@ -186,6 +187,72 @@ def align_page_datasets(blocks: List[Dict[str, Any]], data: Dict[str, Any]) -> D
         if match:
             out[key] = out[match]
     return out
+
+
+def _unique_key(key: str, used: Set[str]) -> str:
+    if key not in used:
+        return key
+    suffix = 2
+    while f"{key}_{suffix}" in used:
+        suffix += 1
+    return f"{key}_{suffix}"
+
+
+def dedupe_page_data_keys(blocks: List[Dict[str, Any]], reserved: Set[str]) -> List[Dict[str, Any]]:
+    """Give this page dataset keys that do not overwrite datasets already stored for earlier pages."""
+    owned = copy.deepcopy(blocks)
+    used = set(reserved)
+    renames: Dict[str, str] = {}
+    for block in owned:
+        kind = _binding_kind(block)
+        key = block.get("dataKey")
+        if key and kind in {"kpiRow", "lineChart", "barChart", "pieChart", "dataTable"}:
+            renamed = _unique_key(str(key), used)
+            if renamed != key:
+                renames[str(key)] = renamed
+                block["dataKey"] = renamed
+            used.add(str(block["dataKey"]))
+        if kind == "filterBar":
+            for flt in block.get("filters") or []:
+                if isinstance(flt, dict) and flt.get("optionsKey"):
+                    current = str(flt["optionsKey"])
+                    renamed = _unique_key(current, used)
+                    if renamed != current:
+                        renames[current] = renamed
+                        flt["optionsKey"] = renamed
+                    used.add(str(flt["optionsKey"]))
+    for block in owned:
+        source = block.get("sourceDataKey")
+        if source in renames:
+            block["sourceDataKey"] = renames[str(source)]
+        for action in block.get("actions") or []:
+            if isinstance(action, dict) and action.get("dataKey") in renames:
+                action["dataKey"] = renames[str(action["dataKey"])]
+    return owned
+
+
+def retain_page_datasets(
+    blocks: List[Dict[str, Any]],
+    data: Dict[str, Any],
+    *,
+    reserved: Optional[Set[str]] = None,
+    page_id: str = "",
+) -> Dict[str, Any]:
+    """Keep this page's datasets and drop keys copied from earlier pages."""
+    aligned = align_page_datasets(blocks, data)
+    taken = set(reserved or ())
+    bindings = required_bindings(blocks)
+    required = [key for key, _kind in bindings]
+    if any(key in taken for key in required):
+        raise ValueError("Dataset keys must be unique across pages")
+    meta = {f"{key}_meta" for key, kind in bindings if kind == "kpiRow"}
+    if page_id:
+        meta.add(f"kpis_{page_id}_meta")
+    kept = {key: aligned[key] for key in required if key in aligned}
+    for key in meta:
+        if key in aligned and key not in taken and key not in kept:
+            kept[key] = aligned[key]
+    return kept
 
 
 def dataset_shape_hint(blocks: List[Dict[str, Any]]) -> str:

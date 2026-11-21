@@ -66,6 +66,7 @@ Generate prompt-specific synthetic operational data for ONE page's blocks. Never
 
 Rules:
 - The object inside "data" MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists). Copy each dataKey verbatim. Do not put datasets at the top level, under "mock", or under a renamed key.
+- Return only this page's dataKeys. Do not copy keys that already belong to earlier pages.
 - KPI bundles: objects with string values matching labels (%, counts, currency as in PRD).
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
 - Tables: keys MUST match column field names exactly. Honor user-provided names, dates, units, values, and row counts. Infer other synthetic values from the exact manufacturing process, not a canned domain dataset.
@@ -243,10 +244,12 @@ PRD:
                 else:
                     raise ValueError(f"LLM could not repair PRD gaps for {outline.id}")
 
+        from app_builder.services.definition_contract import dedupe_page_data_keys, dataset_shape_hint, retain_page_datasets, validate_page_data
+
+        blocks_plan.blocks = dedupe_page_data_keys(blocks_plan.blocks, set(mock))
+
         if on_progress:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")
-
-        from app_builder.services.definition_contract import align_page_datasets, dataset_shape_hint, validate_page_data
 
         data_user = f"""Page: {outline.title} ({outline.id})
 Blocks JSON:
@@ -258,7 +261,7 @@ PRD section:
 Full requirement:
 {ctx['requirement']}
 
-Previously generated datasets (preserve shared entity identities):
+Previously generated datasets (reuse entity names and ids, but do not return these keys):
 {json.dumps(mock, ensure_ascii=False)[:16000]}
 
 Required JSON shape (use these keys verbatim inside "data"):
@@ -273,10 +276,13 @@ Required JSON shape (use these keys verbatim inside "data"):
             try:
                 if data_plan is None:
                     raise ValueError(last_error)
-                data_plan.data = align_page_datasets(blocks_plan.blocks, data_plan.data)
+                data_plan.data = retain_page_datasets(
+                    blocks_plan.blocks,
+                    data_plan.data,
+                    reserved=set(mock),
+                    page_id=outline.id,
+                )
                 validate_page_data(blocks_plan.blocks, data_plan.data)
-                if set(mock) & set(data_plan.data):
-                    raise ValueError("Dataset keys must be unique across pages")
                 break
             except ValueError as exc:
                 last_error = str(exc)
