@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app_builder.schemas.app_definition import AppDefinition
+from app_builder.schemas.app_definition import AppDefinition, PageDef
 from app_builder.schemas.app_definition_llm import PageBlocksPlan
 from app_builder.services.definition_contract import validate_definition, validate_page_data
 from app_builder.services.definition_runtime import load_definition, mutate_record, save_definition
@@ -353,6 +353,59 @@ def test_llm_pipeline_uses_selected_model_and_preserves_response(monkeypatch):
     assert result.mock == payload["mock"]
     assert result.pages[0].blocks == payload["pages"][0]["blocks"]
     assert "Casting reports" in calls[-1]
+
+
+def test_analytics_does_not_fail_on_parenthetical_kpi_example():
+    from app_builder.services.prd_compliance import page_gaps
+
+    section = """## Analytics
+**KPIs:**
+- Predictive Model Accuracy (e.g., forecast vs actual stock levels)
+**Charts:**
+- Line chart of forecast vs actual stock levels
+"""
+    page = PageDef(
+        id="analytics",
+        title="Analytics",
+        blocks=[
+            {"type": "kpiRow", "dataKey": "kpis_analytics", "items": [{"label": "Predictive Model Accuracy", "valueKey": "predictive_model_accuracy"}]},
+            {"type": "lineChart", "dataKey": "chart_forecast", "xAxisKey": "period", "series": [{"dataKey": "actual", "name": "Actual"}]},
+            {"type": "barChart", "dataKey": "chart_forecast", "xAxisKey": "period", "series": [{"dataKey": "forecast", "name": "Forecast"}]},
+            {"type": "filterBar", "filters": [{"filterType": "search", "label": "Search"}]},
+            {"type": "dataTable", "dataKey": "stock", "columns": [{"field": "sku", "header": "SKU"}]},
+            {"type": "actionBar", "actions": []},
+        ],
+    )
+    gaps = page_gaps(page, section)
+    assert gaps["missing_kpis"] == []
+    assert gaps["has_chart"] is True
+
+
+def test_dashboard_kpi_matches_without_example_parenthetical():
+    from app_builder.services.prd_compliance import page_gaps
+
+    section = """## Dashboard
+**KPIs:**
+- Predictive Model Accuracy (e.g., forecast vs actual stock levels)
+- Days of supply
+"""
+    matched = PageDef(
+        id="dashboard",
+        title="Dashboard",
+        blocks=[{"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [
+            {"label": "Predictive Model Accuracy", "valueKey": "predictive_model_accuracy"},
+            {"label": "Days of supply", "valueKey": "days_of_supply"},
+        ]}],
+    )
+    assert page_gaps(matched, section)["missing_kpis"] == []
+    missed = PageDef(
+        id="dashboard",
+        title="Dashboard",
+        blocks=[{"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Open orders", "valueKey": "open_orders"}]}],
+    )
+    missing = page_gaps(missed, section)["missing_kpis"]
+    assert "Predictive Model Accuracy" in missing
+    assert "Days of supply" in missing
 
 
 def test_failed_page_generation_has_no_static_fallback(monkeypatch):
