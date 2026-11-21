@@ -7,8 +7,10 @@ import {
   FormControl,
   Grid,
   InputLabel,
+  LinearProgress,
   MenuItem,
   Select,
+  CircularProgress,
   Stack,
   TextField,
   Typography,
@@ -35,6 +37,8 @@ function fieldLabel(f: PredictField): string {
   if (low.includes(`(${unit})`) || low.includes(unit)) return label;
   return `${label} (${unit})`;
 }
+
+const MIN_PREDICT_UI_MS = 800;
 
 const LEGACY_FIELDS: PredictField[] = [
   { key: 'mtbf_hours', label: 'MTBF (hours)', unit: 'h' },
@@ -148,6 +152,7 @@ export default function PredictPage() {
     setLoading(true);
     setError(null);
     setResult(null);
+    const started = Date.now();
     try {
       const features: Record<string, number> = {};
       fields.forEach(({ key }) => {
@@ -161,6 +166,10 @@ export default function PredictPage() {
         prompt: scenario.trim(),
         target_field: targetField,
       });
+      const elapsed = Date.now() - started;
+      if (elapsed < MIN_PREDICT_UI_MS) {
+        await new Promise((resolve) => setTimeout(resolve, MIN_PREDICT_UI_MS - elapsed));
+      }
       setResult(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Prediction failed');
@@ -251,7 +260,13 @@ export default function PredictPage() {
             <CardContent>
               <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 2 }}>Forecast indicators</Typography>
               {loading ? (
-                <Typography variant="body2" color="text.secondary">Computing forecast…</Typography>
+                <Stack spacing={2} alignItems="center" sx={{ py: 6 }}>
+                  <CircularProgress size={36} />
+                  <Typography variant="body2" color="text.secondary">
+                    Running forecast against your operational data…
+                  </Typography>
+                  <LinearProgress sx={{ width: '100%', maxWidth: 360 }} />
+                </Stack>
               ) : !result ? (
                 <Typography variant="body2" color="text.secondary">
                   Choose a target column, fill the other fields, and click Predict.

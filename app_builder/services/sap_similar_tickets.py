@@ -269,9 +269,12 @@ def wants_operational_supply_chain_app(prd: str, requirement: str) -> bool:
     blob = f"{prd}\n{requirement}".lower()
     return bool(
         re.search(
-            r"\b(supply\s*chain|inventory|procurement|purchase\s*order|warehouse|"
-            r"\bsku\b|reorder|stock\s*level|manufacturing\s+(dashboard|ops|operations|monitoring)|"
-            r"plant\s+ops|maintenance\s+event|quality\s+inspection|"
+            r"\b(supply\s*chain|inventory|procurement|purchase\s*order|warehouse|vendor|"
+            r"supplier|sourcing|spend|logistics|"
+            r"\bsku\b|reorder|stock\s*level|"
+            r"manufacturing\s+(inventory|supply|vendor|procurement|dashboard|ops|operations|monitoring)|"
+            r"manufacturing\s+inventory|manufacturing\s+vendor|"
+            r"plant\s+ops|maintenance\s+event|quality\s+inspection|quality|performance|"
             r"\boee\b|mtbf|mttr|work\s*order|downtime|equipment effectiveness)\b",
             blob,
         )
