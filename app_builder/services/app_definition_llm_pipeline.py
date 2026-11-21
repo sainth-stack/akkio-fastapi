@@ -26,7 +26,10 @@ Derive navigation and page outlines from the user's requirement, PRD, and UI/UX 
 - Icons: MUI names (Dashboard, FactCheck, Assessment, ShowChart, People, Settings, PrecisionManufacturing).
 - subtitle: one sentence describing what the page shows (from PRD).
 - domain: short slug inferred from the product (e.g. manufacturing_quality), not a hardcoded list.
-- appName: SHORT brand label for the sidebar — at most 2 words (e.g. "Quality Pulse", "Fleet Ops"), never the full sentence from the prompt.
+- appName: SHORT brand label for the sidebar — at most 2 words (e.g. "Quality Pulse", "Fleet Ops"), never the full sentence from the prompt. At most 120 characters.
+
+Return exactly:
+{"appName": "Vendor Ops", "description": "", "domain": "manufacturing", "navigation": [{"label": "Dashboard", "path": "/", "icon": "Dashboard", "pageId": "dashboard"}], "pages": [{"id": "dashboard", "title": "Dashboard", "subtitle": ""}]}
 """
 
 _BLOCKS_SYSTEM = """You are a UX architect. Output ONLY valid JSON for PageBlocksPlan.
@@ -138,6 +141,22 @@ Architecture and planning contracts:
 {json.dumps((plan_json or {}).get('architecture', {}), ensure_ascii=False)[:16000]}
 """
     shell: Optional[AppShellPlan] = await _llm_validated(llm, _SHELL_SYSTEM, shell_user, AppShellPlan, "app_shell")
+    if shell is None and screens:
+        blueprint = (plan_json or {}).get("blueprint") if isinstance((plan_json or {}).get("blueprint"), dict) else {}
+        domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "generic")
+        logger.warning("[app_definition_llm] shell JSON invalid; continuing with %d planned screens", len(screens))
+        shell = AppShellPlan.model_validate({
+            "appName": (app_name or "Workspace").strip()[:120] or "Workspace",
+            "domain": domain,
+            "pages": [
+                {
+                    "id": str(screen.get("id") or f"page_{index + 1}"),
+                    "title": str(screen.get("title") or "Page"),
+                    "subtitle": str(screen.get("purpose") or ""),
+                }
+                for index, screen in enumerate(screens[:12])
+            ],
+        })
     if shell is None:
         return None
     if screens:

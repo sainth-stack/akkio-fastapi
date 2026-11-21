@@ -91,6 +91,52 @@ def test_record_persistence_and_validation(tmp_path, monkeypatch):
         mutate_record(updated, "castings", {"batch": "", "status": "Scheduled"})
 
 
+def test_shell_accepts_long_name_and_loose_json():
+    from app_builder.agents.structured_output import loads_json_object
+    from app_builder.schemas.app_definition_llm import AppShellPlan
+
+    long_name = "Manufacturing Vendor Management Dashboard " * 6
+    shell = AppShellPlan.model_validate({
+        "app_name": long_name,
+        "screens": [{"name": "Dashboard", "page_id": "dashboard"}, {"name": "Analytics"}, {"name": "Reports"}],
+    })
+    assert len(shell.appName) <= 120
+    assert [page.id for page in shell.pages] == ["dashboard", "analytics", "reports"]
+    assert shell.navigation[0].path == "/"
+    parsed = loads_json_object('```json\n{"appName": "Vendor Ops", "pages": [{"title": "Dashboard"},],}\n```')
+    assert AppShellPlan.model_validate(parsed).pages[0].title == "Dashboard"
+
+
+def test_invalid_shell_continues_from_planned_screens(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    def page(page_id, label):
+        return (
+            {"blocks": [{"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": [{"label": label, "valueKey": "value"}]}]},
+            {"data": {f"kpis_{page_id}": {"value": "1"}}},
+        )
+
+    responses = ["not json", "still not json", {"note": "no pages"}]
+    for page_id, label in (("dashboard", "Dashboard"), ("analytics", "Analytics"), ("reports", "Reports")):
+        responses.extend(page(page_id, label))
+
+    class LLM:
+        async def ainvoke(self, messages):
+            payload = responses.pop(0)
+            content = payload if isinstance(payload, str) else json.dumps(payload)
+            return SimpleNamespace(content=[{"type": "text", "text": content}])
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(
+        requirement="build a manufacturing vendor management dashboard (Dashboard, Analytics, Reports)",
+    ))
+    assert [page.id for page in result.pages] == ["dashboard", "analytics", "reports"]
+    assert result.mock["kpis_dashboard"]["value"] == "1"
+    assert result.mock["kpis_analytics"]["value"] == "1"
+    assert result.mock["kpis_reports"]["value"] == "1"
+    assert result.navigation[0].path == "/"
+
+
 def test_page_data_accepts_top_level_mock_and_renamed_keys():
     from app_builder.schemas.app_definition_llm import PageDataPlan
     from app_builder.services.definition_contract import align_page_datasets
