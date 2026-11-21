@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.local/
+test-results/
+live-test-results/
+playwright-report/
+coverage/
