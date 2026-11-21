@@ -45,6 +45,47 @@ def test_strict_finalization_preserves_layout_status_and_zero():
     assert result.mock == data
     assert result.mock["castings"][0]["status"] == "Closed"
     assert result.meta.promptHash
+    assert "predict" not in [item.pageId for item in result.navigation]
+
+
+def test_strict_predict_prompt_adds_predict_and_observability():
+    from app_builder.services.app_definition_generator import finalize_app_definition
+    from app_builder.services.synthetic_predict import run_live_prediction
+
+    raw = definition()
+    raw["pages"][0]["blocks"][1]["columns"].append({"field": "spend", "header": "Spend"})
+    raw["mock"]["castings"][0]["spend"] = 1200
+    model = AppDefinition.model_validate(raw)
+    result = finalize_app_definition(
+        model,
+        requirement=(
+            "build a manufacturing vendor management dashboard (Dashboard, Analytics, Reports) "
+            "with RAG chat, Predict, and LLM observability to track prompts, outputs, tokens, and model cost"
+        ),
+    )
+    page_ids = [item.pageId for item in result.navigation]
+    assert page_ids[0] == "reports"
+    assert "predict" in page_ids
+    assert "observability" in page_ids
+    assert any(item.path == "/predict" for item in result.navigation)
+    assert any(item.path == "/observability" for item in result.navigation)
+    caps = result.meta.capabilities or []
+    assert "predict" in caps
+    assert "rag_chat" in caps
+    assert "llm_observability" in caps
+    cfg = result.meta.predictConfig or {}
+    keys = [field["key"] for field in cfg.get("fields") or []]
+    assert "rejected" in keys
+    assert "spend" in keys
+    assert "batch" not in keys
+    assert "status" not in keys
+    assert cfg["baseline"]["spend"] == 1200
+    assert cfg["baseline"]["rejected"] == 0
+    payload = result.model_dump(mode="json")
+    payload["data"] = result.mock
+    forecast = run_live_prediction(payload, features={"spend": 1500, "rejected": 4}, target_field="rejected")
+    assert forecast["target_field"] == "rejected"
+    assert isinstance(forecast["predicted_value"], (int, float))
 
 
 def test_runtime_compute_does_not_seed_or_overwrite_strict_data():

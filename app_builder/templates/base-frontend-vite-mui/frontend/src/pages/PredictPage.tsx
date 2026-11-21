@@ -89,7 +89,7 @@ export default function PredictPage() {
       predictConfig?.targetField || fields[0]?.key || 'production_output';
     setTargetField(initialTarget);
     const stored = predictConfig?.baseline || {};
-    const hasBaseline = Object.values(stored).some((v) => v != null && Number(v) !== 0);
+    const hasBaseline = Object.values(stored).some((v) => v != null && Number.isFinite(Number(v)));
     if (hasBaseline) {
       setValues(baselineToForm(fields, stored));
       setBaselineLoaded(true);
@@ -146,7 +146,7 @@ export default function PredictPage() {
   useEffect(() => {
     if (!apiBase || baselineLoaded) return;
     const stored = predictConfig?.baseline || {};
-    const hasBaseline = Object.values(stored).some((v) => v != null && Number(v) !== 0);
+    const hasBaseline = Object.values(stored).some((v) => v != null && Number.isFinite(Number(v)));
     if (hasBaseline) return;
     void syncFromLiveData();
   }, [apiBase, baselineLoaded, predictConfig?.baseline, syncFromLiveData]);

@@ -744,7 +744,17 @@ def finalize_app_definition(
     """Ensure mock data exists for every block reference; align nav pageIds."""
     if defn.meta.generationPolicy == "strict_llm_v1" or "llm" in str(defn.meta.generatedBy).lower():
         from app_builder.services.definition_contract import validate_definition
+        from app_builder.services.intelligence_pages import ensure_intelligence_features
+        from app_builder.services.llm_observability_pages import ensure_observability_features
+        from app_builder.services.predict_config import build_predict_config
         import hashlib
+        import re
+
+        req = requirement or defn.meta.requirement or ""
+        prd_text = prd or defn.meta.prd or ""
+        if re.search(r"\b(predict|forecast|what-if|what if)\b", f"{prd_text}\n{req}", re.I):
+            defn = ensure_intelligence_features(defn, prd=prd_text, requirement=req)
+        defn = ensure_observability_features(defn, prd=prd_text, requirement=req)
 
         validate_definition(defn)
         from app_builder.services.definition_metrics import compute_definition
@@ -760,6 +770,12 @@ def finalize_app_definition(
             {"id": block["dataKey"], "dataKey": block["dataKey"], "title": block.get("title") or page.title, "columns": block["columns"]}
             for page in defn.pages for block in page.blocks if block["type"] == "dataTable"
         ]
+        if any(item.pageId == "predict" for item in defn.navigation):
+            payload = defn.model_dump(mode="json")
+            payload["data"] = defn.mock
+            cfg = build_predict_config(payload)
+            if cfg.get("fields"):
+                defn.meta.predictConfig = cfg
         return defn
     from app_builder.services.page_layout_intent import strip_misplaced_kpi_blocks
     from app_builder.services.prd_structure_parser import page_prompt_context

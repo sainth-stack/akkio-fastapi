@@ -79,7 +79,6 @@ function AppRoutes() {
 
   if (!definition) return <div style={{ padding: 24 }}>{loading ? 'Loading app…' : error || 'App definition is unavailable.'}</div>;
   const defaultPath = definition.navigation[0]?.path ?? '/';
-  const strict = definition.meta.generationPolicy === 'strict_llm_v1';
 
   return (
     <ThemeProvider theme={theme}>
@@ -91,9 +90,7 @@ function AppRoutes() {
               key={item.pageId}
               path={item.path}
               element={
-                strict ? (
-                  <PageRenderer pageId={item.pageId} />
-                ) : isPredictNavItem(item) ? (
+                isPredictNavItem(item) ? (
                   <PredictPage />
                 ) : isObservabilityNavItem(item) ? (
                   <ObservabilityPage />

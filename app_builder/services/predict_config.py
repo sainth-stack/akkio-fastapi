@@ -56,6 +56,17 @@ def resolve_predict_baseline(defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
     return out
 
 
+def _pure_number(val: Any) -> bool:
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return True
+    if isinstance(val, str):
+        s = val.strip().replace(",", "").replace("%", "").replace("$", "")
+        return bool(re.fullmatch(r"-?\d+(\.\d+)?", s))
+    return False
+
+
 def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[str, Any]]) -> bool:
     from app_builder.services.operational_metrics_compute import _num
 
@@ -63,23 +74,59 @@ def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[s
         return False
     if ctype == "string":
         return False
-    numeric_hits = 0
-    if rows:
-        numeric_hits = sum(1 for r in rows[:12] if _num(r.get(field)) is not None)
+    sample = rows[:12]
+    numeric_hits = sum(1 for r in sample if _num(r.get(field)) is not None) if sample else 0
     if ctype == "datetime":
-        return numeric_hits >= max(1, len(rows[:12]) // 3)
+        return numeric_hits >= max(1, len(sample) // 3)
     if ctype == "number":
         return True
-    if not re.search(
-        r"hours|pct|rate|qty|count|units|total|price|output|defect|yield|downtime|mtbf|mttr|oee|scrap|passed|inspected",
+    name_ok = bool(re.search(
+        r"hours|pct|rate|qty|quantity|count|units|total|price|spend|cost|amount|output|defect|"
+        r"yield|downtime|mtbf|mttr|oee|scrap|passed|inspected|lead|days|score|delay|otd|delivery",
         f"{field} {header}",
         re.I,
-    ):
+    ))
+    if sample:
+        pure = sum(1 for r in sample if _pure_number(r.get(field)))
+        if pure >= max(1, len(sample) // 2):
+            return True
+        if name_ok and numeric_hits >= max(1, len(sample) // 3):
+            return True
         return False
-    if rows:
-        if numeric_hits < max(1, len(rows[:12]) // 3):
-            return False
-    return True
+    return name_ok
+
+
+def _kpi_numeric_fields(defn: Dict[str, Any]) -> tuple:
+    """KPI value keys whose stored values are numbers, with those values as the baseline."""
+    from app_builder.services.operational_metrics_compute import _num
+
+    bag = defn.get("data") or defn.get("mock") or {}
+    fields: List[Dict[str, Any]] = []
+    baseline: Dict[str, float] = {}
+    seen: set = set()
+    for page in defn.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "kpiRow":
+                continue
+            bundle = bag.get(block.get("dataKey"))
+            if not isinstance(bundle, dict):
+                continue
+            for item in block.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("valueKey") or "")
+                if not key or key in seen:
+                    continue
+                num = _num(bundle.get(key))
+                if num is None:
+                    continue
+                seen.add(key)
+                label = str(item.get("label") or key.replace("_", " ").title())
+                fields.append({"key": key, "label": label, "unit": _unit_for_field(key, label)})
+                baseline[key] = round(num, 4)
+    return fields, baseline
 
 
 def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
@@ -103,6 +150,13 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
             unit = _unit_for_field(field, header)
             numeric_fields.append({"key": field, "label": header, "unit": unit})
 
+    kpi_fields, kpi_baseline = _kpi_numeric_fields(defn)
+    for field in kpi_fields:
+        if field["key"] in seen:
+            continue
+        seen.add(field["key"])
+        numeric_fields.append(field)
+
     kpi_targets: List[str] = []
     for page in defn.get("pages") or []:
         for block in page.get("blocks") or []:
@@ -125,8 +179,13 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
                             kpi_targets.append(f["key"])
 
     preferred = [k for k in kpi_targets if k in {f["key"] for f in numeric_fields}]
+    if not preferred:
+        preferred = [f["key"] for f in kpi_fields if f["key"] in {item["key"] for item in numeric_fields}]
     default_target = preferred[0] if preferred else (numeric_fields[0]["key"] if numeric_fields else "")
     baseline = {f["key"]: round(_avg_from_rows(rows, f["key"]), 4) for f in numeric_fields if rows}
+    for key, val in kpi_baseline.items():
+        if key not in baseline or not baseline[key]:
+            baseline[key] = val
 
     return {
         "version": 1,
@@ -151,6 +210,6 @@ def _unit_for_field(field: str, header: str = "") -> str:
         return "%"
     if "hours" in blob or "mtbf" in blob or "mttr" in blob or "downtime" in blob:
         return "h"
-    if "price" in blob or "total" in blob or "revenue" in blob:
+    if "price" in blob or "total" in blob or "revenue" in blob or "spend" in blob or "cost" in blob or "amount" in blob:
         return "$"
     return ""
