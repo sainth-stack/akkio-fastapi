@@ -91,6 +91,188 @@ def test_record_persistence_and_validation(tmp_path, monkeypatch):
         mutate_record(updated, "castings", {"batch": "", "status": "Scheduled"})
 
 
+def test_shell_accepts_long_name_and_loose_json():
+    from app_builder.agents.structured_output import loads_json_object
+    from app_builder.schemas.app_definition_llm import AppShellPlan
+
+    long_name = "Manufacturing Vendor Management Dashboard " * 6
+    shell = AppShellPlan.model_validate({
+        "app_name": long_name,
+        "screens": [{"name": "Dashboard", "page_id": "dashboard"}, {"name": "Analytics"}, {"name": "Reports"}],
+    })
+    assert len(shell.appName) <= 120
+    assert [page.id for page in shell.pages] == ["dashboard", "analytics", "reports"]
+    assert shell.navigation[0].path == "/"
+    parsed = loads_json_object('```json\n{"appName": "Vendor Ops", "pages": [{"title": "Dashboard"},],}\n```')
+    assert AppShellPlan.model_validate(parsed).pages[0].title == "Dashboard"
+
+
+def test_invalid_shell_continues_from_planned_screens(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    def page(page_id, label):
+        return (
+            {"blocks": [{"type": "kpiRow", "dataKey": f"kpis_{page_id}", "items": [{"label": label, "valueKey": "value"}]}]},
+            {"data": {f"kpis_{page_id}": {"value": "1"}}},
+        )
+
+    responses = ["not json", "still not json", {"note": "no pages"}]
+    for page_id, label in (("dashboard", "Dashboard"), ("analytics", "Analytics"), ("reports", "Reports")):
+        responses.extend(page(page_id, label))
+
+    class LLM:
+        async def ainvoke(self, messages):
+            payload = responses.pop(0)
+            content = payload if isinstance(payload, str) else json.dumps(payload)
+            return SimpleNamespace(content=[{"type": "text", "text": content}])
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(
+        requirement="build a manufacturing vendor management dashboard (Dashboard, Analytics, Reports)",
+    ))
+    assert [page.id for page in result.pages] == ["dashboard", "analytics", "reports"]
+    assert result.mock["kpis_dashboard"]["value"] == "1"
+    assert result.mock["kpis_analytics"]["value"] == "1"
+    assert result.mock["kpis_reports"]["value"] == "1"
+    assert result.navigation[0].path == "/"
+
+
+def test_page_data_accepts_top_level_mock_and_renamed_keys():
+    from app_builder.schemas.app_definition_llm import PageDataPlan
+    from app_builder.services.definition_contract import align_page_datasets
+
+    blocks = definition()["pages"][0]["blocks"]
+    top_level = PageDataPlan.model_validate({"kpis_reports": {"rejected": 2}, "castings": [{"batch": "CAST-72", "status": "Closed"}]})
+    wrapped = PageDataPlan.model_validate({"mock": {"datasets": {"kpis_reports": {"rejected": 2}, "castings": [{"batch": "CAST-72", "status": "Closed"}]}}})
+    assert top_level.data["kpis_reports"]["rejected"] == 2
+    assert wrapped.data["castings"][0]["batch"] == "CAST-72"
+    aligned = align_page_datasets(blocks, {"reports_kpis": {"rejected": 4}, "castings": [{"batch": "CAST-72", "status": "Closed"}]})
+    validate_page_data(blocks, aligned)
+    assert aligned["kpis_reports"]["rejected"] == 4
+
+
+def test_llm_pipeline_accepts_datasets_emitted_outside_data(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    payload = definition()
+    responses = [
+        {"appName": "Casting Ops", "domain": "casting", "navigation": payload["navigation"], "pages": [{"id": "reports", "title": "Reports"}]},
+        {"blocks": payload["pages"][0]["blocks"]},
+        payload["mock"],
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+    assert result.mock["kpis_reports"] == payload["mock"]["kpis_reports"]
+    assert result.mock["castings"] == payload["mock"]["castings"]
+
+
+def _shell(pages):
+    return {
+        "appName": "Manufacturing Vendor",
+        "domain": "manufacturing",
+        "navigation": [{"label": page["title"], "path": "/" if i == 0 else f"/{page['id']}", "pageId": page["id"]} for i, page in enumerate(pages)],
+        "pages": pages,
+    }
+
+
+def test_later_page_keeps_its_data_when_earlier_keys_are_echoed(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    dashboard_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Vendors", "valueKey": "vendors"}]},
+        {"type": "lineChart", "title": "Spend", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "spend", "name": "Spend"}]},
+    ]
+    analytics_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_analytics", "items": [{"label": "On time", "valueKey": "on_time"}]},
+        {"type": "barChart", "title": "Defects", "dataKey": "chart_analytics", "xAxisKey": "period", "series": [{"dataKey": "defects", "name": "Defects"}]},
+    ]
+    dashboard_data = {"kpis_dashboard": {"vendors": "12"}, "chart_dashboard": [{"period": "W1", "spend": 10}, {"period": "W2", "spend": 12}]}
+    analytics_data = {
+        **dashboard_data,
+        "kpis_analytics": {"on_time": "95%"},
+        "chart_analytics": [{"period": "W1", "defects": 3}, {"period": "W2", "defects": 1}],
+    }
+    responses = [
+        _shell([{"id": "dashboard", "title": "Dashboard"}, {"id": "analytics", "title": "Analytics"}]),
+        {"blocks": dashboard_blocks},
+        {"data": dashboard_data},
+        {"blocks": analytics_blocks},
+        {"data": analytics_data},
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Manufacturing vendor dashboard and analytics"))
+    assert result.mock["kpis_dashboard"] == {"vendors": "12"}
+    assert result.mock["kpis_analytics"] == {"on_time": "95%"}
+    assert result.mock["chart_dashboard"][0]["spend"] == 10
+    assert result.mock["chart_analytics"][0]["defects"] == 3
+    assert [page.id for page in result.pages] == ["dashboard", "analytics"]
+
+
+def test_reused_dataset_key_is_renamed_for_the_next_page(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    dashboard_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "Vendors", "valueKey": "vendors"}]},
+        {"type": "lineChart", "title": "Spend", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "spend", "name": "Spend"}]},
+    ]
+    analytics_blocks = [
+        {"type": "kpiRow", "dataKey": "kpis_dashboard", "items": [{"label": "On time", "valueKey": "on_time"}]},
+        {"type": "barChart", "title": "Defects", "dataKey": "chart_dashboard", "xAxisKey": "period", "series": [{"dataKey": "defects", "name": "Defects"}]},
+    ]
+    responses = [
+        _shell([{"id": "dashboard", "title": "Dashboard"}, {"id": "analytics", "title": "Analytics"}]),
+        {"blocks": dashboard_blocks},
+        {"data": {"kpis_dashboard": {"vendors": "12"}, "chart_dashboard": [{"period": "W1", "spend": 10}]}},
+        {"blocks": analytics_blocks},
+        {"data": {"kpis_dashboard": {"on_time": "95%"}, "chart_dashboard": [{"period": "W1", "defects": 3}]}},
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    result = asyncio.run(generate_app_definition_llm(requirement="Manufacturing vendor dashboard and analytics"))
+    assert result.mock["kpis_dashboard"] == {"vendors": "12"}
+    assert result.mock["kpis_dashboard_2"] == {"on_time": "95%"}
+    assert result.mock["chart_dashboard"][0]["spend"] == 10
+    assert result.mock["chart_dashboard_2"][0]["defects"] == 3
+    assert result.pages[1].blocks[0]["dataKey"] == "kpis_dashboard_2"
+    assert result.pages[1].blocks[1]["dataKey"] == "chart_dashboard_2"
+
+
+def test_omitted_dataset_still_fails(monkeypatch):
+    from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
+
+    payload = definition()
+    incomplete = {"data": {"castings": payload["mock"]["castings"]}}
+    responses = [
+        {"appName": "Casting Ops", "domain": "casting", "navigation": payload["navigation"], "pages": [{"id": "reports", "title": "Reports"}]},
+        {"blocks": payload["pages"][0]["blocks"]},
+        incomplete,
+        incomplete,
+        incomplete,
+    ]
+
+    class LLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(responses.pop(0)))
+
+    monkeypatch.setitem(sys.modules, "llm_helper", SimpleNamespace(get_llm_for_user=lambda *args, **kwargs: LLM()))
+    with pytest.raises(ValueError, match="Missing dataset: kpis_reports"):
+        asyncio.run(generate_app_definition_llm(requirement="Casting reports"))
+
+
 def test_llm_pipeline_uses_selected_model_and_preserves_response(monkeypatch):
     from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
 

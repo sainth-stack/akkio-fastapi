@@ -26,7 +26,10 @@ Derive navigation and page outlines from the user's requirement, PRD, and UI/UX 
 - Icons: MUI names (Dashboard, FactCheck, Assessment, ShowChart, People, Settings, PrecisionManufacturing).
 - subtitle: one sentence describing what the page shows (from PRD).
 - domain: short slug inferred from the product (e.g. manufacturing_quality), not a hardcoded list.
-- appName: SHORT brand label for the sidebar — at most 2 words (e.g. "Quality Pulse", "Fleet Ops"), never the full sentence from the prompt.
+- appName: SHORT brand label for the sidebar — at most 2 words (e.g. "Quality Pulse", "Fleet Ops"), never the full sentence from the prompt. At most 120 characters.
+
+Return exactly:
+{"appName": "Vendor Ops", "description": "", "domain": "manufacturing", "navigation": [{"label": "Dashboard", "path": "/", "icon": "Dashboard", "pageId": "dashboard"}], "pages": [{"id": "dashboard", "title": "Dashboard", "subtitle": ""}]}
 """
 
 _BLOCKS_SYSTEM = """You are a UX architect. Output ONLY valid JSON for PageBlocksPlan.
@@ -59,12 +62,14 @@ Rules:
 - Do NOT output mock/data — blocks only.
 """
 
-_DATA_SYSTEM = """You are a data engineer. Output ONLY valid JSON for PageDataPlan.
+_DATA_SYSTEM = """You are a data engineer. Output ONLY valid JSON with this shape:
+{"data": {"<dataKey>": <dataset>}}
 
 Generate prompt-specific synthetic operational data for ONE page's blocks. Never claim it is real factory data.
 
 Rules:
-- Keys MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists).
+- The object inside "data" MUST include every dataKey referenced in the blocks (KPI bundles, chart arrays, table arrays, filter option lists). Copy each dataKey verbatim. Do not put datasets at the top level, under "mock", or under a renamed key.
+- Return only this page's dataKeys. Do not copy keys that already belong to earlier pages.
 - KPI bundles: objects with string values matching labels (%, counts, currency as in PRD).
 - Also output kpis_<pageId>_meta with <valueKey>_trend_pct (number -5..8) and <valueKey>_target for each KPI.
 - Tables: keys MUST match column field names exactly. Honor user-provided names, dates, units, values, and row counts. Infer other synthetic values from the exact manufacturing process, not a canned domain dataset.
@@ -136,6 +141,22 @@ Architecture and planning contracts:
 {json.dumps((plan_json or {}).get('architecture', {}), ensure_ascii=False)[:16000]}
 """
     shell: Optional[AppShellPlan] = await _llm_validated(llm, _SHELL_SYSTEM, shell_user, AppShellPlan, "app_shell")
+    if shell is None and screens:
+        blueprint = (plan_json or {}).get("blueprint") if isinstance((plan_json or {}).get("blueprint"), dict) else {}
+        domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "generic")
+        logger.warning("[app_definition_llm] shell JSON invalid; continuing with %d planned screens", len(screens))
+        shell = AppShellPlan.model_validate({
+            "appName": (app_name or "Workspace").strip()[:120] or "Workspace",
+            "domain": domain,
+            "pages": [
+                {
+                    "id": str(screen.get("id") or f"page_{index + 1}"),
+                    "title": str(screen.get("title") or "Page"),
+                    "subtitle": str(screen.get("purpose") or ""),
+                }
+                for index, screen in enumerate(screens[:12])
+            ],
+        })
     if shell is None:
         return None
     if screens:
@@ -242,6 +263,10 @@ PRD:
                 else:
                     raise ValueError(f"LLM could not repair PRD gaps for {outline.id}")
 
+        from app_builder.services.definition_contract import dedupe_page_data_keys, dataset_shape_hint, retain_page_datasets, validate_page_data
+
+        blocks_plan.blocks = dedupe_page_data_keys(blocks_plan.blocks, set(mock))
+
         if on_progress:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")
 
@@ -255,30 +280,46 @@ PRD section:
 Full requirement:
 {ctx['requirement']}
 
-Previously generated datasets (preserve shared entity identities):
+Previously generated datasets (reuse entity names and ids, but do not return these keys):
 {json.dumps(mock, ensure_ascii=False)[:16000]}
 
-Generate complete data for every dataKey in these blocks.
+Required JSON shape (use these keys verbatim inside "data"):
+{dataset_shape_hint(blocks_plan.blocks)}
 """
         data_plan: Optional[PageDataPlan] = await _llm_validated(
             llm, _DATA_SYSTEM, data_user, PageDataPlan, f"page_data_{outline.id}"
         )
-        from app_builder.services.definition_contract import validate_page_data
 
         last_error = "No page data generated"
         for attempt in range(3):
             try:
                 if data_plan is None:
                     raise ValueError(last_error)
+                data_plan.data = retain_page_datasets(
+                    blocks_plan.blocks,
+                    data_plan.data,
+                    reserved=set(mock),
+                    page_id=outline.id,
+                )
                 validate_page_data(blocks_plan.blocks, data_plan.data)
-                if set(mock) & set(data_plan.data):
-                    raise ValueError("Dataset keys must be unique across pages")
                 break
             except ValueError as exc:
                 last_error = str(exc)
                 if attempt == 2:
                     raise ValueError(f"Invalid LLM data for {outline.id}: {last_error}") from exc
-                data_plan = await _llm_validated(llm, _DATA_SYSTEM, f"{data_user}\nRepair error: {last_error}", PageDataPlan, f"page_data_repair_{outline.id}")
+                logger.warning(
+                    "[app_definition_llm] page data for %s missing required datasets (%s); received keys=%s",
+                    outline.id,
+                    last_error,
+                    list(data_plan.data) if data_plan is not None else [],
+                )
+                data_plan = await _llm_validated(
+                    llm,
+                    _DATA_SYSTEM,
+                    f"{data_user}\nRepair error: {last_error}\nReturn every required key inside the data object.",
+                    PageDataPlan,
+                    f"page_data_repair_{outline.id}",
+                )
         mock.update(data_plan.data)
 
         pages.append(
