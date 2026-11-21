@@ -2,22 +2,33 @@
 .env.local
 __pycache__/
 *.pyc
-venv/
 .pytest_cache/
 
+# Local virtualenvs (use backend/venv only)
+/venv/
+/.venv/
+/.venv-purge/
+backend/venv/
+
+# Legacy repo-root folders (pre backend/ + frontend/ layout)
+/test/
+/uploads_multi_model/
+/poc/
+
 # Backend runtime / generated data
-backend/chroma_store/
+backend/chroma_store/*
+!backend/chroma_store/.gitkeep
 backend/uploads_multi_model/
 backend/generated_charts/
 backend/validation_reports/
 backend/app_builder/runtime/
-backend/venv/
 backend/.env
 backend/.env.local
 
 # Dependencies in templates
 node_modules/
 backend/app_builder/templates/*/frontend/node_modules/
+backend/app_builder/templates/*/frontend/dist/
 backend/app_builder/templates/*/backend/venv/
 
 # Frontend (Vite)
@@ -26,7 +37,7 @@ frontend/build/
 frontend/.env
 frontend/.env.local
 
-# Legacy paths (if any old deploy dirs remain at repo root)
-chroma_store/
-uploads_multi_model/
-app_builder/runtime/
+# Legacy paths at repo root only (do not match backend/chroma_store/)
+/chroma_store/
+/uploads_multi_model/
+/app_builder/

@@ -53,3 +53,10 @@ pm2 example:
 pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi/backend
 pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/frontend -- start
 ```
+
+## Repo hygiene
+
+Keep only `backend/` and `frontend/` source. Do not commit:
+
+- `venv/`, `node_modules/`, `frontend/build/`, `backend/chroma_store/*.sqlite3`
+- Old copies at repo root (`venv/`, `poc/`, `test/`) — safe to delete locally; use `backend/venv` only
