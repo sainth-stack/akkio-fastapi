@@ -110,7 +110,9 @@ Browser Download does not expose response headers. The MIME assertion is derived
 
 ## Troubleshooting
 
-`AUTH_REQUIRED` / `AUTH_UNVERIFIED`: run `npm run auth`, complete sign-in manually, press Enter, retry. If account verification fails after successful login, inspect the private screenshot and update accessible account selectors; do not remove authentication checks.
+`AUTH_REQUIRED` / `AUTH_UNVERIFIED`: click **Sign in to Gemini** (or run `npm run auth`), complete sign-in in **Google Chrome**, then verify. If account verification fails after successful login, inspect the private screenshot and update accessible account selectors; do not remove authentication checks.
+
+`INSECURE_BROWSER` / “This browser or app may not be secure”: Google rejected Playwright Chromium. This POC launches installed Google Chrome with a fresh `.local/chrome-profile`. Close the blocked window, **Quit Chrome (Cmd+Q)** if needed, then sign in again. Do not use Chromium-for-Testing for Google login.
 
 `PROFILE_BUSY`: close auth/other POC browsers. After a crash, confirm processes are stopped before deleting `.local/gemini-profile/.poc-lock`.
 

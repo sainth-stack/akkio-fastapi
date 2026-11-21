@@ -14,13 +14,27 @@ export class BrowserManager {
     catch { throw new GenerationError('PROFILE_BUSY', 'The Gemini browser profile is already in use. Close the sign-in browser or other POC process first.'); }
     try {
       this.context = await chromium.launchPersistentContext(this.config.profileDir, {
-        headless, acceptDownloads: true, viewport: { width: 1440, height: 1000 }, locale: 'en-US',
+        channel: 'chrome',
+        headless,
+        acceptDownloads: true,
+        viewport: { width: 1440, height: 1000 },
+        locale: 'en-US',
         timeout: this.config.navigationTimeout,
+        ignoreDefaultArgs: ['--enable-automation'],
       });
       this.context.setDefaultTimeout(15000);
       this.context.setDefaultNavigationTimeout(this.config.navigationTimeout);
       return this.context;
-    } catch { await this.close(); throw new GenerationError('BROWSER_LAUNCH_FAILED', 'Chromium could not launch. Install the Playwright Chromium browser and ensure the profile is not in use.'); }
+    } catch (error) {
+      await this.close();
+      const detail = error instanceof Error ? error.message : '';
+      throw new GenerationError(
+        'BROWSER_LAUNCH_FAILED',
+        /executable|channel|chrome/i.test(detail)
+          ? 'Google Chrome could not launch. Install Google Chrome (not Chromium) and retry sign-in.'
+          : 'Google Chrome could not launch. Quit any POC Chrome window, then retry sign-in.',
+      );
+    }
   }
   async close() {
     const context = this.context; this.context = null;

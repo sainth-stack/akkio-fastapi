@@ -20,7 +20,7 @@ export const config = {
   generationTimeout: env.GENERATION_TIMEOUT_MS, navigationTimeout: env.NAVIGATION_TIMEOUT_MS,
   downloadTimeout: env.DOWNLOAD_TIMEOUT_MS, maxImageBytes: env.MAX_IMAGE_BYTES,
   maxPromptLength: env.MAX_PROMPT_LENGTH, rateLimit: env.RATE_LIMIT_PER_MINUTE,
-  profileDir: path.resolve(projectRoot, process.env.GEMINI_PROFILE_DIR || '.local/gemini-profile'),
+  profileDir: path.resolve(projectRoot, process.env.GEMINI_PROFILE_DIR || '.local/chrome-profile'),
   imageDir: path.resolve(projectRoot, process.env.IMAGE_STORAGE_DIR || '.local/images'),
   jobDir: path.resolve(projectRoot, process.env.JOB_STORAGE_DIR || '.local/jobs'),
   diagnosticsDir: path.resolve(projectRoot, process.env.DIAGNOSTICS_DIR || '.local/diagnostics'),

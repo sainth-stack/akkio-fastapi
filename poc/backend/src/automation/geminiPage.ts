@@ -11,6 +11,10 @@ export class GeminiPage {
     const signIn = this.page.getByRole('button', { name: /^sign in$/i }).or(this.page.getByRole('link', { name: /^sign in$/i }));
     let visibleSignIn = false;
     for (let i = 0; i < await signIn.count(); i++) visibleSignIn ||= await signIn.nth(i).isVisible();
+    const blocked = await this.page.getByText(/couldn.t sign you in|this browser or app may not be secure|try using a different browser/i).first().isVisible().catch(() => false);
+    if (blocked) {
+      throw new GenerationError('INSECURE_BROWSER', 'Google blocked the previous automated Chromium window. Close that window, click Sign in to Gemini again, and complete login in Google Chrome. This app does not bypass Google’s sign-in checks.');
+    }
     if (/accounts\.google\.com/.test(this.page.url()) || visibleSignIn) {
       throw new GenerationError('AUTH_REQUIRED', 'Gemini requires manual sign-in. Click Sign in to Gemini in the app, enter your credentials on Google’s page, then click I have signed in to verify. Retry generation afterward.');
     }
