@@ -1,0 +1,103 @@
+.administration-page {
+  width: 100%;
+  max-width: none;
+  padding: 8px 0 32px;
+  box-sizing: border-box;
+}
+
+/* Page headers */
+.admin-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 24px;
+  width: 100%;
+}
+
+.admin-page-header__title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0 0 4px;
+  letter-spacing: -0.02em;
+}
+
+.admin-page-header__subtitle {
+  font-size: 14px;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Toolbar */
+.administration-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.administration-toolbar h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #334155;
+}
+
+/* Data card wrapper for tables */
+.admin-data-card {
+  width: 100%;
+  border-radius: 12px !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: none !important;
+  overflow: hidden;
+}
+
+.admin-data-card .ant-card-body {
+  padding: 0 !important;
+}
+
+.admin-data-card .ant-table-wrapper {
+  width: 100%;
+}
+
+.admin-data-card .ant-table {
+  width: 100%;
+  border-radius: 0;
+}
+
+.admin-data-card .ant-table-thead > tr > th {
+  background: #f8fafc !important;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding: 14px 16px !important;
+}
+
+.admin-data-card .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #f1f5f9 !important;
+  padding: 14px 16px !important;
+}
+
+.admin-data-card .ant-table-tbody > tr:hover > td {
+  background: #fafbff !important;
+}
+
+.admin-data-card .ant-table-pagination {
+  margin: 16px !important;
+}
+
+@media (max-width: 768px) {
+  .administration-page {
+    padding: 16px;
+  }
+
+  .admin-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

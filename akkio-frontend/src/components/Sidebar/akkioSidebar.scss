@@ -1,0 +1,217 @@
+// Modern Design System Variables
+$sidebar-bg-from: hsl(239.1, 75.14%, 65.29%);
+$sidebar-bg-to: hsl(239.1, 75.14%, 60%); // Slightly darker for gradient if needed
+$sidebar-text-primary: #ffffff;
+$sidebar-text-secondary: rgba(255, 255, 255, 0.85); // Increased contrast for lighter bg
+$sidebar-hover-bg: rgba(255, 255, 255, 0.2);
+$sidebar-active-bg: rgba(255, 255, 255, 0.3);
+$sidebar-active-border: #ffffff; // White accent looks better on bright blue
+$font-family: 'Inter', 'Poppins', sans-serif;
+
+.akkioSidebar {
+  background: $sidebar-bg-from;
+  background: linear-gradient(180deg, $sidebar-bg-from 0%, $sidebar-bg-to 100%);
+  color: $sidebar-text-primary;
+  border-right: none;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.3s ease;
+}
+
+.akkioSidebar__header {
+  min-height: 20px; // Spacing adjustment
+}
+
+.akkioSidebar__divider {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 16px 24px;
+}
+
+.akkioSidebar__list {
+  margin: 0;
+  padding: 0 16px;
+  list-style: none;
+  flex: 1;
+  overflow-y: auto;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+  }
+}
+
+.akkioSidebar__sublist {
+  margin: 4px 0 2px 20px;
+  padding: 4px 0 4px 12px;
+  list-style: none;
+  width: calc(100% - 20px);
+  box-sizing: border-box;
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+}
+
+.akkioSidebar__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  position: relative;
+
+  &:hover {
+    background-color: $sidebar-hover-bg;
+
+    .akkioSidebar__text {
+      color: $sidebar-text-primary;
+    }
+
+    .akkioSidebar__icon {
+      color: $sidebar-text-primary;
+      transform: scale(1.05);
+    }
+  }
+
+  &--active {
+    background-color: $sidebar-active-bg;
+
+    .akkioSidebar__text,
+    .akkioSidebar__icon {
+      color: $sidebar-text-primary;
+      font-weight: 600;
+    }
+
+    // Optional indicator on the left
+    &:before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 16px;
+      width: 3px;
+      background-color: $sidebar-active-border;
+      border-radius: 0 4px 4px 0;
+      opacity: 0; // Hidden for now, can enable for different style
+    }
+  }
+
+  &--group {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    background: transparent !important;
+
+    &:hover {
+      background: transparent !important;
+    }
+
+    &.akkioSidebar__item--active {
+      background: transparent !important;
+
+      > .akkioSidebar__link--toggle {
+        background-color: $sidebar-active-bg;
+      }
+    }
+
+    > .akkioSidebar__link--toggle {
+      padding: 10px 14px;
+      border-radius: 12px;
+      margin-bottom: 2px;
+
+      &:hover {
+        background-color: $sidebar-hover-bg;
+      }
+    }
+  }
+
+  &--sub {
+    padding: 8px 12px;
+    margin-bottom: 2px;
+    background: transparent;
+    border-radius: 8px;
+
+    .akkioSidebar__link {
+      gap: 0;
+    }
+
+    .akkioSidebar__text {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    &.akkioSidebar__item--active {
+      background: rgba(255, 255, 255, 0.18);
+
+      .akkioSidebar__text {
+        color: $sidebar-text-primary;
+        font-weight: 600;
+      }
+    }
+  }
+}
+
+.akkioSidebar__link {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  flex: 1;
+  width: 100%;
+
+  &--toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+  }
+}
+
+.akkioSidebar__icon {
+  color: $sidebar-text-secondary;
+  transition: all 0.2s ease;
+  min-width: 20px;
+}
+
+.akkioSidebar__text {
+  color: $sidebar-text-secondary;
+  font-family: $font-family;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  transition: color 0.2s ease;
+  white-space: nowrap;
+}
+
+.akkioSidebar__chev {
+  color: $sidebar-text-secondary;
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+  margin-left: auto;
+  flex-shrink: 0;
+
+  &--open {
+    transform: rotate(90deg);
+  }
+}
+
+.akkioSidebar__footer {
+  padding-bottom: 20px;
+}

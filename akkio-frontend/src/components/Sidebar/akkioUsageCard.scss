@@ -1,0 +1,128 @@
+// Premium Usage Card Styles
+$card-bg: rgba(255, 255, 255, 0.05);
+$card-border: rgba(255, 255, 255, 0.08);
+$text-primary: #ffffff;
+$text-secondary: rgba(255, 255, 255, 0.6);
+$accent-gradient: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%);
+$icon-bg: rgba(255, 255, 255, 0.1);
+
+.akkioUsageCard {
+  margin: 16px;
+  padding: 20px;
+  border-radius: 24px;
+  background: $card-bg;
+  border: 1px solid $card-border;
+  backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+}
+
+.akkioUsageCard__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.akkioUsageCard__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-secondary;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.akkioUsageCard__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.akkioUsageCard__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.akkioUsageCard__iconWrapper {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: $icon-bg;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.akkioUsageCard__icon {
+  color: $text-primary;
+  font-size: 18px;
+}
+
+.akkioUsageCard__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.akkioUsageCard__value {
+  font-size: 16px;
+  font-weight: 700;
+  color: $text-primary;
+  line-height: 1.2;
+
+  small {
+    font-size: 12px;
+    font-weight: 500;
+    color: $text-secondary;
+    margin-left: 2px;
+  }
+}
+
+.akkioUsageCard__label {
+  font-size: 12px;
+  color: $text-secondary;
+  font-weight: 500;
+}
+
+.akkioUsageCard__upgrade {
+  width: 100%;
+  padding: 12px;
+  border-radius: 16px;
+  border: none;
+  background: $accent-gradient;
+  color: white;
+  font-weight: 600;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+    filter: brightness(110%);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    filter: grayscale(100%);
+  }
+}

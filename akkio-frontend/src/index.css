@@ -1,0 +1,175 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500;600;700&family=Montserrat:wght@700&family=Poppins:wght@100;200;300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #fff !important;
+}
+
+.icon-font{
+  font-size: "20px !important"; 
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+.greencircle {
+  height: 45px;
+  border-radius: 50%;
+  background-color: green;
+  width: 45px;
+  text-align: center;
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  color: white;
+  font-weight: 700;
+  font-size: 20px;
+  border: 1px solid black;
+}
+
+.redcircle {
+  height: 45px;
+  border-radius: 50%;
+  background-color: red;
+  width: 45px;
+  text-align: center;
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  color: black;
+  font-weight: 700;
+  font-size: 20px;
+}
+
+.lightcolor {
+  height: 45px;
+  border-radius: 50%;
+  background-color: lightblue;
+  width: 45px;
+  text-align: center;
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  color: black;
+  font-weight: 700;
+  font-size: 20px;
+}
+
+@media print {
+  body, html {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body * {
+    width: 100%;
+  }
+
+  .non-printable *,
+  .non-printable {
+    display: none;
+  }
+
+  .printonly * {
+    visibility: visible;
+  }
+
+  .printonly {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+
+.ant-modal-mask{
+  background-color: rgba(0, 0, 0, 0.2) !important;
+}
+
+
+
+
+
+
+.image{
+  width:400px !important;
+  height: 400px !important;
+  display: block !important;
+}
+
+
+/* Adjust any other styles as needed */
+/* ... */
+
+
+.chatContainer {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chatMessage {
+  padding: 10px;
+  border-radius: 12px;
+  max-width: 80%;
+  margin: 5px 0;
+}
+
+.answerBubble {
+  padding: 10px;
+  border-radius: 12px;
+  max-width: 80%;
+  margin: 5px 0;
+  background-color: #e0f7fa; /* Light cyan background */
+  text-align: left;
+}
+
+.answerBubble img {
+  border-radius: 8px;
+  margin-right: 10px;
+}
+
+.answerBubble button {
+  margin-top: 10px;
+}
+
+
+
+
+
+.custom-tab {
+  text-transform: none;
+  font-size: 16px;
+  font-weight: 500;
+  color: #ff0000;
+  padding: 10px 16px;
+  border-radius: 8px;
+  transition: background 0.3s ease;
+}
+
+.custom-tab:hover {
+  background-color: #e6edf5;
+}
+
+.custom-tab.Mui-selected {
+  background-color: #3f8cff;
+  color: #fff;
+  font-weight: 700;
+}
+
+
+

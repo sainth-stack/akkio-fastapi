@@ -1,0 +1,30 @@
+.main-content{
+    overflow: auto;
+    overflow-x:hidden;
+    margin-left: 260px;
+    background-color: #FFF;
+    padding: 16px 24px;
+    min-height: calc(100vh - 60px);
+    box-sizing: border-box;
+    width: calc(100% - 260px);
+}
+
+.new-sidebar{
+    margin-left: 230px;
+}
+
+/* Additional responsive padding for different screen sizes */
+@media (max-width: 1200px) {
+    .main-content {
+        margin-left: 260px;
+        width: calc(100% - 260px);
+    }
+}
+
+@media (max-width: 768px) {
+    .main-content {
+        margin-left: 0;
+        width: 100%;
+        padding: 8px;
+    }
+}

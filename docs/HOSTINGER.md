@@ -53,10 +53,11 @@ Do **not** set `DEPLOY_EC2_IP` / `DEPLOY_SSH_KEY_PATH`.
 
 ### Frontend (`akkio-frontend/.env`)
 
+From repo root this file is `akkio-fastapi/akkio-frontend/.env` after clone.
+
 ```bash
-REACT_APP_BASE_URL=http://YOUR_IP:8000
-PORT=3002
-HOST=0.0.0.0
+VITE_BASE_URL=http://YOUR_IP:8000
+VITE_DEV_PORT=3002
 ```
 
 `HOST=0.0.0.0` is required so the UI is reachable via IP, not only localhost.
@@ -74,7 +75,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ### React (POC dev server)
 
 ```bash
-cd akkio-frontend
+cd akkio-fastapi/akkio-frontend
+npm install
 npm start
 ```
 
@@ -82,7 +84,7 @@ npm start
 
 ```bash
 pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi
-pm2 start npm --name akkio-ui --cwd /path/to/akkio-frontend -- start
+pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/akkio-frontend -- start
 pm2 save
 ```
 

@@ -1,0 +1,27 @@
+.akkioSidebarLayout {
+  position: fixed;
+  left: 0;
+  z-index: 100; // Increased z-index to stay above other content
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.akkioSidebarLayout--main {
+  top: 75px; // Match header height
+  height: calc(100vh - 70px);
+  width: 260px; // Slightly wider for better readability
+}
+
+.akkioSidebarLayout--admin {
+  top: 60px;
+  height: calc(100vh - 60px);
+  width: 240px;
+}
+
+.akkioSidebarLayout--settings {
+  top: 0; // Assuming settings sidebar might be full height or under header? 
+  // keeping original top value strategy or just 0 if new design implies it
+  // Original was -20px which is weird, let's fix to behave normally
+  height: 100vh;
+  width: 240px;
+}

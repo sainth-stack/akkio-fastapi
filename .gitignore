@@ -16,3 +16,9 @@ app_builder/runtime/
 node_modules/
 app_builder/templates/*/frontend/node_modules/
 app_builder/templates/*/backend/venv/
+
+# App Builder UI (Vite) — lives in this repo under akkio-frontend/
+akkio-frontend/node_modules/
+akkio-frontend/build/
+akkio-frontend/.env
+akkio-frontend/.env.local

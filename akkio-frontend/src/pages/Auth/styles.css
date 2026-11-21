@@ -1,0 +1,27 @@
+.text-green{
+    color: green;
+}
+.bg-biscuit{
+    background-color: #FFFEE1;
+}
+.relative{
+    position: relative;
+}
+.eye3{
+    position: absolute;
+    top: -27px;
+    right:15px;
+    cursor: pointer;
+}
+input:focus {
+    outline: none !important;
+}
+
+.login-right-panel {
+    min-height: 100vh;
+    background-color: #1a3a35;
+    background-image: url("../../assets/svg/bg.jpg");
+    background-size: cover;
+    background-repeat: no-repeat;
+    background-position: center;
+}
