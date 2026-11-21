@@ -1,6 +1,0 @@
-import { Clock3, ArrowUpRight, Image } from 'lucide-react';
-import type { GenerationJob } from '../../../shared/types';
-
-export function GenerationHistory({ jobs, onSelect, disabled }: { jobs: GenerationJob[]; onSelect: (job: GenerationJob) => void; disabled: boolean }) {
-  return <section className="history-section"><div className="history-heading"><h2><Clock3 size={17}/>Recent creations</h2><span className="muted small">Saved locally · {jobs.length} requests</span></div>{!jobs.length ? <div className="empty-history"><Image size={18}/><span>Your creative journey starts with your first prompt.</span></div> : <div className="history-grid">{jobs.map(job => <button disabled={disabled} key={job.jobId} className="history-card" onClick={() => onSelect(job)}>{job.imageUrl ? <img src={job.imageUrl} alt=""/> : <div className="history-placeholder"><Image size={22}/></div>}<div><span className={`history-state ${job.status === 'FAILED' ? 'failed' : ''}`}>{job.status.replaceAll('_', ' ')}</span><p>{job.prompt}</p><time dateTime={job.createdAt}>{new Date(job.createdAt).toLocaleString()}</time></div><ArrowUpRight size={16}/></button>)}</div>}</section>;
-}
