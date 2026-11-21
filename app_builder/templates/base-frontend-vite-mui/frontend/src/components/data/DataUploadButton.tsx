@@ -238,7 +238,7 @@ export default function DataUploadButton() {
           <Alert severity={snack.severity} onClose={() => setSnack(null)} sx={{ width: '100%' }}>
             {snack.message}
           </Alert>
-        ) : undefined}
+        ) : null}
       </Snackbar>
     </>
   );

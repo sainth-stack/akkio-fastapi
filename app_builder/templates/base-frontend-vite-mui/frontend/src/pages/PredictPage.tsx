@@ -60,9 +60,7 @@ function baselineToForm(fields: PredictField[], baseline: Record<string, number>
 export default function PredictPage() {
   const { definition } = useAppDefinition();
   const apiBase = getAkkioApiBase();
-  const rawPredictConfig = definition?.meta?.predictConfig;
-  const predictConfig: PredictConfig | undefined =
-    rawPredictConfig && typeof rawPredictConfig === 'object' ? (rawPredictConfig as PredictConfig) : undefined;
+  const predictConfig = (definition?.meta?.predictConfig as PredictConfig | undefined) ?? undefined;
 
   const fields = useMemo<PredictField[]>(() => {
     if (predictConfig?.fields?.length) {
@@ -89,7 +87,7 @@ export default function PredictPage() {
       predictConfig?.targetField || fields[0]?.key || 'production_output';
     setTargetField(initialTarget);
     const stored = predictConfig?.baseline || {};
-    const hasBaseline = Object.values(stored).some((v) => v != null && Number.isFinite(Number(v)));
+    const hasBaseline = Object.values(stored).some((v) => v != null && Number(v) !== 0);
     if (hasBaseline) {
       setValues(baselineToForm(fields, stored));
       setBaselineLoaded(true);
@@ -104,7 +102,6 @@ export default function PredictPage() {
   const postPredict = useCallback(
     async (body: Record<string, unknown>) => {
       if (!apiBase) throw new Error('Open this app from the Akkio host to run predictions.');
-      if (!definition) throw new Error('App definition is not loaded.');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       const token = getAkkioAccessToken();
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -146,7 +143,7 @@ export default function PredictPage() {
   useEffect(() => {
     if (!apiBase || baselineLoaded) return;
     const stored = predictConfig?.baseline || {};
-    const hasBaseline = Object.values(stored).some((v) => v != null && Number.isFinite(Number(v)));
+    const hasBaseline = Object.values(stored).some((v) => v != null && Number(v) !== 0);
     if (hasBaseline) return;
     void syncFromLiveData();
   }, [apiBase, baselineLoaded, predictConfig?.baseline, syncFromLiveData]);

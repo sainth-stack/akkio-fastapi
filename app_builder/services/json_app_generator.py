@@ -82,6 +82,7 @@ export const tokens = {{
   fontFamily:     "'{font}', system-ui, -apple-system, sans-serif",
   chartPalette:   {json.dumps(palette)},
   shellVariant:   '{t.get("shellVariant", "light")}',
+  border:         '{t.get("border", "#e2e8f0")}',
 }} as const;
 
 export type Tokens = typeof tokens;
@@ -176,8 +177,6 @@ async def run_json_app_codegen(
     design_tokens: Optional[Dict[str, Any]] = None,
     app_name: Optional[str] = None,
     use_llm: bool = True,
-    user_email: Optional[str] = None,
-    model_name: Optional[str] = None,
 ) -> Dict[str, str]:
     """Async entry for codegen WebSocket — LLM AppDefinition from PRD, then bind template."""
     async def emit(payload: Dict[str, Any]) -> None:
@@ -260,8 +259,6 @@ async def run_json_app_codegen(
             app_name=app_name,
             use_llm=use_llm,
             on_progress=_on_def_progress,
-            user_email=user_email,
-            model_name=model_name,
         )
         if is_sap:
             defn.meta = defn.meta.model_copy(update={"domain": "sap", "sapRagPhase": "dashboard"})

@@ -47,12 +47,12 @@ export type LivePrediction = {
   baseline_reference?: Record<string, number>;
 };
 
-function severityToColor(sev?: string): 'error' | 'warning' | 'success' | 'info' {
+function severityToColor(sev?: string): 'error' | 'warning' | 'success' | 'info' | 'primary' {
   if (sev === 'error') return 'error';
   if (sev === 'warning') return 'warning';
   if (sev === 'success') return 'success';
   if (sev === 'info') return 'info';
-  return 'info';
+  return 'primary';
 }
 
 export default function PredictionIndicators({ result }: { result: LivePrediction }) {

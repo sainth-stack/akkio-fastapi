@@ -9,7 +9,6 @@ export type FilterDef = {
   label: string;
   filterType?: 'search' | 'dateRange' | 'select';
   optionsKey?: string;
-  field?: string;
 };
 
 export default function FilterBar({
@@ -29,7 +28,7 @@ export default function FilterBar({
           const id = f.id.toLowerCase();
           if (t === 'select' && f.optionsKey) {
             const opts = (getDataSlice(definition, f.optionsKey) as Array<{ value: string; label: string }>) || [];
-            const value = state.values[f.field || id] || '';
+            const value = id.includes('line') ? state.line : id.includes('status') ? state.status : '';
             return (
               <TextField
                 key={f.id}
@@ -41,7 +40,8 @@ export default function FilterBar({
                   const v = e.target.value;
                   setFilters((prev) => ({
                     ...prev,
-                    values: { ...prev.values, [f.field || id]: v },
+                    ...(id.includes('line') ? { line: v } : {}),
+                    ...(id.includes('status') ? { status: v } : {}),
                   }));
                 }}
                 sx={{ minWidth: 180 }}
@@ -61,16 +61,16 @@ export default function FilterBar({
                   type="date"
                   label={`${f.label} from`}
                   InputLabelProps={{ shrink: true }}
-                  value={state.values[`${f.field || id}:from`] || ''}
-                  onChange={(e) => setFilters((p) => ({ ...p, values: { ...p.values, [`${f.field || id}:from`]: e.target.value } }))}
+                  value={state.dateFrom}
+                  onChange={(e) => setFilters((p) => ({ ...p, dateFrom: e.target.value }))}
                 />
                 <TextField
                   size="small"
                   type="date"
                   label="To"
                   InputLabelProps={{ shrink: true }}
-                  value={state.values[`${f.field || id}:to`] || ''}
-                  onChange={(e) => setFilters((p) => ({ ...p, values: { ...p.values, [`${f.field || id}:to`]: e.target.value } }))}
+                  value={state.dateTo}
+                  onChange={(e) => setFilters((p) => ({ ...p, dateTo: e.target.value }))}
                 />
               </Stack>
             );

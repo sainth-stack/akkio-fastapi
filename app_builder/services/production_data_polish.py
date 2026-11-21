@@ -48,7 +48,7 @@ def polish_production_data_bag(defn: AppDefinition) -> Dict[str, Any]:
 def app_definition_to_client_json(defn: AppDefinition) -> Dict[str, Any]:
     """Serialize for frontend/src/mock/data.json — production `data` only (no duplicate mock bag)."""
     raw = defn.model_dump(mode="json")
-    datasets = dict(defn.mock) if defn.meta.generationPolicy == "strict_llm_v1" else polish_production_data_bag(defn)
+    datasets = polish_production_data_bag(defn)
     raw.pop("mock", None)
     raw["data"] = datasets
     meta = dict(raw.get("meta") or {})
@@ -61,6 +61,5 @@ def app_definition_to_client_json(defn: AppDefinition) -> Dict[str, Any]:
     if not meta.get("description"):
         meta["description"] = "Operational datasets loaded from data.json"
     meta.setdefault("dataSource", "static")
-    # Optional objects are omitted, not null, so the frontend JSON import stays assignable.
-    raw["meta"] = {key: value for key, value in meta.items() if value is not None}
+    raw["meta"] = meta
     return raw

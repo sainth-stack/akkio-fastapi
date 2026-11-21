@@ -6,7 +6,6 @@ export type PageFilters = {
   status: string;
   dateFrom: string;
   dateTo: string;
-  values: Record<string, string>;
 };
 
 const defaultFilters: PageFilters = {
@@ -15,7 +14,6 @@ const defaultFilters: PageFilters = {
   status: '',
   dateFrom: '',
   dateTo: '',
-  values: {},
 };
 
 const PageFilterContext = createContext<{

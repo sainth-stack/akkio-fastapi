@@ -22,48 +22,13 @@ def _clean_label(text: str) -> str:
     return label
 
 
-def _core_kpi_label(text: str) -> str:
-    """Drop example parentheses so 'Accuracy (e.g., forecast vs actual)' matches 'Accuracy'."""
-    label = _clean_label(text)
-    label = re.sub(
-        r"\s*\((?:e\.?\s?g\.?|eg\.?|i\.?\s?e\.?|for example|such as|example|including)\b[^)]*\)",
-        "",
-        label,
-        flags=re.I,
-    )
-    return label.strip(" -:")
-
-
-def _kpi_key(label: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", _core_kpi_label(label).lower()).strip()
-
-
-def _kpi_present(expected: str, found: Set[str]) -> bool:
-    exp = _kpi_key(expected)
-    if not exp:
-        return True
-    exp_tokens = [token for token in exp.split() if len(token) > 2]
-    for raw in found:
-        got = _kpi_key(raw)
-        if not got:
-            continue
-        if exp == got or exp in got:
-            return True
-        got_tokens = [token for token in got.split() if len(token) > 2]
-        if len(got_tokens) >= 2 and got in exp:
-            return True
-        if exp_tokens and all(token in got.split() for token in exp_tokens):
-            return True
-    return False
-
-
 def extract_expected_kpis(section: str) -> List[str]:
     from app_builder.services.page_layout_intent import _subsection_text
 
     labels: List[str] = []
     kpi_block = _subsection_text(section, "kpis") or _subsection_text(section, "kpi")
     for line in _bullets(kpi_block):
-        label = _core_kpi_label(line.split(":")[-1] if ":" in line else line)
+        label = _clean_label(line.split(":")[-1] if ":" in line else line)
         if 2 < len(label) < 80:
             labels.append(label)
 
@@ -79,7 +44,7 @@ def extract_expected_kpis(section: str) -> List[str]:
             line,
             re.I,
         ):
-            label = _core_kpi_label(line.split(":")[-1] if ":" in line else line)
+            label = _clean_label(line.split(":")[-1] if ":" in line else line)
             if 2 < len(label) < 80:
                 labels.append(label)
     block = re.search(r"quality kpis?:\s*\n((?:\s*[-*•].+\n?)+)", section, re.I)
@@ -129,21 +94,12 @@ def extract_expected_table_columns(section: str) -> List[str]:
 
 def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:
     """Return missing KPI labels, table columns, and block count issues."""
-    from app_builder.services.page_layout_intent import (
-        _merge_chart_bullets_from_section,
-        _subsection_text,
-        infer_page_layout_intent,
-        resolve_dashboard_page_id,
-    )
+    from app_builder.services.page_layout_intent import infer_page_layout_intent
 
     gaps: Dict[str, Any] = {"missing_kpis": [], "missing_columns": [], "block_types": []}
+    from app_builder.services.page_layout_intent import resolve_dashboard_page_id
 
-    # A one-page lookup treats the only page as the dashboard. Analytics is not a dashboard,
-    # so an example in its PRD must not become a required KPI card.
-    if re.search(r"\banalytics?\b", f"{page.id} {page.title}", re.I):
-        dash_id = None
-    else:
-        dash_id = resolve_dashboard_page_id([(page.id, page.title)], None)
+    dash_id = resolve_dashboard_page_id([(page.id, page.title)], None)
     layout_intent = infer_page_layout_intent(
         section,
         page.title,
@@ -175,7 +131,7 @@ def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:
                         found_fields.add(str(col["field"]).lower())
 
     for kpi in expected_kpis:
-        if not _kpi_present(kpi, found_kpi_labels):
+        if kpi.lower() not in found_kpi_labels and not any(kpi.lower() in f for f in found_kpi_labels):
             gaps["missing_kpis"].append(kpi)
 
     for col in expected_cols:
@@ -184,8 +140,7 @@ def page_gaps(page: PageDef, section: str) -> Dict[str, Any]:
             gaps["missing_columns"].append(col)
 
     gaps["block_types"] = types
-    chart_block = _subsection_text(section, "charts") or _subsection_text(section, "chart")
-    gaps["needs_charts"] = bool(_merge_chart_bullets_from_section(section, chart_block))
+    gaps["needs_charts"] = bool(layout_intent.wants_charts)
     gaps["has_chart"] = any(t in types for t in ("lineChart", "barChart", "pieChart"))
     gaps["needs_filters"] = bool(layout_intent.wants_filters)
     gaps["has_filter"] = "filterBar" in types

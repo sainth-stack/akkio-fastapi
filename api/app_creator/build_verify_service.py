@@ -354,9 +354,6 @@ Rules:
             if json_app and path.replace("\\", "/") == "frontend/src/App.tsx":
                 logger.warning("[build-fix] Ignoring LLM patch to json_app App.tsx")
                 continue
-            if json_app and path.replace("\\", "/") == "frontend/src/mock/data.json":
-                logger.warning("[build-fix] Ignoring patch to generated app data")
-                continue
             updated[path] = content
 
     try:

@@ -68,17 +68,23 @@ function AppRoutes() {
     [definition?.theme],
   );
 
+  if (loading && !definition) {
+    return null;
+  }
+  if (error || !definition) {
+    return <div style={{ padding: 24 }}>Failed to load app definition.</div>;
+  }
+
+  const defaultPath = definition.navigation[0]?.path ?? '/';
+
   const routesNav = useMemo(() => {
     const seen = new Set<string>();
-    return (definition?.navigation || []).filter((n) => {
+    return definition.navigation.filter((n) => {
       if (seen.has(n.pageId)) return false;
       seen.add(n.pageId);
       return true;
     });
-  }, [definition?.navigation]);
-
-  if (!definition) return <div style={{ padding: 24 }}>{loading ? 'Loading app…' : error || 'App definition is unavailable.'}</div>;
-  const defaultPath = definition.navigation[0]?.path ?? '/';
+  }, [definition.navigation]);
 
   return (
     <ThemeProvider theme={theme}>

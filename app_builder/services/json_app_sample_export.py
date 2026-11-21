@@ -122,12 +122,6 @@ def _sheet_title(data_key: str, used: set) -> str:
 
 def load_builder_prompt_context(project_name: str) -> tuple[str, str]:
     """Requirement + PRD from builder_meta.json for domain-aware source datasets."""
-    from app_builder.services.app_data_rag import load_project_app_definition
-
-    definition = load_project_app_definition(project_name)
-    meta = (definition or {}).get("meta") or {}
-    if meta.get("generationPolicy") == "strict_llm_v1":
-        return str(meta.get("requirement") or ""), str(meta.get("prd") or "")
     root = resolve_project_root(project_name)
     meta_path = os.path.join(root, "builder_meta.json")
     requirement = ""

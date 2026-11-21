@@ -36,26 +36,6 @@ def build_sample_data_xlsx(project_name: str) -> str:
     """Write KPIs + Detail + Breakdown sheets; returns temp file path."""
     import pandas as pd
 
-    from app_builder.services.app_data_rag import load_project_app_definition
-
-    definition = load_project_app_definition(project_name)
-    if definition and (definition.get("meta") or {}).get("generationPolicy") == "strict_llm_v1":
-        fd, path = tempfile.mkstemp(suffix=".xlsx")
-        os.close(fd)
-        used = set()
-        with pd.ExcelWriter(path, engine="openpyxl") as writer:
-            from app_builder.services.json_app_sample_export import _sheet_title
-
-            tables = [b for p in definition["pages"] for b in p["blocks"] if b.get("type") == "dataTable"]
-            if not tables:
-                raise ValueError("This app has no tabular datasets to export")
-            bag = definition.get("data") or definition.get("mock") or {}
-            for table in tables:
-                columns = table["columns"]
-                rows = [{c["header"]: row.get(c["field"]) for c in columns} for row in bag.get(table["dataKey"], [])]
-                pd.DataFrame(rows, columns=[c["header"] for c in columns]).to_excel(writer, sheet_name=_sheet_title(table["dataKey"], used), index=False)
-        return path
-
     from app_builder.services.json_app_sample_export import (
         build_import_template_sheets,
         build_sheets_from_json_app,

@@ -17,8 +17,6 @@ import {
   Typography,
   useMediaQuery,
   useTheme,
-  type SxProps,
-  type Theme,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import * as MuiIcons from '@mui/icons-material';
@@ -71,7 +69,7 @@ export default function AppShell({
 
   const handleDrawerToggle = () => setMobileOpen((prev) => !prev);
 
-  const drawerPaperSx: Record<string, string> = brand
+  const drawerPaperSx = brand
     ? {
         bgcolor: 'primary.dark',
         color: 'primary.contrastText',
@@ -152,7 +150,7 @@ export default function AppShell({
     </Box>
   );
 
-  const drawerSx: SxProps<Theme> = {
+  const drawerSx = {
     '& .MuiDrawer-paper': {
       boxSizing: 'border-box',
       width: DRAWER_WIDTH,

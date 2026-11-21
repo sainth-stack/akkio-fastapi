@@ -46,13 +46,27 @@ Formatting:
 - Charts: prefix with type — `Line chart:`, `Bar chart:`, `Donut chart:` (one idea per bullet).
 - KPIs: one metric per bullet (e.g. First Pass Yield (FPY), Defect Rate).
 - Do not duplicate the same widget on every page unless the prompt says so.
-- Put KPIs, charts, tables, filters and actions on any page where the user requests them. Do not impose a layout based on the page name.
+- **KPIs:** subsection ONLY on the Dashboard (or Home/Overview) page — never on other pages. Other pages use Charts, Table columns, Filters, Actions as needed.
 - Do not add a Tech Stack section unless building a fullstack enterprise app.
 - The generated app includes an in-app **Data assistant** chat (floating button) that answers from KPI/chart/table data — keep metrics in data.json consistent with PRD labels."""
 
 
 def _page_layout_hint(page: str) -> str:
-    return "Layout and actions must follow the user requirement, not the route name."
+    low = (page or "").lower()
+    if re.search(r"\b(dashboard|home|overview)\b", low):
+        return (
+            "Layout: **KPIs** + **Charts** (Include/Charts bullets; charts should relate to KPIs — MTBF, MTTR, "
+            "work orders, downtime). Put **filterable maintenance event tables** on Dashboard only (Table columns), "
+            "not on Analytics."
+        )
+    if re.search(r"\breports?\b", low):
+        return "Layout: **Charts only**. No **Table columns**, no **Actions** (no export/download buttons in the UI). Omit **Filters** unless the user requested filters."
+    if re.search(r"\banalytics?\b", low):
+        return (
+            "Layout: **Charts only** (trends, pareto, failure frequency, root cause) — **no Table columns** "
+            "(tables belong on Dashboard). Omit **Filters** unless the user requested filters."
+        )
+    return ""
 
 
 def infer_pages_from_requirement(requirement: str) -> List[str]:

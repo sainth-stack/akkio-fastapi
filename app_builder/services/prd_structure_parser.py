@@ -71,7 +71,6 @@ def _slice_section_from_markdown(prd: str, page_title: str, page_id: str) -> str
     lines = prd.splitlines()
     start: Optional[int] = None
     heading = ""
-    heading_level = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not re.match(r"^#{1,4}\s+", stripped):
@@ -80,14 +79,12 @@ def _slice_section_from_markdown(prd: str, page_title: str, page_id: str) -> str
         if _title_matches_page(raw, page_title, page_id):
             start = i + 1
             heading = raw
-            heading_level = len(stripped) - len(stripped.lstrip("#"))
             break
     if start is None:
         return ""
     body_lines: List[str] = []
     for line in lines[start:]:
-        match = re.match(r"^(#{1,6})\s+", line.strip())
-        if match and len(match.group(1)) <= heading_level:
+        if re.match(r"^#{1,4}\s+", line.strip()):
             break
         body_lines.append(line)
     body = "\n".join(body_lines).strip()

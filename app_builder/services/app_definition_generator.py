@@ -742,41 +742,6 @@ def finalize_app_definition(
     theme_variation_seed: str = "",
 ) -> AppDefinition:
     """Ensure mock data exists for every block reference; align nav pageIds."""
-    if defn.meta.generationPolicy == "strict_llm_v1" or "llm" in str(defn.meta.generatedBy).lower():
-        from app_builder.services.definition_contract import validate_definition
-        from app_builder.services.intelligence_pages import ensure_intelligence_features
-        from app_builder.services.llm_observability_pages import ensure_observability_features
-        from app_builder.services.predict_config import build_predict_config
-        import hashlib
-        import re
-
-        req = requirement or defn.meta.requirement or ""
-        prd_text = prd or defn.meta.prd or ""
-        if re.search(r"\b(predict|forecast|what-if|what if)\b", f"{prd_text}\n{req}", re.I):
-            defn = ensure_intelligence_features(defn, prd=prd_text, requirement=req)
-        defn = ensure_observability_features(defn, prd=prd_text, requirement=req)
-
-        validate_definition(defn)
-        from app_builder.services.definition_metrics import compute_definition
-
-        computed = compute_definition(defn.model_dump(mode="json"))
-        defn.mock = computed["mock"]
-        defn.meta.generationPolicy = "strict_llm_v1"
-        defn.meta.requirement = requirement or defn.meta.requirement
-        defn.meta.prd = prd or defn.meta.prd
-        defn.meta.promptHash = hashlib.sha256(defn.meta.requirement.encode()).hexdigest()
-        defn.meta.dataModel = "definition_v1"
-        defn.meta.sourceDatasets = [
-            {"id": block["dataKey"], "dataKey": block["dataKey"], "title": block.get("title") or page.title, "columns": block["columns"]}
-            for page in defn.pages for block in page.blocks if block["type"] == "dataTable"
-        ]
-        if any(item.pageId == "predict" for item in defn.navigation):
-            payload = defn.model_dump(mode="json")
-            payload["data"] = defn.mock
-            cfg = build_predict_config(payload)
-            if cfg.get("fields"):
-                defn.meta.predictConfig = cfg
-        return defn
     from app_builder.services.page_layout_intent import strip_misplaced_kpi_blocks
     from app_builder.services.prd_structure_parser import page_prompt_context
     from app_builder.services.app_theme_generator import ensure_app_visual_identity
@@ -1061,8 +1026,6 @@ async def resolve_app_definition(
     use_llm: bool = True,
     prefer_stored: bool = False,
     on_progress: Optional[Any] = None,
-    user_email: Optional[str] = None,
-    model_name: Optional[str] = None,
 ) -> AppDefinition:
     plan_json = plan_json or {}
 
@@ -1091,9 +1054,25 @@ async def resolve_app_definition(
             plan_json=plan_json,
             app_name=app_name,
             on_progress=_progress if on_progress else None,
-            user_email=user_email,
-            model_name=model_name,
         )
+        if llm_def is None:
+            llm_def = await generate_app_definition_with_llm(
+                requirement=requirement,
+                prd=prd,
+                uiux=uiux,
+                plan_json=plan_json,
+            )
+            if llm_def is not None:
+                llm_def.meta.generatedBy = llm_def.meta.generatedBy or "llm"
+                llm_def = finalize_app_definition(
+                    llm_def,
+                    prd=prd,
+                    requirement=requirement,
+                    design_tokens=plan_json.get("design_tokens")
+                    if isinstance(plan_json.get("design_tokens"), dict)
+                    else None,
+                    theme_variation_seed=str(plan_json.get("theme_variation_seed") or ""),
+                )
         if llm_def is not None:
             llm_def.meta.appName = resolve_app_display_name(
                 requirement=requirement,

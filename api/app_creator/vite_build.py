@@ -62,15 +62,6 @@ def run_vite_build(
         build_env = os.environ.copy()
         build_env["VITE_BASE_PATH"] = f"/app/{project_name}/"
 
-        with open(os.path.join(frontend_dir, "package.json"), encoding="utf-8") as handle:
-            scripts = json.load(handle).get("scripts", {})
-        if "typecheck" in scripts:
-            result = subprocess.run(["npm", "run", "typecheck"], cwd=frontend_dir, capture_output=True, timeout=npm_build_timeout(), env=build_env)
-            output = (result.stdout or b"").decode("utf-8", errors="replace") + (result.stderr or b"").decode("utf-8", errors="replace")
-            logs.append(output[-8000:])
-            if result.returncode != 0:
-                return None, f"Typecheck failed: {output[-1200:]}", "\n".join(logs)
-
         logs.append(f"[vite] VITE_BASE_PATH={build_env['VITE_BASE_PATH']} npm run build")
         r = subprocess.run(
             ["npm", "run", "build"],

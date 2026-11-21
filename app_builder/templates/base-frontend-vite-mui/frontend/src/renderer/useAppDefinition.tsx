@@ -19,17 +19,13 @@ export interface AppDefinition {
     capabilities?: string[];
     dataSource?: string;
     dataModel?: string;
-    generationPolicy?: string;
-    containsSyntheticData?: boolean;
-    /** Absent when Predict is not configured. JSON serialization may use null. */
-    predictConfig?: Record<string, unknown> | null;
     sourceDatasets?: Array<{
       id: string;
       dataKey: string;
       title: string;
-      description?: string | null;
-      columns: Array<Record<string, unknown>>;
-    }> | null;
+      description?: string;
+      columns: Array<{ field: string; header: string; type?: string }>;
+    }>;
   };
   theme: Record<string, unknown>;
   navigation: Array<{ label: string; path: string; icon: string; pageId: string }>;
@@ -57,91 +53,6 @@ type AppDefinitionContextValue = {
 };
 
 const AppDefinitionContext = createContext<AppDefinitionContextValue | null>(null);
-
-function textValue(value: unknown, fallback = ''): string {
-  return typeof value === 'string' && value.trim() ? value : fallback;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
-
-/** Accept generated data.json, including null optional fields, and return a renderer-safe definition. */
-export function readAppDefinition(raw: unknown): AppDefinition {
-  const root = recordValue(raw) || {};
-  const metaIn = recordValue(root.meta) || {};
-  const pages = (Array.isArray(root.pages) ? root.pages : []).flatMap((item) => {
-    const page = recordValue(item);
-    if (!page) return [];
-    const id = textValue(page.id, 'page');
-    return [{
-      id,
-      title: textValue(page.title, id),
-      subtitle: typeof page.subtitle === 'string' ? page.subtitle : undefined,
-      blocks: Array.isArray(page.blocks) ? page.blocks.filter((block) => block && typeof block === 'object' && !Array.isArray(block)) as Array<Record<string, unknown>> : [],
-    }];
-  });
-  const navigation = (Array.isArray(root.navigation) ? root.navigation : []).flatMap((item, index) => {
-    const nav = recordValue(item);
-    if (!nav) return [];
-    const pageId = textValue(nav.pageId, pages[index]?.id || `page_${index + 1}`);
-    return [{
-      label: textValue(nav.label, pageId),
-      path: index === 0 ? '/' : textValue(nav.path, `/${pageId}`),
-      icon: textValue(nav.icon, 'Article'),
-      pageId,
-    }];
-  });
-  const theme: Record<string, unknown> = {};
-  const themeIn = recordValue(root.theme);
-  if (themeIn) {
-    for (const [key, value] of Object.entries(themeIn)) {
-      if (typeof value === 'string') theme[key] = value;
-      if (key === 'chartPalette' && Array.isArray(value)) {
-        theme[key] = value.filter((color): color is string => typeof color === 'string');
-      }
-    }
-  }
-  const sources = Array.isArray(metaIn.sourceDatasets)
-    ? metaIn.sourceDatasets.flatMap((item) => {
-        const ds = recordValue(item);
-        if (!ds) return [];
-        const dataKey = textValue(ds.dataKey);
-        if (!dataKey) return [];
-        return [{
-          id: textValue(ds.id, dataKey),
-          dataKey,
-          title: textValue(ds.title, dataKey),
-          description: typeof ds.description === 'string' ? ds.description : undefined,
-          columns: Array.isArray(ds.columns)
-            ? ds.columns.filter((col) => col && typeof col === 'object') as Array<Record<string, unknown>>
-            : [],
-        }];
-      })
-    : undefined;
-
-  return {
-    version: typeof root.version === 'number' ? root.version : 1,
-    meta: {
-      appName: textValue(metaIn.appName, 'Application'),
-      description: typeof metaIn.description === 'string' ? metaIn.description : '',
-      domain: textValue(metaIn.domain, 'generic'),
-      capabilities: Array.isArray(metaIn.capabilities) ? metaIn.capabilities.filter((item): item is string => typeof item === 'string') : undefined,
-      dataSource: typeof metaIn.dataSource === 'string' ? metaIn.dataSource : undefined,
-      dataModel: typeof metaIn.dataModel === 'string' ? metaIn.dataModel : undefined,
-      generationPolicy: typeof metaIn.generationPolicy === 'string' ? metaIn.generationPolicy : undefined,
-      containsSyntheticData: metaIn.containsSyntheticData === true,
-      predictConfig: recordValue(metaIn.predictConfig),
-      sourceDatasets: sources,
-    },
-    theme,
-    navigation: navigation.length ? navigation : [{ label: pages[0]?.title || 'Dashboard', path: '/', icon: 'Dashboard', pageId: pages[0]?.id || 'dashboard' }],
-    pages: pages.length ? pages : [{ id: 'dashboard', title: 'Dashboard', blocks: [] }],
-    data: recordValue(root.data),
-    mock: recordValue(root.mock),
-  };
-}
 
 function collectImportTargets(defn: AppDefinition): ImportTarget[] {
   const fromMeta = defn.meta?.sourceDatasets;
@@ -172,7 +83,7 @@ function collectImportTargets(defn: AppDefinition): ImportTarget[] {
 }
 
 export function AppDefinitionProvider({ children }: { children: ReactNode }) {
-  const staticDef = readAppDefinition(definitionJson);
+  const staticDef = definitionJson as AppDefinition;
   const [definition, setDefinition] = useState<AppDefinition>(staticDef);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +92,52 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
     setDefinition(next);
     setError(null);
   }, []);
+
+  const recomputeFromSource = useCallback(async () => {
+    const base = getAkkioApiBase();
+    if (!base) return;
+    const model = staticDef.meta?.dataModel || '';
+    if (model !== 'source_compute_v1') return;
+    setLoading(true);
+    setError(null);
+    try {
+      const token = getAkkioAccessToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`${base}/data/compute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          messages: [],
+          app_definition: staticDef,
+        }),
+      });
+      const payload = (await res.json()) as {
+        data?: AppDefinition['data'];
+        pages?: AppDefinition['pages'];
+        meta?: AppDefinition['meta'];
+        detail?: unknown;
+      };
+      if (!res.ok) {
+        throw new Error(String(payload.detail || 'Could not compute chart data'));
+      }
+      setDefinition((prev) => ({
+        ...prev,
+        data: payload.data ?? prev.data,
+        pages: payload.pages ?? prev.pages,
+        meta: { ...prev.meta, ...(payload.meta || {}) },
+      }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to compute metrics');
+      setDefinition(staticDef);
+    } finally {
+      setLoading(false);
+    }
+  }, [staticDef]);
+
+  useEffect(() => {
+    void recomputeFromSource();
+  }, [recomputeFromSource]);
 
   const refreshDefinition = useCallback(async () => {
     const base = getAkkioApiBase();
@@ -196,19 +153,21 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
       if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(`${base}/definition`, { headers });
       if (!res.ok) {
+        if (res.status === 404) {
+          setDefinition(staticDef);
+          return;
+        }
         throw new Error(`Could not load app data (${res.status})`);
       }
-      setDefinition(readAppDefinition(await res.json()));
+      const data = (await res.json()) as AppDefinition;
+      setDefinition(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load definition');
+      setDefinition(staticDef);
     } finally {
       setLoading(false);
     }
   }, [staticDef]);
-
-  useEffect(() => {
-    if (getAkkioApiBase()) void refreshDefinition();
-  }, [refreshDefinition]);
 
   const importTargets = useMemo(
     () => (definition ? collectImportTargets(definition) : []),
@@ -233,7 +192,7 @@ export function AppDefinitionProvider({ children }: { children: ReactNode }) {
 export function useAppDefinition(): AppDefinitionContextValue {
   const ctx = useContext(AppDefinitionContext);
   if (!ctx) {
-    const definition = readAppDefinition(definitionJson);
+    const definition = definitionJson as AppDefinition;
     return {
       definition,
       loading: false,

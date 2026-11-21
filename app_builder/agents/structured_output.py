@@ -21,78 +21,38 @@ T = TypeVar("T", bound=BaseModel)
 # JSON extraction from LLM text
 # ---------------------------------------------------------------------------
 
-def response_text(content: Any) -> str:
-    """Flatten a chat response into text. Some models return a list of content parts."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                parts.append(str(item.get("text") or item.get("content") or ""))
-        return "\n".join(part for part in parts if part)
-    return str(content or "")
+def extract_json_block(text: str) -> Optional[str]:
+    """
+    Pull the first valid JSON object out of an LLM response.
 
+    Tries (in order):
+      1. ```json … ``` fenced block
+      2. ``` … ``` fenced block
+      3. First { … } balanced block in the raw text
+    """
+    # 1. ```json block
+    m = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
 
-def _balanced_span(text: str, open_ch: str, close_ch: str) -> Optional[str]:
-    start = text.find(open_ch)
+    # 2. plain ``` block
+    m = re.search(r"```\s*(\{[\s\S]*?\})\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    # 3. Balanced { … } scan
+    start = text.find("{")
     if start == -1:
         return None
     depth = 0
-    in_string = False
-    escape = False
     for i, ch in enumerate(text[start:], start):
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == open_ch:
+        if ch == "{":
             depth += 1
-        elif ch == close_ch:
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 return text[start : i + 1]
     return None
-
-
-def extract_json_block(text: str) -> Optional[str]:
-    """Pull the first JSON object or array out of an LLM response."""
-    text = response_text(text)
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.DOTALL)
-    scopes = [fenced.group(1)] if fenced else []
-    scopes.append(text)
-    for scope in scopes:
-        if scope.strip().startswith("["):
-            array = _balanced_span(scope, "[", "]")
-            if array:
-                return array
-        obj = _balanced_span(scope, "{", "}")
-        if obj:
-            return obj
-        array = _balanced_span(scope, "[", "]")
-        if array:
-            return array
-    return None
-
-
-def loads_json_object(text: str) -> Any:
-    """Parse model JSON, including trailing commas that strict json.loads rejects."""
-    raw = extract_json_block(text)
-    if not raw:
-        raise ValueError("No JSON object found in LLM response")
-    relaxed = re.sub(r",\s*([}\]])", r"\1", raw)
-    try:
-        return json.loads(relaxed)
-    except json.JSONDecodeError:
-        return json.loads(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -126,19 +86,13 @@ async def extract_validated(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=current_user_prompt),
             ])
-            content = response.content if hasattr(response, "content") else str(response)
+            content: str = response.content if hasattr(response, "content") else str(response)
 
-            data = loads_json_object(response_text(content))
-            if isinstance(data, list):
-                fields = set(getattr(schema, "model_fields", {}))
-                if "blocks" in fields:
-                    data = {"blocks": data}
-                elif "pages" in fields or "navigation" in fields:
-                    data = {"pages": data}
-                else:
-                    raise ValueError("JSON array is not an object")
-            if not isinstance(data, dict):
-                raise ValueError("JSON response must be an object")
+            json_str = extract_json_block(content)
+            if not json_str:
+                raise ValueError("No JSON object found in LLM response")
+
+            data: Dict[str, Any] = json.loads(json_str)
             model_instance = schema(**data)
             logger.info("[structured_output] %s validated OK", label)
             return model_instance

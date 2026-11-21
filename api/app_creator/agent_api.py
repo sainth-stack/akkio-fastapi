@@ -386,8 +386,6 @@ async def execute_agents(websocket: WebSocket, session_id: str):
         # Initialize State for LangGraph
         initial_state = {
             "user_requirement": UserRequirement(description=requirement),
-            "user_email": user_email,
-            "model_name": request_data.get("model_name"),
             "project_name": project_name,
             "saved_prd": prd,
             "saved_uiux": uiux,

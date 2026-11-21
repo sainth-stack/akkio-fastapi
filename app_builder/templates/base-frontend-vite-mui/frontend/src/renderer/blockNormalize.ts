@@ -43,7 +43,6 @@ export function normalizeBlock(
   definition: AppDefinition,
   pageId?: string,
 ): Block {
-  if (definition.meta.generationPolicy === 'strict_llm_v1') return block;
   const type = block.type as string;
   const next = { ...block };
 
