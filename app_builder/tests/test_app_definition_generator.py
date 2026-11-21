@@ -129,7 +129,9 @@ class TestAppDefinitionGenerator(unittest.TestCase):
                 "kpis_dashboard": {"open_tickets": "9"},
             },
         }
-        out = apply_source_data_pipeline(stale, requirement=req, prd="")
+        out = apply_source_data_pipeline(
+            stale, requirement=req, prd="", seed_if_empty=True, recompute_from_source=True
+        )
         data = out.get("data") or {}
         self.assertNotIn("source_sap_tickets", data)
         self.assertFalse(is_sap_similarity_app(out))
@@ -150,7 +152,9 @@ class TestAppDefinitionGenerator(unittest.TestCase):
             requirement=req,
             plan_json={"blueprint": {"selected_domain": "manufacturing"}},
         )
-        out = apply_source_data_pipeline(app.to_json_dict(), requirement=req, prd="")
+        out = apply_source_data_pipeline(
+            app.to_json_dict(), requirement=req, prd="", seed_if_empty=True, recompute_from_source=True
+        )
         self.assertFalse(is_sap_similarity_app(out))
         data = out.get("data") or {}
         self.assertNotIn("source_sap_tickets", data)

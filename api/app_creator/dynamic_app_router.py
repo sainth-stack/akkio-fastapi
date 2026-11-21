@@ -531,7 +531,8 @@ async def get_app_definition(
         defn,
         requirement=requirement,
         prd=prd,
-        seed_if_empty=True,
+        seed_if_empty=False,
+        project_id=project_id,
     )
     return JSONResponse(content=defn)
 

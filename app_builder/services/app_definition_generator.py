@@ -21,6 +21,13 @@ from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks
 
 logger = logging.getLogger("app_builder")
 
+# Product policy: AppDefinition + data.json come from LLM for each prompt — no stored/deterministic JSON.
+APP_DEFINITION_LLM_ONLY = True
+
+
+class AppDefinitionLLMRequiredError(RuntimeError):
+    """Raised when LLM app definition generation fails and fallback is disabled."""
+
 _ICON_HINTS = (
     (("dashboard", "overview", "home"), "Dashboard"),
     (("session", "inspection"), "FactCheck"),
@@ -806,11 +813,14 @@ def finalize_app_definition(
 
     defn = repair_broken_data_table_blocks(defn, prd=prd)
     mock = dict(defn.mock or {})
-    for page in defn.pages:
-        mock.update(_collect_mock_keys(page.blocks))
+    llm_authored = "llm" in str(defn.meta.generatedBy or "").lower()
+    if not llm_authored:
+        for page in defn.pages:
+            mock.update(_collect_mock_keys(page.blocks))
     defn.mock = mock
     defn = normalize_app_definition_blocks(defn, prd=prd)
-    defn = ensure_datasets_from_blocks(defn)
+    if not llm_authored:
+        defn = ensure_datasets_from_blocks(defn)
     from app_builder.services.block_normalizer import repair_table_mock_keys
 
     defn = repair_table_mock_keys(defn)
@@ -848,6 +858,7 @@ def finalize_app_definition(
     defn.mock = mock
     from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
+    llm_authored = "llm" in str(defn.meta.generatedBy or "").lower()
     piped = apply_source_data_pipeline(
         {
             **defn.model_dump(mode="json"),
@@ -856,7 +867,7 @@ def finalize_app_definition(
         },
         requirement=requirement,
         prd=prd,
-        seed_if_empty=True,
+        seed_if_empty=not llm_authored,
     )
     meta_p = piped.get("meta") or {}
     defn.meta = defn.meta.model_copy(
@@ -865,6 +876,7 @@ def finalize_app_definition(
             "dataModel": str(meta_p.get("dataModel") or "source_compute_v1"),
             "dataSource": str(meta_p.get("dataSource") or defn.meta.dataSource),
             "predictConfig": meta_p.get("predictConfig"),
+            "generatedBy": defn.meta.generatedBy or str(meta_p.get("generatedBy") or ""),
         }
     )
     defn.mock = piped.get("data") or {}
@@ -1017,13 +1029,16 @@ async def resolve_app_definition(
 ) -> AppDefinition:
     plan_json = plan_json or {}
 
-    if prefer_stored:
+    if prefer_stored and not APP_DEFINITION_LLM_ONLY:
         stored = plan_json.get("app_definition")
         if isinstance(stored, dict) and stored.get("pages"):
             try:
                 return finalize_app_definition(AppDefinition.model_validate(stored))
             except Exception:
                 pass
+
+    if APP_DEFINITION_LLM_ONLY and not use_llm:
+        raise AppDefinitionLLMRequiredError("LLM generation is required for AppDefinition (use_llm=False disabled).")
 
     if use_llm:
         from app_builder.services.app_definition_llm_pipeline import generate_app_definition_llm
@@ -1048,6 +1063,7 @@ async def resolve_app_definition(
                 plan_json=plan_json,
             )
             if llm_def is not None:
+                llm_def.meta.generatedBy = llm_def.meta.generatedBy or "llm"
                 llm_def = finalize_app_definition(
                     llm_def,
                     prd=prd,
@@ -1073,23 +1089,9 @@ async def resolve_app_definition(
             )
             return llm_def
 
-    if on_progress:
-        await on_progress("Deterministic fallback: building AppDefinition from PRD screen map…")
-    built = build_app_definition_from_plan(
-        requirement=requirement,
-        prd=prd,
-        uiux=uiux,
-        plan_json=plan_json,
-        app_name=app_name,
-    )
-    if on_progress:
-        await on_progress("Enriching production-style sample data for charts and tables…")
-    return finalize_app_definition(
-        built,
-        prd=prd,
-        requirement=requirement,
-        design_tokens=plan_json.get("design_tokens") if isinstance(plan_json.get("design_tokens"), dict) else None,
-        theme_variation_seed=str(plan_json.get("theme_variation_seed") or ""),
+    raise AppDefinitionLLMRequiredError(
+        "LLM could not produce an AppDefinition for this prompt. Regenerate or refine the prompt — "
+        "deterministic/template JSON fallback is disabled."
     )
 
 

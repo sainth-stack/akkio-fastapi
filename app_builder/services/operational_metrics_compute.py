@@ -589,12 +589,13 @@ def _ensure_minimum_dashboard_charts(out: Dict[str, Any], rows: List[Dict[str, A
     return out
 
 
-def _seed_source_rows_in_bag(defn: Dict[str, Any]) -> Dict[str, Any]:
+def _seed_source_rows_in_bag(defn: Dict[str, Any], *, project_id: str = "") -> Dict[str, Any]:
     """Ensure every declared source dataset has rows before KPI/chart compute."""
     from app_builder.services.source_data_constants import DEFAULT_SOURCE_SEED_ROWS
-    from app_builder.services.source_data_seeder import seed_rows_for_dataset
+    from app_builder.services.source_data_seeder import ensure_definition_seed_salt, seed_rows_for_dataset
 
     out = dict(defn)
+    seed_salt = ensure_definition_seed_salt(out, project_id=project_id)
     bag = dict(out.get("data") or out.get("mock") or {})
     meta = dict(out.get("meta") or {})
     user_uploaded = str(meta.get("dataSource") or "") == "upload"
@@ -618,6 +619,7 @@ def _seed_source_rows_in_bag(defn: Dict[str, Any]) -> Dict[str, Any]:
                 ds,
                 row_count=DEFAULT_SOURCE_SEED_ROWS,
                 human_headers=False,
+                seed_salt=seed_salt,
             )
             changed = True
     if changed:
@@ -756,26 +758,45 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _llm_authored_definition(defn: Dict[str, Any]) -> bool:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    gb = str(meta.get("generatedBy") or "").lower()
+    return "llm" in gb
+
+
 def apply_source_data_pipeline(
     defn: Dict[str, Any],
     *,
     requirement: str = "",
     prd: str = "",
-    seed_if_empty: bool = True,
+    seed_if_empty: bool = False,
+    project_id: str = "",
+    recompute_from_source: Optional[bool] = None,
 ) -> Dict[str, Any]:
     from app_builder.services.source_data_constants import (
         DEFAULT_SOURCE_SEED_ROWS,
         MAX_AUTO_SOURCE_ROWS,
     )
-    from app_builder.services.source_data_seeder import seed_rows_for_dataset
+    from app_builder.services.source_data_seeder import ensure_definition_seed_salt, seed_rows_for_dataset
     from app_builder.services.source_dataset_planner import ensure_source_datasets_on_definition
-    from app_builder.services.sap_similar_tickets import detach_sap_similarity_for_prompt
+    from app_builder.services.sap_similar_tickets import (
+        detach_sap_similarity_for_prompt,
+        should_seed_sap_tickets,
+    )
 
     out = detach_sap_similarity_for_prompt(dict(defn), prd=prd, requirement=requirement)
+    llm_authored = _llm_authored_definition(out)
+    if llm_authored:
+        seed_if_empty = False
     out = ensure_source_datasets_on_definition(out, requirement=requirement, prd=prd)
+    seed_salt = ensure_definition_seed_salt(out, project_id=project_id)
     bag = dict(out.get("data") or out.get("mock") or {})
     meta = dict(out.get("meta") or {})
     user_uploaded = str(meta.get("dataSource") or "") == "upload"
+    if recompute_from_source is None:
+        recompute_from_source = user_uploaded or should_seed_sap_tickets(out, prd=prd, requirement=requirement)
+    if llm_authored and not user_uploaded:
+        recompute_from_source = should_seed_sap_tickets(out, prd=prd, requirement=requirement)
     active_keys = {str(ds.get("dataKey") or "") for ds in get_source_datasets(out)}
     for key in list(bag.keys()):
         if str(key).startswith(SOURCE_PREFIX) and key not in active_keys:
@@ -800,6 +821,7 @@ def apply_source_data_pipeline(
                 ds,
                 row_count=DEFAULT_SOURCE_SEED_ROWS,
                 human_headers=False,
+                seed_salt=seed_salt,
             )
     out["data"] = bag
     out.pop("mock", None)
@@ -827,7 +849,12 @@ def apply_source_data_pipeline(
     caps = meta.get("capabilities") or []
     if meta.get("domain") == "sap" or (isinstance(caps, list) and "sap_similar_tickets" in caps):
         out = enrich_definition_tickets(out, force=False)
-    out = recompute_derived_data(out)
+    meta = dict(out.get("meta") or {})
+    if llm_authored and str(meta.get("dataSource") or "") not in ("upload",):
+        meta["dataSource"] = "llm_generated"
+        out["meta"] = meta
+    if recompute_from_source:
+        out = recompute_derived_data(out)
     from app_builder.services.navigation_labels import normalize_definition_navigation
 
     return normalize_definition_navigation(out)

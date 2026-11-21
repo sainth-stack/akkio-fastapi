@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -20,6 +21,40 @@ def _seed(key: str) -> random.Random:
     import hashlib
 
     return random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:16], 16))
+
+
+def ensure_definition_seed_salt(defn: Dict[str, Any], *, project_id: str = "") -> str:
+    """Stable per-app salt so new apps do not all share identical demo rows."""
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    existing = str(meta.get("seedSalt") or "").strip()
+    if existing:
+        return existing
+    parts = [
+        str(defn.get("id") or ""),
+        project_id.strip(),
+        str(meta.get("appName") or ""),
+        str(meta.get("description") or ""),
+    ]
+    if any(p.strip() for p in parts):
+        import hashlib
+
+        salt = hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]
+    else:
+        salt = uuid.uuid4().hex[:24]
+    meta = dict(meta)
+    meta["seedSalt"] = salt
+    defn["meta"] = meta
+    return salt
+
+
+def seed_rng_for_dataset(
+    dataset: Dict[str, Any],
+    *,
+    seed_salt: str = "",
+) -> random.Random:
+    dk = str(dataset.get("dataKey") or dataset.get("id") or "source")
+    key = f"{seed_salt}:{dk}" if seed_salt else dk
+    return _seed(key)
 
 
 def _slug(s: str) -> str:
@@ -195,10 +230,10 @@ def seed_rows_for_dataset(
     *,
     row_count: int = DEFAULT_SOURCE_SEED_ROWS,
     human_headers: bool = False,
+    seed_salt: str = "",
 ) -> List[Dict[str, Any]]:
     cols = dataset.get("columns") or []
-    dk = str(dataset.get("dataKey") or dataset.get("id") or "source")
-    rng = _seed(dk)
+    rng = seed_rng_for_dataset(dataset, seed_salt=seed_salt)
     rows: List[Dict[str, Any]] = []
     for i in range(max(1, min(row_count, 48))):
         row: Dict[str, Any] = {}

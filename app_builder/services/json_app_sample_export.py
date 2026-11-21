@@ -145,11 +145,13 @@ def build_import_template_sheets(project_name: str) -> Dict[str, List[Dict[str, 
     requirement, prd = load_builder_prompt_context(project_name)
     from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
+    from app_builder.services.operational_metrics_compute import _llm_authored_definition
+
     defn = apply_source_data_pipeline(
         defn,
         requirement=requirement,
         prd=prd,
-        seed_if_empty=True,
+        seed_if_empty=not _llm_authored_definition(defn),
     )
     from app_builder.services.source_dataset_planner import build_template_sheets
 

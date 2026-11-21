@@ -395,9 +395,11 @@ def build_template_sheets(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Excel sheets: human headers + moderate sample rows only (not live uploaded data)."""
     from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
-    from app_builder.services.source_data_seeder import seed_rows_for_dataset
+    from app_builder.services.source_data_seeder import ensure_definition_seed_salt, seed_rows_for_dataset
 
     sample_rows = row_count if row_count is not None else TEMPLATE_SAMPLE_ROWS
+    work = dict(defn)
+    seed_salt = ensure_definition_seed_salt(work)
     sheets: Dict[str, List[Dict[str, Any]]] = {}
     for ds in get_source_datasets(defn):
         if not isinstance(ds, dict):
@@ -407,7 +409,9 @@ def build_template_sheets(
         if not dk or not cols:
             continue
         sheet_name = dk.replace(SOURCE_PREFIX, "")[:31]
-        sheets[sheet_name] = seed_rows_for_dataset(ds, row_count=sample_rows, human_headers=True)
+        sheets[sheet_name] = seed_rows_for_dataset(
+            ds, row_count=sample_rows, human_headers=True, seed_salt=seed_salt
+        )
     return sheets
 
 

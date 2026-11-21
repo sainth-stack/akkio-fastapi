@@ -49,7 +49,9 @@ class TestSourceDataPipeline(unittest.TestCase):
         from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
-        defn = apply_source_data_pipeline(self._manufacturing_defn())
+        defn = apply_source_data_pipeline(
+            self._manufacturing_defn(), seed_if_empty=True, recompute_from_source=True
+        )
         sheets = build_template_sheets(defn)
         self.assertTrue(sheets)
         first = next(iter(sheets.values()))
@@ -62,7 +64,9 @@ class TestSourceDataPipeline(unittest.TestCase):
         from app_builder.services.source_data_constants import TEMPLATE_SAMPLE_ROWS
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
-        defn = apply_source_data_pipeline(self._manufacturing_defn())
+        defn = apply_source_data_pipeline(
+            self._manufacturing_defn(), seed_if_empty=True, recompute_from_source=True
+        )
         bag = defn.get("data") or {}
         for key in list(bag.keys()):
             if str(key).startswith("source_") and isinstance(bag[key], list):
@@ -101,7 +105,7 @@ class TestSourceDataPipeline(unittest.TestCase):
             ],
             "data": {},
         }
-        out = apply_source_data_pipeline(defn)
+        out = apply_source_data_pipeline(defn, seed_if_empty=True, recompute_from_source=True)
         bag = out.get("data") or {}
         trend = bag.get("chart_fpy_trend") or []
         self.assertTrue(trend)
@@ -152,7 +156,13 @@ class TestSourceDataPipeline(unittest.TestCase):
             ],
             "data": {},
         }
-        out = apply_source_data_pipeline(defn, requirement="inventory visibility sku warehouse", prd="inventory app")
+        out = apply_source_data_pipeline(
+            defn,
+            requirement="inventory visibility sku warehouse",
+            prd="inventory app",
+            seed_if_empty=True,
+            recompute_from_source=True,
+        )
         for pid in ("dashboard", "inventory", "reports"):
             page = next(p for p in out["pages"] if p["id"] == pid)
             types = [
@@ -219,7 +229,7 @@ class TestSourceDataPipeline(unittest.TestCase):
             "navigation": [{"pageId": "dashboard", "path": "/", "label": "Dashboard"}],
             "data": {},
         }
-        out = apply_source_data_pipeline(defn)
+        out = apply_source_data_pipeline(defn, seed_if_empty=True, recompute_from_source=True)
         bag = out.get("data") or {}
         trend = bag.get("chart_dashboard_trend") or []
         self.assertTrue(trend)
@@ -232,6 +242,35 @@ class TestSourceDataPipeline(unittest.TestCase):
         self.assertTrue(table[0].get("name"))
         bar = bag.get("series_analytics_1_bar") or []
         self.assertTrue(any((row.get("actual") or 0) > 0 for row in bar))
+
+    def test_new_apps_get_distinct_source_rows(self):
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+
+        req = "manufacturing inventory supply chain vendor dashboard"
+        a = apply_source_data_pipeline(
+            {"meta": {"appName": "Plant A Inventory", "domain": "manufacturing"}, "pages": [], "data": {}},
+            requirement=req,
+            prd="",
+            project_id="plant-a-001",
+            seed_if_empty=True,
+            recompute_from_source=True,
+        )
+        b = apply_source_data_pipeline(
+            {"meta": {"appName": "Plant B Vendor Hub", "domain": "manufacturing"}, "pages": [], "data": {}},
+            requirement=req,
+            prd="",
+            project_id="plant-b-002",
+            seed_if_empty=True,
+            recompute_from_source=True,
+        )
+        key = "source_inventory_items"
+        self.assertIn(key, a.get("data") or {})
+        self.assertIn(key, b.get("data") or {})
+        ra = (a["data"][key] or [])[0]
+        rb = (b["data"][key] or [])[0]
+        self.assertNotEqual(ra, rb)
+        self.assertTrue(a["meta"].get("seedSalt"))
+        self.assertNotEqual(a["meta"]["seedSalt"], b["meta"]["seedSalt"])
 
 
 if __name__ == "__main__":
