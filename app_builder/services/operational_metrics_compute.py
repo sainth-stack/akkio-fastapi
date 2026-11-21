@@ -313,7 +313,11 @@ def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
         return _first_row_key(sample, ["downtime_hours", "downtime"])
     if re.search(r"event|work order|maintenance", title_l):
         return _COUNT_METRIC
-    return _first_row_key(sample, ["quantity_on_hand", "amount", "value", "count"])
+    return _first_row_key(
+        sample,
+        ["quantity_on_hand", "amount", "value", "count",
+         "downtime_hours", "mtbf_hours", "mttr_hours"],
+    )
 
 
 def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:

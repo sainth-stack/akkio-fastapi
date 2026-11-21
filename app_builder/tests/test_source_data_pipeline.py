@@ -177,7 +177,7 @@ class TestSourceDataPipeline(unittest.TestCase):
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
 
         defn = {
-            "meta": {"domain": "manufacturing_maintenance", "description": "MTBF MTTR maintenance"},
+            "meta": {"appName": "Maintenance Dashboard", "domain": "manufacturing_maintenance", "description": "MTBF MTTR maintenance"},
             "pages": [
                 {
                     "id": "dashboard",

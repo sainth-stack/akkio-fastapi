@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app_builder.schemas.app_definition import AppDefinition, AppMeta, AppTheme, NavItemDef, PageDef
@@ -58,7 +59,8 @@ Rules:
 - kpiRow ONLY on the Dashboard page (route id/title dashboard or home). NEVER on Analytics, Reports, Sessions, or any other page — even if PRD lists KPIs there.
 - Include charts for bullets under **Charts:** or **Include:** on that page (use distinct titles and series names from the bullet text).
 - On Dashboard: include KPI row when **KPIs:** exist; include line/bar charts only when the page section lists chart bullets (do not add charts if none are listed).
-- Include dataTable only when **Table columns:** exist or Purpose describes a searchable list/register.
+- Include dataTable ONLY when **Table columns:** explicitly lists columns in the PRD section above. Column field names and headers MUST be taken verbatim from those bullets.
+- CRITICAL — table columns must match the user's business domain. For inventory: use sku, product_name, warehouse, quantity_on_hand, reorder_point, unit_cost, status. For vendor quality: use vendor, inspection_lot, defect_rate_pct, yield_pct, status. For procurement: use po_number, vendor, order_value, lead_time_days, status. For supply chain: use po_number, supplier, item, quantity, delivery_date, status. NEVER default to work_order_id, machine, production_line, mtbf_hours, mttr_hours, downtime_hours, root_cause unless the prompt is explicitly about plant maintenance.
 - dataTable columns MUST use shape {{ "field": "snake_case_key", "header": "Human label" }} — never empty field/header; do not use title/dataKey on column objects.
 - Include filterBar only when **Filters:** lists filters. Do NOT add actionBar for export, download, PDF, or CSV — the UI is view-only.
 - actionBar only for explicit in-app **create** flows (rare); never exportCsv/exportPdf.
@@ -197,7 +199,20 @@ Suggested screens:
             dashboard_page_id=dashboard_page_id,
         )
 
+        _maintenance_domain = bool(re.search(
+            r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b",
+            f"{ctx['requirement']} {section}",
+            re.I,
+        ))
+        _domain_guard = (
+            "This is a MAINTENANCE app — work_order_id, machine, downtime_hours, mtbf_hours, mttr_hours columns are allowed."
+            if _maintenance_domain
+            else
+            "This is NOT a maintenance app. Do NOT use work_order_id, machine, production_line, equipment, root_cause, downtime_hours, mtbf_hours, mttr_hours, or any maintenance/plant column. Table columns must match the entities in the user's requirement (e.g. SKU, vendor, supplier, purchase order, inspection lot — whatever the prompt describes)."
+        )
         blocks_user = f"""App: {display_name}
+Domain guard: {_domain_guard}
+
 Page id: {outline.id}
 Page title: {outline.title}
 Page subtitle: {outline.subtitle}
@@ -209,10 +224,10 @@ Layout intent (from PRD — follow this; do not duplicate other pages):
 - include filters: {page_intent_hint.wants_filters}
 - include export/create actions: {page_intent_hint.wants_export_actions or page_intent_hint.wants_create_action}
 
-PRD section for this page:
-{section or '(use requirement + UI docs below)'}
+PRD section for this page (table column names and KPI names MUST come from here):
+{section or '(use requirement below)'}
 
-Full requirement excerpt:
+Full requirement (source of truth for all labels and column names):
 {ctx['requirement'][:8000]}
 
 UI/UX excerpt:
@@ -276,6 +291,8 @@ UI/UX excerpt:
                 or (page_intent.wants_charts and gaps.get("needs_charts") and not gaps.get("has_chart"))
             ):
                 repair_user = f"""Fix blocks to satisfy PRD gaps on page {outline.id}.
+Domain guard: {_domain_guard}
+
 Layout intent (do not exceed — page must look different from other routes):
 - KPI row: {page_intent.wants_kpis} (max {page_intent.kpi_cap or 0} items)
 - Charts: {page_intent.wants_charts} (max {page_intent.chart_cap or 0})
@@ -304,16 +321,21 @@ PRD:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")
 
         data_user = f"""Page: {outline.title} ({outline.id})
-User requirement (the data must describe this business, not a generic plant):
+Domain guard: {_domain_guard}
+
+User requirement — every label, number, and row must come from THIS business:
 {ctx['requirement'][:8000]}
 
-Blocks JSON:
+Blocks JSON (generate data for every dataKey here):
 {json.dumps(blocks_plan.blocks, indent=2)[:24000]}
 
 PRD section:
 {section[:12000]}
 
-Generate complete data for every dataKey in these blocks. KPI values and table rows must use the nouns in the requirement.
+Rules:
+- KPI string values and table rows must use the nouns in the requirement above.
+- If the domain guard says NOT maintenance, then table rows must NOT contain work_order_id, machine, CNC Mill, Conveyor A, Hydraulic Press, WO-24000, downtime_hours, mtbf_hours, or mttr_hours.
+- Use realistic names for the actual domain: SKU codes, vendor names, warehouse codes, inspection lot IDs, supplier names, purchase order numbers — whatever the requirement describes.
 """
         data_plan: Optional[PageDataPlan] = await _llm_validated(
             llm, _DATA_SYSTEM, data_user, PageDataPlan, f"page_data_{outline.id}"
@@ -332,6 +354,52 @@ Generate complete data for every dataKey in these blocks. KPI values and table r
 
     if not pages:
         return None
+
+    # Post-generation guard: strip maintenance columns from non-maintenance apps.
+    _is_maint_app = bool(re.search(
+        r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b",
+        requirement or "",
+        re.I,
+    ))
+    if not _is_maint_app:
+        _MAINT_FIELDS = {
+            "work_order_id", "machine", "production_line", "equipment",
+            "event_type", "root_cause", "downtime_hours", "mtbf_hours", "mttr_hours",
+        }
+        cleaned_pages: List[PageDef] = []
+        for page in pages:
+            new_blocks: List[Any] = []
+            for block in page.blocks:
+                if isinstance(block, dict) and block.get("type") == "dataTable":
+                    cols = block.get("columns") or []
+                    block_fields = {str(c.get("field") or "") for c in cols if isinstance(c, dict)}
+                    if block_fields and block_fields.issubset(_MAINT_FIELDS | {"status", "severity", "shift", "occurred_at"}):
+                        # This table is entirely maintenance columns — skip it for non-maintenance apps
+                        continue
+                    # Keep the table but drop individual maintenance columns
+                    cleaned_cols = [
+                        c for c in cols
+                        if isinstance(c, dict) and str(c.get("field") or "") not in _MAINT_FIELDS
+                    ]
+                    if not cleaned_cols:
+                        continue
+                    new_blocks.append({**block, "columns": cleaned_cols})
+                else:
+                    new_blocks.append(block)
+            cleaned_pages.append(PageDef(
+                id=page.id, title=page.title, subtitle=page.subtitle, blocks=new_blocks
+            ))
+        pages = cleaned_pages
+        # Also drop maintenance keys from mock
+        for mf in _MAINT_FIELDS:
+            mock.pop(mf, None)
+        for key in list(mock):
+            if isinstance(mock.get(key), list) and mock[key]:
+                first = mock[key][0]
+                if isinstance(first, dict) and set(first.keys()).issubset(
+                    _MAINT_FIELDS | {"status", "severity", "shift", "occurred_at"}
+                ):
+                    mock.pop(key, None)
 
     meta = AppMeta(
         appName=display_name,

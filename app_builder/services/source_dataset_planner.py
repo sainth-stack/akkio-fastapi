@@ -213,22 +213,42 @@ def infer_source_datasets(
     if table_cols:
         if not llm_authored:
             table_cols = _pick_columns_for_context(table_cols, ctx)
-        sid = "operational_records"
+        # For LLM-authored apps, derive the sid from the actual context (not column sniffing)
+        # so an inventory prompt never gets labelled maintenance_events.
         is_procurement, is_quality, is_maint, is_retail = _domain_flags(ctx)
-        if is_procurement and not is_quality and not is_maint:
-            sid = "purchase_orders"
-        elif is_maint and not is_quality:
-            sid = "maintenance_events"
-        elif is_quality and not is_maint and not is_procurement:
-            sid = "quality_inspections"
-        elif is_retail:
-            sid = "sales_orders"
-        elif _columns_match_procurement(table_cols):
-            sid = "purchase_orders"
-        elif _columns_match_quality(table_cols):
-            sid = "quality_inspections"
-        elif _columns_match_maintenance(table_cols):
-            sid = "maintenance_events"
+        is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", ctx))
+        is_vendor = bool(re.search(r"vendor|supplier", ctx))
+        is_supply_chain = bool(re.search(r"supply.chain|purchase.order|\bpo\b|procurement|sourcing", ctx))
+        if llm_authored:
+            # Decide by context keywords, ignoring whatever columns the LLM happened to write
+            if is_supply_chain or is_vendor:
+                sid = "purchase_orders"
+            elif is_inventory:
+                sid = "inventory_items"
+            elif is_quality:
+                sid = "quality_inspections"
+            elif is_retail:
+                sid = "sales_orders"
+            elif is_maint:
+                sid = "maintenance_events"
+            else:
+                sid = "operational_records"
+        else:
+            sid = "operational_records"
+            if is_procurement and not is_quality and not is_maint:
+                sid = "purchase_orders"
+            elif is_maint and not is_quality:
+                sid = "maintenance_events"
+            elif is_quality and not is_maint and not is_procurement:
+                sid = "quality_inspections"
+            elif is_retail:
+                sid = "sales_orders"
+            elif _columns_match_procurement(table_cols):
+                sid = "purchase_orders"
+            elif _columns_match_quality(table_cols):
+                sid = "quality_inspections"
+            elif _columns_match_maintenance(table_cols):
+                sid = "maintenance_events"
         return [
             {
                 "id": sid,

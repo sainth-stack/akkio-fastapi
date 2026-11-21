@@ -19,14 +19,18 @@ def _slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")
 
 
-def align_dashboard_charts_to_kpis(defn: AppDefinition, *, dashboard_page_id: str) -> AppDefinition:
+def align_dashboard_charts_to_kpis(
+    defn: AppDefinition,
+    *,
+    dashboard_page_id: str,
+    prd: str = "",
+) -> AppDefinition:
     """Point dashboard chart series at KPI labels that are actually on the page."""
+    _maint_prd = bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime", prd or "", re.I))
     for page in defn.pages:
         if page.id != dashboard_page_id:
             continue
         kpis = _kpi_items_from_page(page)
-        if not kpis:
-            return defn
         chart_keys = {
             "mtbf": ("mtbf_hours", "MTBF (h)"),
             "mttr": ("mttr_hours", "MTTR (h)"),
@@ -35,12 +39,20 @@ def align_dashboard_charts_to_kpis(defn: AppDefinition, *, dashboard_page_id: st
             "output": ("production_output", "Production output"),
         }
         present_hints: Dict[str, str] = {}
+        # Seed hints from actual KPI items on the page
         for item in kpis:
             label = str(item.get("label") or "")
             low = f"{label} {item.get('valueKey')}".lower()
             for hint in chart_keys:
                 if hint.replace("_", " ") in low or hint in low:
                     present_hints[hint] = label
+        # Also seed maintenance hints from PRD when it's a maintenance app
+        if _maint_prd and not present_hints:
+            for hint, (dk, default_label) in chart_keys.items():
+                if hint in ("mtbf", "mttr", "downtime", "work_order"):
+                    present_hints[hint] = default_label
+        if not present_hints and not kpis:
+            return defn
 
         new_blocks: List[Any] = []
         for block in page.blocks:
@@ -62,8 +74,18 @@ def align_dashboard_charts_to_kpis(defn: AppDefinition, *, dashboard_page_id: st
                 keys.add(dk)
 
             if b.get("type") == "lineChart":
+                # Count how many lineCharts are on the page
+                line_count = sum(
+                    1 for blk in page.blocks
+                    if isinstance(blk, dict) and blk.get("type") == "lineChart"
+                )
                 for hint in present_hints:
-                    if hint in title_low or hint.replace("_", " ") in title_low:
+                    # Match by title OR fill in the only trend chart on the page
+                    if (
+                        hint in title_low
+                        or hint.replace("_", " ") in title_low
+                        or line_count == 1  # sole trend chart gets all KPI hints
+                    ):
                         _add_chart_series(hint)
             if b.get("type") == "barChart" and re.search(
                 r"category|performance|by\s+\w+|pareto|breakdown", title_low
@@ -159,7 +181,7 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
     )
     final_pages = [dash_page if p.id == dash_id else p for p in new_pages]
     defn.pages = final_pages
-    return align_dashboard_charts_to_kpis(defn, dashboard_page_id=dash_id)
+    return align_dashboard_charts_to_kpis(defn, dashboard_page_id=dash_id, prd=prd)
 
 
 def apply_dashboard_analytics_product_rules(
@@ -175,5 +197,5 @@ def apply_dashboard_analytics_product_rules(
     )
     defn = consolidate_events_table_on_dashboard(defn, prd=prd)
     if dash_id:
-        defn = align_dashboard_charts_to_kpis(defn, dashboard_page_id=dash_id)
+        defn = align_dashboard_charts_to_kpis(defn, dashboard_page_id=dash_id, prd=prd)
     return defn
