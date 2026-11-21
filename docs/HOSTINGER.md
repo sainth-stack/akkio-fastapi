@@ -5,7 +5,7 @@ Direct **HTTP on IP + ports** only. No Nginx, no Docker, no EC2 SSH deploy.
 ## Repo layout
 
 ```
-akkio-fastapi/     ← git clone root
+akkio/              ← one git clone root
 ├── backend/       ← FastAPI (.env, venv, uvicorn)
 └── frontend/      ← Vite UI (npm start, port 3002)
 ```
@@ -73,7 +73,7 @@ Vite `server.host: true` binds `0.0.0.0` so the UI is reachable via IP, not only
 ### FastAPI
 
 ```bash
-cd akkio-fastapi/backend
+cd akkio/backend
 source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -81,7 +81,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ### React (POC dev server)
 
 ```bash
-cd akkio-fastapi/frontend
+cd akkio/frontend
 npm install
 npm start
 ```
@@ -89,8 +89,8 @@ npm start
 ### pm2 example
 
 ```bash
-pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi/backend
-pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/frontend -- start
+pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio/backend
+pm2 start npm --name akkio-ui --cwd /path/to/akkio/frontend -- start
 pm2 save
 ```
 
@@ -105,7 +105,7 @@ On Hostinger use a persistent path, e.g. `/var/akkio/runtime/projects`, not `/tm
 Run once after DB is configured:
 
 ```bash
-cd akkio-fastapi/backend
+cd akkio/backend
 ./venv/bin/python scripts/seed_admin.py
 ```
 

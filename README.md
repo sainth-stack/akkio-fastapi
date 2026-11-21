@@ -1,12 +1,12 @@
 # Akkio
 
-Monorepo for **App Builder**: FastAPI backend + Vite React UI.
+**One git repo** — FastAPI backend + Vite App Builder UI.
 
 ```
-akkio-fastapi/          ← GitHub repo (clone root)
+akkio/                  ← clone root (repo: sainth-stack/akkio-fastapi)
 ├── backend/            ← Python / FastAPI (port 8000)
 ├── frontend/           ← React + Vite (port 3002)
-├── docs/               ← VPS / deploy notes
+├── docs/               ← VPS / deploy
 └── README.md
 ```
 
@@ -20,43 +20,34 @@ Deploy: [docs/HOSTINGER.md](docs/HOSTINGER.md).
 cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env    # edit MongoDB, keys, PUBLIC_BASE_URL
-python run_server.py    # or: uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env
+python run_server.py
 ```
 
 ### Frontend
 
 ```bash
 cd frontend
-cp .env.example .env    # VITE_BASE_URL=http://localhost:8000
+cp .env.example .env
 npm install
 npm start
 ```
 
-## VPS (one clone)
+## Clone (VPS or laptop)
 
 ```bash
-git clone https://github.com/sainth-stack/akkio-fastapi.git
-cd akkio-fastapi
-git pull origin only-ai-models
-
-# API
-cd backend && source venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8000
-
-# UI
-cd ../frontend && npm install && npm start
+git clone https://github.com/sainth-stack/akkio-fastapi.git akkio
+cd akkio
+git checkout only-ai-models
 ```
 
-pm2 example:
+pm2:
 
 ```bash
-pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio-fastapi/backend
-pm2 start npm --name akkio-ui --cwd /path/to/akkio-fastapi/frontend -- start
+pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name akkio-api --cwd /path/to/akkio/backend
+pm2 start npm --name akkio-ui --cwd /path/to/akkio/frontend -- start
 ```
 
-## Repo hygiene
+## What belongs at repo root
 
-Keep only `backend/` and `frontend/` source. Do not commit:
-
-- `venv/`, `node_modules/`, `frontend/build/`, `backend/chroma_store/*.sqlite3`
-- Old copies at repo root (`venv/`, `poc/`, `test/`) — safe to delete locally; use `backend/venv` only
+Only **`backend/`**, **`frontend/`**, **`docs/`**, and repo metadata. No extra nested `akkio-fastapi/` folder, no root `venv/` (use `backend/venv` only).
