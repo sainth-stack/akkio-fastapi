@@ -769,8 +769,10 @@ def apply_source_data_pipeline(
     )
     from app_builder.services.source_data_seeder import seed_rows_for_dataset
     from app_builder.services.source_dataset_planner import ensure_source_datasets_on_definition
+    from app_builder.services.sap_similar_tickets import detach_sap_similarity_for_prompt
 
-    out = ensure_source_datasets_on_definition(defn, requirement=requirement, prd=prd)
+    out = detach_sap_similarity_for_prompt(dict(defn), prd=prd, requirement=requirement)
+    out = ensure_source_datasets_on_definition(out, requirement=requirement, prd=prd)
     bag = dict(out.get("data") or out.get("mock") or {})
     meta = dict(out.get("meta") or {})
     user_uploaded = str(meta.get("dataSource") or "") == "upload"

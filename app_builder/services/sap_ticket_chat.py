@@ -16,12 +16,9 @@ _SIMILAR_OTHERS = 2
 
 
 def is_sap_ticket_app(defn: Dict[str, Any]) -> bool:
-    meta = defn.get("meta") or {}
-    caps = meta.get("capabilities") or []
-    if not isinstance(caps, list):
-        caps = []
-    domain = str(meta.get("domain") or "").lower()
-    return domain == "sap" or "sap_similar_tickets" in caps
+    from app_builder.services.sap_similar_tickets import is_sap_similarity_app
+
+    return is_sap_similarity_app(defn)
 
 
 def _ticket_rows(defn: Dict[str, Any]) -> List[Dict[str, Any]]:

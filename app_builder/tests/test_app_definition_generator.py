@@ -88,6 +88,55 @@ class TestAppDefinitionGenerator(unittest.TestCase):
         self.assertEqual(datasets[0]["id"], "purchase_orders")
         self.assertNotEqual(datasets[0]["id"], "quality_inspections")
 
+    def test_supply_chain_prompt_clears_prior_sap_tickets(self):
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+        from app_builder.services.sap_similar_tickets import is_sap_similarity_app
+
+        req = (
+            "Build a manufacturing supply chain dashboard (Dashboard, Analytics, Reports) "
+            "with RAG chat, Predict, and LLM observability to track prompts, outputs, tokens, and model cost."
+        )
+        stale = {
+            "meta": {
+                "appName": "Sap Similarity",
+                "domain": "sap",
+                "capabilities": ["sap_similar_tickets", "rag_chat", "predict"],
+            },
+            "navigation": [
+                {"label": "Dashboard", "path": "/", "icon": "Dashboard", "pageId": "dashboard"},
+            ],
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "blocks": [
+                        {
+                            "type": "kpiRow",
+                            "dataKey": "kpis_dashboard",
+                            "items": [{"label": "Open tickets", "valueKey": "open_tickets"}],
+                        },
+                        {
+                            "type": "dataTable",
+                            "title": "SAP tickets",
+                            "dataKey": "table_sap_tickets",
+                            "columns": [],
+                        },
+                    ],
+                }
+            ],
+            "data": {
+                "source_sap_tickets": [{"ticket_id": "SAP-0001", "status": "Open"}],
+                "kpis_dashboard": {"open_tickets": "9"},
+            },
+        }
+        out = apply_source_data_pipeline(stale, requirement=req, prd="")
+        data = out.get("data") or {}
+        self.assertNotIn("source_sap_tickets", data)
+        self.assertFalse(is_sap_similarity_app(out))
+        self.assertNotEqual(str((out.get("meta") or {}).get("domain")), "sap")
+        pc = (out.get("meta") or {}).get("predictConfig") or {}
+        self.assertTrue(pc.get("fields"), "Predict should have numeric fields after supply-chain recompute")
+
     def test_procurement_pipeline_not_sap_ticket_dashboard(self):
         from app_builder.services.app_definition_generator import resolve_app_definition_sync
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline

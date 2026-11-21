@@ -251,16 +251,167 @@ def wants_sap_similar_tickets(prd: str, requirement: str) -> bool:
     )
 
 
+_OPERATIONAL_DATASET_KEYS = frozenset(
+    {
+        "source_inventory_items",
+        "source_purchase_orders",
+        "source_quality_inspections",
+        "source_maintenance_events",
+        "source_production_orders",
+    }
+)
+
+
+def wants_operational_supply_chain_app(prd: str, requirement: str) -> bool:
+    """Manufacturing inventory / supply chain / procurement — not SAP Similarity Tickets."""
+    if wants_sap_similar_tickets(prd, requirement):
+        return False
+    blob = f"{prd}\n{requirement}".lower()
+    return bool(
+        re.search(
+            r"\b(supply\s*chain|inventory|procurement|purchase\s*order|warehouse|"
+            r"\bsku\b|reorder|stock\s*level|manufacturing\s+(dashboard|ops|operations|monitoring)|"
+            r"plant\s+ops|maintenance\s+event|quality\s+inspection)\b",
+            blob,
+        )
+    )
+
+
+def _operational_dataset_keys(defn: Dict[str, Any]) -> set:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    keys: set = set()
+    for ds in meta.get("sourceDatasets") or []:
+        if isinstance(ds, dict):
+            dk = str(ds.get("dataKey") or "")
+            if dk in _OPERATIONAL_DATASET_KEYS:
+                keys.add(dk)
+    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+    for dk in _OPERATIONAL_DATASET_KEYS:
+        if isinstance(bag.get(dk), list) and bag.get(dk):
+            keys.add(dk)
+    return keys
+
+
+def should_apply_sap_similar_features(
+    defn: AppDefinition, *, prd: str = "", requirement: str = ""
+) -> bool:
+    if wants_sap_similar_tickets(prd, requirement):
+        return True
+    if wants_operational_supply_chain_app(prd, requirement):
+        return False
+    if (prd or requirement or "").strip():
+        return False
+    meta = defn.meta
+    return (
+        str(meta.domain or "").lower() == "sap"
+        or "sap_similar_tickets" in (meta.capabilities or [])
+    )
+
+
+def detach_sap_similarity_for_prompt(
+    defn: Dict[str, Any], *, prd: str = "", requirement: str = ""
+) -> Dict[str, Any]:
+    """User switched prompts (e.g. SAP → supply chain): remove ticket data and SAP dashboard chrome."""
+    if not wants_operational_supply_chain_app(prd, requirement):
+        return defn
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    caps = meta.get("capabilities") or []
+    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+    was_sap = (
+        str(meta.get("domain") or "").lower() == "sap"
+        or (isinstance(caps, list) and "sap_similar_tickets" in caps)
+        or bool(bag.get("source_sap_tickets"))
+    )
+    if not was_sap:
+        return defn
+
+    out = dict(defn)
+    meta = dict(meta)
+    caps = [c for c in caps if c != "sap_similar_tickets"] if isinstance(caps, list) else []
+    meta["capabilities"] = caps
+    if str(meta.get("domain") or "").lower() == "sap":
+        meta["domain"] = "manufacturing"
+    meta.pop("sapTicketSeedCount", None)
+    meta.pop("sapRagPhase", None)
+    if requirement:
+        meta["description"] = requirement[:500]
+    datasets = meta.get("sourceDatasets") or []
+    if isinstance(datasets, list):
+        meta["sourceDatasets"] = [
+            d
+            for d in datasets
+            if isinstance(d, dict) and str(d.get("dataKey") or "") != "source_sap_tickets"
+        ]
+    out["meta"] = meta
+
+    bag = dict(bag)
+    for stale in ("source_sap_tickets", "sap_ticket_rag", "table_sap_tickets"):
+        bag.pop(stale, None)
+    kpis = bag.get("kpis_dashboard")
+    if isinstance(kpis, dict) and any(
+        k in kpis for k in ("open_tickets", "total_tickets", "high_priority_tickets", "closed_tickets")
+    ):
+        bag.pop("kpis_dashboard", None)
+    out["data"] = bag
+    out.pop("mock", None)
+
+    pages: List[Dict[str, Any]] = []
+    for page in out.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        blocks_out: List[Dict[str, Any]] = []
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            dk = str(block.get("dataKey") or "")
+            title = str(block.get("title") or "").lower()
+            if dk == "table_sap_tickets" or "sap ticket" in title:
+                continue
+            if block.get("type") == "sapCommunityFeed":
+                continue
+            if dk == "kpis_dashboard":
+                items = block.get("items") if isinstance(block.get("items"), list) else []
+                if any(
+                    str(it.get("valueKey") or "")
+                    in ("open_tickets", "total_tickets", "high_priority_tickets", "closed_tickets")
+                    for it in items
+                    if isinstance(it, dict)
+                ):
+                    continue
+            blocks_out.append(block)
+        pages.append({**page, "blocks": blocks_out})
+    out["pages"] = pages
+
+    nav = [
+        n
+        for n in (out.get("navigation") or [])
+        if isinstance(n, dict) and str(n.get("pageId") or "") not in ("create_ticket", "similar_tickets")
+    ]
+    out["navigation"] = nav
+    return out
+
+
 def is_sap_similarity_app(defn: Dict[str, Any]) -> bool:
     """Hosted JSON app: SAP Similarity Tickets (not manufacturing procurement/inventory)."""
     meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
-    if str(meta.get("domain") or "").lower() == "sap":
-        return True
     caps = meta.get("capabilities") or []
+    op_keys = _operational_dataset_keys(defn)
+    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+    has_tickets = isinstance(bag.get("source_sap_tickets"), list) and bool(bag.get("source_sap_tickets"))
+    has_ops_rows = any(isinstance(bag.get(k), list) and bag.get(k) for k in op_keys)
+
     if isinstance(caps, list) and "sap_similar_tickets" in caps:
+        if has_ops_rows and not has_tickets:
+            return False
+        return True
+
+    if has_ops_rows and not has_tickets:
+        return False
+
+    if str(meta.get("domain") or "").lower() == "sap" and has_tickets:
         return True
     name = str(meta.get("appName") or "").lower()
-    return "sap" in name and "similar" in name
+    return "sap" in name and "similar" in name and has_tickets
 
 
 def should_seed_sap_tickets(
@@ -630,8 +781,7 @@ def _merge_sap_dashboard(defn: AppDefinition) -> AppDefinition:
 def ensure_sap_similar_ticket_features(
     defn: AppDefinition, *, prd: str = "", requirement: str = ""
 ) -> AppDefinition:
-    meta_domain = str(defn.meta.domain or "").lower()
-    if meta_domain != "sap" and not wants_sap_similar_tickets(prd, requirement):
+    if not should_apply_sap_similar_features(defn, prd=prd, requirement=requirement):
         return defn
 
     caps = list(defn.meta.capabilities or [])

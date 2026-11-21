@@ -788,8 +788,19 @@ def finalize_app_definition(
     from app_builder.services.llm_observability_pages import ensure_observability_features
 
     defn = ensure_observability_features(defn, prd=prd, requirement=requirement)
-    from app_builder.services.sap_similar_tickets import ensure_sap_similar_ticket_features
+    from app_builder.services.sap_similar_tickets import (
+        detach_sap_similarity_for_prompt,
+        ensure_sap_similar_ticket_features,
+    )
 
+    detached = detach_sap_similarity_for_prompt(
+        defn.model_dump(mode="json"),
+        prd=prd,
+        requirement=requirement,
+    )
+    from app_builder.schemas.app_definition import AppDefinition as _AppDefinitionModel
+
+    defn = _AppDefinitionModel.model_validate(detached)
     defn = ensure_sap_similar_ticket_features(defn, prd=prd, requirement=requirement)
     from app_builder.services.block_normalizer import repair_broken_data_table_blocks
 
