@@ -24,8 +24,11 @@ from app_builder.services.page_layout_intent import (
 from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks_for_page
 from app_builder.services.prd_driven_layout import ensure_minimum_blocks
 from app_builder.services.prd_structure_parser import build_planning_context, section_for_page
+from pydantic import ValidationError
 
 logger = logging.getLogger("app_builder")
+
+_VISIBLE_BLOCK_TYPES = frozenset({"kpiRow", "lineChart", "barChart", "pieChart", "dataTable"})
 
 _SHELL_SYSTEM = """You are a principal product architect. Output ONLY valid JSON for AppShellPlan.
 
@@ -84,6 +87,26 @@ Rules:
 - filter select options: [{ value, label }, ...] using the same categories as the table.
 - No duplicate keys; no commentary outside JSON.
 """
+
+
+def _coerce_page_blocks_plan(blocks: List[Dict[str, Any]], *, page_id: str) -> PageBlocksPlan:
+    """Build PageBlocksPlan without failing codegen when the LLM returns sparse JSON."""
+    try:
+        return PageBlocksPlan(blocks=blocks)
+    except ValidationError as exc:
+        logger.warning("[app_definition_llm] PageBlocksPlan validation failed for %s: %s", page_id, exc)
+        padded = list(blocks or [])
+        while len(padded) < 2:
+            padded.append({"type": "text", "content": "", "hidden": True})
+        return PageBlocksPlan(blocks=padded[:24])
+
+
+def _page_has_visible_widgets(blocks: List[Dict[str, Any]]) -> int:
+    return sum(
+        1
+        for b in blocks or []
+        if isinstance(b, dict) and str(b.get("type") or "") in _VISIBLE_BLOCK_TYPES
+    )
 
 
 async def _llm_validated(llm: Any, system: str, user: str, schema: type, label: str) -> Optional[Any]:
@@ -266,31 +289,41 @@ UI/UX excerpt:
             )
 
         def _plan_from_prd() -> PageBlocksPlan:
-            return PageBlocksPlan(
-                blocks=_finalize_blocks(
+            return _coerce_page_blocks_plan(
+                _finalize_blocks(
                     prd_blocks_for_page(
                         outline.id,
                         outline.title,
                         section_body,
                         dashboard_page_id=dashboard_page_id,
                     )
-                )
+                ),
+                page_id=outline.id,
             )
 
-        if blocks_plan is None or not blocks_plan.blocks:
-            blocks_plan = _plan_from_prd()
-        else:
-            blocks_plan = PageBlocksPlan(blocks=_finalize_blocks(blocks_plan.blocks))
-            gaps = page_gaps(
-                PageDef(id=outline.id, title=outline.title, subtitle=outline.subtitle, blocks=blocks_plan.blocks),
-                section_body,
-            )
-            if (
-                gaps.get("missing_kpis")
-                or gaps.get("missing_columns")
-                or (page_intent.wants_charts and gaps.get("needs_charts") and not gaps.get("has_chart"))
-            ):
-                repair_user = f"""Fix blocks to satisfy PRD gaps on page {outline.id}.
+        try:
+            if blocks_plan is None or not blocks_plan.blocks:
+                blocks_plan = _plan_from_prd()
+            else:
+                blocks_plan = _coerce_page_blocks_plan(
+                    _finalize_blocks(blocks_plan.blocks),
+                    page_id=outline.id,
+                )
+                gaps = page_gaps(
+                    PageDef(
+                        id=outline.id,
+                        title=outline.title,
+                        subtitle=outline.subtitle,
+                        blocks=blocks_plan.blocks,
+                    ),
+                    section_body,
+                )
+                if (
+                    gaps.get("missing_kpis")
+                    or gaps.get("missing_columns")
+                    or (page_intent.wants_charts and gaps.get("needs_charts") and not gaps.get("has_chart"))
+                ):
+                    repair_user = f"""Fix blocks to satisfy PRD gaps on page {outline.id}.
 Domain guard: {_domain_guard}
 
 Layout intent (do not exceed — page must look different from other routes):
@@ -309,13 +342,30 @@ Gaps:
 PRD:
 {section_body[:14000]}
 """
-                repaired = await _llm_validated(
-                    llm, _BLOCKS_SYSTEM, repair_user, PageBlocksPlan, f"page_blocks_repair_{outline.id}"
+                    repaired = await _llm_validated(
+                        llm, _BLOCKS_SYSTEM, repair_user, PageBlocksPlan, f"page_blocks_repair_{outline.id}"
+                    )
+                    if repaired and repaired.blocks:
+                        blocks_plan = _coerce_page_blocks_plan(
+                            _finalize_blocks(repaired.blocks),
+                            page_id=outline.id,
+                        )
+                    else:
+                        blocks_plan = _plan_from_prd()
+
+            if _page_has_visible_widgets(blocks_plan.blocks) < 1:
+                logger.warning(
+                    "[app_definition_llm] page %s had no visible widgets after finalize — PRD fallback",
+                    outline.id,
                 )
-                if repaired and repaired.blocks:
-                    blocks_plan = PageBlocksPlan(blocks=_finalize_blocks(repaired.blocks))
-                else:
-                    blocks_plan = _plan_from_prd()
+                blocks_plan = _plan_from_prd()
+        except Exception as exc:
+            logger.warning(
+                "[app_definition_llm] blocks phase failed for %s (%s) — PRD fallback",
+                outline.id,
+                exc,
+            )
+            blocks_plan = _plan_from_prd()
 
         if on_progress:
             await on_progress(f"LLM phase 3/3: datasets for «{outline.title}»…")

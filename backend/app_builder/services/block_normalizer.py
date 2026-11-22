@@ -36,17 +36,46 @@ def _is_placeholder_header(header: str) -> bool:
 
 def _infer_table_columns(block: Dict[str, Any], page_id: str, title: str, *, prd: str = "") -> List[Dict[str, Any]]:
     from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
+    from app_builder.services.source_dataset_planner import (
+        _inventory_columns,
+        _pick_columns_for_context,
+        _procurement_columns,
+    )
 
     blob = f"{prd} {page_id} {title} {block.get('title') or ''}".lower()
-    if re.search(r"maintenance|manufacturing|operations|mtbf|mttr|work order|equipment|downtime", blob):
+    picked = _pick_columns_for_context([{"field": "id", "header": "ID"}], blob)
+    if picked and picked[0].get("field") != "id":
+        return [{k: v for k, v in c.items() if k != "type"} for c in picked]
+
+    is_vendor = bool(re.search(r"vendor|supplier|inspection lot|defect rate|yield", blob))
+    is_inventory = bool(re.search(r"inventory|stock|sku|warehouse|reorder", blob))
+    is_maint = bool(
+        re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b|equipment", blob)
+    )
+    if is_vendor and not is_maint:
+        return [
+            {"field": "vendor", "header": "Vendor"},
+            {"field": "inspection_lot", "header": "Inspection lot"},
+            {"field": "defect_rate_pct", "header": "Defect rate (%)"},
+            {"field": "yield_pct", "header": "Yield (%)"},
+            {"field": "status", "header": "Status"},
+        ]
+    if is_inventory and not is_maint:
+        return _inventory_columns()
+    if re.search(r"procurement|purchase order|sourcing|requisition", blob) and not is_maint:
+        return _procurement_columns()
+    if is_maint or (
+        re.search(r"manufacturing|operations", blob)
+        and not is_vendor
+        and not is_inventory
+        and re.search(r"maintenance|mtbf|mttr|work order|downtime", blob)
+    ):
         return _maintenance_analytics_columns()
     return [
-        {"field": "work_order_id", "header": "Work order"},
-        {"field": "machine", "header": "Machine"},
-        {"field": "production_line", "header": "Production line"},
-        {"field": "event_type", "header": "Event type"},
+        {"field": "id", "header": "ID"},
+        {"field": "name", "header": "Name"},
         {"field": "status", "header": "Status"},
-        {"field": "occurred_at", "header": "Occurred at"},
+        {"field": "updated_at", "header": "Updated at"},
     ]
 
 
