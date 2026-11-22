@@ -39,6 +39,27 @@ def _source_rows(defn: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _default_baseline(key: str, label: str = "") -> float:
+    blob = f"{key} {label}".lower()
+    if "stock-out" in blob or "stockout" in blob or "stock_out" in blob:
+        return 6.0
+    if "safety" in blob:
+        return 80.0
+    if "reorder" in blob:
+        return 120.0
+    if "on_hand" in blob or "warehouse stock" in blob or "current stock" in blob or "quantity" in blob:
+        return 420.0
+    if "cost" in blob or "price" in blob or "value" in blob:
+        return 48.0
+    if "lead" in blob or "days" in blob:
+        return 12.0
+    if "rate" in blob or "pct" in blob or "yield" in blob:
+        return 96.4
+    if "defect" in blob:
+        return 2.4
+    return 25.0
+
+
 def resolve_predict_baseline(defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float]:
     """Use stored baseline when present; otherwise (or when zero) average from source rows."""
     rows = _source_rows(defn)
@@ -52,6 +73,12 @@ def resolve_predict_baseline(defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
             avg = round(_avg_from_rows(rows, key), 4)
             if avg:
                 val = avg
+        if val == 0.0:
+            label = next(
+                (str(f.get("label") or "") for f in cfg.get("fields") or [] if str(f.get("key") or "") == key),
+                key,
+            )
+            val = _default_baseline(key, label)
         out[key] = val
     return out
 
@@ -159,7 +186,11 @@ def build_predict_config(defn: Dict[str, Any]) -> Dict[str, Any]:
             _append_field(numeric_fields, seen, field, header, _unit_for_field(field, header), allow_maintenance=allow_maintenance)
 
     default_target = numeric_fields[0]["key"] if numeric_fields else ""
-    baseline = {f["key"]: round(_avg_from_rows(rows, f["key"]), 4) for f in numeric_fields if rows}
+    baseline = {}
+    for f in numeric_fields:
+        key = str(f["key"])
+        avg = round(_avg_from_rows(rows, key), 4) if rows else 0.0
+        baseline[key] = avg or _default_baseline(key, str(f.get("label") or ""))
 
     return {
         "version": 1,

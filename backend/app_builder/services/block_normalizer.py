@@ -159,6 +159,76 @@ def align_table_datasets_to_columns(defn: AppDefinition, *, llm_authored: bool =
     return defn
 
 
+_MAINT_TABLE_FIELDS = {
+    "work_order_id", "machine", "production_line", "equipment",
+    "event_type", "root_cause", "downtime_hours", "mtbf_hours", "mttr_hours",
+}
+
+
+def _prompt_requests_maintenance(requirement: str, prd: str = "") -> bool:
+    req = requirement or ""
+    if re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b", req, re.I):
+        return True
+    if re.search(
+        r"inventory|warehouse|\bsku\b|reorder|safety stock|stock-?out|vendor|supplier|"
+        r"inspection|defect|yield|procurement|purchase order|supply chain",
+        req,
+        re.I,
+    ):
+        return False
+    return bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b", prd or "", re.I))
+
+
+def apply_prompt_table_schema(
+    defn: AppDefinition,
+    *,
+    requirement: str = "",
+    prd: str = "",
+) -> AppDefinition:
+    """Replace default plant-maintenance tables when the prompt asks for another domain."""
+    if _prompt_requests_maintenance(requirement, prd):
+        return defn
+    blob = f"{requirement}\n{prd}"
+    columns = _infer_table_columns({}, "records", "Records", prd=blob)
+    if not columns:
+        return defn
+    title = "Records"
+    fields = {str(c.get("field")) for c in columns}
+    if "sku" in fields or "quantity_on_hand" in fields:
+        title = "Warehouse stock"
+    elif "inspection_lot" in fields:
+        title = "Inspection lots"
+    elif "po_number" in fields:
+        title = "Purchase orders"
+    from app_builder.services.generic_dataset_builder import _cell_value, _seed
+
+    mock = dict(defn.mock or {})
+    for page in defn.pages:
+        new_blocks: List[Any] = []
+        for block in page.blocks:
+            if not isinstance(block, dict) or block.get("type") != "dataTable":
+                new_blocks.append(block)
+                continue
+            cols = block.get("columns") or []
+            have = {str(c.get("field") or "") for c in cols if isinstance(c, dict)}
+            off_domain = bool(have & _MAINT_TABLE_FIELDS) or str(block.get("title") or "").lower() == "recent maintenance events"
+            if not off_domain:
+                new_blocks.append(block)
+                continue
+            dk = str(block.get("dataKey") or f"table_{page.id}")
+            rng = _seed(dk + (requirement or "")[:40])
+            headers = {str(c.get("field")): str(c.get("header") or "") for c in columns}
+            field_names = [str(c.get("field")) for c in columns if c.get("field")]
+            mock[dk] = [
+                {f: _cell_value(f, i, rng, headers.get(f, "")) for f in field_names}
+                for i in range(16)
+            ]
+            new_blocks.append({**block, "title": title, "dataKey": dk, "columns": columns})
+        page.blocks = new_blocks
+    defn.mock = mock
+    return defn
+
+
 def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "", llm_authored: bool = False) -> AppDefinition:
     """Replace LLM placeholder columns (field_0) with domain-appropriate schemas on every page."""
     mock = defn.mock or {}
@@ -181,7 +251,10 @@ def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "", llm_a
                         "columns": _infer_table_columns(block, page.id, page.title, prd=prd),
                     }
                     title_low = str(block.get("title") or "").lower()
-                    if title_low.endswith("records") or title_low == f"{page.title.lower()} records":
+                    blob = f"{prd} {page.title}".lower()
+                    if re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime", blob) and (
+                        title_low.endswith("records") or title_low == f"{page.title.lower()} records"
+                    ):
                         block["title"] = "Recent maintenance events"
             new_blocks.append(block)
         page.blocks = new_blocks

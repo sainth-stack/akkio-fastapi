@@ -859,7 +859,7 @@ def finalize_app_definition(
     defn = enforce_kpis_on_dashboard_only(defn, prd=prd, requirement=requirement)
     from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
-    defn = apply_dashboard_analytics_product_rules(defn, prd=prd)
+    defn = apply_dashboard_analytics_product_rules(defn, prd=prd, requirement=requirement)
     from app_builder.services.intelligence_pages import ensure_intelligence_features
 
     defn = ensure_intelligence_features(defn, prd=prd, requirement=requirement)
@@ -904,6 +904,9 @@ def finalize_app_definition(
     from app_builder.services.block_normalizer import align_table_datasets_to_columns
 
     defn = align_table_datasets_to_columns(defn, llm_authored=llm_authored)
+    from app_builder.services.block_normalizer import apply_prompt_table_schema
+
+    defn = apply_prompt_table_schema(defn, requirement=requirement, prd=prd)
     defn.mock = polish_production_data_bag(defn)
     from app_builder.services.app_theme_generator import apply_theme_to_chart_blocks
 

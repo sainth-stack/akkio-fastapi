@@ -905,7 +905,7 @@ def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement
         model = enforce_page_role_blocks(model, prd=prd)
         from app_builder.services.dashboard_layout import apply_dashboard_analytics_product_rules
 
-        model = apply_dashboard_analytics_product_rules(model, prd=prd)
+        model = apply_dashboard_analytics_product_rules(model, prd=prd, requirement=requirement)
         from app_builder.services.intelligence_pages import ensure_intelligence_features
         from app_builder.services.llm_observability_pages import ensure_observability_features
 

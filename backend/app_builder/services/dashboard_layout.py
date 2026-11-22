@@ -100,7 +100,9 @@ def align_dashboard_charts_to_kpis(
     return defn
 
 
-def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "") -> AppDefinition:
+def consolidate_events_table_on_dashboard(
+    defn: AppDefinition, *, prd: str = "", requirement: str = ""
+) -> AppDefinition:
     """Move dataTable from Analytics to Dashboard; Analytics stays charts-only."""
     from app_builder.services.page_layout_intent import resolve_dashboard_page_id
     from app_builder.services.prd_driven_layout import _maintenance_analytics_columns
@@ -137,7 +139,9 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
     dash_blocks = list(dash_page.blocks or [])
     from app_builder.services.block_normalizer import _columns_are_invalid, repair_data_table_columns
 
-    maintenance_prd = bool(re.search(r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime", (prd or ""), re.I))
+    from app_builder.services.block_normalizer import _prompt_requests_maintenance
+
+    maintenance_prd = _prompt_requests_maintenance(requirement, prd)
     repaired_blocks: List[Any] = []
     for b in dash_blocks:
         if isinstance(b, dict) and b.get("type") == "dataTable":
@@ -151,7 +155,7 @@ def consolidate_events_table_on_dashboard(defn: AppDefinition, *, prd: str = "")
         table_block: Optional[Dict[str, Any]] = None
         if pulled_tables:
             table_block = pulled_tables[0]
-        elif re.search(r"maintenance|mtbf|mttr|work order", (prd or "").lower()):
+        elif maintenance_prd:
             table_block = {
                 "type": "dataTable",
                 "title": "Recent maintenance events",
@@ -188,6 +192,7 @@ def apply_dashboard_analytics_product_rules(
     defn: AppDefinition,
     *,
     prd: str = "",
+    requirement: str = "",
 ) -> AppDefinition:
     from app_builder.services.page_layout_intent import resolve_dashboard_page_id
 
@@ -195,7 +200,7 @@ def apply_dashboard_analytics_product_rules(
         [(p.id, p.title) for p in defn.pages],
         [n.pageId for n in (defn.navigation or [])],
     )
-    defn = consolidate_events_table_on_dashboard(defn, prd=prd)
+    defn = consolidate_events_table_on_dashboard(defn, prd=prd, requirement=requirement)
     if dash_id:
         defn = align_dashboard_charts_to_kpis(defn, dashboard_page_id=dash_id, prd=prd)
     return defn

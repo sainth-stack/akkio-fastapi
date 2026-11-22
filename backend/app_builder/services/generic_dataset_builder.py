@@ -24,6 +24,41 @@ def _human_header(field: str) -> str:
 def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = "") -> Any:
     f = field.lower()
     h = (col_header or field).lower()
+    if f == "sku" or f.endswith("_sku"):
+        return f"SKU-{4400 + row_i}"
+    if "warehouse" in f:
+        return rng.choice(("WH-East", "WH-West", "WH-Central", "WH-North"))
+    if "product_name" in f or f in ("item", "item_name"):
+        return rng.choice((
+            "Bearing kit A12",
+            "Servo motor 2kW",
+            "Hydraulic seal pack",
+            "Control relay 24V",
+            "Steel bracket 80mm",
+        ))
+    if f in ("quantity_on_hand", "current_stock", "on_hand") or "stock" in f and "safety" not in f and "out" not in f:
+        return rng.randint(40, 860)
+    if "reorder" in f:
+        return rng.randint(25, 180)
+    if "safety_stock" in f or "safety" in f:
+        return rng.randint(20, 120)
+    if "unit_cost" in f or f == "unit_price":
+        return round(rng.uniform(8, 240), 2)
+    if f in ("vendor", "supplier"):
+        return rng.choice(("Northline Metals", "Apex Components", "Harbor Supply", "Keene Industrial", "Vanta Parts"))
+    if "inspection_lot" in f:
+        return f"LOT-{7800 + row_i}"
+    if "po_number" in f or f == "purchase_order":
+        return f"PO-{56000 + row_i}"
+    if "order_value" in f:
+        return round(rng.uniform(1200, 48000), 2)
+    if "lead_time" in f:
+        return rng.randint(4, 28)
+    if "delivery_date" in f:
+        day = (row_i % 27) + 1
+        return f"2024-07-{day:02d}"
+    if "yield" in f:
+        return round(rng.uniform(91, 99.4), 1)
     if "work_order" in f or f in ("wo_id", "work_order_id"):
         return f"WO-{24000 + row_i}"
     if f == "shift" or h == "shift":
@@ -89,7 +124,7 @@ def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = ""
     if f == "id" or f.endswith("_id"):
         prefix = "".join(x[0].upper() for x in re.findall(r"[a-z]+", field)[:3]) or "ID"
         return f"{prefix}-{1000 + row_i}"
-    if "date" in f or "time" in f or f in ("when", "occurred_at", "started_at", "updated_at"):
+    if "date" in f or "time" in f or f.endswith("_at") or f in ("when", "occurred_at", "started_at", "updated_at"):
         day = (row_i % 28) + 1
         return f"2024-06-{day:02d}T{8 + row_i % 10:02d}:{(row_i * 7) % 60:02d}:00Z"
     if f == "status" or "status" in h:
@@ -102,7 +137,7 @@ def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = ""
         if "defect" in f or "scrap" in f or "rework" in f:
             return f"{rng.uniform(0.3, 4.2):.1f}%"
         return f"{rng.uniform(88.0, 99.2):.1f}%"
-    if any(k in f for k in ("qty", "quantity", "units", "count", "passed", "failed", "inspected")):
+    if not f.endswith("_at") and any(k in f for k in ("qty", "quantity", "units", "count", "passed", "failed", "inspected")):
         return rng.randint(50, 5000)
     if f in ("value", "reading", "score", "oee", "fpy"):
         return round(rng.uniform(70, 99.5), 1)
