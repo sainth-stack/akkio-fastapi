@@ -29,6 +29,11 @@ def _llm_authored(defn: AppDefinition) -> bool:
 def enhance_production_datasets(defn: AppDefinition) -> AppDefinition:
     bag: Dict[str, Any] = dict(defn.mock or {})
     keep_prompt_rows = _llm_authored(defn)
+    if keep_prompt_rows:
+        from app_builder.services.generated_data_validation import validate_generated_definition
+
+        validate_generated_definition(defn)
+        return defn
 
     for page in defn.pages:
         for block in page.blocks:

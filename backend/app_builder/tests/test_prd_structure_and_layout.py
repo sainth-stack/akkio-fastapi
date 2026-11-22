@@ -105,9 +105,10 @@ Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
         charts = [b for b in blocks if b.get("type") in ("lineChart", "barChart", "pieChart")]
         self.assertLessEqual(len(charts), 6)
 
-    def test_finalize_removes_sample_table_cells(self):
+    def test_finalize_rejects_sample_table_cells(self):
         from app_builder.schemas.app_definition import AppDefinition, AppMeta, AppTheme, NavItemDef, PageDef
         from app_builder.services.app_definition_generator import finalize_app_definition
+        from app_builder.services.generated_data_validation import GeneratedDataValidationError
 
         defn = AppDefinition(
             meta=AppMeta(
@@ -141,10 +142,9 @@ Create a Manufacturing Quality Monitoring Dashboard with 4 pages:
                 ]
             },
         )
-        out = finalize_app_definition(defn)
-        row = (out.mock or {}).get("table_sessions", [{}])[0]
-        self.assertFalse(str(row.get("session_id", "")).startswith("Sample "))
-        self.assertEqual(out.navigation[0].icon, "FactCheck")
+        with self.assertRaises(GeneratedDataValidationError):
+            finalize_app_definition(defn)
+        self.assertEqual(defn.mock["table_sessions"][0]["session_id"], "Sample session_id 1")
 
 
 if __name__ == "__main__":

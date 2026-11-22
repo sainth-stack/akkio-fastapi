@@ -171,6 +171,11 @@ def generate_json_app_files(
         app_name=app_name,
     )
 
+    if "llm" in str(definition.meta.generatedBy or "").lower():
+        from app_builder.services.generated_data_validation import validate_generated_definition
+
+        validate_generated_definition(definition)
+
     files = load_template_frontend_files()
 
     files["frontend/src/mock/data.json"] = json.dumps(

@@ -15,14 +15,7 @@ from app_builder.services.app_definition_generator import (
     resolve_app_display_name,
 )
 from app_builder.services.prd_compliance import page_gaps
-from app_builder.services.page_layout_intent import (
-    apply_layout_intent_to_blocks,
-    ensure_blocks_match_intent,
-    infer_page_layout_intent,
-    resolve_dashboard_page_id,
-)
-from app_builder.services.prd_driven_layout import blocks_for_page as prd_blocks_for_page
-from app_builder.services.prd_driven_layout import ensure_minimum_blocks
+from app_builder.services.page_layout_intent import infer_page_layout_intent, resolve_dashboard_page_id
 from app_builder.services.prd_structure_parser import build_planning_context, section_for_page
 
 logger = logging.getLogger("app_builder")
@@ -246,36 +239,12 @@ UI/UX excerpt:
         )
 
         def _finalize_blocks(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            shaped = apply_layout_intent_to_blocks(
-                raw, page_intent, page_id=outline.id, title=outline.title
-            )
-            shaped = ensure_blocks_match_intent(
-                shaped,
-                page_intent,
-                page_id=outline.id,
-                title=outline.title,
-                section=section_body,
-                dashboard_page_id=dashboard_page_id,
-            )
-            return ensure_minimum_blocks(
-                shaped,
-                outline.id,
-                outline.title,
-                section=section_body,
-                dashboard_page_id=dashboard_page_id,
-            )
+            return raw
 
         def _plan_from_prd() -> PageBlocksPlan:
-            return PageBlocksPlan(
-                blocks=_finalize_blocks(
-                    prd_blocks_for_page(
-                        outline.id,
-                        outline.title,
-                        section_body,
-                        dashboard_page_id=dashboard_page_id,
-                    )
-                )
-            )
+            from app_builder.services.generated_data_validation import GeneratedDataValidationError
+
+            raise GeneratedDataValidationError(f"LLM could not produce prompt-compliant blocks for {outline.id}")
 
         if blocks_plan is None or not blocks_plan.blocks:
             blocks_plan = _plan_from_prd()
@@ -314,6 +283,13 @@ PRD:
                 )
                 if repaired and repaired.blocks:
                     blocks_plan = PageBlocksPlan(blocks=_finalize_blocks(repaired.blocks))
+                    remaining = page_gaps(
+                        PageDef(id=outline.id, title=outline.title, blocks=blocks_plan.blocks), section_body,
+                    )
+                    if remaining.get("missing_kpis") or remaining.get("missing_columns") or (
+                        page_intent.wants_charts and remaining.get("needs_charts") and not remaining.get("has_chart")
+                    ):
+                        _plan_from_prd()
                 else:
                     blocks_plan = _plan_from_prd()
 
@@ -337,11 +313,27 @@ Rules:
 - If the domain guard says NOT maintenance, then table rows must NOT contain work_order_id, machine, CNC Mill, Conveyor A, Hydraulic Press, WO-24000, downtime_hours, mtbf_hours, or mttr_hours.
 - Use realistic names for the actual domain: SKU codes, vendor names, warehouse codes, inspection lot IDs, supplier names, purchase order numbers — whatever the requirement describes.
 """
-        data_plan: Optional[PageDataPlan] = await _llm_validated(
-            llm, _DATA_SYSTEM, data_user, PageDataPlan, f"page_data_{outline.id}"
-        )
-        if data_plan and isinstance(data_plan.data, dict):
-            mock.update(data_plan.data)
+        from app_builder.services.generated_data_validation import GeneratedDataValidationError, validate_page_data
+
+        data_error = ""
+        for data_attempt in range(3):
+            data_plan: Optional[PageDataPlan] = await _llm_validated(
+                llm, _DATA_SYSTEM, data_user + (f"\nRepair these errors: {data_error}" if data_error else ""),
+                PageDataPlan, f"page_data_{outline.id}_{data_attempt}",
+            )
+            try:
+                if data_plan is None:
+                    raise GeneratedDataValidationError(f"No valid data returned for {outline.id}")
+                validate_page_data(blocks_plan.blocks, data_plan.data, outline.id)
+                if set(mock).intersection(data_plan.data):
+                    raise GeneratedDataValidationError(f"Dataset keys reused across pages: {set(mock).intersection(data_plan.data)}")
+            except GeneratedDataValidationError as exc:
+                data_error = str(exc)
+                if data_attempt == 2:
+                    raise
+            else:
+                mock.update(data_plan.data)
+                break
 
         pages.append(
             PageDef(
@@ -354,52 +346,6 @@ Rules:
 
     if not pages:
         return None
-
-    # Post-generation guard: strip maintenance columns from non-maintenance apps.
-    _is_maint_app = bool(re.search(
-        r"maintenance|\bmtbf\b|\bmttr\b|work order|downtime|\boee\b",
-        requirement or "",
-        re.I,
-    ))
-    if not _is_maint_app:
-        _MAINT_FIELDS = {
-            "work_order_id", "machine", "production_line", "equipment",
-            "event_type", "root_cause", "downtime_hours", "mtbf_hours", "mttr_hours",
-        }
-        cleaned_pages: List[PageDef] = []
-        for page in pages:
-            new_blocks: List[Any] = []
-            for block in page.blocks:
-                if isinstance(block, dict) and block.get("type") == "dataTable":
-                    cols = block.get("columns") or []
-                    block_fields = {str(c.get("field") or "") for c in cols if isinstance(c, dict)}
-                    if block_fields and block_fields.issubset(_MAINT_FIELDS | {"status", "severity", "shift", "occurred_at"}):
-                        # This table is entirely maintenance columns — skip it for non-maintenance apps
-                        continue
-                    # Keep the table but drop individual maintenance columns
-                    cleaned_cols = [
-                        c for c in cols
-                        if isinstance(c, dict) and str(c.get("field") or "") not in _MAINT_FIELDS
-                    ]
-                    if not cleaned_cols:
-                        continue
-                    new_blocks.append({**block, "columns": cleaned_cols})
-                else:
-                    new_blocks.append(block)
-            cleaned_pages.append(PageDef(
-                id=page.id, title=page.title, subtitle=page.subtitle, blocks=new_blocks
-            ))
-        pages = cleaned_pages
-        # Also drop maintenance keys from mock
-        for mf in _MAINT_FIELDS:
-            mock.pop(mf, None)
-        for key in list(mock):
-            if isinstance(mock.get(key), list) and mock[key]:
-                first = mock[key][0]
-                if isinstance(first, dict) and set(first.keys()).issubset(
-                    _MAINT_FIELDS | {"status", "severity", "shift", "occurred_at"}
-                ):
-                    mock.pop(key, None)
 
     meta = AppMeta(
         appName=display_name,
