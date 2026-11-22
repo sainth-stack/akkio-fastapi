@@ -35,7 +35,7 @@ class AppShellPlan(BaseModel):
 
 
 class PageBlocksPlan(BaseModel):
-    blocks: List[Dict[str, Any]] = Field(min_length=2, max_length=24)
+    blocks: List[Dict[str, Any]] = Field(min_length=1, max_length=24)
 
 
 class PageDataPlan(BaseModel):

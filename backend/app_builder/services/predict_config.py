@@ -70,6 +70,13 @@ def _field_is_predictable(field: str, header: str, ctype: str, rows: List[Dict[s
         return numeric_hits >= max(1, len(rows[:12]) // 3)
     if ctype == "number":
         return True
+    strict_numeric_hits = sum(
+        1 for row in rows[:12]
+        if isinstance(row.get(field), (int, float)) and not isinstance(row.get(field), bool)
+        or isinstance(row.get(field), str) and re.fullmatch(r"[+-]?\d+(?:\.\d+)?", row[field].strip())
+    )
+    if rows and strict_numeric_hits >= max(1, len(rows[:12]) // 3):
+        return True
     if not re.search(
         r"hours|pct|rate|qty|count|units|total|price|output|defect|yield|downtime|mtbf|mttr|oee|scrap|passed|inspected",
         f"{field} {header}",

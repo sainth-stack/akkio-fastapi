@@ -753,6 +753,24 @@ def finalize_app_definition(
         design_tokens=design_tokens,
         variation_seed=theme_variation_seed,
     )
+    if "llm" in str(defn.meta.generatedBy or "").lower():
+        from app_builder.services.block_normalizer import repair_broken_data_table_blocks
+        from app_builder.services.generated_data_validation import validate_generated_definition
+        from app_builder.services.operational_metrics_compute import apply_source_data_pipeline
+        from app_builder.services.app_theme_generator import apply_theme_to_chart_blocks
+
+        defn = repair_broken_data_table_blocks(defn, prd=prd, llm_authored=True)
+        defn = normalize_app_definition_blocks(defn, prd=prd)
+        validate_generated_definition(defn)
+        if re.search(r"\b(predict|forecast|rag|chat|assistant)\b", f"{requirement} {prd}", re.I):
+            from app_builder.services.intelligence_pages import ensure_intelligence_features
+
+            defn = ensure_intelligence_features(defn, prd=prd, requirement=requirement)
+        defn = apply_theme_to_chart_blocks(defn, replace_generic_colors=True)
+        piped = apply_source_data_pipeline(
+            defn.model_dump(mode="json"), requirement=requirement, prd=prd, seed_if_empty=False,
+        )
+        return AppDefinition.model_validate({**piped, "mock": piped.get("data") or {}})
     from app_builder.services.page_layout_intent import (
         enforce_kpis_on_dashboard_only,
         enforce_page_role_blocks,
@@ -898,12 +916,10 @@ def _gen_to_app_definition(gen: Any, theme: AppTheme) -> AppDefinition:
         for p in gen.pages
     ]
     mock = dict(gen.mock or {})
-    for page in pages:
-        mock.update(_collect_mock_keys(page.blocks))
 
     return finalize_app_definition(
         AppDefinition(
-            meta=AppMeta(appName=gen.appName, description=gen.description, domain=gen.domain),
+            meta=AppMeta(appName=gen.appName, description=gen.description, domain=gen.domain, generatedBy="llm"),
             theme=theme,
             navigation=navigation,
             pages=pages,

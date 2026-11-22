@@ -790,6 +790,27 @@ def apply_source_data_pipeline(
 
     out = detach_sap_similarity_for_prompt(dict(defn), prd=prd, requirement=requirement)
     llm_authored = _llm_authored_definition(out)
+    if llm_authored and str((out.get("meta") or {}).get("dataSource") or "") != "upload":
+        from app_builder.services.generated_data_validation import validate_generated_definition
+        from app_builder.services.predict_config import attach_predict_config
+
+        validate_generated_definition(out)
+        meta = dict(out.get("meta") or {})
+        meta.update(dataSource="llm_generated", dataModel="llm_generated_v1")
+        if requirement:
+            meta["requirement"] = requirement
+        meta["sourceDatasets"] = [
+            {"id": str(block["dataKey"]), "dataKey": block["dataKey"],
+             "title": block.get("title") or page.get("title") or block["dataKey"],
+             "columns": block["columns"]}
+            for page in out.get("pages") or []
+            for block in page.get("blocks") or []
+            if isinstance(block, dict) and block.get("type") == "dataTable"
+        ]
+        out["meta"] = meta
+        out["data"] = dict(out.get("data") or out.get("mock") or {})
+        out.pop("mock", None)
+        return attach_predict_config(out)
     if llm_authored:
         seed_if_empty = False
     out = ensure_source_datasets_on_definition(out, requirement=requirement, prd=prd)
@@ -870,6 +891,8 @@ def apply_source_data_pipeline(
 
 def _repair_definition_pages(defn: Dict[str, Any], *, prd: str = "", requirement: str = "") -> Dict[str, Any]:
     """Rebuild empty page blocks from PRD (hosted apps often ship with dashboard-only blocks)."""
+    if _llm_authored_definition(defn):
+        return defn
     try:
         from app_builder.schemas.app_definition import AppDefinition
         from app_builder.services.page_layout_intent import (

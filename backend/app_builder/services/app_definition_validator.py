@@ -76,6 +76,8 @@ def validate_all_screens(
     Ensure each navigation target (except predict) has ≥2 visible blocks.
     Safe to run on every /definition request — only fills gaps, does not wipe good layouts.
     """
+    if "llm" in str((defn.get("meta") or {}).get("generatedBy") or "").lower():
+        return defn
     from app_builder.schemas.app_definition import AppDefinition, PageDef
     from app_builder.services.page_layout_intent import resolve_dashboard_page_id
     from app_builder.services.prd_driven_layout import blocks_for_page

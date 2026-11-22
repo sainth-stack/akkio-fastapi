@@ -21,7 +21,7 @@ def _columns_from_rows(rows: Any) -> List[Dict[str, Any]]:
         for r in rows:
             if isinstance(r, dict) and r:
                 return [{"field": str(k), "header": _humanize(str(k))} for k in r.keys()]
-    return [{"field": "name", "header": "Name"}, {"field": "status", "header": "Status"}]
+    return []
 
 
 def _is_placeholder_field(field: str) -> bool:
@@ -130,22 +130,9 @@ def align_table_datasets_to_columns(defn: AppDefinition, *, llm_authored: bool =
                 fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
                 headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
             if llm_authored and dk and fields:
-                existing = mock.get(dk)
-                rows = existing if isinstance(existing, list) else []
-                has_placeholders = _table_has_placeholders(rows) if rows else False
-                first = rows[0] if rows and isinstance(rows[0], dict) else {}
-                if not has_placeholders and first and not any(f in first for f in fields):
-                    block = {**block, "columns": _columns_from_rows(rows)}
-                    new_blocks.append(block)
-                    continue
-                if rows and not has_placeholders:
-                    new_blocks.append(block)
-                    continue
-                rng = _seed(dk)
-                mock[dk] = [
-                    {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
-                    for i in range(max(28, len(rows)))
-                ]
+                from app_builder.services.generated_data_validation import validate_page_data
+
+                validate_page_data([block], mock, page.id)
                 new_blocks.append(block)
                 continue
             if dk and fields:
@@ -274,9 +261,6 @@ def repair_table_mock_keys(defn: AppDefinition, *, llm_authored: bool = False) -
             if not isinstance(rows, list):
                 continue
             if llm_authored:
-                first = rows[0] if rows and isinstance(rows[0], dict) else {}
-                if first and not any(f in first for f in fields):
-                    block["columns"] = _columns_from_rows(rows)
                 continue
             if rows and not _table_has_placeholders(rows) and not _columns_are_invalid(cols):
                 keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
