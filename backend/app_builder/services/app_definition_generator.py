@@ -403,6 +403,59 @@ def align_shell_plan_to_screens(shell: Any, screens: List[Dict[str, str]]) -> An
     return shell.model_copy(update={"pages": pages, "navigation": navigation})
 
 
+def _domain_slug_from_context(requirement: str, plan_json: Optional[Dict[str, Any]] = None) -> str:
+    plan_json = plan_json or {}
+    blueprint = plan_json.get("blueprint") if isinstance(plan_json.get("blueprint"), dict) else {}
+    domain = str(blueprint.get("selected_domain") or blueprint.get("domain") or "").strip()
+    if domain:
+        return domain.lower().replace(" ", "_")[:48]
+    blob = (requirement or "").lower()
+    if re.search(r"inventory|warehouse|sku|stock-out|reorder|safety stock", blob):
+        return "inventory"
+    if re.search(r"vendor|supplier", blob):
+        return "vendor_quality"
+    if re.search(r"procurement|purchase order", blob):
+        return "procurement"
+    return "manufacturing"
+
+
+def build_shell_plan_from_screens(
+    screens: List[Dict[str, str]],
+    *,
+    app_name: str,
+    requirement: str = "",
+    plan_json: Optional[Dict[str, Any]] = None,
+) -> "AppShellPlan":
+    """Deterministic app shell when LLM app_shell JSON fails (uses parsed Dashboard / Analytics / …)."""
+    from app_builder.schemas.app_definition_llm import AppShellPlan, NavItemPlan, PageOutlinePlan
+
+    pages: List[PageOutlinePlan] = []
+    navigation: List[NavItemPlan] = []
+    use = screens[:8] if screens else [{"id": "dashboard", "title": "Dashboard", "purpose": "Overview"}]
+    for i, raw in enumerate(use):
+        pid = str(raw.get("id") or _slug(str(raw.get("title") or "page")))
+        title = str(raw.get("title") or pid.replace("_", " ").title())
+        subtitle = str(raw.get("purpose") or title)
+        pages.append(PageOutlinePlan(id=pid, title=title, subtitle=subtitle))
+        navigation.append(
+            NavItemPlan(
+                label=title,
+                path="/" if i == 0 else f"/{pid}",
+                icon=_icon_for_label(title),
+                pageId=pid,
+            )
+        )
+    brand = shorten_brand_name(app_name or "Workspace")
+    desc = (requirement or "").strip().split("\n")[0][:200] or brand
+    return AppShellPlan(
+        appName=brand[:120],
+        description=desc,
+        domain=_domain_slug_from_context(requirement, plan_json),
+        navigation=navigation,
+        pages=pages,
+    )
+
+
 _BRAND_STOP = frozenset(
     {
         "dashboard",
@@ -1104,6 +1157,31 @@ async def resolve_app_definition(
                 len(llm_def.mock or {}),
             )
             return llm_def
+
+        logger.warning(
+            "[app_definition] LLM shell/blocks/data failed — building AppDefinition from PRD + architecture"
+        )
+        fallback = resolve_app_definition_sync(
+            requirement=requirement,
+            prd=prd,
+            uiux=uiux,
+            plan_json=plan_json,
+            app_name=app_name,
+        )
+        fallback.meta.generatedBy = "prd_fallback"
+        fallback.meta.appName = resolve_app_display_name(
+            requirement=requirement,
+            prd=prd,
+            plan_json=plan_json,
+            app_name=app_name or fallback.meta.appName,
+        )
+        logger.info(
+            "[app_definition] PRD fallback | pages=%d nav=%d keys=%d",
+            len(fallback.pages),
+            len(fallback.navigation),
+            len(fallback.mock or {}),
+        )
+        return fallback
 
     raise AppDefinitionLLMRequiredError(
         "LLM could not produce an AppDefinition for this prompt. Regenerate or refine the prompt — "

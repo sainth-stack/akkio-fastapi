@@ -1,5 +1,7 @@
 import copy
 import json
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -107,7 +109,7 @@ class TestMockedGeneration(unittest.IsolatedAsyncioTestCase):
     async def test_data_repaired_with_mocked_llm(self):
         await self.run_generation(repair=True)
 
-    async def test_exhausted_data_repair_fails(self):
+    async def test_exhausted_data_repair_uses_synthesis(self):
         await self.run_generation(repair=False)
 
     async def run_generation(self, repair):
@@ -127,8 +129,10 @@ class TestMockedGeneration(unittest.IsolatedAsyncioTestCase):
             return PageDataPlan(data=definition.mock)
 
         mocked = AsyncMock(side_effect=response)
-        with patch("llm_helper.get_llm_for_user", return_value=object()), \
-             patch("app_builder.services.app_definition_llm_pipeline._llm_validated", mocked), \
+        sys.modules["llm_helper"] = types.SimpleNamespace(
+            get_llm_for_user=lambda *a, **k: object(),
+        )
+        with patch("app_builder.services.app_definition_llm_pipeline._llm_validated", mocked), \
                patch("app_builder.services.json_app_codegen_pipeline._tick", new=AsyncMock()), \
              patch.object(httpx.HTTPTransport, "handle_request", side_effect=AssertionError("Live HTTP forbidden")), \
              patch.object(httpx.AsyncHTTPTransport, "handle_async_request", side_effect=AssertionError("Live HTTP forbidden")):
@@ -142,7 +146,12 @@ class TestMockedGeneration(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["data"], definition.mock)
                 self.assertEqual(result["pages"][0]["blocks"][0]["type"], "dataTable")
             else:
-                with self.assertRaises(GeneratedDataValidationError):
-                    await generate_app_definition_llm(requirement="Inventory management with SKUs and warehouses")
+                result = await generate_app_definition_llm(
+                    requirement="Inventory management with SKUs and warehouses"
+                )
+                self.assertIsNotNone(result)
+                self.assertGreaterEqual(len(result.pages), 1)
+                types_on_page = [b["type"] for b in result.pages[0].blocks if isinstance(b, dict)]
+                self.assertIn("dataTable", types_on_page)
         labels = [call.args[-1] for call in mocked.await_args_list if call.args[3] is PageDataPlan]
         self.assertEqual(len(labels), 2 if repair else 3)

@@ -11,6 +11,7 @@ from app_builder.schemas.app_definition_llm import AppShellPlan, PageBlocksPlan,
 from app_builder.services.app_definition_compiler import _theme_from_tokens
 from app_builder.services.app_definition_generator import (
     align_shell_plan_to_screens,
+    build_shell_plan_from_screens,
     extract_screens_from_plan,
     resolve_app_display_name,
 )
@@ -109,6 +110,30 @@ def _page_has_visible_widgets(blocks: List[Dict[str, Any]]) -> int:
     )
 
 
+def _synthesize_page_mock(
+    blocks: List[Dict[str, Any]],
+    *,
+    page_id: str,
+    existing_mock: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Fill datasets for one page when LLM data JSON fails validation."""
+    from app_builder.services.generic_dataset_builder import ensure_datasets_from_blocks
+
+    defn = AppDefinition(
+        meta=AppMeta(appName="Synth", domain="generic", generatedBy="synth"),
+        navigation=[],
+        pages=[PageDef(id=page_id, title=page_id, blocks=blocks)],
+        mock=dict(existing_mock),
+    )
+    defn.meta.generatedBy = "synth"
+    filled = ensure_datasets_from_blocks(defn)
+    out = dict(existing_mock)
+    for key, val in (filled.mock or {}).items():
+        if key not in out:
+            out[key] = val
+    return out
+
+
 async def _llm_validated(llm: Any, system: str, user: str, schema: type, label: str) -> Optional[Any]:
     from app_builder.agents.structured_output import extract_validated
 
@@ -137,8 +162,33 @@ async def generate_app_definition_llm(
         logger.warning("[app_definition_llm] llm_helper unavailable")
         return None
 
+    try:
+        return await _generate_app_definition_llm_impl(
+            requirement=requirement,
+            prd=prd,
+            uiux=uiux,
+            plan_json=plan_json,
+            app_name=app_name,
+            on_progress=on_progress,
+            get_llm=get_llm_for_user,
+        )
+    except Exception as exc:
+        logger.exception("[app_definition_llm] pipeline aborted: %s", exc)
+        return None
+
+
+async def _generate_app_definition_llm_impl(
+    *,
+    requirement: str = "",
+    prd: str = "",
+    uiux: str = "",
+    plan_json: Optional[Dict[str, Any]] = None,
+    app_name: Optional[str] = None,
+    on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    get_llm: Any,
+) -> Optional[AppDefinition]:
     ctx = build_planning_context(requirement=requirement, prd=prd, uiux=uiux, plan_json=plan_json)
-    llm = get_llm_for_user(None, temperature=0.2, streaming=False)
+    llm = get_llm(None, temperature=0.2, streaming=False)
 
     screens = extract_screens_from_plan(
         requirement=requirement, prd=prd, uiux=uiux, plan_json=plan_json or {},
@@ -160,9 +210,30 @@ UI/UX:
 Suggested screens:
 {screen_hint}
 """
-    shell: Optional[AppShellPlan] = await _llm_validated(llm, _SHELL_SYSTEM, shell_user, AppShellPlan, "app_shell")
+    display_for_shell = resolve_app_display_name(
+        requirement=requirement,
+        prd=prd,
+        plan_json=plan_json,
+        app_name=app_name,
+    )
+    shell: Optional[AppShellPlan] = await _llm_validated(
+        llm, _SHELL_SYSTEM, shell_user, AppShellPlan, "app_shell"
+    )
     if shell is None:
-        return None
+        if screens:
+            logger.warning(
+                "[app_definition_llm] app_shell LLM failed — using %d parsed screens",
+                len(screens),
+            )
+            shell = build_shell_plan_from_screens(
+                screens,
+                app_name=display_for_shell,
+                requirement=ctx["requirement"],
+                plan_json=plan_json,
+            )
+        else:
+            logger.error("[app_definition_llm] app_shell LLM failed and no screens parsed from PRD")
+            return None
     if screens:
         shell = align_shell_plan_to_screens(shell, screens)
 
@@ -423,7 +494,18 @@ Rules:
             except GeneratedDataValidationError as exc:
                 data_error = str(exc)
                 if data_attempt == 2:
-                    raise
+                    logger.warning(
+                        "[app_definition_llm] data LLM exhausted for %s — block-driven synthesis",
+                        outline.id,
+                    )
+                    mock.update(
+                        _synthesize_page_mock(
+                            blocks_plan.blocks,
+                            page_id=outline.id,
+                            existing_mock=mock,
+                        )
+                    )
+                    break
             else:
                 mock.update(data_plan.data)
                 break
