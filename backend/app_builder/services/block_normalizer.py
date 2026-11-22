@@ -15,6 +15,15 @@ def _humanize(key: str) -> str:
     return s.title() if s else key
 
 
+def _columns_from_rows(rows: Any) -> List[Dict[str, Any]]:
+    """Derive table columns from LLM-authored data rows (data is source of truth)."""
+    if isinstance(rows, list):
+        for r in rows:
+            if isinstance(r, dict) and r:
+                return [{"field": str(k), "header": _humanize(str(k))} for k in r.keys()]
+    return [{"field": "name", "header": "Name"}, {"field": "status", "header": "Status"}]
+
+
 def _is_placeholder_field(field: str) -> bool:
     f = (field or "").strip().lower()
     return bool(re.match(r"^(col_?\d+|field_?\d+|column_?\d+)$", f))
@@ -66,7 +75,7 @@ def _columns_are_invalid(columns: List[Dict[str, Any]]) -> bool:
     return False
 
 
-def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
+def align_table_datasets_to_columns(defn: AppDefinition, *, llm_authored: bool = False) -> AppDefinition:
     """Ensure every table row uses column field keys with display-ready values (export + UI)."""
     from app_builder.services.generic_dataset_builder import _cell_value, _seed, _table_has_placeholders
 
@@ -83,10 +92,33 @@ def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
             fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
             headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
             if _columns_are_invalid(cols):
-                block = {**block, "columns": _infer_table_columns(block, page.id, page.title)}
+                replacement = (
+                    _columns_from_rows(mock.get(dk)) if llm_authored
+                    else _infer_table_columns(block, page.id, page.title)
+                )
+                block = {**block, "columns": replacement}
                 cols = block.get("columns") or []
                 fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
                 headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
+            if llm_authored and dk and fields:
+                existing = mock.get(dk)
+                rows = existing if isinstance(existing, list) else []
+                has_placeholders = _table_has_placeholders(rows) if rows else False
+                first = rows[0] if rows and isinstance(rows[0], dict) else {}
+                if not has_placeholders and first and not any(f in first for f in fields):
+                    block = {**block, "columns": _columns_from_rows(rows)}
+                    new_blocks.append(block)
+                    continue
+                if rows and not has_placeholders:
+                    new_blocks.append(block)
+                    continue
+                rng = _seed(dk)
+                mock[dk] = [
+                    {f: _cell_value(f, i, rng, headers.get(f, "")) for f in fields}
+                    for i in range(max(28, len(rows)))
+                ]
+                new_blocks.append(block)
+                continue
             if dk and fields:
                 rng = _seed(dk)
                 existing = mock.get(dk)
@@ -111,8 +143,9 @@ def align_table_datasets_to_columns(defn: AppDefinition) -> AppDefinition:
     return defn
 
 
-def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "") -> AppDefinition:
+def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "", llm_authored: bool = False) -> AppDefinition:
     """Replace LLM placeholder columns (field_0) with domain-appropriate schemas on every page."""
+    mock = defn.mock or {}
     for page in defn.pages:
         new_blocks: List[Any] = []
         for block in page.blocks:
@@ -121,13 +154,19 @@ def repair_broken_data_table_blocks(defn: AppDefinition, *, prd: str = "") -> Ap
                 continue
             block = repair_data_table_columns(block)
             if _columns_are_invalid(block.get("columns") or []):
-                block = {
-                    **block,
-                    "columns": _infer_table_columns(block, page.id, page.title, prd=prd),
-                }
-                title_low = str(block.get("title") or "").lower()
-                if title_low.endswith("records") or title_low == f"{page.title.lower()} records":
-                    block["title"] = "Recent maintenance events"
+                if llm_authored:
+                    block = {
+                        **block,
+                        "columns": _columns_from_rows(mock.get(str(block.get("dataKey") or ""))),
+                    }
+                else:
+                    block = {
+                        **block,
+                        "columns": _infer_table_columns(block, page.id, page.title, prd=prd),
+                    }
+                    title_low = str(block.get("title") or "").lower()
+                    if title_low.endswith("records") or title_low == f"{page.title.lower()} records":
+                        block["title"] = "Recent maintenance events"
             new_blocks.append(block)
         page.blocks = new_blocks
     return defn
@@ -178,7 +217,7 @@ def repair_data_table_columns(block: Dict[str, Any]) -> Dict[str, Any]:
     return b
 
 
-def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
+def repair_table_mock_keys(defn: AppDefinition, *, llm_authored: bool = False) -> AppDefinition:
     from app_builder.services.generic_dataset_builder import _cell_value, _seed, _table_has_placeholders
 
     mock = dict(defn.mock or {})
@@ -193,7 +232,10 @@ def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
             dk = str(block.get("dataKey") or "")
             cols = block.get("columns") or []
             if _columns_are_invalid(cols):
-                block = {**block, "columns": _infer_table_columns(block, page.id, page.title)}
+                if llm_authored:
+                    block["columns"] = _columns_from_rows(mock.get(dk))
+                else:
+                    block = {**block, "columns": _infer_table_columns(block, page.id, page.title)}
                 cols = block.get("columns") or []
             fields = [str(c.get("field")) for c in cols if isinstance(c, dict) and c.get("field")]
             headers = {str(c.get("field")): str(c.get("header") or "") for c in cols if isinstance(c, dict)}
@@ -201,6 +243,11 @@ def repair_table_mock_keys(defn: AppDefinition) -> AppDefinition:
                 continue
             rows = mock.get(dk)
             if not isinstance(rows, list):
+                continue
+            if llm_authored:
+                first = rows[0] if rows and isinstance(rows[0], dict) else {}
+                if first and not any(f in first for f in fields):
+                    block["columns"] = _columns_from_rows(rows)
                 continue
             if rows and not _table_has_placeholders(rows) and not _columns_are_invalid(cols):
                 keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []

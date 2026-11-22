@@ -811,9 +811,9 @@ def finalize_app_definition(
     defn = ensure_sap_similar_ticket_features(defn, prd=prd, requirement=requirement)
     from app_builder.services.block_normalizer import repair_broken_data_table_blocks
 
-    defn = repair_broken_data_table_blocks(defn, prd=prd)
-    mock = dict(defn.mock or {})
     llm_authored = "llm" in str(defn.meta.generatedBy or "").lower()
+    defn = repair_broken_data_table_blocks(defn, prd=prd, llm_authored=llm_authored)
+    mock = dict(defn.mock or {})
     if not llm_authored:
         for page in defn.pages:
             mock.update(_collect_mock_keys(page.blocks))
@@ -823,16 +823,16 @@ def finalize_app_definition(
         defn = ensure_datasets_from_blocks(defn)
     from app_builder.services.block_normalizer import repair_table_mock_keys
 
-    defn = repair_table_mock_keys(defn)
-    defn = repair_broken_data_table_blocks(defn, prd=prd)
-    defn = repair_table_mock_keys(defn)
+    defn = repair_table_mock_keys(defn, llm_authored=llm_authored)
+    defn = repair_broken_data_table_blocks(defn, prd=prd, llm_authored=llm_authored)
+    defn = repair_table_mock_keys(defn, llm_authored=llm_authored)
     from app_builder.services.production_dataset_enhancer import enhance_production_datasets
     from app_builder.services.production_data_polish import polish_production_data_bag
 
     defn = enhance_production_datasets(defn)
     from app_builder.services.block_normalizer import align_table_datasets_to_columns
 
-    defn = align_table_datasets_to_columns(defn)
+    defn = align_table_datasets_to_columns(defn, llm_authored=llm_authored)
     defn.mock = polish_production_data_bag(defn)
     from app_builder.services.app_theme_generator import apply_theme_to_chart_blocks
 
