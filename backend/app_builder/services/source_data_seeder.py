@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List
 
 from app_builder.services.source_data_constants import DEFAULT_SOURCE_SEED_ROWS
@@ -65,7 +65,8 @@ def _cell(field: str, header: str, i: int, rng: random.Random) -> Any:
     f = field.lower()
     h = header.lower()
     if "ticket_id" in f:
-        return f"TKT-{2000 + i}"
+        year = 2025 + (i % 24) // 12
+        return f"TKT-{year}-{i + 1:04d}"
     if "title" in f and "ticket" in h:
         return rng.choice(
             (
@@ -88,7 +89,8 @@ def _cell(field: str, header: str, i: int, rng: random.Random) -> Any:
     if "work_order" in f or f == "id" and "order" in h:
         return f"WO-{1000 + i}"
     if "inspection" in f and "id" in f:
-        return f"INS-{2000 + i}"
+        year = 2025 + (i % 24) // 12
+        return f"INS-{year}-{i + 1:04d}"
     if "order_id" in f and "work" not in f:
         return f"ORD-{3000 + i}"
     if "customer" in f:
@@ -143,8 +145,13 @@ def _cell(field: str, header: str, i: int, rng: random.Random) -> Any:
         return int(rng.uniform(1, 12))
     if "unit_price" in f or "order_total" in f or "price" in f:
         return round(rng.uniform(15, 450), 2)
-    if "occurred" in f or "inspected_at" in f or "ordered_at" in f or "date" in f:
-        base = datetime(2026, 6, 1) + timedelta(days=i % 14, hours=i % 12)
+    if "occurred" in f or "inspected_at" in f or "ordered_at" in f or "date" in f or f.endswith("_at"):
+        # Spread rows across Jan 2025–Dec 2026. Never June-only and never year 2000.
+        month_index = i % 24
+        year = 2025 + month_index // 12
+        month = (month_index % 12) + 1
+        day = (i % 27) + 1
+        base = datetime(year, month, day, 8 + (i % 10), (i * 7) % 60)
         return base.strftime("%Y-%m-%d %H:%M")
     if "operator" in f or "owner" in f:
         return rng.choice(_OPERATORS)

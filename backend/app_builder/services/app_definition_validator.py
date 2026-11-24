@@ -134,6 +134,16 @@ def validate_all_screens(
             section,
             dashboard_page_id=dash_id,
         )
+        existing = list(page.blocks or [])
+        if existing:
+            def _kind(block):
+                raw = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                return str(getattr(raw, "value", raw) or "")
+
+            have = {_kind(block) for block in existing}
+            rebuilt = list(existing) + [
+                block for block in (rebuilt or []) if _kind(block) not in have
+            ]
         if len(_visible_widgets(rebuilt)) < 2:
             from app_builder.services.prd_driven_layout import default_page_chart_blocks
 

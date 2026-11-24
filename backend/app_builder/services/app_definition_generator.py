@@ -604,12 +604,12 @@ def _collect_mock_keys(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
             return
         if kind == "line":
             mock[key] = [
-                {"period": f"2024-06-{(i % 28) + 1:02d}", "value": 70 + i * 3, "target": 85}
+                {"period": f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}", "value": 70 + i * 3, "target": 85}
                 for i in range(6)
             ]
         else:
             mock[key] = [
-                {"period": f"2024-06-{(i % 28) + 1:02d}", "actual": 40 + i * 5, "benchmark": 50 + i * 2}
+                {"period": f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}", "actual": 40 + i * 5, "benchmark": 50 + i * 2}
                 for i in range(6)
             ]
 

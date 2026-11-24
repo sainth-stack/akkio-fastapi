@@ -125,8 +125,10 @@ def _cell_value(field: str, row_i: int, rng: random.Random, col_header: str = ""
         prefix = "".join(x[0].upper() for x in re.findall(r"[a-z]+", field)[:3]) or "ID"
         return f"{prefix}-{1000 + row_i}"
     if "date" in f or "time" in f or f.endswith("_at") or f in ("when", "occurred_at", "started_at", "updated_at"):
-        day = (row_i % 28) + 1
-        return f"2024-06-{day:02d}T{8 + row_i % 10:02d}:{(row_i * 7) % 60:02d}:00Z"
+        day = (row_i % 27) + 1
+        month = (row_i % 12) + 1
+        year = 2025 + (row_i % 24) // 12
+        return f"{year}-{month:02d}-{day:02d}T{8 + row_i % 10:02d}:{(row_i * 7) % 60:02d}:00Z"
     if f == "status" or "status" in h:
         return rng.choice(["Active", "Complete", "Warning", "Critical", "Draft", "In Review"])
     if "severity" in f:
@@ -269,7 +271,9 @@ def _chart_rows(data_key: str, series_keys: List[str], x_key: str = "period") ->
     rng = _seed(data_key)
     rows: List[Dict[str, Any]] = []
     for i in range(MIN_CHART_POINTS):
-        row: Dict[str, Any] = {x_key: f"2024-06-{(i % 28) + 1:02d}"}
+        row: Dict[str, Any] = {
+            x_key: f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}"
+        }
         for sk in series_keys:
             skl = sk.lower()
             if "target" in skl or "capacity" in skl or "benchmark" in skl:

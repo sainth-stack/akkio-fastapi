@@ -31,7 +31,9 @@ function AppShellLayout() {
       seen.add(n.pageId);
       items.push(n);
     }
-    return items.map((n) => ({
+    return items
+      .filter((n) => !/\brag(\s+chat)?\b/i.test(`${n.label} ${n.pageId}`))
+      .map((n) => ({
       label: n.label,
       path: n.path,
       icon: n.icon,
@@ -80,6 +82,7 @@ function AppRoutes() {
   const routesNav = useMemo(() => {
     const seen = new Set<string>();
     return definition.navigation.filter((n) => {
+      if (/\brag(\s+chat)?\b/i.test(`${n.label} ${n.pageId}`)) return false;
       if (seen.has(n.pageId)) return false;
       seen.add(n.pageId);
       return true;

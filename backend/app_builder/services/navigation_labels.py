@@ -51,6 +51,21 @@ def friendly_nav_label(
     return (title or page_id or "Page").strip()
 
 
+def _is_rag_menu_item(page_id: str, title: str) -> bool:
+    blob = f"{page_id} {title}".lower().replace("_", " ").replace("-", " ")
+    return bool(re.search(r"\brag(\s+chat)?\b|\bdata assistant\b|\bchat assistant\b", blob))
+
+
+def _canonicalize_special_page(page: Dict[str, Any]) -> Dict[str, Any]:
+    """LLM often names the screen 'LLM Observability' with a non-matching route."""
+    pid = str(page.get("id") or "")
+    title = str(page.get("title") or "")
+    blob = f"{pid} {title}".lower()
+    if "observability" in blob and pid != "observability":
+        page = {**page, "id": "observability", "title": "Observability"}
+    return page
+
+
 def _prune_junk_nav_pages(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Drop LLM capability phrases mistaken for nav pages (e.g. 'Tokens', 'RAG chat')."""
     from app_builder.services.app_definition_generator import (
@@ -59,12 +74,18 @@ def _prune_junk_nav_pages(defn: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     out = dict(defn)
+    pages_in = []
+    for p in out.get("pages") or []:
+        if not isinstance(p, dict):
+            continue
+        if _is_rag_menu_item(str(p.get("id") or ""), str(p.get("title") or "")):
+            continue
+        pages_in.append(_canonicalize_special_page(p))
     keep_ids = {"predict", "observability", "create_ticket", "similar_tickets"}
     pages = [
         p
-        for p in (out.get("pages") or [])
-        if isinstance(p, dict)
-        and (
+        for p in pages_in
+        if (
             str(p.get("id") or "") in keep_ids
             or (
                 str(p.get("id") or "") not in _RESERVED_SCREEN_IDS
@@ -73,19 +94,20 @@ def _prune_junk_nav_pages(defn: Dict[str, Any]) -> Dict[str, Any]:
         )
     ]
     page_ids = {str(p.get("id") or "") for p in pages}
-    nav = [
-        n
-        for n in (out.get("navigation") or [])
-        if isinstance(n, dict)
-        and (
-            str(n.get("pageId") or "") in keep_ids
-            or (
-                str(n.get("pageId") or "") in page_ids
-                and str(n.get("pageId") or "") not in _RESERVED_SCREEN_IDS
-                and _is_plausible_app_page_name(str(n.get("label") or n.get("pageId") or ""))
-            )
-        )
-    ]
+    nav = []
+    for n in out.get("navigation") or []:
+        if not isinstance(n, dict):
+            continue
+        if _is_rag_menu_item(str(n.get("pageId") or ""), str(n.get("label") or "")):
+            continue
+        item = _canonicalize_special_page({"id": n.get("pageId"), "title": n.get("label") or ""})
+        page_id = str(item.get("id") or "")
+        if page_id in keep_ids or (
+            page_id in page_ids
+            and page_id not in _RESERVED_SCREEN_IDS
+            and _is_plausible_app_page_name(str(n.get("label") or page_id))
+        ):
+            nav.append({**n, "pageId": page_id})
     out["pages"] = pages
     out["navigation"] = nav
     return out
@@ -119,6 +141,9 @@ def normalize_definition_navigation(defn: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(item, dict):
             continue
         page_id = str(item.get("pageId") or "")
+        label_blob = f"{page_id} {item.get('label') or ''}".lower()
+        if "observability" in label_blob:
+            page_id = "observability"
         if page_id not in page_ids and i < len(pages):
             page_id = str(pages[i].get("id") or page_id)
         if not page_id or page_id in seen_page_ids:

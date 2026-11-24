@@ -54,7 +54,8 @@ export function isObservabilityNavItem(item: {
   label?: string;
 }): boolean {
   const pid = (item.pageId || '').toLowerCase();
-  if (pid === 'observability') return true;
+  const label = (item.label || '').toLowerCase();
+  if (pid === 'observability' || pid.includes('observability') || label.includes('observability')) return true;
   if (item.path === '/observability' || item.path.endsWith('/observability')) return true;
   return false;
 }

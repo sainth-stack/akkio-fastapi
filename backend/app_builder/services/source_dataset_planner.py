@@ -438,6 +438,23 @@ def build_template_sheets(
         if not dk or not cols:
             continue
         sheet_name = dk.replace(SOURCE_PREFIX, "")[:31]
+        bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+        if not bag and isinstance(defn.get("mock"), dict):
+            bag = defn.get("mock") or {}
+        live = bag.get(dk) if isinstance(bag.get(dk), list) else None
+        if live:
+            header_for = {
+                str(c.get("field") or ""): str(c.get("header") or c.get("field") or "")
+                for c in cols
+                if isinstance(c, dict)
+            }
+            sheets[sheet_name] = [
+                {header_for.get(str(k), str(k)): v for k, v in row.items()}
+                if isinstance(row, dict)
+                else row
+                for row in live
+            ]
+            continue
         sheets[sheet_name] = seed_rows_for_dataset(
             ds, row_count=sample_rows, human_headers=True, seed_salt=seed_salt
         )

@@ -467,13 +467,17 @@ def repair_pages_with_no_blocks(defn: Any, *, prd: str = "", requirement: str = 
     )
     new_pages = []
     for page in pages:
+        def _kind(b: Any) -> str:
+            raw = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+            return str(getattr(raw, "value", raw) or "")
+
         blocks = list(page.blocks or [])
         visible = [
             b
             for b in blocks
-            if isinstance(b, dict) and str(b.get("type") or "") in ("kpiRow", "lineChart", "barChart", "pieChart", "dataTable")
+            if _kind(b) in ("kpiRow", "lineChart", "barChart", "pieChart", "dataTable")
         ]
-        if len(visible) < 2:
+        if not visible:
             section = page_prompt_context(prd, requirement, page.title, page.id)
             if not section.strip():
                 section = f"### {page.title}\n{page.subtitle or page.title}\n"

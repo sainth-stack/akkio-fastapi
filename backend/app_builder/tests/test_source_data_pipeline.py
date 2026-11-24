@@ -75,7 +75,10 @@ class TestSourceDataPipeline(unittest.TestCase):
         defn["data"] = bag
         sheets = build_template_sheets(defn)
         rows = next(iter(sheets.values()))
-        self.assertLessEqual(len(rows), TEMPLATE_SAMPLE_ROWS)
+        live = next(
+            v for k, v in bag.items() if str(k).startswith("source_") and isinstance(v, list)
+        )
+        self.assertEqual(len(rows), len(live))
 
     def test_quality_charts_map_source_columns(self):
         from app_builder.services.operational_metrics_compute import apply_source_data_pipeline

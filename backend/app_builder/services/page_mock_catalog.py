@@ -242,11 +242,11 @@ def _column_value(
         hour = 8 + (i % 10)
         minute = (i * 7) % 60
         if "when" in f or "seen" in f:
-            return f"2024-06-{day:02d}T{hour:02d}:{minute:02d}:00Z"
-        return f"2024-06-{day:02d}T{hour:02d}:{minute:02d}:00Z"
+            return f"{2025 + ((i + seed) % 24) // 12}-{(i % 12) + 1:02d}-{day:02d}T{hour:02d}:{minute:02d}:00Z"
+        return f"{2025 + ((i + seed) % 24) // 12}-{(i % 12) + 1:02d}-{day:02d}T{hour:02d}:{minute:02d}:00Z"
 
     if f in ("started", "start_time", "started_at"):
-        return f"2024-06-{(i % 28) + 1:02d}T08:{(i * 3) % 60:02d}:00Z"
+        return f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}T08:{(i * 3) % 60:02d}:00Z"
 
     if f in ("duration", "runtime"):
         return f"{1 + (i % 4)}h {(10 + i * 7) % 60}m"
@@ -285,7 +285,7 @@ def _column_value(
 
     if f == "occurred_at":
         day = (i % 28) + 1
-        return f"2024-06-{day:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z"
+        return f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{day:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z"
 
     return f"{field.replace('_', ' ').title()} {i + 1}"
 
@@ -311,7 +311,7 @@ def generate_table_rows(
                 "severity": ("Low", "Medium", "High", "Critical")[i % 4],
                 "type": _ALERT_TYPES[i % len(_ALERT_TYPES)],
                 "message": _ALERT_MESSAGES[i % len(_ALERT_MESSAGES)],
-                "occurred_at": f"2024-06-{(i % 28) + 1:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z",
+                "occurred_at": f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}T{(6 + i % 12):02d}:{(i * 5) % 60:02d}:00Z",
             })
         return [{f: r.get(f) for f in fields} for r in rows]
 
@@ -324,7 +324,7 @@ def generate_table_rows(
                 "operator": _OPERATORS[i % len(_OPERATORS)],
                 "duration": f"{1 + (i % 4)}h {(10 + i * 7) % 60}m",
                 "status": ("Running", "Idle", "Warning", "Complete")[i % 4],
-                "started_at": f"2024-06-{(i % 28) + 1:02d}T08:{(i * 3) % 60:02d}:00Z",
+                "started_at": f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}T08:{(i * 3) % 60:02d}:00Z",
             }
             for i in range(row_count)
         ]
@@ -421,7 +421,7 @@ def generate_chart_rows(
 ) -> Tuple[List[Dict[str, Any]], str]:
     x_key = "period"
     seed = sum(ord(c) for c in f"{data_key}:{page_id}") % 11
-    labels = [f"2024-06-{((i + seed) % 28) + 1:02d}" for i in range(CHART_POINTS)]
+    labels = [f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{((i + seed) % 27) + 1:02d}" for i in range(CHART_POINTS)]
     rows: List[Dict[str, Any]] = []
 
     is_transformer = profile == "transformer_monitoring" or any(

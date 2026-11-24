@@ -156,9 +156,9 @@ def _extend_chart(
     out = [dict(r) for r in rows if isinstance(r, dict)]
     i = len(out)
     while len(out) < target_len:
-        base = out[i % len(out)] if out else {x_key: "2024-06-01"}
+        base = out[i % len(out)] if out else {x_key: "2025-01-01"}
         row = copy.deepcopy(base)
-        row[x_key] = f"2024-06-{(i % 28) + 1:02d}"
+        row[x_key] = f"{2025 + (i % 24) // 12}-{(i % 12) + 1:02d}-{(i % 27) + 1:02d}"
         for sk in series_keys:
             if isinstance(row.get(sk), (int, float)):
                 row[sk] = round(float(row[sk]) + rng.uniform(-2, 2.5), 2)

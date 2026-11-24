@@ -212,6 +212,32 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
 
 
+def _period_sort_key(label: str) -> tuple:
+    names = {
+        "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+        "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+    }
+    m = re.match(r"([A-Za-z]{3}) (\d{4})", label or "")
+    if m and m.group(1).title() in names:
+        return (int(m.group(2)), names[m.group(1).title()])
+    return (9999, 0, label)
+
+
+def _period_label(raw: str) -> str:
+    """Chart axis label from a source timestamp: 'Mar 2025', never a bare year like 2000."""
+    text = (raw or "").strip()
+    m = re.match(r"(20\d{2})-(\d{2})", text)
+    if not m:
+        return text[:10] or "Unknown"
+    year = int(m.group(1))
+    month = int(m.group(2))
+    if year < 2025 or year > 2026 or not 1 <= month <= 12:
+        year = 2025 if year < 2025 else 2026
+        month = min(12, max(1, month or 1))
+    names = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{names[month - 1]} {year}"
+
+
 def _aggregate_line_rows(
     rows: List[Dict[str, Any]],
     x_field: str,
@@ -230,13 +256,16 @@ def _aggregate_line_rows(
                 break
     for r in rows:
         if x_field in r and x_field not in ("period", "date", "name", "label"):
-            x = str(r.get(x_field) or "Unknown")
+            raw = str(r.get(x_field) or "Unknown")
+            x = _period_label(raw) if re.match(r"20\d{2}-\d{2}", raw) else raw
         elif date_field:
-            x = str(r.get(date_field) or "")[:10] or f"Period {len(buckets) + 1}"
+            x = _period_label(str(r.get(date_field) or ""))
+        elif x_field in r:
+            x = _period_label(str(r.get(x_field) or ""))
         else:
             x = f"Period {len(buckets) + 1}"
         buckets[x].append(r)
-    keys = sorted(buckets.keys())[-max_points:]
+    keys = sorted(buckets.keys(), key=_period_sort_key)[-max_points:]
     out: List[Dict[str, Any]] = []
     x_out = x_field if x_field not in ("name", "label") else "period"
     for x in keys:
@@ -632,6 +661,31 @@ def _seed_source_rows_in_bag(defn: Dict[str, Any], *, project_id: str = "") -> D
     return out
 
 
+def _normalize_operational_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Force operational dates into 2025–2026 and stop IDs that look like the year 2000."""
+    out: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            out.append(row)
+            continue
+        nxt = dict(row)
+        month_index = i % 24
+        year = 2025 + month_index // 12
+        month = (month_index % 12) + 1
+        day = (i % 27) + 1
+        stamp = f"{year}-{month:02d}-{day:02d} 08:00"
+        for key, val in list(nxt.items()):
+            if isinstance(val, str) and re.fullmatch(r"(INS|TKT|WO)-\d{4}$", val):
+                nxt[key] = f"{val.split('-')[0]}-{year}-{i + 1:04d}"
+            if re.search(r"date|_at$|occurred|inspected|ordered", str(key), re.I):
+                text = str(val)
+                parsed = re.match(r"(20\d{2})-(\d{2})", text)
+                if not parsed or not (2025 <= int(parsed.group(1)) <= 2026):
+                    nxt[key] = stamp
+        out.append(nxt)
+    return out
+
+
 def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Fill KPI bundles, analytics tables, and chart series from source_* rows."""
     from app_builder.services.sap_similar_tickets import (
@@ -647,6 +701,10 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
 
     out = _seed_source_rows_in_bag(defn)
     bag = dict(out.get("data") or out.get("mock") or {})
+    for key, val in list(bag.items()):
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            bag[key] = _normalize_operational_rows(val)
+    out["data"] = bag
     _, rows = _primary_source_rows(out)
 
     for page in out.get("pages") or []:
@@ -739,7 +797,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
                         rows,
                         "period",
                         series_keys,
-                        max_points=14,
+                        max_points=24,
                         series_source_map=smap,
                     )
                     block["xAxisKey"] = str(block.get("xAxisKey") or "period")
@@ -759,6 +817,70 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
     meta = dict(out.get("meta") or {})
     meta["dataSource"] = "computed_from_source"
     out["meta"] = meta
+    return out
+
+
+def _rows_have_dates(rows: List[Dict[str, Any]]) -> bool:
+    for row in rows[:12]:
+        if not isinstance(row, dict):
+            continue
+        for key, val in row.items():
+            if re.search(r"date|_at$|occurred|inspected|ordered", str(key), re.I):
+                return True
+            if isinstance(val, str) and re.match(r"20\d{2}-\d{2}", val):
+                return True
+    return False
+
+
+def _shared_table_rows(defn: Dict[str, Any]) -> List[Dict[str, Any]]:
+    bag = defn.get("data") if isinstance(defn.get("data"), dict) else {}
+    best: List[Dict[str, Any]] = []
+    for page in defn.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "dataTable":
+                continue
+            rows = bag.get(block.get("dataKey"))
+            if isinstance(rows, list) and len(rows) > len(best) and rows and isinstance(rows[0], dict):
+                best = rows
+    return best
+
+
+def _refresh_display_from_shared_rows(defn: Dict[str, Any]) -> Dict[str, Any]:
+    """KPIs, charts, tables, and the download all read one row set from 2025–2026."""
+    out = dict(defn)
+    bag = dict(out.get("data") or {})
+    for key, val in list(bag.items()):
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            bag[key] = _normalize_operational_rows(val)
+    out["data"] = bag
+    rows = _shared_table_rows(out)
+    if not rows:
+        return out
+    for page in out.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            btype = str(block.get("type") or "")
+            dk = str(block.get("dataKey") or "")
+            title = str(block.get("title") or "").lower()
+            x_key = str(block.get("xAxisKey") or "")
+            time_chart = x_key in ("period", "date", "") or "over time" in title or "trend" in title
+            if btype in ("lineChart", "barChart") and dk and time_chart and _rows_have_dates(rows):
+                sample = rows[0]
+                series_keys = _dedupe_series_keys(block, sample) or ["value"]
+                bag[dk] = _aggregate_line_rows(
+                    rows,
+                    "period",
+                    series_keys,
+                    max_points=24,
+                    series_source_map=_series_source_map(block, sample),
+                )
+                block["xAxisKey"] = "period"
+    out["data"] = bag
     return out
 
 
@@ -810,7 +932,10 @@ def apply_source_data_pipeline(
         out["meta"] = meta
         out["data"] = dict(out.get("data") or out.get("mock") or {})
         out.pop("mock", None)
-        return attach_predict_config(out)
+        out = _refresh_display_from_shared_rows(out)
+        from app_builder.services.navigation_labels import normalize_definition_navigation
+
+        return attach_predict_config(normalize_definition_navigation(out))
     if llm_authored:
         seed_if_empty = False
     out = ensure_source_datasets_on_definition(out, requirement=requirement, prd=prd)
