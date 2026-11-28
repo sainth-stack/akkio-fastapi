@@ -41,8 +41,8 @@ export default function PieChart({
       <RePieChart>
         <Pie
           data={data}
-          cx="42%"
-          cy="50%"
+          cx="50%"
+          cy="46%"
           innerRadius={innerRadius}
           outerRadius={outerRadius}
           dataKey="value"
@@ -63,16 +63,18 @@ export default function PieChart({
         {showTooltip && <Tooltip content={<ChartTooltip />} />}
         {showLegend && (
           <Legend
-            layout="vertical"
-            align="right"
-            verticalAlign="middle"
+            layout="horizontal"
+            align="center"
+            verticalAlign="bottom"
             iconType="circle"
             iconSize={8}
+            wrapperStyle={{ fontSize: 12, width: '100%', left: 0, paddingTop: 4 }}
             formatter={(value: string) => {
               const item = data.find((d) => d.name === value);
               const pct = item && total ? Math.round((item.value / total) * 100) : null;
-              const label = pct != null ? `${value} (${pct}%)` : value;
-              return <span style={{ fontSize: 12, color: '#64748b' }}>{label}</span>;
+              const short = value.length > 18 ? `${value.slice(0, 16)}…` : value;
+              const label = pct != null ? `${short} ${pct}%` : short;
+              return <span style={{ fontSize: 11, color: '#64748b' }}>{label}</span>;
             }}
           />
         )}

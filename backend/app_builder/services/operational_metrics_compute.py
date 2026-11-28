@@ -332,6 +332,56 @@ def _table_field_value(row: Dict[str, Any], field: str) -> Any:
     return row.get(field, "")
 
 
+def _best_measure(sample: Dict[str, Any], title: str = "") -> Optional[str]:
+    """Numeric column the chart should plot. Sales and leads are not left on a zero 'value' series."""
+    title_l = (title or "").lower()
+    preferred: List[str] = []
+    if re.search(r"\blead", title_l):
+        preferred = ["leads", "lead_count", "lead_value"]
+    elif re.search(r"conversion|rate|yield|\bpct\b|percent", title_l):
+        preferred = ["conversion_rate", "conversion_rate_pct", "rate_pct", "yield_pct", "first_pass_yield_pct"]
+    elif re.search(r"sale|revenue|spend|order|amount", title_l):
+        preferred = ["order_value", "order_total", "revenue", "sales", "sales_amount", "amount", "total"]
+    found = _first_row_key(
+        sample,
+        preferred
+        + [
+            "order_value", "order_total", "revenue", "sales", "sales_amount", "amount",
+            "quantity_on_hand", "quantity", "units", "leads", "lead_count", "value",
+            "defect_count", "downtime_hours",
+        ],
+    )
+    if found:
+        return found
+    for key, val in sample.items():
+        if _num(val) is None:
+            continue
+        if re.search(r"(^id$|_id$|_at$|date|year|phone|zip)", str(key), re.I):
+            continue
+        return str(key)
+    return None
+
+
+def _category_field(sample: Dict[str, Any], title: str = "") -> Optional[str]:
+    title_l = (title or "").lower()
+    preferred: List[str] = []
+    if "source" in title_l:
+        preferred = ["source", "lead_source", "channel"]
+    elif "segment" in title_l:
+        preferred = ["segment", "customer_segment", "customer"]
+    elif re.search(r"\bproduct\b", title_l) and "production" not in title_l:
+        preferred = ["product_line", "product", "product_name", "sku"]
+    elif re.search(r"status|distribution|conversion", title_l):
+        preferred = ["status", "stage", "source", "segment", "product_line", "category"]
+    found = _first_row_key(sample, preferred)
+    if found:
+        return found
+    for key, val in sample.items():
+        if isinstance(val, str) and val and _num(val) is None and not re.search(r"date|_at$|_id$", str(key), re.I):
+            return str(key)
+    return None
+
+
 def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
     title_l = (title or "").lower()
     if re.search(r"mttr|time to repair", title_l):
@@ -340,13 +390,9 @@ def _metric_from_title(title: str, sample: Dict[str, Any]) -> Optional[str]:
         return _first_row_key(sample, ["mtbf_hours", "mtbf"])
     if re.search(r"downtime", title_l):
         return _first_row_key(sample, ["downtime_hours", "downtime"])
-    if re.search(r"event|work order|maintenance", title_l):
+    if re.search(r"event|work order|maintenance", title_l) and not re.search(r"sale|lead|revenue|order", title_l):
         return _COUNT_METRIC
-    return _first_row_key(
-        sample,
-        ["quantity_on_hand", "amount", "value", "count",
-         "downtime_hours", "mtbf_hours", "mttr_hours"],
-    )
+    return _best_measure(sample, title)
 
 
 def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:
@@ -358,12 +404,17 @@ def _series_numeric_value(group: List[Dict[str, Any]], src: str) -> float:
     nums = [n for n in nums if n is not None]
     if not nums:
         return 0.0
+    if re.search(r"sale|revenue|amount|order_value|order_total|lead|quantity|count|units|spend|total", src or "", re.I):
+        return round(sum(nums), 2)
     if "downtime" in (src or ""):
         return round(sum(nums), 2)
     return round(sum(nums) / len(nums), 2)
 
 
 def _pick_breakdown_dimension(sample: Dict[str, Any], title: str, x_key: str) -> Optional[str]:
+    titled = _category_field(sample, title)
+    if titled and re.search(r"source|segment|product|status|distribution|conversion|channel", title or "", re.I):
+        return titled
     title_l = (title or "").lower()
     if "machine" in title_l and "machine" in sample:
         return "machine"
@@ -371,15 +422,25 @@ def _pick_breakdown_dimension(sample: Dict[str, Any], title: str, x_key: str) ->
         return x_key
     if re.search(r"cause|pareto|downtime", title_l) and "root_cause" in sample:
         return "root_cause"
+    skip_plant = bool(re.search(r"\bsale|\blead|revenue|\bsegment\b|\bproduct\b|customer|conversion", title_l)) and "production" not in title_l
     for dim in (
         "machine",
         "root_cause",
         "production_line",
         "event_type",
         "equipment",
+        "source",
+        "lead_source",
+        "segment",
+        "customer_segment",
+        "product_line",
+        "channel",
+        "status",
         "warehouse",
         "category",
     ):
+        if skip_plant and dim in ("machine", "production_line", "equipment", "root_cause", "event_type"):
+            continue
         if dim in sample:
             return dim
     return None
@@ -414,7 +475,7 @@ def _series_source_map(block: Dict[str, Any], sample: Dict[str, Any]) -> Dict[st
         elif sk in (_BENCHMARK_METRIC, "benchmark") or "benchmark" in name:
             src = _BENCHMARK_METRIC
         elif sk in ("value", "actual") or name in ("value", "actual"):
-            src = _metric_from_title(title, sample) or _first_row_key(sample, [sk, _slug(sk)])
+            src = _metric_from_title(title, sample) or _best_measure(sample, title) or _first_row_key(sample, [sk, _slug(sk)])
         elif sk in sample:
             src = sk
         else:
@@ -428,7 +489,7 @@ def _chart_x_field(block: Dict[str, Any], sample: Dict[str, Any]) -> str:
     title_l = title.lower()
     x_key = str(block.get("xAxisKey") or "period")
     if re.search(
-        r"production line|by line|by category|by machine|pareto|defects by|breakdown|events by|cause",
+        r"production line|by line|by category|by machine|by source|by segment|pareto|defects by|breakdown|events by|cause|contribution",
         title_l,
     ):
         dim = _pick_breakdown_dimension(sample, title, x_key)
@@ -458,11 +519,49 @@ def _dedupe_series_keys(block: Dict[str, Any], sample: Dict[str, Any]) -> List[s
         if not sk:
             continue
         src = smap.get(sk, sk)
-        if src in seen_src:
+        if src in seen_src or sk.lower() in {item.lower() for item in out}:
             continue
         seen_src.add(src)
         out.append(sk)
     return out
+
+
+def _slices_from_category(rows: List[Dict[str, Any]], title: str) -> List[Dict[str, Any]]:
+    """Several named slices. A single 100% ring named after the chart title is not a distribution."""
+    if not rows or not isinstance(rows[0], dict):
+        return []
+    sample = rows[0]
+    dim = _category_field(sample, title)
+    candidates = [dim] if dim else []
+    for key, val in sample.items():
+        if key in candidates:
+            continue
+        if isinstance(val, str) and val and _num(val) is None and not re.search(r"date|_at$|_id$", str(key), re.I):
+            if str(key) not in ("machine", "production_line", "equipment", "root_cause") or re.search(
+                r"machine|production|equipment|cause", title, re.I
+            ):
+                candidates.append(str(key))
+    metric = _best_measure(sample, title)
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for cand in candidates:
+        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            label = str(row.get(cand) or "").strip()
+            if not label or label.lower() == title.lower():
+                continue
+            grouped[label].append(row)
+        if len(grouped) >= 2:
+            groups = grouped
+            break
+    if len(groups) < 2:
+        return []
+    slices: List[Dict[str, Any]] = []
+    for name, grp in sorted(groups.items(), key=lambda item: -len(item[1]))[:6]:
+        nums = [_num(g.get(metric)) for g in grp] if metric else []
+        nums = [n for n in nums if n is not None]
+        value = round(sum(nums), 1) if nums else float(len(grp))
+        slices.append({"name": name[:32], "value": value})
+    return slices if len(slices) >= 2 else []
 
 
 def _pie_from_rows(block: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -496,16 +595,21 @@ def _pie_from_rows(block: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Di
             {"name": "Gap to target", "value": round(gap, 1)},
             {"name": "Headroom", "value": round(max(0.0, 100 - target), 1)},
         ]
-    if re.search(r"status|open|in progress|completed|distribution", title):
+    if re.search(r"status|open|in progress|completed|distribution|contribution|conversion|segment|source|product", title):
+        grouped = _slices_from_category(rows, str(block.get("title") or ""))
+        if grouped:
+            return grouped
         groups: Dict[str, int] = defaultdict(int)
         for r in rows:
-            st = str(r.get("status") or "Unknown")
-            groups[st] += 1
-        return [
-            {"name": name, "value": float(cnt)}
-            for name, cnt in sorted(groups.items(), key=lambda x: -x[1])[:8]
-        ]
-    return []
+            st = str(r.get("status") or "").strip()
+            if st:
+                groups[st] += 1
+        if len(groups) >= 2:
+            return [
+                {"name": name[:32], "value": float(cnt)}
+                for name, cnt in sorted(groups.items(), key=lambda x: -x[1])[:8]
+            ]
+    return _slices_from_category(rows, str(block.get("title") or ""))
 
 
 def _rows_match_schema(row: Dict[str, Any], columns: List[Dict[str, Any]]) -> bool:
@@ -807,7 +911,7 @@ def recompute_derived_data(defn: Dict[str, Any]) -> Dict[str, Any]:
 
             if btype == "pieChart":
                 pie = _pie_from_rows(block, rows)
-                if pie:
+                if len(pie) >= 2:
                     bag[dk] = pie
                 continue
 
@@ -872,14 +976,46 @@ def _refresh_display_from_shared_rows(defn: Dict[str, Any]) -> Dict[str, Any]:
             if btype in ("lineChart", "barChart") and dk and time_chart and _rows_have_dates(rows):
                 sample = rows[0]
                 series_keys = _dedupe_series_keys(block, sample) or ["value"]
-                bag[dk] = _aggregate_line_rows(
+                smap = _series_source_map(block, sample)
+                plotted = _aggregate_line_rows(
                     rows,
                     "period",
                     series_keys,
                     max_points=24,
-                    series_source_map=_series_source_map(block, sample),
+                    series_source_map=smap,
                 )
+                if plotted and all(
+                    not (row.get(sk) or 0)
+                    for row in plotted
+                    for sk in series_keys
+                    if "target" not in sk.lower()
+                ):
+                    measure = _best_measure(sample, str(block.get("title") or ""))
+                    if measure:
+                        series_keys = [measure]
+                        plotted = _aggregate_line_rows(
+                            rows,
+                            "period",
+                            series_keys,
+                            max_points=24,
+                            series_source_map={measure: measure},
+                        )
+                block["series"] = [
+                    next(
+                        (
+                            s for s in (block.get("series") or [])
+                            if isinstance(s, dict) and str(s.get("dataKey") or "") == sk
+                        ),
+                        {"dataKey": sk, "name": sk.replace("_", " ").title()},
+                    )
+                    for sk in series_keys
+                ]
+                bag[dk] = plotted
                 block["xAxisKey"] = "period"
+            elif btype == "pieChart" and dk:
+                pie = _pie_from_rows(block, rows)
+                if len(pie) >= 2:
+                    bag[dk] = pie
     out["data"] = bag
     return out
 

@@ -112,6 +112,7 @@ const chartPaperSx = {
     borderColor: 'divider',
     bgcolor: 'background.paper',
     boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+    overflow: 'hidden',
   },
   grid: {
     p: 2.5,
@@ -124,6 +125,7 @@ const chartPaperSx = {
     borderColor: 'divider',
     bgcolor: 'background.paper',
     boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+    overflow: 'hidden',
   },
 } as const;
 
