@@ -343,11 +343,24 @@ async def rag_export(
 
     if _is_sap_similarity_definition(defn):
         context = build_sap_rag_export(defn)
-    else:
-        query = "full export of KPIs charts tables products and dashboard data"
+    elif defn.get("appKind") == "ecommerce" or isinstance(defn.get("products"), list):
         from app_builder.services.app_data_rag import build_rag_context
 
-        context = build_rag_context(defn, query, focus_page_id=body.page_id)
+        context = build_rag_context(
+            defn,
+            "full export of products and catalog data",
+            focus_page_id=body.page_id,
+        )
+    else:
+        from app_builder.services.app_data_rag import build_policy_rag_export
+
+        try:
+            context = await build_policy_rag_export(defn)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not generate policies from the prompt: {exc}",
+            ) from exc
     return JSONResponse(
         content={
             "appName": meta.get("appName") or "Application",

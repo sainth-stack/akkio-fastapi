@@ -376,47 +376,53 @@ def _prompt_text(defn: Dict[str, Any]) -> str:
     return str(meta.get("requirement") or meta.get("description") or "").strip()
 
 
-def _policies_from_prompt(defn: Dict[str, Any]) -> str:
-    """Policy section follows the user prompt. Unmentioned domains are left out."""
-    prompt = _prompt_text(defn)
-    low = prompt.lower()
-    lines = [
-        "Policies",
-        "These policies are taken from the prompt for this app.",
-        "",
-        f"Prompt: {prompt or 'Manufacturing operations for 2025 and 2026.'}",
-        "",
-        "- Data policy: dashboard charts, tables, and this export use the same rows, dated January 2025 through December 2026.",
-    ]
-    rules = (
-        (
-            ("safety", "stock", "inventory", "warehouse", "reorder", "sku"),
-            "- Inventory policy: a SKU is below policy when quantity on hand is at or under its reorder point or safety stock.",
-        ),
-        (
-            ("quality", "inspection", "defect", "yield", "scrap", "vendor"),
-            "- Quality policy: inspection lots stay in the same lot IDs shown on the dashboard, and a lot is held when its defect rate is above the yield target in the prompt.",
-        ),
-        (
-            ("purchase", "procurement", "spend", "po", "supplier"),
-            "- Procurement policy: purchase-order value and lead time are taken from the order rows, and an order is open until its status is received or closed.",
-        ),
-        (
-            ("sales", "revenue", "customer", "order"),
-            "- Sales policy: manufacturing sales are booked order value in the same 2025–2026 window as the charts.",
-        ),
-        (
-            ("maintenance", "mtbf", "mttr", "downtime", "oee", "work order"),
-            "- Maintenance policy: downtime, MTBF, and MTTR are calculated from work-order events, not from a separate chart seed.",
-        ),
-    )
-    matched = [text for words, text in rules if any(w in low for w in words)]
-    if not matched:
-        matched.append(
-            "- Operating policy: each KPI and chart states a figure that can be recomputed from the rows in this document."
-        )
-    lines.extend(matched)
-    return "\n".join(lines)
+_POLICY_SYSTEM = """You write the operating policies that form the RAG knowledge for an application.
+Use only the app prompt the user provides.
+Write 4 to 8 policies. Cover every responsibility the prompt names, and do not add topics it does not mention.
+Each policy is one bullet that starts with "- " and a short name ending in "policy:".
+Do not include KPI totals, chart series, dashboard metrics, or invented numbers.
+Return plain text only."""
+
+
+def _llm_text(response: Any) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or ""))
+        return "\n".join(part for part in parts if part).strip()
+    return str(content or "").strip()
+
+
+async def generate_policies_from_prompt(prompt: str, *, llm: Any = None) -> str:
+    """Ask the configured model to write policies from the app prompt."""
+    source = (prompt or "").strip()
+    if not source:
+        raise ValueError("This app has no prompt to generate policies from.")
+    if llm is None:
+        from llm_helper import get_llm_for_user
+
+        llm = get_llm_for_user(user_email=None, temperature=0.2)
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        messages = [
+            SystemMessage(content=_POLICY_SYSTEM),
+            HumanMessage(content=f"App prompt:\n{source}"),
+        ]
+    except ImportError:
+        messages = [
+            type("Msg", (), {"content": _POLICY_SYSTEM})(),
+            type("Msg", (), {"content": f"App prompt:\n{source}"})(),
+        ]
+    response = await llm.ainvoke(messages)
+    text = _llm_text(response)
+    if not text:
+        raise ValueError("The model returned no policies.")
+    return text
 
 
 def _manufacturing_sales_section(defn: Dict[str, Any]) -> str:
@@ -430,6 +436,8 @@ def _manufacturing_sales_section(defn: Dict[str, Any]) -> str:
     total = 0.0
     counted = 0
     for key, rows in data.items():
+        if str(key).startswith(("kpis_", "series_", "chart_")):
+            continue
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
             continue
         sample = rows[0]
@@ -465,22 +473,33 @@ def _manufacturing_sales_section(defn: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_manufacturing_rag_export(defn: Dict[str, Any]) -> str:
-    """Manufacturing RAG document: Knowledge, Manufacturing sales, and prompt policies."""
-    chunks = build_knowledge_chunks(defn, focus_page_id=None)
-    knowledge = "\n\n".join(text for _, text in chunks) or "No dashboard knowledge is loaded."
+def format_policy_export(defn: Dict[str, Any], policies_text: str) -> str:
+    """Wrap model-written policies. Manufacturing apps also list sales rows. No KPI dump."""
+    prompt = _prompt_text(defn)
     parts = [
         "Knowledge",
-        knowledge,
+        "The knowledge for this assistant is the policy set generated from the prompt.",
         "",
-        _manufacturing_sales_section(defn),
+        "Policies",
+        f"Prompt: {prompt or 'No prompt was stored on this app.'}",
         "",
-        _policies_from_prompt(defn),
+        (policies_text or "").strip(),
     ]
+    if _is_manufacturing_definition(defn):
+        parts.extend(["", _manufacturing_sales_section(defn)])
     body = "\n".join(parts).strip()
     if len(body) > _MAX_CONTEXT_CHARS:
         body = body[:_MAX_CONTEXT_CHARS] + "\n…(truncated)"
     return body
+
+
+async def build_policy_rag_export(defn: Dict[str, Any], *, llm: Any = None) -> str:
+    policies = await generate_policies_from_prompt(_prompt_text(defn), llm=llm)
+    return format_policy_export(defn, policies)
+
+
+async def build_manufacturing_rag_export(defn: Dict[str, Any]) -> str:
+    return await build_policy_rag_export(defn)
 
 
 def build_rag_context(
@@ -492,8 +511,6 @@ def build_rag_context(
     export_query = bool(re.search(r"\b(export|download|full)\b", (query or "").lower()))
     if _is_sap_similarity_definition(defn) and export_query:
         return build_sap_rag_export(defn)
-    if _is_manufacturing_definition(defn) and export_query:
-        return build_manufacturing_rag_export(defn)
     chunks = build_knowledge_chunks(defn, focus_page_id=focus_page_id)
     if _is_sap_similarity_definition(defn):
         selected = [text for _, text in chunks]

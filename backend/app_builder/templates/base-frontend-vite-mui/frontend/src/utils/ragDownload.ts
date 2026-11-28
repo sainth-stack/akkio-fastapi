@@ -51,7 +51,7 @@ h1{font-size:20px}pre{white-space:pre-wrap;font-size:12px;line-height:1.5;backgr
 @media print{body{padding:12px} pre{background:#fff;border:1px solid #e2e8f0}}
 </style></head><body>
 <h1>RAG data export — ${escapeHtml(appName)}</h1>
-<p>Knowledge, manufacturing sales, and the policies from the app prompt. Open this file in a browser and use Print → Save as PDF if needed.</p>
+<p>Policies written from the app prompt. Open this file in a browser and use Print → Save as PDF if needed.</p>
 <pre>${escapeHtml(context)}</pre>
 </body></html>`;
 

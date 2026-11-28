@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 
@@ -42,7 +43,7 @@ class TestAppDataRag(unittest.TestCase):
         self.assertIn("downtime", ctx.lower())
 
     def test_manufacturing_export_has_knowledge_sales_and_prompt_policies(self):
-        from app_builder.services.app_data_rag import build_rag_context
+        from app_builder.services.app_data_rag import build_policy_rag_export
 
         prompt = "Manufacturing vendor dashboard for inspection lots, safety stock, and purchase orders in 2025 and 2026"
         defn = {
@@ -77,18 +78,75 @@ class TestAppDataRag(unittest.TestCase):
                 ],
             },
         }
-        text = build_rag_context(defn, "export rag data")
+        model_policies = (
+            "- Inspection policy: Hold a lot when it fails the inspection rule named in the prompt.\n"
+            "- Stock policy: Replenish a SKU that falls to its safety stock."
+        )
+        seen = {}
+
+        class _Reply:
+            content = model_policies
+
+        class _Llm:
+            async def ainvoke(self, messages):
+                seen["prompt"] = messages[-1].content
+                return _Reply()
+
+        text = asyncio.run(build_policy_rag_export(defn, llm=_Llm()))
+        self.assertIn(prompt, seen["prompt"])
         self.assertIn("Knowledge", text)
         self.assertIn("Manufacturing sales", text)
         self.assertIn("PO-8801", text)
         self.assertIn("Policies", text)
-        self.assertIn("inspection lots", text)
-        self.assertIn("Inventory policy", text)
-        self.assertIn("Quality policy", text)
-        self.assertIn("Procurement policy", text)
-        self.assertNotIn("Maintenance policy", text)
-        self.assertIn("Total Purchase Orders over time", text)
+        self.assertIn("Inspection policy", text)
+        self.assertIn("Stock policy", text)
+        self.assertNotIn("kpis_", text)
+        self.assertNotIn("series_", text)
 
+
+    def test_customer_service_export_is_policies_not_kpis(self):
+        from app_builder.services.app_data_rag import build_policy_rag_export
+
+        prompt = (
+            "Build a customer service operation app where the app create tickets, "
+            "analyse and monitor the tickets and also create in app assistant with rag functionality"
+        )
+        defn = {
+            "meta": {"appName": "Workspace", "domain": "generic", "description": prompt},
+            "pages": [{"id": "predict", "title": "Predict", "subtitle": "Run what-if forecasts"}],
+            "data": {
+                "kpis_dashboard": {
+                    "total_tickets_created": "17,054",
+                    "average_resolution_time": "27h 1m",
+                    "customer_satisfaction_score": "16,399",
+                    "tickets_resolved_today": "2,299",
+                },
+                "series_dashboard_1_line": [{"period": "Jan 2025", "value": 12}],
+                "table_tickets": [{"ticket_id": "TKT-2025-0001", "status": "Open"}],
+            },
+        }
+        model_policies = (
+            "- Ticket creation policy: Create a ticket when a customer contacts the desk.\n"
+            "- Assistant policy: The in-app assistant answers from these policies."
+        )
+
+        class _Reply:
+            content = model_policies
+
+        class _Llm:
+            async def ainvoke(self, messages):
+                assert prompt in messages[-1].content
+                return _Reply()
+
+        text = asyncio.run(build_policy_rag_export(defn, llm=_Llm()))
+        self.assertIn("Policies", text)
+        self.assertIn("Ticket creation policy", text)
+        self.assertIn("Assistant policy", text)
+        self.assertIn(prompt, text)
+        self.assertNotIn("17,054", text)
+        self.assertNotIn("kpis_dashboard", text)
+        self.assertNotIn("series_dashboard", text)
+        self.assertNotIn("customer_satisfaction_score", text)
 
     def test_sap_rag_export_ticket_and_solution_only(self):
         from app_builder.services.app_data_rag import build_sap_rag_export
