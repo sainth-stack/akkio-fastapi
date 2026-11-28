@@ -376,12 +376,26 @@ def _prompt_text(defn: Dict[str, Any]) -> str:
     return str(meta.get("requirement") or meta.get("description") or "").strip()
 
 
-_POLICY_SYSTEM = """You write the operating policies that form the RAG knowledge for an application.
-Use only the app prompt the user provides.
-Write 4 to 8 policies. Cover every responsibility the prompt names, and do not add topics it does not mention.
-Each policy is one bullet that starts with "- " and a short name ending in "policy:".
-Do not include KPI totals, chart series, dashboard metrics, or invented numbers.
-Return plain text only."""
+_POLICY_SYSTEM = """You write the operating-policy document that is the RAG knowledge for an application.
+The user message is the app prompt. Write a full document from that prompt, not a short summary.
+
+Structure:
+1. A "Knowledge" section of 2 to 4 paragraphs. Explain what this app is for, who uses it, and what the assistant is allowed to answer.
+2. Then one policy for every responsibility the prompt names. Use a heading line that ends with "Policy".
+3. Under each policy write all of the following, each as its own short paragraph:
+   - Purpose
+   - Who it applies to
+   - Rules that must be followed
+   - The steps to carry the work out, in order
+   - What is in scope and what is out of scope
+   - How the in-app assistant must use this policy when answering
+
+Depth:
+- Each policy is several paragraphs, not one sentence.
+- Expand the prompt into concrete operating rules. Do not add a new business area the prompt never mentions.
+- When the prompt says RAG, it means retrieval-augmented answers grounded in these policies. It does not mean a red, amber, and green status.
+- Do not include KPI totals, chart series, dashboard metrics, or invented numbers.
+- Plain text only. No JSON."""
 
 
 def _llm_text(response: Any) -> str:
@@ -405,7 +419,7 @@ async def generate_policies_from_prompt(prompt: str, *, llm: Any = None) -> str:
     if llm is None:
         from llm_helper import get_llm_for_user
 
-        llm = get_llm_for_user(user_email=None, temperature=0.2)
+        llm = get_llm_for_user(user_email=None, temperature=0.3, max_tokens=4000)
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -477,9 +491,6 @@ def format_policy_export(defn: Dict[str, Any], policies_text: str) -> str:
     """Wrap model-written policies. Manufacturing apps also list sales rows. No KPI dump."""
     prompt = _prompt_text(defn)
     parts = [
-        "Knowledge",
-        "The knowledge for this assistant is the policy set generated from the prompt.",
-        "",
         "Policies",
         f"Prompt: {prompt or 'No prompt was stored on this app.'}",
         "",

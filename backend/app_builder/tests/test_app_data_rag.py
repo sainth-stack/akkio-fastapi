@@ -94,7 +94,6 @@ class TestAppDataRag(unittest.TestCase):
 
         text = asyncio.run(build_policy_rag_export(defn, llm=_Llm()))
         self.assertIn(prompt, seen["prompt"])
-        self.assertIn("Knowledge", text)
         self.assertIn("Manufacturing sales", text)
         self.assertIn("PO-8801", text)
         self.assertIn("Policies", text)
