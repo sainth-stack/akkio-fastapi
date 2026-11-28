@@ -147,6 +147,26 @@ class TestAppDataRag(unittest.TestCase):
         self.assertNotIn("series_dashboard", text)
         self.assertNotIn("customer_satisfaction_score", text)
 
+    def test_policy_subject_swaps_operations_for_inventory(self):
+        from app_builder.services.app_data_rag import _policy_instruction, _policy_subject
+
+        inventory = "Build an inventory dashboard for warehouse stock, safety stock, and reorder points"
+        operations = "Build a manufacturing operations dashboard for plant performance"
+        self.assertEqual(_policy_subject(inventory), "Inventory")
+        self.assertEqual(_policy_subject(operations), "Operations")
+        inventory_request = _policy_instruction(inventory)
+        operations_request = _policy_instruction(operations)
+        self.assertIn("Manufacturing Inventory Policy", inventory_request)
+        self.assertNotIn("Manufacturing Operations Policy", inventory_request)
+        self.assertIn("Manufacturing Operations Policy", operations_request)
+        for request in (inventory_request, operations_request):
+            self.assertIn("policy statements", request)
+            self.assertIn("procedures", request)
+            self.assertIn("responsibilities", request)
+            self.assertIn("KPIs", request)
+            self.assertIn("approval matrix", request)
+            self.assertIn("compliance requirements", request)
+
     def test_sap_rag_export_ticket_and_solution_only(self):
         from app_builder.services.app_data_rag import build_sap_rag_export
         from app_builder.services.sap_similar_tickets import seed_sap_tickets_if_empty

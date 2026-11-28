@@ -376,26 +376,52 @@ def _prompt_text(defn: Dict[str, Any]) -> str:
     return str(meta.get("requirement") or meta.get("description") or "").strip()
 
 
-_POLICY_SYSTEM = """You write the operating-policy document that is the RAG knowledge for an application.
-The user message is the app prompt. Write a full document from that prompt, not a short summary.
+def _policy_subject(prompt: str) -> str:
+    """The word that replaces Operations in the standard policy title."""
+    low = (prompt or "").lower()
+    topics = (
+        ("inventory", "Inventory"),
+        ("warehouse", "Inventory"),
+        ("safety stock", "Inventory"),
+        ("reorder", "Inventory"),
+        ("quality", "Quality"),
+        ("inspection", "Quality"),
+        ("procurement", "Procurement"),
+        ("purchase order", "Procurement"),
+        ("maintenance", "Maintenance"),
+        ("sales", "Sales"),
+        ("customer service", "Customer Service"),
+        ("ticket", "Customer Service"),
+        ("operation", "Operations"),
+    )
+    for needle, label in topics:
+        if needle in low:
+            return label
+    return "Operations"
 
-Structure:
-1. A "Knowledge" section of 2 to 4 paragraphs. Explain what this app is for, who uses it, and what the assistant is allowed to answer.
-2. Then one policy for every responsibility the prompt names. Use a heading line that ends with "Policy".
-3. Under each policy write all of the following, each as its own short paragraph:
-   - Purpose
-   - Who it applies to
-   - Rules that must be followed
-   - The steps to carry the work out, in order
-   - What is in scope and what is out of scope
-   - How the in-app assistant must use this policy when answering
 
-Depth:
-- Each policy is several paragraphs, not one sentence.
-- Expand the prompt into concrete operating rules. Do not add a new business area the prompt never mentions.
-- When the prompt says RAG, it means retrieval-augmented answers grounded in these policies. It does not mean a red, amber, and green status.
-- Do not include KPI totals, chart series, dashboard metrics, or invented numbers.
-- Plain text only. No JSON."""
+def _policy_instruction(prompt: str) -> str:
+    """Same request for every app. Only the subject word changes with the prompt."""
+    subject = _policy_subject(prompt)
+    return (
+        f"Create a Manufacturing {subject} Policy document suitable for an enterprise "
+        "manufacturing organization, with policy statements, procedures, responsibilities, "
+        "KPIs, approval matrix, and compliance requirements.\n\n"
+        f"Application prompt:\n{prompt.strip()}\n\n"
+        f"The subject is {subject}. Write that in the title in place of Operations when the "
+        "prompt is not about operations. Include each section in full: Policy statements, "
+        "Procedures, Responsibilities, KPIs, Approval matrix, and Compliance requirements. "
+        "Define the KPIs the policy requires. Do not copy dashboard chart totals into the document."
+    )
+
+
+_POLICY_SYSTEM = """You write enterprise manufacturing policy documents.
+Follow the document title in the request. The subject (Operations, Inventory, Quality, or another topic) is already chosen. Do not change it back to Operations.
+Write a full document, not an outline. Include every section the request names:
+policy statements, procedures, responsibilities, KPIs, an approval matrix, and compliance requirements.
+Keep each section specific to the application prompt.
+When the prompt says RAG, it means retrieval-augmented answers grounded in this document. It does not mean a red, amber, and green status.
+Plain text with headings. No JSON."""
 
 
 def _llm_text(response: Any) -> str:
@@ -425,12 +451,12 @@ async def generate_policies_from_prompt(prompt: str, *, llm: Any = None) -> str:
 
         messages = [
             SystemMessage(content=_POLICY_SYSTEM),
-            HumanMessage(content=f"App prompt:\n{source}"),
+            HumanMessage(content=_policy_instruction(source)),
         ]
     except ImportError:
         messages = [
             type("Msg", (), {"content": _POLICY_SYSTEM})(),
-            type("Msg", (), {"content": f"App prompt:\n{source}"})(),
+            type("Msg", (), {"content": _policy_instruction(source)})(),
         ]
     response = await llm.ainvoke(messages)
     text = _llm_text(response)
