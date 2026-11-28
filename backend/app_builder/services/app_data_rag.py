@@ -362,16 +362,138 @@ def retrieve_chunks(
     return picked
 
 
+def _is_manufacturing_definition(defn: Dict[str, Any]) -> bool:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    blob = " ".join(
+        str(meta.get(k) or "")
+        for k in ("appName", "domain", "description", "requirement")
+    ).lower()
+    return bool(re.search(r"manufactur|plant|vendor|procurement|warehouse|inspection", blob))
+
+
+def _prompt_text(defn: Dict[str, Any]) -> str:
+    meta = defn.get("meta") if isinstance(defn.get("meta"), dict) else {}
+    return str(meta.get("requirement") or meta.get("description") or "").strip()
+
+
+def _policies_from_prompt(defn: Dict[str, Any]) -> str:
+    """Policy section follows the user prompt. Unmentioned domains are left out."""
+    prompt = _prompt_text(defn)
+    low = prompt.lower()
+    lines = [
+        "Policies",
+        "These policies are taken from the prompt for this app.",
+        "",
+        f"Prompt: {prompt or 'Manufacturing operations for 2025 and 2026.'}",
+        "",
+        "- Data policy: dashboard charts, tables, and this export use the same rows, dated January 2025 through December 2026.",
+    ]
+    rules = (
+        (
+            ("safety", "stock", "inventory", "warehouse", "reorder", "sku"),
+            "- Inventory policy: a SKU is below policy when quantity on hand is at or under its reorder point or safety stock.",
+        ),
+        (
+            ("quality", "inspection", "defect", "yield", "scrap", "vendor"),
+            "- Quality policy: inspection lots stay in the same lot IDs shown on the dashboard, and a lot is held when its defect rate is above the yield target in the prompt.",
+        ),
+        (
+            ("purchase", "procurement", "spend", "po", "supplier"),
+            "- Procurement policy: purchase-order value and lead time are taken from the order rows, and an order is open until its status is received or closed.",
+        ),
+        (
+            ("sales", "revenue", "customer", "order"),
+            "- Sales policy: manufacturing sales are booked order value in the same 2025–2026 window as the charts.",
+        ),
+        (
+            ("maintenance", "mtbf", "mttr", "downtime", "oee", "work order"),
+            "- Maintenance policy: downtime, MTBF, and MTTR are calculated from work-order events, not from a separate chart seed.",
+        ),
+    )
+    matched = [text for words, text in rules if any(w in low for w in words)]
+    if not matched:
+        matched.append(
+            "- Operating policy: each KPI and chart states a figure that can be recomputed from the rows in this document."
+        )
+    lines.extend(matched)
+    return "\n".join(lines)
+
+
+def _manufacturing_sales_section(defn: Dict[str, Any]) -> str:
+    data = _data_bag(defn)
+    lines = ["Manufacturing sales", ""]
+    value_keys = ("order_value", "order_total", "amount", "revenue", "sales", "unit_cost")
+    id_keys = ("po_number", "order_id", "inspection_id", "sku", "sales_order")
+    party_keys = ("customer", "vendor", "account", "warehouse")
+    date_keys = ("ordered_at", "inspected_at", "occurred_at", "date", "period")
+    picked: List[str] = []
+    total = 0.0
+    counted = 0
+    for key, rows in data.items():
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            continue
+        sample = rows[0]
+        if not any(k in sample for k in value_keys + id_keys):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            amount = None
+            for vk in value_keys:
+                val = row.get(vk)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    amount = float(val)
+                    break
+            ident = next((str(row.get(k)) for k in id_keys if row.get(k)), "")
+            party = next((str(row.get(k)) for k in party_keys if row.get(k)), "")
+            when = next((str(row.get(k))[:16] for k in date_keys if row.get(k)), "")
+            if amount is None and not ident:
+                continue
+            counted += 1
+            if amount is not None:
+                total += amount
+            if len(picked) < 12 and (ident or amount is not None):
+                bits = [b for b in (ident, party, when, None if amount is None else f"{amount:,.2f}") if b]
+                picked.append("  • " + " | ".join(bits))
+    if not picked:
+        lines.append("No order rows are loaded yet. Sales figures appear here once purchase or sales rows are on the dashboard.")
+        return "\n".join(lines)
+    lines.append(f"Orders in this export: {counted}")
+    lines.append(f"Manufacturing sales value (sum of order amounts): {total:,.2f}")
+    lines.append("")
+    lines.extend(picked)
+    return "\n".join(lines)
+
+
+def build_manufacturing_rag_export(defn: Dict[str, Any]) -> str:
+    """Manufacturing RAG document: Knowledge, Manufacturing sales, and prompt policies."""
+    chunks = build_knowledge_chunks(defn, focus_page_id=None)
+    knowledge = "\n\n".join(text for _, text in chunks) or "No dashboard knowledge is loaded."
+    parts = [
+        "Knowledge",
+        knowledge,
+        "",
+        _manufacturing_sales_section(defn),
+        "",
+        _policies_from_prompt(defn),
+    ]
+    body = "\n".join(parts).strip()
+    if len(body) > _MAX_CONTEXT_CHARS:
+        body = body[:_MAX_CONTEXT_CHARS] + "\n…(truncated)"
+    return body
+
+
 def build_rag_context(
     defn: Dict[str, Any],
     query: str,
     *,
     focus_page_id: Optional[str] = None,
 ) -> str:
-    if _is_sap_similarity_definition(defn) and re.search(
-        r"\b(export|download|full)\b", (query or "").lower()
-    ):
+    export_query = bool(re.search(r"\b(export|download|full)\b", (query or "").lower()))
+    if _is_sap_similarity_definition(defn) and export_query:
         return build_sap_rag_export(defn)
+    if _is_manufacturing_definition(defn) and export_query:
+        return build_manufacturing_rag_export(defn)
     chunks = build_knowledge_chunks(defn, focus_page_id=focus_page_id)
     if _is_sap_similarity_definition(defn):
         selected = [text for _, text in chunks]

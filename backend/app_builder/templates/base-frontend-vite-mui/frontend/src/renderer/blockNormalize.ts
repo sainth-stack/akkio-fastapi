@@ -63,21 +63,29 @@ export function normalizeBlock(
 
   if (type === 'lineChart' || type === 'barChart') {
     const data = (getMockSlice(definition, block.dataKey as string) as Record<string, unknown>[]) || [];
+    if (!data.length || !data[0]) return next;
+
     const series = block.series as Array<{ dataKey: string; name?: string }> | undefined;
-    if (series?.length || !data.length) return next;
-
-    const xKey = (block.xAxisKey as string) || 'label';
+    const xKey = (block.xAxisKey as string) || 'period';
     const sample = data[0];
-    const xResolved = sample && xKey in sample
+    const xResolved = xKey in sample
       ? xKey
-      : ['period', 'label', 'name', 'week', 'shift', 'hour', 'date'].find((k) => sample && k in sample) || xKey;
-
-    const dataKeys = Object.keys(sample).filter((k) => k !== xResolved);
+      : ['period', 'label', 'name', 'week', 'shift', 'hour', 'date', 'machine', 'category'].find((k) => k in sample) || xKey;
+    const numericKeys = Object.keys(sample).filter((k) => {
+      if (k === xResolved) return false;
+      const val = sample[k];
+      return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val)));
+    });
+    const usable = (series || []).filter((s) => s?.dataKey && s.dataKey in sample);
     next.xAxisKey = xResolved;
-    next.series = dataKeys.map((dataKey) => ({
-      dataKey,
-      name: humanizeField(dataKey),
-    }));
+    if (!usable.length && numericKeys.length) {
+      next.series = numericKeys.map((dataKey) => ({
+        dataKey,
+        name: humanizeField(dataKey),
+      }));
+    } else if (usable.length) {
+      next.series = usable;
+    }
     return next;
   }
 

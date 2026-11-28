@@ -41,6 +41,7 @@ export default function LineChart({
   showTooltip = true,
   rich = false,
 }: LineChartProps) {
+  const gradId = React.useId().replace(/:/g, '');
   const primaryKey = series.find((s) => !/target|benchmark|capacity/i.test(s.dataKey + (s.name || '')))?.dataKey
     || series[0]?.dataKey;
 
@@ -49,7 +50,7 @@ export default function LineChart({
       <ComposedChart data={data} margin={{ top: 12, right: 8, left: -8, bottom: 4 }}>
         {rich && primaryKey ? (
           <defs>
-            <linearGradient id={`fill-${primaryKey}`} x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id={`fill-${gradId}`} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={series[0]?.color || CHART_COLORS[0]} stopOpacity={0.28} />
               <stop offset="100%" stopColor={series[0]?.color || CHART_COLORS[0]} stopOpacity={0.02} />
             </linearGradient>
@@ -88,7 +89,7 @@ export default function LineChart({
             type="monotone"
             dataKey={primaryKey}
             stroke="none"
-            fill={`url(#fill-${primaryKey})`}
+            fill={`url(#fill-${gradId})`}
             legendType="none"
             tooltipType="none"
           />

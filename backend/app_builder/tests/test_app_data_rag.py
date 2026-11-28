@@ -41,6 +41,54 @@ class TestAppDataRag(unittest.TestCase):
         self.assertIn("Downtime trend", ctx)
         self.assertIn("downtime", ctx.lower())
 
+    def test_manufacturing_export_has_knowledge_sales_and_prompt_policies(self):
+        from app_builder.services.app_data_rag import build_rag_context
+
+        prompt = "Manufacturing vendor dashboard for inspection lots, safety stock, and purchase orders in 2025 and 2026"
+        defn = {
+            "meta": {
+                "appName": "Plant Ops",
+                "domain": "manufacturing",
+                "requirement": prompt,
+            },
+            "pages": [
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "blocks": [
+                        {
+                            "type": "lineChart",
+                            "title": "Total Purchase Orders over time",
+                            "dataKey": "chart_po",
+                            "xAxisKey": "period",
+                            "series": [{"dataKey": "order_value", "name": "Spend"}],
+                        }
+                    ],
+                }
+            ],
+            "data": {
+                "chart_po": [
+                    {"period": "Jan 2025", "order_value": 1200},
+                    {"period": "Feb 2025", "order_value": 800},
+                ],
+                "table_orders": [
+                    {"po_number": "PO-8801", "vendor": "Apex Metals", "order_value": 4200, "ordered_at": "2025-03-02"},
+                    {"po_number": "PO-8802", "vendor": "Nova Components", "order_value": 1800, "ordered_at": "2026-01-14"},
+                ],
+            },
+        }
+        text = build_rag_context(defn, "export rag data")
+        self.assertIn("Knowledge", text)
+        self.assertIn("Manufacturing sales", text)
+        self.assertIn("PO-8801", text)
+        self.assertIn("Policies", text)
+        self.assertIn("inspection lots", text)
+        self.assertIn("Inventory policy", text)
+        self.assertIn("Quality policy", text)
+        self.assertIn("Procurement policy", text)
+        self.assertNotIn("Maintenance policy", text)
+        self.assertIn("Total Purchase Orders over time", text)
+
 
     def test_sap_rag_export_ticket_and_solution_only(self):
         from app_builder.services.app_data_rag import build_sap_rag_export

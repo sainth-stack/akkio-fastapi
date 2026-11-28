@@ -105,6 +105,8 @@ const chartPaperSx = {
   standalone: {
     p: 2.5,
     mb: 3,
+    width: '100%',
+    minWidth: 0,
     borderRadius: 2.5,
     border: '1px solid',
     borderColor: 'divider',
@@ -114,6 +116,8 @@ const chartPaperSx = {
   grid: {
     p: 2.5,
     mb: 0,
+    width: '100%',
+    minWidth: 0,
     height: '100%',
     borderRadius: 2.5,
     border: '1px solid',
@@ -122,6 +126,22 @@ const chartPaperSx = {
     boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
   },
 } as const;
+
+function chartRows(
+  rows: Record<string, unknown>[],
+  series: Array<{ dataKey: string }>,
+): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const next = { ...row };
+    for (const s of series) {
+      const val = next[s.dataKey];
+      if (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val))) {
+        next[s.dataKey] = Number(val);
+      }
+    }
+    return next;
+  });
+}
 
 function ChartCardTitle({ title }: { title: string }) {
   return (
@@ -191,9 +211,11 @@ export default function BlockRenderer({
   }
 
   if (type === 'lineChart' || type === 'barChart') {
-    const data = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
+    const raw = (getDataSlice(definition, normalized.dataKey as string) as Record<string, unknown>[]) || [];
+    const data = Array.isArray(raw) ? raw : [];
     const series = (normalized.series as Array<{ dataKey: string; name?: string; color?: string }>) || [];
     const xAxisKey = resolveXAxisKey(data, (normalized.xAxisKey as string) || 'period');
+    const plotted = chartRows(data, series);
     const Chart = type === 'lineChart' ? LineChart : BarChart;
     const chartHeight = (normalized.height as number) || (layout === 'grid' ? 280 : 320);
     const barLayout =
@@ -207,7 +229,7 @@ export default function BlockRenderer({
           <Typography variant="body2" color="text.secondary">No chart data</Typography>
         ) : (
           <Chart
-            data={data}
+            data={plotted}
             series={series.map((s, i) => ({
               dataKey: s.dataKey,
               name: s.name || s.dataKey,
@@ -224,7 +246,12 @@ export default function BlockRenderer({
   }
 
   if (type === 'pieChart') {
-    const data = (getDataSlice(definition, normalized.dataKey as string) as Array<{ name: string; value: number }>) || [];
+    const rawPie = (getDataSlice(definition, normalized.dataKey as string) as Array<{ name: string; value: number | string }>) || [];
+    const data = (Array.isArray(rawPie) ? rawPie : []).map((row) => ({
+      ...row,
+      name: String(row?.name ?? ''),
+      value: typeof row?.value === 'number' ? row.value : Number(row?.value) || 0,
+    }));
     const chartHeight = (normalized.height as number) || (layout === 'grid' ? 280 : 320);
     return (
       <Paper sx={chartPaperSx[layout]} elevation={0}>
